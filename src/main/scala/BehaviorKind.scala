@@ -1,8 +1,6 @@
 package readren.matrix
 
-import readren.taskflow.TaskDomain
-
-import BehaviorKind.*
+import readren.taskflow.Doer
 
 object BehaviorKind {
 	type SerialNumber = Int
@@ -10,7 +8,7 @@ object BehaviorKind {
 
 trait BehaviorKind {
 	/** Should be thread-safe  */
-	def createInbox[M](taskDomain: TaskDomain): Inbox[M]
-	/** Called withing the progenitor's [[TaskDomain]]. */
-	def createDoer[M](id: Doer.SerialNumber, inbox: Inbox[M]): Doer
+	def createInbox[M](doer: Doer): Inbox[M]
+	/** Called withing the progenitor's [[Doer]]. */
+	def createReactant[M](id: Reactant.SerialNumber, inbox: Inbox[M]): Reactant
 }

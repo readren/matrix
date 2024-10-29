@@ -2,20 +2,20 @@ package readren.matrix
 
 
 import scala.collection.mutable
-import readren.taskflow.TaskDomain
+import readren.taskflow.Doer
 
-class FifoInbox[M](adminDomain: TaskDomain) extends Inbox[M] {
+class FifoInbox[M](adminDoer: Doer) extends Inbox[M] {
 	
-	/** Should be accessed only within the [[adminDomain]] */
+	/** Should be accessed only within the [[adminDoer]] */
 	private val queue: mutable.ArrayDeque[M] = mutable.ArrayDeque.empty
 
 	override def submit(m: M): Unit = {
-		adminDomain.queueForSequentialExecution(queue.append(m))
+		adminDoer.queueForSequentialExecution(queue.append(m))
 	}
 
-	override def withdraw(withdrawingTaskDomain: TaskDomain): withdrawingTaskDomain.Task[M] = {
-		withdrawingTaskDomain.Task.foreign(adminDomain) {
-			adminDomain.Task.mine(() => queue.removeHead())
-		}
+	override def withdraw(withdrawer: Doer): withdrawer.Task[M] = {
+		adminDoer.Task
+			.mine(() => queue.removeHead())
+			.onBehalfOf(withdrawer)
 	}
 }

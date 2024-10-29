@@ -1,6 +1,6 @@
 package readren.matrix
 
-import readren.taskflow.TaskDomain
+import readren.taskflow.Doer
 
 object Inbox {
 }
@@ -9,6 +9,6 @@ object Inbox {
 trait Inbox[M] {
 
 	def submit(m: M): Unit
-	def withdraw(withdrawingTaskDomain: TaskDomain): withdrawingTaskDomain.Task[M]
-//	def owner: Doer | Null
+	def withdraw(withdrawer: Doer): withdrawer.Task[M]
+//	def reactant: Reactant | Null
 }

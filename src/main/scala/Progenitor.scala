@@ -1,6 +1,6 @@
 package readren.matrix
 
-import readren.taskflow.TaskDomain
+import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable
@@ -11,38 +11,38 @@ object Progenitor {
 	type TaskSerialNumber = Int
 
 	trait Aide {
-		val taskDomains: IArray[TaskDomain]
+		val doers: IArray[Doer]
 
-		def pickTaskDomain(serialNumber: TaskSerialNumber): TaskDomain
+		def pickDoer(serialNumber: TaskSerialNumber): Doer
 	}
 
 }
 
 import Progenitor.*
 
-/** A progenitor of [[Doer]]s */
+/** A progenitor of [[Reactant]]s */
 trait Progenitor(serialNumber: TaskSerialNumber, aide: Aide) {
 
-	private val adminDomain = aide.pickTaskDomain(serialNumber)
+	private val adminDoer = aide.pickDoer(serialNumber)
 	private val inboxSerialNumberSequencer: AtomicInteger = new AtomicInteger(0)
 
-	/** Private to the [[newDoerSerialNumber()]] method. Never use directly. */
-	private var doerSerialNumberSequencer: Doer.SerialNumber = 0
-	/** Should be accessed only within the [[adminDomain]] */
-	private inline def newDoerSerialNumber(): Doer.SerialNumber = {
-		doerSerialNumberSequencer += 1
-		doerSerialNumberSequencer
+	/** Private to the [[newReactantSerial()]] method. Never use directly. */
+	private var reactantSerialSequencer: Reactant.SerialNumber = 0
+	/** Should be accessed only within the [[adminDoer]] */
+	private inline def newReactantSerial(): Reactant.SerialNumber = {
+		reactantSerialSequencer += 1
+		reactantSerialSequencer
 	}
-	/** Should be accessed only within the [[adminDomain]] */
-	private val children: mutable.LongMap[Doer] = mutable.LongMap.empty
+	/** Should be accessed only within the [[adminDoer]] */
+	private val children: mutable.LongMap[Reactant] = mutable.LongMap.empty
 
-	def createDoer[A](behavior: Behavior): Inbox[A] = {
-		val inboxDomain = aide.pickTaskDomain(inboxSerialNumberSequencer.incrementAndGet())
-		val inbox = behavior.kind.createInbox[A](inboxDomain)
-		adminDomain.queueForSequentialExecution{
-			val doerSerialNumber = newDoerSerialNumber()
-			val doer = behavior.kind.createDoer(doerSerialNumber, inbox)
-			children.addOne(doerSerialNumber, doer)
+	def createReactant[A](behavior: Behavior): Inbox[A] = {
+		val inboxDoer = aide.pickDoer(inboxSerialNumberSequencer.incrementAndGet())
+		val inbox = behavior.kind.createInbox[A](inboxDoer)
+		adminDoer.queueForSequentialExecution{
+			val reactantSerial = newReactantSerial()
+			val reactant = behavior.kind.createReactant(reactantSerial, inbox)
+			children.addOne(reactantSerial, reactant)
 		}
 		inbox
 	}
