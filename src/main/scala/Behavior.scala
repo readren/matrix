@@ -1,5 +1,7 @@
 package readren.matrix
 
-trait Behavior {
+trait Behavior[-M] {
 	val kind: BehaviorKind
+	
+	def handle(message: M): Behavior[M]
 }

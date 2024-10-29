@@ -8,12 +8,11 @@ import scala.collection.mutable
 
 
 object Progenitor {
-	type TaskSerialNumber = Int
+	type SerialNumber = Int
 
 	trait Aide {
-		val doers: IArray[Doer]
-
-		def pickDoer(serialNumber: TaskSerialNumber): Doer
+		def buildDoerAssistant(): Doer.Assistant
+		val maxPendingMessagesProcessedPerActorTurn: Int
 	}
 
 }
@@ -21,28 +20,32 @@ object Progenitor {
 import Progenitor.*
 
 /** A progenitor of [[Reactant]]s */
-trait Progenitor(serialNumber: TaskSerialNumber, aide: Aide) {
+trait Progenitor(progenitorSerial: SerialNumber, aide: Progenitor.Aide) { thisProgenitor =>
 
-	private val adminDoer = aide.pickDoer(serialNumber)
-	private val inboxSerialNumberSequencer: AtomicInteger = new AtomicInteger(0)
-
-	/** Private to the [[newReactantSerial()]] method. Never use directly. */
-	private var reactantSerialSequencer: Reactant.SerialNumber = 0
-	/** Should be accessed only within the [[adminDoer]] */
-	private inline def newReactantSerial(): Reactant.SerialNumber = {
-		reactantSerialSequencer += 1
-		reactantSerialSequencer
+	private val matrixAdmins: IArray[MatrixAdmin] = {
+		val availableProcessors = Runtime.getRuntime.availableProcessors()
+		IArray.fill(availableProcessors) {
+			new MatrixAdmin(aide.buildDoerAssistant())
+		}
 	}
-	/** Should be accessed only within the [[adminDoer]] */
-	private val children: mutable.LongMap[Reactant] = mutable.LongMap.empty
 
-	def createReactant[A](behavior: Behavior): Inbox[A] = {
-		val inboxDoer = aide.pickDoer(inboxSerialNumberSequencer.incrementAndGet())
-		val inbox = behavior.kind.createInbox[A](inboxDoer)
-		adminDoer.queueForSequentialExecution{
-			val reactantSerial = newReactantSerial()
-			val reactant = behavior.kind.createReactant(reactantSerial, inbox)
+	private val thisProgenitorAdmin = pickAdmin(progenitorSerial)
+
+	private val reactantSerialSequencer: AtomicInteger = new AtomicInteger(0)
+
+	/** Should be accessed only within the [[thisProgenitorAdmin]] */
+	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
+
+	inline def pickAdmin(serialNumber: SerialNumber): MatrixAdmin = matrixAdmins(serialNumber % matrixAdmins.length)
+
+	def createReactant[U, M <: U](behavior: Behavior[M]): Inbox[M] = {
+		val reactantSerial = reactantSerialSequencer.incrementAndGet()
+		val reactantAdmin = pickAdmin(reactantSerial)
+		val inbox = behavior.kind.createInbox[M](reactantAdmin)
+		thisProgenitorAdmin.queueForSequentialExecution{
+			val reactant = behavior.kind.createReactant(reactantSerial, reactantAdmin, inbox)
 			children.addOne(reactantSerial, reactant)
+			inbox.setOwner(reactant, thisProgenitorAdmin)
 		}
 		inbox
 	}
