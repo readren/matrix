@@ -12,11 +12,15 @@ object Reactant {
 trait Reactant[M](val serialNumber: Reactant.SerialNumber, val admin: MatrixAdmin, initialBehavior: Behavior[M]) {
 	
 	/** should be called within the [[admin]]. */
-	var isIdle: Boolean 
+	var isIdle: Boolean
+	@deprecated("no se si sirve de algo")
+	var abortionCompleted: Boolean
 
 	def withdrawNextMessage(): Maybe[M]
 	
 	def setBehavior(behavior: Behavior[M]): Unit
 	
-	def currentBehavior: Behavior[M]	
+	def currentBehavior: Behavior[M]
+	
+	def handleException: PartialFunction[Throwable, Boolean]
 }

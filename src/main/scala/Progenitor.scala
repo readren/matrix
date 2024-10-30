@@ -10,24 +10,14 @@ import scala.collection.mutable
 object Progenitor {
 	type SerialNumber = Int
 
-	trait Aide {
-		def buildDoerAssistant(): Doer.Assistant
-		val maxPendingMessagesProcessedPerActorTurn: Int
-	}
 
 }
 
 import Progenitor.*
 
 /** A progenitor of [[Reactant]]s */
-trait Progenitor(progenitorSerial: SerialNumber, aide: Progenitor.Aide) { thisProgenitor =>
+trait Progenitor(progenitorSerial: SerialNumber, matrixAdmins: IArray[MatrixAdmin]) { thisProgenitor =>
 
-	private val matrixAdmins: IArray[MatrixAdmin] = {
-		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		IArray.fill(availableProcessors) {
-			new MatrixAdmin(aide.buildDoerAssistant())
-		}
-	}
 
 	private val thisProgenitorAdmin = pickAdmin(progenitorSerial)
 

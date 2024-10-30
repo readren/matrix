@@ -39,9 +39,7 @@ class FifoInbox[M](override val admin: MatrixAdmin) extends InboxBackend[M] { th
 		}
 
 		if admin eq asker then work()
-		else admin.queueForSequentialExecution {
-			work()
-		}
+		else admin.queueForSequentialExecution(work())
 	}
 
 }
