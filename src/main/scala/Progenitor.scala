@@ -28,11 +28,11 @@ trait Progenitor(progenitorSerial: SerialNumber, matrixAdmins: IArray[MatrixAdmi
 
 	inline def pickAdmin(serialNumber: SerialNumber): MatrixAdmin = matrixAdmins(serialNumber % matrixAdmins.length)
 
-	def createReactant[U, M <: U](behavior: Behavior[M]): Inbox[M] = {
+	def createReactant[U, M <: U](behavior: Behavior[U]): Inbox[M] = {
 		val reactantSerial = reactantSerialSequencer.incrementAndGet()
 		val reactantAdmin = pickAdmin(reactantSerial)
 		val inbox = behavior.kind.createInbox[M](reactantAdmin)
-		thisProgenitorAdmin.queueForSequentialExecution{
+		thisProgenitorAdmin.queueForSequentialExecution {
 			val reactant = behavior.kind.createReactant(reactantSerial, reactantAdmin, inbox)
 			children.addOne(reactantSerial, reactant)
 			inbox.setOwner(reactant, thisProgenitorAdmin)

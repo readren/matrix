@@ -16,5 +16,5 @@ class DefaultAide extends Matrix.Aide { thisAide =>
 		override def reportFailure(cause: Throwable): Unit = thisAide.reportFailure(cause)
 	}
 
-	override def buildDoerAssistantForMsgHandling(): Doer.Assistant = buildDoerAssistantForAdmin()
+	override def buildDoerAssistantForMsgHandlerExecutor(): Doer.Assistant = buildDoerAssistantForAdmin()
 }

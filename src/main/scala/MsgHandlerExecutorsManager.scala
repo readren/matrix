@@ -4,35 +4,35 @@ import readren.taskflow.Doer
 
 import scala.annotation.tailrec
 
-object MsgHandlingDoersManager {
+object MsgHandlerExecutorsManager {
 	trait Aide {
-		def buildDoerAssistantForMsgHandling(): Doer.Assistant
+		def buildDoerAssistantForMsgHandlerExecutor(): Doer.Assistant
 	}
 }
 
-class MsgHandlingDoersManager(aide: MsgHandlingDoersManager.Aide) {
-	private val msgHandlingDoers: IArray[MsgHandlingDoer] = {
+class MsgHandlerExecutorsManager(aide: MsgHandlerExecutorsManager.Aide) {
+	private val msgHandlerExecutors: IArray[MsgHandlerExecutor] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
 		IArray.fill(availableProcessors) {
-			new MsgHandlingDoer(aide.buildDoerAssistantForMsgHandling())
+			new MsgHandlerExecutor(aide.buildDoerAssistantForMsgHandlerExecutor())
 		}
 	}
 
-	private val picksPerUpdate = msgHandlingDoers.length * 9
-	/** This variable is accessed (read and mutated) concurrently by many threads, which may cause its value being corrupted, but it doesn't matter. See the comments in the implementation of [[pickMsgHandlingDoer]] */
+	private val picksPerUpdate = msgHandlerExecutors.length * 7
+	/** This variable is accessed (read and mutated) concurrently by many threads, which may cause its value being corrupted, but it doesn't matter. See the comments in the implementation of [[pickExecutor]] */
 	private var remainingPicksUntilUpdate: Int = picksPerUpdate
-	/** These elements in this array are accessed (read and mutated) concurrently by many threads, which may cause its value being corrupted, but it doesn't matter. See the comments in the implementation of [[pickMsgHandlingDoer]] */
-	private val loadByIndex: Array[Integer] = Array.fill(msgHandlingDoers.length)(0)
+	/** These elements in this array are accessed (read and mutated) concurrently by many threads, which may cause its value being corrupted, but it doesn't matter. See the comments in the implementation of [[pickExecutor]] */
+	private val loadByIndex: Array[Integer] = Array.fill(msgHandlerExecutors.length)(0)
 
-	/** Picks the [[MsgHandlingDoer]] with the least load. */
-	def pickMsgHandlingDoer(): MsgHandlingDoer = {
+	/** Picks the [[MsgHandlerExecutor]] with the least load. */
+	def pickExecutor(): MsgHandlerExecutor = {
 
 		@tailrec
-		def findLeastLoadedDoerUsingCurrentMetrics(previousIndex: Int = msgHandlingDoers.length, minLoad: Int = Integer.MAX_VALUE, leastLoadedDoer: MsgHandlingDoer = msgHandlingDoers(0)): MsgHandlingDoer = {
+		def findLeastLoadedDoerUsingCurrentMetrics(previousIndex: Int = msgHandlerExecutors.length, minLoad: Int = Integer.MAX_VALUE, leastLoadedDoer: MsgHandlerExecutor = msgHandlerExecutors(0)): MsgHandlerExecutor = {
 			if previousIndex == 0 then leastLoadedDoer
 			else {
 				val index = previousIndex - 1
-				val doer = msgHandlingDoers(index)
+				val doer = msgHandlerExecutors(index)
 				val load = doer.load
 				loadByIndex(index) = load
 				if load < minLoad then {
@@ -44,11 +44,11 @@ class MsgHandlingDoersManager(aide: MsgHandlingDoersManager.Aide) {
 		}
 
 		@tailrec
-		def findLeastLoadedDoerUsingOldMetrics(previousIndex: Int = msgHandlingDoers.length, minLoad: Int = Integer.MAX_VALUE, leastLoadedDoerIndex: Int = 0): Int = {
+		def findLeastLoadedDoerUsingOldMetrics(previousIndex: Int = msgHandlerExecutors.length, minLoad: Int = Integer.MAX_VALUE, leastLoadedDoerIndex: Int = 0): Int = {
 			if previousIndex == 0 then leastLoadedDoerIndex
 			else {
 				val index = previousIndex - 1
-				val doer = msgHandlingDoers(index)
+				val doer = msgHandlerExecutors(index)
 				val load = loadByIndex(index)
 				if load == 0 then index
 				else if load < minLoad then {
@@ -66,7 +66,7 @@ class MsgHandlingDoersManager(aide: MsgHandlingDoersManager.Aide) {
 			val pickedDoerIndex = findLeastLoadedDoerUsingOldMetrics()
 			// if the next assignment is overridden by another thread, the worst that can happen is to miss a metric increment, which is nothing to worry about.
 			loadByIndex(pickedDoerIndex) += 2
-			msgHandlingDoers(pickedDoerIndex)
+			msgHandlerExecutors(pickedDoerIndex)
 		} else {
 			// if the next assignment is overridden by another thread, it will be done again in the next pick, so no worries.
 			remainingPicksUntilUpdate = picksPerUpdate

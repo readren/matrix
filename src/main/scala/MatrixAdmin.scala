@@ -7,19 +7,10 @@ import constants.*
 
 object MatrixAdmin {
 
-	sealed trait ProcessMsgResult
 
-	case class Continue[M](nextBehavior: Behavior[M])
-
-	case object Stop extends ProcessMsgResult
-
-	case object Restart extends ProcessMsgResult
-
-	case object Ignore extends ProcessMsgResult
 }
 
-class MatrixAdmin(val assistant: Doer.Assistant, msgHandlingDoersManager: MsgHandlingDoersManager) extends Doer(assistant) { thisAdmin =>
-
+class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: MsgHandlerExecutorsManager) extends Doer(assistant) { thisAdmin =>
 
 
 	/** Should be called within this [[MatrixAdmin]]. */
@@ -27,14 +18,22 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlingDoersManager: MsgHan
 		assert(reactant.isIdle && (reactant.admin eq thisAdmin) && (stimulator.admin eq thisAdmin))
 
 		def processMsg(message: M, currentBehavior: Behavior[M]): thisAdmin.Task[Boolean] = {
-			val msgHandlingDoer: MsgHandlingDoer = msgHandlingDoersManager.pickMsgHandlingDoer()
-			msgHandlingDoer.processes { currentBehavior.handle(message) }
+			val msgHandlerExecutor: MsgHandlerExecutor = msgHandlerExecutorsManager.pickExecutor()
+			msgHandlerExecutor.executeMsgHandler(currentBehavior, message)
 				.onBehalfOf(thisAdmin)
-				.map { nextBehavior =>
-					reactant.setBehavior(nextBehavior)
-					false
+				.map {
+					case ContinueWith(nextBehavior) =>
+						reactant.setBehavior(nextBehavior)
+						false
+					case Ignore =>
+						false
+					case Stop =>
+						reactant.markForTermination()
+						true
+					case Restart =>
+						reactant.markForRestart()
+						true
 				}
-				.recover(reactant.handleException)
 		}
 
 		def consumeNextPendingMessages(): Task[Boolean] = {
@@ -58,23 +57,22 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlingDoersManager: MsgHan
 				}
 
 			// repeat the `handlesMessageAndUpdatesBehavior` task until pending messages are exhausted.
-			handlesMessageAndUpdatesBehavior.repeatedUntilSome() { (count, continueStopOrAbort) =>
-				continueStopOrAbort.fold(Maybe.empty) { stopOrAbort =>
-					if stopOrAbort then {
-						// if the cycle was aborted, set the mark on the reactant that the message handling was aborted
-						reactant.abortionCompleted = true
+			handlesMessageAndUpdatesBehavior.repeatedUntilSome() { (count, hungryExhaustedOrAborted) =>
+				hungryExhaustedOrAborted.fold(Maybe.empty) { wasAborted =>
+					if wasAborted then {
+						// if the cycle was aborted, exit the loop.
 						SomeSuccessTrue
 					}
 					else {
 						// if pending messages are exhausted, mark the reactant as idle and exit the loop.
-						reactant.isIdle = true
+						reactant.setIsIdleState(true)
 						SomeSuccessFalse
 					}
 				}
 			}
 		}
 
-		reactant.isIdle = false
+		reactant.setIsIdleState(false)
 
 		// build a task that handles all pending messages updating the behavior and then set the reactant's idle mark to true.
 		val handlesAllPendingMessages: thisAdmin.Task[Boolean] =
@@ -83,10 +81,21 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlingDoersManager: MsgHan
 					if haveToAbort then thisAdmin.Task.immediate(SuccessTrue)
 					else consumeNextPendingMessages()
 				}
+			}.andThen { result =>
+				if result ne SuccessFalse then {
+					if result.isInstanceOf[Failure[?]] then reactant.markForTermination()
+					else assert(result eq SuccessTrue)
+					troubleShoot()
+				}
+
 			}
 
 		// Nothing happens until this point where the task built above is executed.
 		handlesAllPendingMessages.attemptAndForgetHandlingErrors()(reportFailure)
+	}
+
+	private def troubleShoot(): Unit = {
+		???
 	}
 
 }
