@@ -5,10 +5,7 @@ import readren.taskflow.Doer
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 
-object MsgHandlerExecutor {
-	
-}
-
+@deprecated("See the MsgHandlerExecutorManager's deprecation comment")
 class MsgHandlerExecutor(assistant: Doer.Assistant) extends Doer(assistant) {
 
 	@volatile private var queuedExecutionsCounter: Int = 0
@@ -21,7 +18,7 @@ class MsgHandlerExecutor(assistant: Doer.Assistant) extends Doer(assistant) {
 
 	/** Returns a [[Task]] that, when executed, runs the received procedure. Similar to [[Task.mine]] */
 	inline def executeMsgHandler[M](currentBehavior: Behavior[M], message: M): Task[ProcessMsgResult[M]] = {
-		queuedExecutionsCounter += 1
+		queuedExecutionsCounter += 1 // TODO avoid race condition here. Either with AtomicInteger or mutating it within an assigned MatrixAdmin. 
 		new Monitored[M](currentBehavior, message)
 	}
 

@@ -10,6 +10,7 @@ object MsgHandlerExecutorsManager {
 	}
 }
 
+@deprecated("Bad idea. It is much better and easier to use ForkJoinPool")
 class MsgHandlerExecutorsManager(aide: MsgHandlerExecutorsManager.Aide) {
 	private val msgHandlerExecutors: IArray[MsgHandlerExecutor] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
