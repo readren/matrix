@@ -4,7 +4,7 @@ import readren.taskflow.Doer
 
 
 object Matrix {
-	trait Aide extends MsgHandlerExecutorsManager.Aide {
+	trait Aide {
 		def reportFailure(cause: Throwable): Unit
 		def buildDoerAssistantForAdmin(): Doer.Assistant
 	}
@@ -14,12 +14,12 @@ class Matrix(name: String, aide: Matrix.Aide) { thisMatrix =>
 
 	import Matrix.*
 
-	private val msgHandlingDoersManager = new MsgHandlerExecutorsManager(aide)
+	private val msgHandlerExecutorService = new MsgHandlerExecutorService
 
 	private val adminDoers: IArray[MatrixAdmin] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
 		IArray.fill(availableProcessors) {
-			new MatrixAdmin(aide.buildDoerAssistantForAdmin(), msgHandlingDoersManager)
+			new MatrixAdmin(aide.buildDoerAssistantForAdmin(), msgHandlerExecutorService)
 		}
 	}
 	

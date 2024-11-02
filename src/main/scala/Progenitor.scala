@@ -21,7 +21,7 @@ trait Progenitor(progenitorSerial: SerialNumber, matrixAdmins: IArray[MatrixAdmi
 
 	private val thisProgenitorAdmin = pickAdmin(progenitorSerial)
 
-	private val reactantSerialSequencer: AtomicInteger = new AtomicInteger(0)
+	private val reactantSerialSequencer: AtomicInteger = new AtomicInteger(progenitorSerial)
 
 	/** Should be accessed only within the [[thisProgenitorAdmin]] */
 	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
@@ -33,7 +33,7 @@ trait Progenitor(progenitorSerial: SerialNumber, matrixAdmins: IArray[MatrixAdmi
 		val reactantAdmin = pickAdmin(reactantSerial)
 		val inbox = behavior.kind.createInbox[M](reactantAdmin)
 		thisProgenitorAdmin.queueForSequentialExecution {
-			val reactant = behavior.kind.createReactant(reactantSerial, reactantAdmin, inbox)
+			val reactant = behavior.kind.createReactant(reactantSerial, thisProgenitor, reactantAdmin, inbox)
 			children.addOne(reactantSerial, reactant)
 			inbox.setOwner(reactant, thisProgenitorAdmin)
 		}

@@ -9,7 +9,7 @@ trait InboxBackend[M] extends Inbox[M] {
 	val admin: MatrixAdmin
 
 	/** Withdraws the next pending message. */
-	def withdraw(): admin.Task[Maybe[M]]
+	def withdraw(): admin.Duty[Maybe[M]]
 
 	/** Called one time a moment after this instance is created. */
 	def setOwner(reactant: Reactant[M], asker: MatrixAdmin): Unit

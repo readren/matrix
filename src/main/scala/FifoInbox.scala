@@ -25,8 +25,8 @@ class FifoInbox[M](override val admin: MatrixAdmin) extends InboxBackend[M] { th
 		}
 	}
 
-	override def withdraw(): admin.Task[Maybe[M]] = {
-		admin.Task.mine { () =>
+	override def withdraw(): admin.Duty[Maybe[M]] = {
+		admin.Duty.mine { () =>
 			if queue.isEmpty then Maybe.empty
 			else Maybe.some(queue.removeHead())
 		}
@@ -34,6 +34,7 @@ class FifoInbox[M](override val admin: MatrixAdmin) extends InboxBackend[M] { th
 
 	override def setOwner(reactant: Reactant[M], asker: MatrixAdmin): Unit = {
 		inline def work(): Unit = {
+			assert(owner.admin eq admin)
 			owner = reactant
 			if queue.nonEmpty then admin.stimulate(owner, thisFifoInbox)
 		}

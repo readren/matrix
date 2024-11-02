@@ -9,7 +9,7 @@ object Reactant {
 /** @param serialNumber identifies this [[Reactant]] among its siblings (those created by the same [[Progenitor]]).
  *  @param admin the [[MatrixAdmin]] assigned to this [[Reactant]].
  *  @param initialBehavior the behavior of this [[Reactant]] */
-trait Reactant[M](val serialNumber: Reactant.SerialNumber, val admin: MatrixAdmin, initialBehavior: Behavior[M]) {
+trait Reactant[M](val serialNumber: Reactant.SerialNumber, val progenitor: Progenitor, val admin: MatrixAdmin, initialBehavior: Behavior[M]) {
 	
 	/** should be accessed within the [[admin]]. */
 	def isIdle: Boolean
