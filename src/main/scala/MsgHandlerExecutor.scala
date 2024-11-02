@@ -2,8 +2,8 @@ package readren.matrix
 
 import readren.taskflow.Doer
 
-import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
+import scala.util.{Failure, Success, Try}
 
 @deprecated("See the MsgHandlerExecutorManager's deprecation comment")
 class MsgHandlerExecutor(assistant: Doer.Assistant) extends Doer(assistant) {

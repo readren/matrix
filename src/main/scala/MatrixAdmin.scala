@@ -1,9 +1,11 @@
 package readren.matrix
 
+import constants.*
+
+import readren.taskflow.Doer.ExceptionReport
 import readren.taskflow.{Doer, Maybe}
 
 import scala.util.{Failure, Success, Try}
-import constants.*
 
 object MatrixAdmin {
 
@@ -19,19 +21,22 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: Msg
 
 		def processMsg(message: M, currentBehavior: Behavior[M]): thisAdmin.Task[Boolean] = {
 			val msgHandlerExecutor: MsgHandlerExecutor = msgHandlerExecutorsManager.pickExecutor()
-			msgHandlerExecutor.executeMsgHandler(currentBehavior, message)
+			msgHandlerExecutor.executeMsgHandler[M](currentBehavior, message)
 				.onBehalfOf(thisAdmin)
-				.map {
-					case ContinueWith(nextBehavior) =>
-						reactant.setBehavior(nextBehavior)
+				.map[Boolean] {
+					case cw: ContinueWith[M @unchecked] =>
+						reactant.setBehavior(cw.behavior)
 						false
 					case Ignore =>
 						false
+					case Restart =>
+						reactant.markForRestart()
+						true
 					case Stop =>
 						reactant.markForTermination()
 						true
-					case Restart =>
-						reactant.markForRestart()
+					case Error(exceptionHandlerError, originalCause) =>
+						thisAdmin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$currentBehavior] terminated abruptly when it tried to handle $originalCause", exceptionHandlerError))
 						true
 				}
 		}
@@ -46,7 +51,7 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: Msg
 				}.flatMap { oNextMessage =>
 					oNextMessage.fold {
 						// if no pending message to process, return Maybe.some(false)
-						thisAdmin.Task.immediate(SuccessSomeFalse)
+						thisAdmin.Task.ready(SuccessSomeFalse)
 					} { nextMessage =>
 						// if a message was withdrawn, handle it, update the `nextBehavior` variable, and return Maybe.empty
 						processMsg(nextMessage, reactant.currentBehavior).map { haveToAbort =>
@@ -57,7 +62,7 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: Msg
 				}
 
 			// repeat the `handlesMessageAndUpdatesBehavior` task until pending messages are exhausted.
-			handlesMessageAndUpdatesBehavior.repeatedUntilSome() { (count, hungryExhaustedOrAborted) =>
+			handlesMessageAndUpdatesBehavior.reiteratedUntilSome() { (count, hungryExhaustedOrAborted) =>
 				hungryExhaustedOrAborted.fold(Maybe.empty) { wasAborted =>
 					if wasAborted then {
 						// if the cycle was aborted, exit the loop.
@@ -78,7 +83,7 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: Msg
 		val handlesAllPendingMessages: thisAdmin.Task[Boolean] =
 			stimulator.withdraw().castTypePath(thisAdmin).flatMap { oFirstMessage =>
 				processMsg(oFirstMessage.get, reactant.currentBehavior).flatMap { haveToAbort =>
-					if haveToAbort then thisAdmin.Task.immediate(SuccessTrue)
+					if haveToAbort then thisAdmin.Task.ready(SuccessTrue)
 					else consumeNextPendingMessages()
 				}
 			}.andThen { result =>
@@ -91,7 +96,7 @@ class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorsManager: Msg
 			}
 
 		// Nothing happens until this point where the task built above is executed.
-		handlesAllPendingMessages.attemptAndForgetHandlingErrors()(reportFailure)
+		handlesAllPendingMessages.triggerAndForgetHandlingErrors()(reportFailure)
 	}
 
 	private def troubleShoot(): Unit = {

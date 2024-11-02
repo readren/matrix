@@ -4,6 +4,7 @@ import readren.taskflow.Doer
 
 import scala.annotation.tailrec
 
+@deprecated("Bad idea. It is much better and easier to use ForkJoinPool")
 object MsgHandlerExecutorsManager {
 	trait Aide {
 		def buildDoerAssistantForMsgHandlerExecutor(): Doer.Assistant
