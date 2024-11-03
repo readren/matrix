@@ -5,123 +5,106 @@ import constants.*
 import readren.taskflow.Doer.ExceptionReport
 import readren.taskflow.{Doer, Maybe}
 
-import scala.util.{Failure, Success, Try}
-
 object MatrixAdmin {
-
-
+	private enum Decision {
+		case continue, restart, stop
+	}
 }
 
 class MatrixAdmin(val assistant: Doer.Assistant, msgHandlerExecutorService: MsgHandlerExecutorService) extends Doer(assistant) { thisAdmin =>
 
+	import MatrixAdmin.*
 
 	/** Should be called within this [[MatrixAdmin]]. */
 	def stimulate[M](reactant: Reactant[M], stimulator: InboxBackend[M]): Unit = {
 		assert(reactant.isIdle && (reactant.admin eq thisAdmin) && (stimulator.admin eq thisAdmin))
 
-		def processMsg(message: M, currentBehavior: Behavior[M]): thisAdmin.Duty[Boolean] = {
+		def handleMsg(message: M, currentBehavior: Behavior[M]): thisAdmin.Duty[Decision] = {
 			inline val clarityVsEfficiency = false
-			val handlesMessage: thisAdmin.Duty[ProcessMsgResult[M]] =
+			val handlesMessage: thisAdmin.Duty[HandleMsgResult[M]] =
 				if clarityVsEfficiency then {
 					// clarity version
-					val covenant = new thisAdmin.Covenant[ProcessMsgResult[M]]
-					msgHandlerExecutorService.executeMsgHandler(currentBehavior, message) { pmc => covenant.fulfill(pmc)() }
+					val covenant = new thisAdmin.Covenant[HandleMsgResult[M]]
+					msgHandlerExecutorService.executeMsgHandler(currentBehavior, message) { hmr => covenant.fulfill(hmr)() }
 					covenant
 				} else {
 					// a bit more efficient version: creates one less object.
-					var result: Maybe[ProcessMsgResult[M]] = Maybe.empty
-					var observer: Maybe[ProcessMsgResult[M] => Unit] = Maybe.empty
-					msgHandlerExecutorService.executeMsgHandler(currentBehavior, message) { pmc =>
+					var result: Maybe[HandleMsgResult[M]] = Maybe.empty
+					var observer: Maybe[HandleMsgResult[M] => Unit] = Maybe.empty
+					msgHandlerExecutorService.executeMsgHandler(currentBehavior, message) { hmr =>
 						thisAdmin.queueForSequentialExecution {
 							observer.fold {
-								result = Maybe.some(pmc)
-							}(_(pmc))
+								result = Maybe.some(hmr)
+							}(_(hmr))
 						}
 					}
-					new thisAdmin.Duty[ProcessMsgResult[M]] {
-						override def engage(onComplete: ProcessMsgResult[M] => Unit): Unit =
+					new thisAdmin.Duty[HandleMsgResult[M]] {
+						override def engage(onComplete: HandleMsgResult[M] => Unit): Unit =
 							result.fold {
 								observer = Maybe.some(onComplete)
 							}(onComplete)
 					}
 				}
 
-			handlesMessage.map[Boolean] {
+			handlesMessage.map {
 				case cw: ContinueWith[M @unchecked] =>
 					reactant.setBehavior(cw.behavior)
-					false
+					Decision.continue
 				case Ignore =>
-					false
+					Decision.continue
 				case Restart =>
-					reactant.markForRestart()
-					true
+					Decision.restart
 				case Stop =>
-					reactant.markForTermination()
-					true
+					Decision.stop
 				case Error(exceptionHandlerError, originalCause) =>
 					thisAdmin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$currentBehavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the message [$message]", exceptionHandlerError))
-					true
+					Decision.stop
 			}
 		}
 
-		def consumeNextPendingMessages(): Duty[Boolean] = {
+		def processNextPendingMessages(): Duty[Decision] = {
 
-			// Build a duty that, if there is a pending message, withdraws it, handles it, updates the reactant's behavior, and returns `Maybe.empty`; else returns Maybe.some(()).
-			val handlesMessageAndUpdatesBehavior: thisAdmin.Duty[Maybe[Boolean]] =
-				thisAdmin.Duty.mine { () =>
-					// withdraw the next pending message considering all the inboxes the reactant has.
-					reactant.withdrawNextMessage()
-				}.flatMap { oNextMessage =>
-					oNextMessage.fold {
-						// if no pending message to process, return Maybe.some(false)
-						thisAdmin.Duty.ready(SomeFalse)
-					} { nextMessage =>
-						// if a message was withdrawn, handle it, update the `nextBehavior` variable, and return Maybe.empty
-						processMsg(nextMessage, reactant.currentBehavior).map { haveToAbort =>
-							if haveToAbort then SomeTrue
-							else Maybe.empty
+			// Build a duty that, if there is no pending messages, returns `Maybe.some(continue)`;
+			// else if there is a pending message, withdraws it, handles it, and if everything went OK updates the reactant's behavior, and returns `Maybe.empty`;
+			// else (there were problems) returns `Maybe.some(decision)` where decision != continue.
+			val processMessage: thisAdmin.Duty[Maybe[Decision]] =
+
+				// withdraw the next pending message considering all the inboxes the reactant has.
+				reactant.withdrawNextMessage()
+					.castTypePath(thisAdmin)
+					.flatMap { oNextMessage =>
+						oNextMessage.fold {
+							// if no pending message to process, return Maybe.some(continue) to exit the loop gracefully
+							thisAdmin.Duty.ready(Maybe.some(Decision.continue))
+						} { nextMessage =>
+							// if a message was withdrawn, handle it, and return Maybe.empty to continue in the loop unless there were trouble.
+							handleMsg(nextMessage, reactant.getCurrentBehavior).map { decision =>
+								if decision == Decision.continue then Maybe.empty
+								else Maybe.some(decision)
+							}
 						}
 					}
-				}
 
 			// repeat the `handlesMessageAndUpdatesBehavior` task until pending messages are exhausted.
-			handlesMessageAndUpdatesBehavior.repeatedUntilSome() { (count, hungryExhaustedOrAborted) =>
-				hungryExhaustedOrAborted.fold(Maybe.empty) { wasAborted =>
-					if wasAborted then {
-						// if the cycle was aborted, exit the loop.
-						SomeTrue
-					}
-					else {
-						// if pending messages are exhausted, mark the reactant as idle and exit the loop.
-						reactant.setIsIdleState(true)
-						SomeFalse
-					}
-				}
-			}
+			processMessage.repeatedUntilSome() { (count, hungryExhaustedOrAborted) => hungryExhaustedOrAborted }
 		}
 
 		reactant.setIsIdleState(false)
 
 		// build a duty that handles all pending messages updating the behavior and then set the reactant's idle mark to true.
-		val handlesAllPendingMessages: thisAdmin.Duty[Boolean] =
+		val processAllPendingMessages: thisAdmin.Duty[Unit] =
 			stimulator.withdraw().castTypePath(thisAdmin).flatMap { oFirstMessage =>
-				processMsg(oFirstMessage.get, reactant.currentBehavior).flatMap { haveToAbort =>
-					if haveToAbort then thisAdmin.Duty.ready(true)
-					else consumeNextPendingMessages()
+				handleMsg(oFirstMessage.get, reactant.getCurrentBehavior).flatMap { decision =>
+					if decision eq Decision.continue then processNextPendingMessages()
+					else thisAdmin.Duty.ready(decision)
 				}
-			}.andThen { haveToAbort =>
-				if haveToAbort then {
-					troubleShoot(reactant)
-				}
+			}.foreach {
+				case Decision.continue => reactant.setIsIdleState(true)
+				case Decision.restart => reactant.restart()
+				case Decision.stop => reactant.stop()
 			}
 
 		// Nothing happens until this point where the duty built above is executed.
-		handlesAllPendingMessages.triggerAndForget()
+		processAllPendingMessages.triggerAndForget()
 	}
-
-	private def troubleShoot[M](reactant: Reactant[M]): Unit = {
-
-		???
-	}
-
 }

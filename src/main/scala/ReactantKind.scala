@@ -2,11 +2,11 @@ package readren.matrix
 
 import readren.taskflow.Doer
 
-object BehaviorKind {
+object ReactantKind {
 	type SerialNumber = Int
 }
 
-trait BehaviorKind {
+trait ReactantKind {
 	/** Should be thread-safe  */
 	def createInbox[M](admin: MatrixAdmin): InboxBackend[M]
 	/** Called withing the progenitor's [[Doer]]. */

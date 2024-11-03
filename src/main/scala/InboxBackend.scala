@@ -15,3 +15,9 @@ trait InboxBackend[M] extends Inbox[M] {
 	def setOwner(reactant: Reactant[M], asker: MatrixAdmin): Unit
 
 }
+
+object InboxBackend {
+	def union[A, B](inbox: InboxBackend[A], inboxB: InboxBackend[B]): InboxBackend[A|B] = {
+		???
+	}
+}
