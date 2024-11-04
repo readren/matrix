@@ -1,31 +1,25 @@
 package readren.matrix
 
+import Reactant.SerialNumber
+
 import readren.taskflow.Maybe
 
-class RegularReactant[M](val serialNumber: Reactant.SerialNumber, val admin: MatrixAdmin, progenitor: Progenitor, inbox: InboxBackend[M], initialBehavior: Behavior[M])
-	extends Reactant[M] {
+class RegularReactant[M](
+	val serialNumber: SerialNumber,
+	admin: MatrixAdmin,
+	msgHandlerExecutorService: MsgHandlerExecutorService,
+	progenitor: Progenitor,
+	inbox: Inbox[M],
+	initialBehavior: Behavior[M]
+) extends Reactant[M](admin, msgHandlerExecutorService, initialBehavior) {
 
-	private var idleState = true
-	private var currentBehavior = initialBehavior
-	
-	/** should be called within the [[admin]]. */
-	def isIdle: Boolean = idleState
-
-	/** should be called within the [[admin]]. */
-	def setIsIdleState(newState: Boolean): Unit = idleState = newState
 
 	/** should be called within the [[admin]]. */
-	def setBehavior(behavior: Behavior[M]): Unit = currentBehavior = behavior
+	protected def withdrawNextMessage(): Maybe[M] = inbox.withdraw()
 
 	/** should be called within the [[admin]]. */
-	def getCurrentBehavior: Behavior[M] = currentBehavior
+	protected def restart(): Unit = ???
 
 	/** should be called within the [[admin]]. */
-	def withdrawNextMessage(): admin.Duty[Maybe[M]] = inbox.withdraw().castTypePath(admin)
-
-	/** should be called within the [[admin]]. */
-	def restart(): Unit = ???
-
-	/** should be called within the [[admin]]. */
-	def stop(): Unit = ???
+	protected def stop(): Unit = ???
 }

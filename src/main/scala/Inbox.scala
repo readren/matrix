@@ -1,19 +1,16 @@
 package readren.matrix
 
-import readren.taskflow.Doer
+import readren.taskflow.Maybe
 
-object Inbox {
-	trait Question[R] {
-		val replyInbox: Inbox[R]
-	}
-}
+trait Inbox[M] {
 
-/** A facade of [[InboxBackend]] that only exposes the functionality intended for message suppliers (in opposition to message consumers).
- * @tparam M type of the message this inbox receives. */
-trait Inbox[-M] {
+	//	/** The [[MatrixAdmin]] assigned to this inbox, which should be the same that are assigned to the [[Reactant]] that owns it.
+	//	 * All mutable the mutable members of this inbox instance should be accessed within this [[MatrixAdmin]]. 
+	//	 * */
+	//	val admin: MatrixAdmin
 
-	def submit(message: M): Unit
-	
-//	def ask[R](message: M & Inbox[R]): Unit
-//	def ask[R](message: M, replyInbox: Inbox[R]): Unit
+	/** Withdraws the next pending message.
+	 * Should be called withing the owning [[Reactant.admin]] */
+	def withdraw(): Maybe[M]
+
 }

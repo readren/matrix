@@ -14,15 +14,14 @@ class Matrix(name: String, aide: Matrix.Aide) { thisMatrix =>
 
 	import Matrix.*
 
-	private val msgHandlerExecutorService = new MsgHandlerExecutorService
+//	private val msgHandlerExecutorService = new MsgHandlerExecutorService
 
-	private val adminDoers: IArray[MatrixAdmin] = {
+	private val matrixAdmins: IArray[MatrixAdmin] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		IArray.fill(availableProcessors) {
-			new MatrixAdmin(aide.buildDoerAssistantForAdmin(), msgHandlerExecutorService)
-		}
+		val doerAssistant = aide.buildDoerAssistantForAdmin()
+		IArray.fill(availableProcessors)(new MatrixAdmin(doerAssistant))
 	}
 	
-	val progenitor: Progenitor = new Progenitor(0, adminDoers) {}
+	val progenitor: Progenitor = new Progenitor(matrixAdmins(0), 0, matrixAdmins) {}
 
 }

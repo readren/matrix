@@ -1,7 +1,25 @@
 <component name="ProjectCodeStyleConfiguration">
   <code_scheme name="Project" version="173">
     <ScalaCodeStyleSettings>
+      <option name="PLACE_SELF_TYPE_ON_NEW_LINE" value="false" />
+      <option name="NOT_CONTINUATION_INDENT_FOR_PARAMS" value="true" />
+      <option name="INDENT_FIRST_PARAMETER" value="false" />
       <option name="MULTILINE_STRING_CLOSING_QUOTES_ON_NEW_LINE" value="true" />
+      <option name="SD_ALIGN_OTHER_TAGS_COMMENTS" value="false" />
+      <option name="SD_ALIGN_PARAMETERS_COMMENTS" value="false" />
+      <option name="SD_ALIGN_EXCEPTION_COMMENTS" value="false" />
+      <option name="SD_ALIGN_RETURN_COMMENTS" value="false" />
+      <option name="SD_ALIGN_LIST_ITEM_CONTENT" value="false" />
+      <option name="SD_BLANK_LINE_BEFORE_TAGS" value="false" />
     </ScalaCodeStyleSettings>
+    <codeStyleSettings language="Scala">
+      <option name="ALIGN_MULTILINE_PARAMETERS_IN_CALLS" value="true" />
+      <indentOptions>
+        <option name="INDENT_SIZE" value="4" />
+        <option name="CONTINUATION_INDENT_SIZE" value="4" />
+        <option name="TAB_SIZE" value="4" />
+        <option name="USE_TAB_CHARACTER" value="true" />
+      </indentOptions>
+    </codeStyleSettings>
   </code_scheme>
 </component>
