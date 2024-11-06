@@ -10,7 +10,7 @@ trait Inbox[M] {
 	//	val admin: MatrixAdmin
 
 	/** Withdraws the next pending message.
-	 * Should be called withing the owning [[Reactant.admin]] */
+	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] */
 	def withdraw(): Maybe[M]
 
 }

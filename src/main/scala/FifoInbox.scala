@@ -1,10 +1,10 @@
 package readren.matrix
 
 
-import scala.collection.mutable
-import readren.taskflow.{Doer, Maybe}
+import readren.taskflow.Maybe
 
-import scala.compiletime.uninitialized
+import java.net.URI
+import scala.collection.mutable
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
@@ -30,5 +30,10 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 	override def withdraw(): Maybe[M] = {
 		if queue.isEmpty then Maybe.empty
 		else Maybe.some(queue.removeHead())
+	}
+	
+	override val uri: URI = {
+		val mu = admin.matrix.uri
+		URI(mu.getScheme, null, mu.getHost, mu.getPort, mu.getPath + owner.path, null, null)
 	}
 }

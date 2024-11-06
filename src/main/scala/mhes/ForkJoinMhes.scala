@@ -12,4 +12,11 @@ class ForkJoinMhes extends MsgHandlerExecutorService {
 		 
 		forkJoinPool.execute(() => onComplete(behavior.handleMessage(message)))
 	}
+
+	override def executeSignalHandler[U](behavior: Behavior[U], signal: Signal)(onComplete: () => Unit): Unit = {
+		forkJoinPool.execute { () =>
+			behavior.handleSignal(signal)
+			onComplete()
+		}
+	}
 }

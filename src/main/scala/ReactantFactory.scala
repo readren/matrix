@@ -1,24 +1,21 @@
 package readren.matrix
 
-import readren.taskflow.Doer
 
-object ReactantFactory {
-	type SerialNumber = Int
-}
+trait ReactantFactory[U] {
+	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */
+	type MsgBuffer
 
-trait ReactantFactory {
-	/** Being a type member allows the creation of the [[MsgBuffer]] and [[Reactant]] instances in two steps without losing type safety.
-	 * The two-step creation avoids the need to return a tuple. */
-	type MsgBuffer[m] <: Receiver[m]
+	/** Creates the pending messages buffer needed by the [[createReactant]] method. */
+	protected def createMsgBuffer(reactant: Reactant[U]): MsgBuffer
 
-	/** Creates the pending messages buffer for a [[Reactant]]. */
-	def createMsgBuffer[M](reactantAdmin: MatrixAdmin): MsgBuffer[M]
+	protected def createEndpointProvider(msgBuffer: MsgBuffer): EndpointProvider[U]
 
 	/** Creates a new [[Reactant]] */
-	def createReactant[M](
+	def createReactant(
 		id: Reactant.SerialNumber,
-		progenitor: Progenitor,
+		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
-		msgBuffer: MsgBuffer[M]
-	): Reactant[M]
+	): Reactant[U]
+
+
 }

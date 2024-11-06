@@ -2,6 +2,8 @@ package readren.matrix
 
 trait MsgHandlerExecutorService {
 
-	def executeMsgHandler[M](behavior: Behavior[M], message: M)(onComplete: HandleMsgResult[M] => Unit): Unit
-		 
+	def executeMsgHandler[U](behavior: Behavior[U], message: U)(onComplete: HandleMsgResult[U] => Unit): Unit
+
+	def executeSignalHandler[U](behavior: Behavior[U], signal: Signal)(onComplete: () => Unit): Unit
+
 }
