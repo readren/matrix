@@ -42,7 +42,7 @@ abstract class Reactant[U](
 	private var idleState = false
 	private var currentBehavior: Behavior[U] = initialBehavior
 	private var isMarkedToStop = false
-	private var stopCovenant = new admin.Covenant[Unit]
+	private val stopCovenant = new admin.Covenant[Unit]
 
 	val oSpawner: Maybe[Spawner[admin.type]] =
 		if canSpawn then Maybe.some(new Spawner(Maybe.some(this), admin, serialNumber))
