@@ -15,6 +15,7 @@ trait ReactantFactory[U] {
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
+		initialBehavior: Behavior[U]
 	): Reactant[U]
 
 

@@ -3,7 +3,7 @@ package rf
 
 import readren.taskflow.Maybe
 
-class RegularRf[U](initialBehavior: Behavior[U], canSpawn: Boolean) extends ReactantFactory[U] {
+class RegularRf[U](canSpawn: Boolean) extends ReactantFactory[U] {
 	type MsgBuffer = FifoInbox[U]
 
 	override protected def createMsgBuffer(reactant: Reactant[U]): MsgBuffer = new FifoInbox[U](reactant)
@@ -14,6 +14,7 @@ class RegularRf[U](initialBehavior: Behavior[U], canSpawn: Boolean) extends Reac
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		admin: MatrixAdmin,
+		initialBehavior: Behavior[U]		
 	): Reactant[U] = {
 		new Reactant[U](id, progenitor, canSpawn, admin, initialBehavior, Maybe.empty) {
 

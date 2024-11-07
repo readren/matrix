@@ -25,12 +25,12 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
 
 	/** thread-safe */
-	def createReactant[U, M <: U](behavior: Behavior[U], reactantFactory: ReactantFactory[U]): admin.Duty[Endpoint[M]] = {
+	def createReactant[U, M <: U](reactantFactory: ReactantFactory[U])(initialBehavior: Behavior[U]): admin.Duty[Endpoint[M]] = {
 		admin.Duty.mine { () =>
 			reactantSerialSequencer += 1
 			val reactantSerial = reactantSerialSequencer
 			val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
-			val reactant = reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin)
+			val reactant = reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, initialBehavior)
 			children.addOne(reactantSerial, reactant)
 			reactant.endpointProvider.forMyCreator[M]
 		}
