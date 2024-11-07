@@ -8,20 +8,21 @@ case class ContinueWith[-M](behavior: Behavior[M]) extends HandleMsgResult[M] {
 	override def map[U, S <: M](f: Behavior[S] => Behavior[U]): HandleMsgResult[U] = ContinueWith(f(behavior))
 }
 
-sealed trait WithSameBehavior extends HandleMsgResult[Nothing] {
-	override def map[U, S <: Nothing](f: Behavior[Nothing] => Behavior[U]): HandleMsgResult[U] = this.asInstanceOf[HandleMsgResult[U]]
+sealed trait WithSameBehavior extends HandleMsgResult[Any] {
+	override def map[U, S <: Any](f: Behavior[S] => Behavior[U]): HandleMsgResult[U] = this
 }
 
 case object Continue extends WithSameBehavior
 
 case object Stop extends WithSameBehavior
 
-/**	CAUTION: if `stopChildren` is set to false, be sure to avoid unintentional recreation of them in the behavior setup.  
- *  @param stopChildren if true children will be stopped before the restart. */
-case class Restart(stopChildren: Boolean = true) extends WithSameBehavior
+/** Restart the reactant after stopping all children. */
+case object Restart extends WithSameBehavior
 
-case class RestartWith[-M](stopChildren: Boolean)(val behavior: Behavior[M]) extends HandleMsgResult[M] {
-	override def map[U, S <: M](f: Behavior[S] => Behavior[U]): HandleMsgResult[U] = RestartWith(stopChildren)(f(behavior))
+/** Restart the reactant without stopping any of its child reactants.
+ *  @param behavior the behavior that the reactant will have after the restart. Note that the consequent [[RestartReceived]] signal will be handled by the reactant's current behavior, while the [[Restarted]] signal will be handled by the specified behavior. */
+case class RestartWith[-M](behavior: Behavior[M]) extends HandleMsgResult[M] {
+	override def map[U, S <: M](f: Behavior[S] => Behavior[U]): HandleMsgResult[U] = RestartWith(f(behavior))
 }
 
 case class Error(exceptionHandlerError: Throwable, originalCause: Throwable) extends WithSameBehavior

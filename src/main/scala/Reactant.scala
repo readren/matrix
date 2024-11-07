@@ -10,7 +10,7 @@ object Reactant {
 
 	private sealed trait Decision[+U]
 	private case object ToContinue extends Decision[Nothing]
-	private case class ToRestart[U](stopChildren: Boolean, restartBehavior: Behavior[U]) extends Decision[U]
+	private case class ToRestart[U](stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]) extends Decision[U]
 	private case object ToStop extends Decision[Nothing]
 }
 
@@ -25,9 +25,8 @@ import Reactant.*
 abstract class Reactant[U](
 	serialNumber: SerialNumber,
 	progenitor: Spawner[MatrixAdmin],
-	canSpawn: Boolean,
 	val admin: MatrixAdmin,
-	initialBehavior: Behavior[U],
+	initialBehaviorBuilder: Reactant[U] => Behavior[U],
 	oMsgHandlerExecutorService: Maybe[MsgHandlerExecutorService]
 ) {
 
@@ -40,13 +39,10 @@ abstract class Reactant[U](
 
 	/** should be accessed within the [[admin]]. */
 	private var idleState = false
-	private var currentBehavior: Behavior[U] = initialBehavior
 	private var isMarkedToStop = false
 	private val stopCovenant = new admin.Covenant[Unit]
 
-	val oSpawner: Maybe[Spawner[admin.type]] =
-		if canSpawn then Maybe.some(new Spawner(Maybe.some(this), admin, serialNumber))
-		else Maybe.empty
+	private var oSpawner: Maybe[Spawner[admin.type]] = Maybe.empty
 
 	val endpointProvider: EndpointProvider[U]
 
@@ -55,6 +51,25 @@ abstract class Reactant[U](
 		parentPath.append('/').append(serialNumber).toString
 	}
 
+	/** Should be the last field to be initialized, in order to ensure that the `initialBehaviorBuilder` is executed with the [[Reactant]] fully initialized. */
+	private var currentBehavior: Behavior[U] = initialBehaviorBuilder(this)
+
+	{	// send Started signal after all the vals and vars have been initialized
+		admin.Duty.mineFlat{ ()=> executeSignalHandler(Started).foreach(_ => sleepUntilNextMessageArrives()) }
+			.triggerAndForget()
+	}
+
+	/** Should be called withing the [[admin]]. */
+	private def spawner: Spawner[admin.type] = oSpawner.fold {
+		val spawner = new Spawner[admin.type](Maybe.some(this), admin, serialNumber)
+		oSpawner = Maybe.some(spawner)
+		spawner
+	}(spawner => spawner)
+	
+	def spawn[A, B <: A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: Reactant[A] => Behavior[A]): admin.Duty[Endpoint[B]] = {
+		spawner.createReactant[A, B](childReactantFactory, initialChildBehaviorBuilder)
+	}
+	
 	/** @return true if there is no pending messages to process. */
 	protected def noPendingMsg: Boolean
 
@@ -63,12 +78,6 @@ abstract class Reactant[U](
 
 	/** should be called within the [[admin]]. */
 	inline def isIdle: Boolean = idleState
-
-	{	// send Started signal
-		admin.Duty.mineFlat{ ()=> executeSignalHandler(Started).foreach(_ => sleepUntilNextMessageArrives()) }
-			.triggerAndForget()
-	}
-
 
 	/** should be called within the [[admin]]. */
 	private final def sleepUntilNextMessageArrives(): Unit = {
@@ -87,12 +96,12 @@ abstract class Reactant[U](
 	}
 
 	/** should be called within the [[admin]]. */
-	private final def restart(stopChildren: Boolean, restartBehavior: Behavior[U]): admin.Duty[Unit] = {
+	private final def restart(stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Unit] = {
 		def restartMe(): admin.Duty[Unit] = {
 			// send RestartReceived signal
 			executeSignalHandler(RestartReceived).andThen { _ =>
 				// change the behavior before signaling with Restarted
-				currentBehavior = restartBehavior
+				currentBehavior = restartBehaviorBuilder(this)
 				// send the Restarted signal
 				executeSignalHandler(Restarted)
 				sleepUntilNextMessageArrives()
@@ -156,10 +165,10 @@ abstract class Reactant[U](
 				ToContinue
 			case Stop =>
 				ToStop
-			case Restart(stopChildren) =>
-				ToRestart(stopChildren, initialBehavior)
+			case Restart =>
+				ToRestart(true, initialBehaviorBuilder)
 			case rw: RestartWith[U] =>
-				ToRestart[U](rw.stopChildren, rw.behavior)
+				ToRestart[U](false, _ => rw.behavior)
 			case Error(exceptionHandlerError, originalCause) =>
 				admin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$behavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the message [$message]", exceptionHandlerError))
 				ToStop
@@ -213,7 +222,7 @@ abstract class Reactant[U](
 					case ToStop =>
 						stopInternal()
 					case tr: ToRestart[U @unchecked] =>
-						restart(tr.stopChildren, tr.restartBehavior)
+						restart(tr.stopChildren, tr.restartBehaviorBuilder)
 				}
 
 			// Nothing happens until this point where the duty built above is executed.
@@ -246,7 +255,7 @@ abstract class Reactant[U](
 			finalDecision match {
 				case ToContinue => idleState = true
 				case ToStop => stopInternal()
-				case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehavior)
+				case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder)
 			}
 		}
 

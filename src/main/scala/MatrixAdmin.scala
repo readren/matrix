@@ -1,7 +1,5 @@
 package readren.matrix
 
-import constants.*
-
 import readren.taskflow.Doer.ExceptionReport
 import readren.taskflow.{Doer, Maybe}
 

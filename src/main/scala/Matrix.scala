@@ -27,10 +27,9 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		IArray.fill(availableProcessors)(new MatrixAdmin(doerAssistant, thisMatrix))
 	}
 
-	val progenitor: Spawner[MatrixAdmin] = new Spawner(Maybe.empty, matrixAdmins(0), 0)
+	val admin: MatrixAdmin = matrixAdmins(0)
 
-	inline def pickAdmin(serialNumber: Reactant.SerialNumber): MatrixAdmin = matrixAdmins(serialNumber % matrixAdmins.length)
-
+	private val spawner: Spawner[admin.type] = new Spawner(Maybe.empty, admin, 0)
 
 	val uri: URI = {
 		val host = InetAddress.getLocalHost.getHostAddress // Or use getHostAddress for IP
@@ -43,4 +42,10 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		// Construct the URI
 		new URI(scheme, null, host, port, path, null, null)
 	}
+
+	inline def pickAdmin(serialNumber: Reactant.SerialNumber): MatrixAdmin = matrixAdmins(serialNumber % matrixAdmins.length)
+
+	def spawn[U, E <: U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Endpoint[E]] =
+		spawner.createReactant[U, E](reactantFactory, initialBehaviorBuilder)
+
 }

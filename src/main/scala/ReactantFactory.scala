@@ -1,21 +1,21 @@
 package readren.matrix
 
 
-trait ReactantFactory[U] {
+trait ReactantFactory {
 	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */
-	type MsgBuffer
+	type MsgBuffer[U]
 
 	/** Creates the pending messages buffer needed by the [[createReactant]] method. */
-	protected def createMsgBuffer(reactant: Reactant[U]): MsgBuffer
+	protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U]
 
-	protected def createEndpointProvider(msgBuffer: MsgBuffer): EndpointProvider[U]
+	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U]
 
 	/** Creates a new [[Reactant]] */
-	def createReactant(
+	def createReactant[U](
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
-		initialBehavior: Behavior[U]
+		initialBehaviorBuilder: Reactant[U] => Behavior[U]
 	): Reactant[U]
 
 

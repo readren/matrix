@@ -3,20 +3,20 @@ package rf
 
 import readren.taskflow.Maybe
 
-class RegularRf[U](canSpawn: Boolean) extends ReactantFactory[U] {
-	type MsgBuffer = FifoInbox[U]
+object RegularRf extends ReactantFactory {
+	override type MsgBuffer[U] = FifoInbox[U]
 
-	override protected def createMsgBuffer(reactant: Reactant[U]): MsgBuffer = new FifoInbox[U](reactant)
+	override protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U] = new FifoInbox[U](reactant)
 
-	override protected def createEndpointProvider(msgBuffer: FifoInbox[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
+	override protected def createEndpointProvider[U](msgBuffer: FifoInbox[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
 
-	override def createReactant(
+	override def createReactant[U](
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		admin: MatrixAdmin,
-		initialBehavior: Behavior[U]		
+		initialBehaviorBuilder: Reactant[U] => Behavior[U]		
 	): Reactant[U] = {
-		new Reactant[U](id, progenitor, canSpawn, admin, initialBehavior, Maybe.empty) {
+		new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, Maybe.empty) {
 
 			private val fifoInbox = createMsgBuffer(this)
 
