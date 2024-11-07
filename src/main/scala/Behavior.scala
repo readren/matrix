@@ -4,7 +4,7 @@ import readren.taskflow.deriveToString
 
 import scala.reflect.TypeTest
 
-trait Behavior[M] {
+trait Behavior[-M] {
 	def handleMessage(message: M): HandleMsgResult[M]
 
 	def handleSignal(signal: Signal): Unit

@@ -10,7 +10,11 @@ trait Inbox[M] {
 	//	val admin: MatrixAdmin
 
 	/** Withdraws the next pending message.
-	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] */
+	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] only. */
 	def withdraw(): Maybe[M]
 
+
+	/** Checks if there are no pending messages.
+	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] only. */
+	def isEmpty: Boolean
 }

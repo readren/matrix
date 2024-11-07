@@ -22,6 +22,8 @@ class RegularRf[U](initialBehavior: Behavior[U], canSpawn: Boolean) extends Reac
 			override val endpointProvider: EndpointProvider[U] = createEndpointProvider(fifoInbox)
 
 			override def withdrawNextMessage(): Maybe[U] = fifoInbox.withdraw()
+
+			override def noPendingMsg: Boolean = fifoInbox.isEmpty
 		}
 	}
 }

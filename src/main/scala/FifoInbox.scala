@@ -14,7 +14,12 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 	private val queue: mutable.ArrayDeque[M] = mutable.ArrayDeque.empty
 
 	val admin: MatrixAdmin = owner.admin
-	
+
+	override val uri: URI = {
+		val mu = admin.matrix.uri
+		URI(mu.getScheme, null, mu.getHost, mu.getPort, mu.getPath + owner.path, null, null)
+	}
+
 	override def submit(message: M): Unit = {
 		admin.queueForSequentialExecution {
 			val wasEmpty = queue.isEmpty
@@ -31,9 +36,7 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 		if queue.isEmpty then Maybe.empty
 		else Maybe.some(queue.removeHead())
 	}
-	
-	override val uri: URI = {
-		val mu = admin.matrix.uri
-		URI(mu.getScheme, null, mu.getHost, mu.getPort, mu.getPath + owner.path, null, null)
-	}
+
+	override def isEmpty: Boolean = queue.isEmpty
+
 }
