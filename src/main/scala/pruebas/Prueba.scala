@@ -34,12 +34,12 @@ object Prueba {
 		matrix.spawn[Cmd, Spawn](RegularRf) { parent =>
 			//		val parentEndpointForChild = parent.endpointProvider.local[Send]
 			new Behavior[Cmd] {
-				override def handleMessage(message: Cmd): HandleMsgResult[Cmd] = message match {
+				override def handleMessage(message: Cmd): HandleResult[Cmd] = message match {
 					case spawn@Spawn(onChildEndPoint) =>
 						parent.spawn[Int, Int](RegularRf) { child =>
 							//					onChildEndPoint(child.endpointProvider.local)
 							new Behavior[Int] {
-								override def handleMessage(n: Int): HandleMsgResult[Int] = {
+								override def handleMessage(n: Int): HandleResult[Int] = {
 									spawn.onResponse(s"Have received $n")
 									Continue
 								}

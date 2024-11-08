@@ -65,11 +65,11 @@ abstract class Reactant[U](
 		oSpawner = Maybe.some(spawner)
 		spawner
 	}(spawner => spawner)
-	
+
 	def spawn[A, B <: A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: Reactant[A] => Behavior[A]): admin.Duty[Endpoint[B]] = {
 		spawner.createReactant[A, B](childReactantFactory, initialChildBehaviorBuilder)
 	}
-	
+
 	/** @return true if there is no pending messages to process. */
 	protected def noPendingMsg: Boolean
 
@@ -87,10 +87,10 @@ abstract class Reactant[U](
 	}
 
 	/** should be called within the [[admin]]. */
-	private final def executeSignalHandler(signal: Signal): admin.Duty[Unit] = {
+	private final def executeSignalHandler(signal: Signal): admin.Duty[HandleResult[U]] = {
 		oMsgHandlerExecutorService.fold(admin.Duty.ready(currentBehavior.handleSignal(signal))) { msgHandlerExecutorService =>
-			val covenant = new admin.Covenant[Unit]
-			msgHandlerExecutorService.executeSignalHandler(currentBehavior, signal)(() => covenant.fulfill(())())
+			val covenant = new admin.Covenant[HandleResult[U]]
+			msgHandlerExecutorService.executeSignalHandler(currentBehavior, signal)(hr => covenant.fulfill(hr)())
 			covenant
 		}
 	}
@@ -99,13 +99,19 @@ abstract class Reactant[U](
 	private final def restart(stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Unit] = {
 		def restartMe(): admin.Duty[Unit] = {
 			// send RestartReceived signal
-			executeSignalHandler(RestartReceived).andThen { _ =>
-				// change the behavior before signaling with Restarted
-				currentBehavior = restartBehaviorBuilder(this)
-				// send the Restarted signal
-				executeSignalHandler(Restarted)
-				sleepUntilNextMessageArrives()
-				// TODO notify parent
+			executeSignalHandler(RestartReceived).foreach {
+				case Stop => // if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
+					stopInternal()
+				case error@Error(exceptionHandlerError, originalCause) => // if the `handleSignal` responds `Error` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
+					admin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$currentBehavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the signal [$RestartReceived]", exceptionHandlerError))
+					stopInternal()
+				case _ =>
+					// change the behavior before signaling with Restarted
+					currentBehavior = restartBehaviorBuilder(this)
+					// send the Restarted signal
+					executeSignalHandler(Restarted)
+					sleepUntilNextMessageArrives()
+					// TODO notify parent
 			}
 		}
 
@@ -138,7 +144,7 @@ abstract class Reactant[U](
 		/** should be called within the [[admin]]. */
 		def stopMe(): admin.Duty[Unit] = {
 			// execute the StopReceived
-			executeSignalHandler(StopReceived).foreach { _ =>
+			executeSignalHandler(StopReceived).foreach { _ => // note that the result of the `signalHandler` is ignored.
 				// remove myself form progenitor children
 				progenitor.removeChild(serialNumber)
 				stopCovenant.fulfill(())()
@@ -157,7 +163,7 @@ abstract class Reactant[U](
 	final def stimulate(firstMessage: U): Unit = {
 		assert(idleState && !isMarkedToStop)
 
-		def mapHmrToDecision(message: U, behavior: Behavior[U])(hmr: HandleMsgResult[U]): Decision[U] = hmr match {
+		def mapHmrToDecision(message: U, behavior: Behavior[U])(hmr: HandleResult[U]): Decision[U] = hmr match {
 			case cw: ContinueWith[U @unchecked] =>
 				currentBehavior = cw.behavior
 				ToContinue
@@ -169,6 +175,9 @@ abstract class Reactant[U](
 				ToRestart(true, initialBehaviorBuilder)
 			case rw: RestartWith[U] =>
 				ToRestart[U](false, _ => rw.behavior)
+			case Unhandled =>
+				// TODO log it  
+				ToContinue
 			case Error(exceptionHandlerError, originalCause) =>
 				admin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$behavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the message [$message]", exceptionHandlerError))
 				ToStop
@@ -178,7 +187,7 @@ abstract class Reactant[U](
 
 			/** should be called within the admin */
 			def handleMsg(message: U, behavior: Behavior[U]): admin.Duty[Decision[U]] = {
-				val covenant = new admin.Covenant[HandleMsgResult[U]]
+				val covenant = new admin.Covenant[HandleResult[U]]
 				msgHandlerExecutorService.executeMsgHandler(behavior, message) { hmr => covenant.fulfill(hmr)() }
 				covenant.map(mapHmrToDecision(message, behavior))
 			}
