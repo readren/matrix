@@ -10,13 +10,14 @@ trait ReactantFactory {
 
 	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U]
 
-	/** Creates a new [[Reactant]] */
+	/** Creates a new [[Reactant]].
+	 * The implementation should be thread-safe, doing its job withing the received [[MatrixAdmin]].  */
 	def createReactant[U](
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
 		initialBehaviorBuilder: Reactant[U] => Behavior[U]
-	): Reactant[U]
+	): reactantAdmin.Duty[Reactant[U]]
 
 
 }

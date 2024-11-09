@@ -1,9 +1,6 @@
 package readren.matrix
 
-import readren.taskflow.Doer.ExceptionReport
-import readren.taskflow.{Doer, Maybe}
+import readren.taskflow.Doer
 
 
-class MatrixAdmin(val assistant: Doer.Assistant, val matrix: Matrix) extends Doer(assistant) { thisAdmin =>
-
-}
+class MatrixAdmin(val id: Int, val assistant: Doer.Assistant, val matrix: Matrix) extends Doer(assistant)

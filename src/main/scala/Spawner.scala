@@ -2,7 +2,7 @@ package readren.matrix
 
 import readren.taskflow.Maybe
 
-import scala.collection.mutable
+import scala.collection.{MapView, mutable}
 
 
 object Spawner {
@@ -21,19 +21,22 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	/** Should be accessed only within the [[admin]] */
 	private var reactantSerialSequencer: Reactant.SerialNumber = initialReactantSerial
 
-	/** Should be accessed only within the [[admin]] */
+	/** Should be accessed within the [[admin]] only. */
 	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
+	
+	val childrenView: MapView[Long, Reactant[?]] = children.view
 
-	/** thread-safe */
-	def createReactant[U, M <: U](reactantFactory: ReactantFactory, initialBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Endpoint[M]] = {
-		admin.Duty.mine { () =>
-			reactantSerialSequencer += 1
-			val reactantSerial = reactantSerialSequencer
-			val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
-			val reactant = reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, initialBehaviorBuilder)
-			children.addOne(reactantSerial, reactant)
-			reactant.endpointProvider.local[M]
-		}
+	/** Should be called withing the [[admin]] only. */
+	def createReactant[U](reactantFactory: ReactantFactory, initialBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
+		reactantSerialSequencer += 1
+		val reactantSerial = reactantSerialSequencer
+		val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
+		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, initialBehaviorBuilder)
+			.onBehalfOf(admin)
+			.map { reactant =>
+				children.addOne(reactantSerial, reactant)
+				reactant
+			}
 	}
 
 	/** should be called withing the admin */

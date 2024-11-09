@@ -9,7 +9,7 @@ object Matrix {
 	trait Aide {
 		def reportFailure(cause: Throwable): Unit
 
-		def buildDoerAssistantForAdmin(): Doer.Assistant
+		def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant
 	}
 }
 
@@ -17,14 +17,11 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 
 	import Matrix.*
 
-	//	private val msgHandlerExecutorService = new MsgHandlerExecutorService
-
 	/**
 	 * The array with all the [[MatrixAdmin]] instances of this [[Matrix]]. */
 	val matrixAdmins: IArray[MatrixAdmin] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		val doerAssistant = aide.buildDoerAssistantForAdmin()
-		IArray.fill(availableProcessors)(new MatrixAdmin(doerAssistant, thisMatrix))
+		IArray.tabulate(availableProcessors)(id => new MatrixAdmin(id, aide.buildDoerAssistantForAdmin(id), thisMatrix))
 	}
 
 	val admin: MatrixAdmin = matrixAdmins(0)
@@ -43,9 +40,14 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	inline def pickAdmin(serialNumber: Reactant.SerialNumber): MatrixAdmin = matrixAdmins(serialNumber % matrixAdmins.length)
+	inline def pickAdmin(serialNumber: Reactant.SerialNumber): MatrixAdmin =
+		matrixAdmins(serialNumber % matrixAdmins.length)
 
+	/** thread-safe */
 	def spawn[U, E <: U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Endpoint[E]] =
-		spawner.createReactant[U, E](reactantFactory, initialBehaviorBuilder)
+		admin.Duty.mineFlat { () =>
+			spawner.createReactant[U](reactantFactory, initialBehaviorBuilder)
+				.map(_.endpointProvider.local[E])
+		}
 
 }

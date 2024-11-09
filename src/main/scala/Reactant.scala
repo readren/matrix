@@ -4,13 +4,18 @@ import readren.taskflow.Doer.ExceptionReport
 import readren.taskflow.Maybe
 
 import scala.annotation.tailrec
+import scala.collection.MapView
+import scala.compiletime.uninitialized
 
 object Reactant {
 	type SerialNumber = Int
 
 	private sealed trait Decision[+U]
+
 	private case object ToContinue extends Decision[Nothing]
+
 	private case class ToRestart[U](stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]) extends Decision[U]
+
 	private case object ToStop extends Decision[Nothing]
 }
 
@@ -25,17 +30,10 @@ import Reactant.*
 abstract class Reactant[U](
 	serialNumber: SerialNumber,
 	progenitor: Spawner[MatrixAdmin],
-	val admin: MatrixAdmin,
+	override val admin: MatrixAdmin,
 	initialBehaviorBuilder: Reactant[U] => Behavior[U],
 	oMsgHandlerExecutorService: Maybe[MsgHandlerExecutorService]
-) {
-
-
-	//	/** Identifies this [[Reactant]] among its siblings (those created by the same [[Progenitor]]). */
-	//	val serialNumber: Reactant.SerialNumber
-	//
-	//	/** The progenitor of this instance. */
-	//	val progenitor: Progenitor
+) extends ReactantRelay[U] {
 
 	/** should be accessed within the [[admin]]. */
 	private var idleState = false
@@ -43,32 +41,44 @@ abstract class Reactant[U](
 	private val stopCovenant = new admin.Covenant[Unit]
 
 	private var oSpawner: Maybe[Spawner[admin.type]] = Maybe.empty
+	/** Should be accessed withing the [[admin]] */
+	private var childrenRelays: MapView[Long, ReactantRelay[?]] = MapView.empty
+	override val endpointProvider: EndpointProvider[U]
 
-	val endpointProvider: EndpointProvider[U]
-
-	val path: String = {
+	override val path: String = {
 		val parentPath = progenitor.owner.fold(java.lang.StringBuilder())(pr => java.lang.StringBuilder(pr.path))
 		parentPath.append('/').append(serialNumber).toString
 	}
 
 	/** Should be the last field to be initialized, in order to ensure that the `initialBehaviorBuilder` is executed with the [[Reactant]] fully initialized. */
-	private var currentBehavior: Behavior[U] = initialBehaviorBuilder(this)
+	private var currentBehavior: Behavior[U] = uninitialized
 
-	{	// send Started signal after all the vals and vars have been initialized
-		admin.Duty.mineFlat{ ()=> executeSignalHandler(Started).foreach(_ => sleepUntilNextMessageArrives()) }
+	/**
+	 * Should be called only once and within the [[admin]].
+	 * Design note: This method is necessary to initialize the objects referenced by this [[Reactant]] that also need a reference to this [[Reactant]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
+	def initialize(): this.type = { // send Started signal after all the vals and vars have been initialized
+		assert(currentBehavior == null)
+		currentBehavior = initialBehaviorBuilder(this)
+		executeSignalHandler(Started).foreach(_ => sleepUntilNextMessageArrives())
 			.triggerAndForget()
+		this
 	}
 
 	/** Should be called withing the [[admin]]. */
 	private def spawner: Spawner[admin.type] = oSpawner.fold {
 		val spawner = new Spawner[admin.type](Maybe.some(this), admin, serialNumber)
 		oSpawner = Maybe.some(spawner)
+		childrenRelays = spawner.childrenView.filterNot(_._2.isMarkedToStop)
 		spawner
-	}(spawner => spawner)
+	}(alreadyBuiltSpawner => alreadyBuiltSpawner)
 
-	def spawn[A, B <: A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: Reactant[A] => Behavior[A]): admin.Duty[Endpoint[B]] = {
-		spawner.createReactant[A, B](childReactantFactory, initialChildBehaviorBuilder)
+	/** Should be called withing the [[admin]]. */
+	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: Reactant[A] => Behavior[A]): admin.Duty[ReactantRelay[A]] = {
+		spawner.createReactant[A](childReactantFactory, initialChildBehaviorBuilder)
 	}
+
+	/** Should be called withing the [[admin]]. */
+	override def getChildren: MapView[Long, ReactantRelay[?]] = childrenRelays
 
 	/** @return true if there is no pending messages to process. */
 	protected def noPendingMsg: Boolean
@@ -110,8 +120,8 @@ abstract class Reactant[U](
 					currentBehavior = restartBehaviorBuilder(this)
 					// send the Restarted signal
 					executeSignalHandler(Restarted)
-					sleepUntilNextMessageArrives()
-					// TODO notify parent
+					admin.Duty.ready(sleepUntilNextMessageArrives())
+				// TODO notify parent
 			}
 		}
 
@@ -123,17 +133,23 @@ abstract class Reactant[U](
 		} else restartMe()
 	}
 
+	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
+
 	/**
 	 * Instructs to stop this [[Reactant]].
 	 * Supports being called at any moment.
 	 * thread-safe
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
-	final def stop(): admin.Duty[Unit] = {
-		isMarkedToStop = true
-		if isIdle then {
-			idleState = false
-			stopInternal()
-		} else stopCovenant
+	override final def stop(): admin.Duty[Unit] = {
+		admin.Duty.mineFlat { () =>
+			if isIdle then {
+				idleState = false
+				stopInternal()
+			} else {
+				isMarkedToStop = true
+				stopCovenant
+			}
+		}
 	}
 
 	/**
@@ -154,6 +170,7 @@ abstract class Reactant[U](
 		}
 
 		idleState = false
+		isMarkedToStop = true
 		oSpawner.fold(stopMe()) { spawner =>
 			spawner.stopChildren().flatMap(_ => stopMe())
 		}
@@ -233,8 +250,7 @@ abstract class Reactant[U](
 					case tr: ToRestart[U @unchecked] =>
 						restart(tr.stopChildren, tr.restartBehaviorBuilder)
 				}
-
-			// Nothing happens until this point where the duty built above is executed.
+			// Nothing happens until here where the duty built above is executed.
 			processAllPendingMessages.triggerAndForget()
 		}
 
@@ -263,8 +279,8 @@ abstract class Reactant[U](
 				else firstDecision
 			finalDecision match {
 				case ToContinue => idleState = true
-				case ToStop => stopInternal()
-				case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder)
+				case ToStop => stopInternal().triggerAndForget(true)
+				case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 			}
 		}
 

@@ -15,16 +15,18 @@ object RegularRf extends ReactantFactory {
 		progenitor: Spawner[MatrixAdmin],
 		admin: MatrixAdmin,
 		initialBehaviorBuilder: Reactant[U] => Behavior[U]		
-	): Reactant[U] = {
-		new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, Maybe.empty) {
+	): admin.Duty[Reactant[U]] = {
+		admin.Duty.mine { () =>
+			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, Maybe.empty) {
 
-			private val fifoInbox = createMsgBuffer(this)
+				private val fifoInbox = createMsgBuffer(this)
 
-			override val endpointProvider: EndpointProvider[U] = createEndpointProvider(fifoInbox)
+				override val endpointProvider: EndpointProvider[U] = createEndpointProvider(fifoInbox)
 
-			override def withdrawNextMessage(): Maybe[U] = fifoInbox.withdraw()
+				override def withdrawNextMessage(): Maybe[U] = fifoInbox.withdraw()
 
-			override def noPendingMsg: Boolean = fifoInbox.isEmpty
+				override def noPendingMsg: Boolean = fifoInbox.isEmpty
+			}.initialize()
 		}
 	}
 }
