@@ -1,14 +1,12 @@
 package readren.matrix
 
-import readren.taskflow.deriveToString
-
 import scala.reflect.TypeTest
 
 trait MsgBehavior[-A] { thisMsgBehavior =>
-	def handleMessage(message: A): HandleResult[A]
+	def handleMsg(message: A): HandleResult[A]
 
 	def withSignalBehavior[B <: A](signalBehavior: SignalBehavior[B]): Behavior[B] = new Behavior[B] {
-		override def handleMessage(message: B): HandleResult[B] = thisMsgBehavior.handleMessage(message)
+		override def handleMsg(message: B): HandleResult[B] = thisMsgBehavior.handleMsg(message)
 
 		override def handleSignal(signal: Signal): HandleResult[B] = signalBehavior.handleSignal(signal)
 	}
@@ -18,7 +16,7 @@ trait SignalBehavior[-A] { thisSignalBehavior =>
 	def handleSignal(signal: Signal): HandleResult[A]
 
 	def withMsgBehavior[B <: A](msgBehavior: MsgBehavior[B]): Behavior[B] = new Behavior[B] {
-		override def handleMessage(message: B): HandleResult[B] = msgBehavior.handleMessage(message)
+		override def handleMsg(message: B): HandleResult[B] = msgBehavior.handleMsg(message)
 
 		override def handleSignal(signal: Signal): HandleResult[B] = thisSignalBehavior.handleSignal(signal)
 	}
@@ -30,19 +28,19 @@ trait Behavior[-A] extends MsgBehavior[A], SignalBehavior[A] {
 object Behavior {
 
 	object ignore extends Behavior[Any] {
-		override def handleMessage(message: Any): HandleResult[Any] = Continue
+		override def handleMsg(message: Any): HandleResult[Any] = Continue
 
 		override def handleSignal(signal: Signal): HandleResult[Any] = Continue
 	}
 	
-	inline def message[A](handler: MsgBehavior[A]): MsgBehavior[A] = handler
+	inline def handleMsg[A](handler: MsgBehavior[A]): MsgBehavior[A] = handler
 
-	inline def signal[A](handler: SignalBehavior[A]): SignalBehavior[A] = handler
+	inline def handleSignal[A](handler: SignalBehavior[A]): SignalBehavior[A] = handler
 
 	inline def messageAndSignal[A](mb: MsgBehavior[A])(sb: SignalBehavior[A]): Behavior[A] = new MessageAndSignal[A](mb, sb)
 
 	class MessageAndSignal[A](mb: MsgBehavior[A], sb: SignalBehavior[A]) extends Behavior[A] {
-		override def handleMessage(message: A): HandleResult[A] = mb.handleMessage(message)
+		override def handleMsg(message: A): HandleResult[A] = mb.handleMsg(message)
 
 		override def handleSignal(signal: Signal): HandleResult[A] = sb.handleSignal(signal)
 	}
@@ -50,12 +48,12 @@ object Behavior {
 	def restartNest[A](initializer: () => Behavior[A])(cleaner: () => Unit): Behavior[A] = {
 		class Nest(var nestedBehavior: Behavior[A]) extends Behavior[A]:
 			private def update(newBehavior: Behavior[A]): this.type = {
-				this.nestedBehavior = newBehavior;
+				this.nestedBehavior = newBehavior
 				this
 			}
 
-			override def handleMessage(message: A): HandleResult[A] = {
-				nestedBehavior.handleMessage(message) match {
+			override def handleMsg(message: A): HandleResult[A] = {
+				nestedBehavior.handleMsg(message) match {
 					case Restart =>
 						cleaner()
 						ContinueWith(update(initializer()))
@@ -83,20 +81,20 @@ object Behavior {
 	open class UnionOf[A, B](var mbA: MsgBehavior[A], var mbB: MsgBehavior[B], sbAB: SignalBehavior[A | B])(using ttA: TypeTest[A | B, A], ttB: TypeTest[A | B, B]) extends Behavior[A | B] { thisUnionOf =>
 
 		private def update(nmbA: MsgBehavior[A], nmbB: MsgBehavior[B]): this.type = {
-			this.mbA = nmbA;
+			this.mbA = nmbA
 			this.mbB = nmbB
 			this
 		}
 
 		private def handleMessageB(b: B): HandleResult[A | B] =
-			mbB.handleMessage(b).map { nmbB =>
+			mbB.handleMsg(b).map { nmbB =>
 				update(mbA, nmbB)
 			}
 
-		override def handleMessage(message: A | B): HandleResult[A | B] = {
+		override def handleMsg(message: A | B): HandleResult[A | B] = {
 			message match {
 				case ttA(a) =>
-					val hmrA = mbA.handleMessage(a)
+					val hmrA = mbA.handleMsg(a)
 					if hmrA eq Unhandled then ttB.unapply(message) match {
 						case Some(b) => handleMessageB(b)
 						case None => Unhandled
@@ -112,50 +110,46 @@ object Behavior {
 	}
 
 
-	def union[A, B](bA: Behavior[A], bB: Behavior[B])(using ttA: TypeTest[A | B, A], ttB: TypeTest[A | B, B]): Behavior[A | B] = {
+	def united[A, B](bA: Behavior[A], bB: Behavior[B])(using ttA: TypeTest[A | B, A], ttB: TypeTest[A | B, B]): Behavior[A | B] = {
 
 		def combineSignals(hrA: HandleResult[A], hrB: HandleResult[B]): HandleResult[A | B] = {
 			(hrA, hrB) match {
 				case (Unhandled, Unhandled) => Unhandled
 				case (Continue | Unhandled, Continue | Unhandled) => Continue
 				case (Stop, _) | (_, Stop) => Stop
-				case (eA: Error, _) => eA
-				case (_, eB: Error) => eB
 				case (Restart, _) | (_, Restart) => Restart
 				case (RestartWith(nbA), hsrB) => hsrB match {
-					case Continue | Unhandled => RestartWith(union(nbA, bB))
-					case ContinueWith(nbB) => RestartWith(union(nbA, nbB))
-					case RestartWith(nbB) => RestartWith(union(nbA, nbB))
+					case Continue | Unhandled => RestartWith(united(nbA, bB))
+					case ContinueWith(nbB) => RestartWith(united(nbA, nbB))
+					case RestartWith(nbB) => RestartWith(united(nbA, nbB))
 					case _ => unreachable
 				}
 				case (hsrA, RestartWith(nbB)) => hsrA match {
-					case Continue | Unhandled => RestartWith(union(bA, nbB))
-					case ContinueWith(nba) => RestartWith(union(nba, nbB))
+					case Continue | Unhandled => RestartWith(united(bA, nbB))
+					case ContinueWith(nba) => RestartWith(united(nba, nbB))
 					case _ => unreachable
 				}
 				case (ContinueWith(nbA), hsrB) => hsrB match {
-					case Continue | Unhandled => ContinueWith(union(nbA, bB))
-					case ContinueWith(nbB) => ContinueWith(union(nbA, nbB))
+					case Continue | Unhandled => ContinueWith(united(nbA, bB))
+					case ContinueWith(nbB) => ContinueWith(united(nbA, nbB))
 					case _ => unreachable
 				}
 				case (hsrA, ContinueWith(nbB)) => hsrA match {
-					case Continue | Unhandled => ContinueWith(union(bA, nbB))
+					case Continue | Unhandled => ContinueWith(united(bA, nbB))
 					case _ => unreachable
 				}
 			}
 		}
 
-		val signalBehavior: SignalBehavior[A | B] = new SignalBehavior[A | B] {
-			override def handleSignal(signal: Signal): HandleResult[A | B] = {
-				if signal.isInitialization then { // TODO analyze if the order should be the opposite.
-					val hsrB = bB.handleSignal(signal)
-					val hsrA = bA.handleSignal(signal)
-					combineSignals(hsrA, hsrB)
-				} else {
-					val hsrA = bA.handleSignal(signal)
-					val hsrB = bB.handleSignal(signal)
-					combineSignals(hsrA, hsrB)
-				}
+		val signalBehavior: SignalBehavior[A | B] = (signal: Signal) => {
+			if signal.isInitialization then { // TODO analyze if the order should be the opposite.
+				val hsrB = bB.handleSignal(signal)
+				val hsrA = bA.handleSignal(signal)
+				combineSignals(hsrA, hsrB)
+			} else {
+				val hsrA = bA.handleSignal(signal)
+				val hsrB = bB.handleSignal(signal)
+				combineSignals(hsrA, hsrB)
 			}
 		}
 

@@ -16,5 +16,5 @@ trait Inbox[+M] {
 
 	/** Checks if there are no pending messages.
 	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] only. */
-	def isEmpty: Boolean
+	def nonEmpty: Boolean
 }

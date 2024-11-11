@@ -16,7 +16,7 @@ sealed trait Signal {
 }
 
 /** After the reactant was started and before the first message is handled. */
-sealed trait Initialization extends Signal {
+sealed abstract class Initialization extends Signal {
 	override final def isInitialization: Boolean = true
 
 	override final def isCmdReceived: Boolean = false
@@ -41,7 +41,7 @@ case object Restarted extends Initialization {
 }
 
 /** After a stop or restart command but before the reactant is terminated. */
-sealed trait CmdReceived extends Signal {
+sealed abstract class CmdReceived extends Signal {
 	override final def isInitialization: Boolean = false
 
 	override final def isStarted: Boolean = false
@@ -64,3 +64,19 @@ case object RestartReceived extends CmdReceived {
 
 	override final def isRestartReceived: Boolean = true
 }
+
+abstract class AlienSignal extends Signal {
+	override def isInitialization: Boolean = false
+
+	override def isStarted: Boolean = false
+
+	override def isRestarted: Boolean = false
+
+	override def isCmdReceived: Boolean = false
+
+	override def isStopReceived: Boolean = false
+
+	override def isRestartReceived: Boolean = false
+}
+
+case class ChildStopped(serial: Reactant.SerialNumber) extends AlienSignal

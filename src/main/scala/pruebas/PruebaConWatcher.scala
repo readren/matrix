@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{ExecutionContext, Future}
 
-object Prueba {
+object PruebaConWatcher {
 
 	private val matrixAide = new Matrix.Aide { thisMatrixAide =>
 		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
@@ -27,41 +27,26 @@ object Prueba {
 		}
 	}
 
-	case class Response(adminId: Int, text: String)
-
 	sealed trait Cmd
 
-	case class ChildStopped(serial: Int, adminId: Int) extends Cmd
+//	case class ChildStopped(id: Int) extends Cmd
 
-	case class Spawn(onChildEndPoint: Endpoint[Int] => Unit, replyTo: Endpoint[Response]) extends Cmd
+	case class Spawn(onChildEndPoint: Endpoint[Int] => Unit, replyTo: Endpoint[String]) extends Cmd
 	//	case class Send(text: String)
 
 	case class SpawnResponse(endpoint: Endpoint[String])
 
-	@main def run(): Unit = {
-		val csb: StringBuffer = new StringBuffer(99999)
-		val matrix = new Matrix("myMatrix", matrixAide)
-		csb.append("Matrix created\n")
-		val numOfAdmins: Int = matrix.matrixAdmins.length
+	@main def run3(): Unit = {
 
 		val counter: AtomicInteger = new AtomicInteger(0)
-		val sbs: Array[StringBuilder] = Array.fill(numOfAdmins + 1)(new StringBuilder(9999))
-		val outReceiver = new Receiver[Response] {
-			override def submit(message: Response): Unit = {
-				val counterValue = counter.incrementAndGet()
-				sbs(message.adminId).append(f"($counterValue%6d)-${message.text}; ")
-				if false && (counterValue % 100) == 0 then {
-					val lsb = new StringBuilder(99999)
-					for i <- 1 to numOfAdmins do lsb.append(f"\n$i%2d: ${sbs(i).toString}")
-					lsb.append("\n------------")
-					println(lsb.toString())
-				}
-				if message.text == "End" then {
-					for i <- 0 to numOfAdmins do {
-						println(f"$i%2d: ${sbs(i)}")
-						sbs(i).setLength(0)
-					}
-					sbs(0).append("\n----- More than one End message received.")
+		val sb = new StringBuffer(9999999)
+		val outReceiver = new Receiver[String] {
+			override def submit(message: String): Unit = {
+				sb.append(s"(${counter.incrementAndGet()})-$message; ")
+				if message == "End" then {
+					println(sb.toString)
+					sb.setLength(0)
+					sb.append("\n----- More than one End message received.")
 				}
 			}
 
@@ -69,10 +54,11 @@ object Prueba {
 		}
 		val outEndpoint = LocalEndpoint(outReceiver)
 
-		csb.append("Matrix created\n")
+		val matrix = new Matrix("myMatrix", matrixAide)
+		sb.append("Begin:")
 		matrix.spawn[Cmd, Spawn](RegularRf(false)) { parent =>
 			parent.admin.checkWithin()
-			val parentEndpointForChild = parent.endpointProvider.local[ChildStopped]
+//			val parentEndpointForChild = parent.endpointProvider.local[ChildStopped]
 			Behavior.messageAndSignal {
 
 				case spawn@Spawn(onChildEndPoint, replyTo) =>
@@ -82,41 +68,49 @@ object Prueba {
 						Behavior.ignore.withMsgBehavior { n =>
 							child.admin.checkWithin()
 							if n >= 0 then {
-								replyTo.tell(Response(child.admin.id, f"${child.serial}%3d <= $n%6d"))
+								replyTo.tell(s"${child.serial} <= $n")
 								Continue
 							} else {
-								parentEndpointForChild.tell(ChildStopped(child.serial, child.admin.id))
+//								parentEndpointForChild.tell(ChildStopped(child.serial))
 								Stop
 							}
 						}
 					}.map { child =>
+						parent.admin.checkWithin()
 						parent.watch(child.serial)
 						println(s"Child ${child.serial} spawned. Active children: ${parent.getChildren.size}")
 						child.endpointProvider.local[Int]
 					}.trigger(true)(onChildEndPoint)
 					Continue
 
-				case ChildStopped(childSerial, adminId) =>
+//				case ChildStopped(childSerial) =>
+//					checkAdmin(parent.admin)
+//					if parent.getChildren.isEmpty then {
+//						outEndpoint.tell("End")
+//						Stop
+//					} else {
+//						println(s"Child $childSerial stopped. Active children: ${parent.getChildren.size}")
+//						Continue
+//					}
+
+			}(Behavior.handleSignal {
+				case ChildStopped(childSerial) =>
 					parent.admin.checkWithin()
-					outEndpoint.tell(Response(adminId, f"$childSerial%3d | Stopped"))
 					if parent.getChildren.isEmpty then {
-						outEndpoint.tell(Response(0, "End"))
-						println("\nParent was stopped --------")
+						outEndpoint.tell("End")
 						Stop
 					} else {
 						println(s"Child $childSerial stopped. Active children: ${parent.getChildren.size}")
 						Continue
 					}
-
-			}(Behavior.handleSignal { s =>
-				parent.admin.checkWithin()
-				println(s"Parent has received the signal: $s")
-				Continue
+				case s =>
+					println(s"Received signal: $s")
+					Continue
 			})
 		}.trigger() { parentEndpoint =>
-			csb.append("Parent started\n")
+			sb.append("Start: ")
 			val futures = for j <- 0 to 99 yield Future {
-				csb.append(s"Future $j begin: ")
+				sb.append(s"Future $j begin: ")
 				parentEndpoint.tell(Spawn(
 					childEndpoint => Future {
 						for i <- 0 to 99 do childEndpoint.tell(j * 1000 + i)
@@ -124,10 +118,10 @@ object Prueba {
 					}(ExecutionContext.global),
 					outEndpoint
 					))
-				csb.append(s"Future $j end. ")
+				sb.append(s"Future $j end. ")
 			}(ExecutionContext.global)
 			Future.sequence(futures)(ArrayBuffer, ExecutionContext.global).onComplete { _ =>
-				println(s"\nFutures completed: csb=[${csb.toString}]")
+				println(s"\nFutures completed: sb=[${sb.toString}]")
 			}(ExecutionContext.global)
 		}
 	}

@@ -26,6 +26,4 @@ case class RestartWith[-M](behavior: Behavior[M]) extends HandleResult[M] {
 	override def map[U, S <: M](f: Behavior[S] => Behavior[U]): HandleResult[U] = RestartWith(f(behavior))
 }
 
-case class Error(exceptionHandlerError: Throwable, originalCause: Throwable) extends WithSameBehavior
-
 case object Unhandled extends WithSameBehavior

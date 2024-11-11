@@ -16,7 +16,7 @@ trait ReactantFactory {
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
-		initialBehaviorBuilder: Reactant[U] => Behavior[U]
+		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): reactantAdmin.Duty[Reactant[U]]
 
 

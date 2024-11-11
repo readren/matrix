@@ -1,6 +1,5 @@
 package readren.matrix
 
-import readren.taskflow.Doer.ExceptionReport
 import readren.taskflow.Maybe
 
 import scala.annotation.tailrec
@@ -14,7 +13,7 @@ object Reactant {
 
 	private case object ToContinue extends Decision[Nothing]
 
-	private case class ToRestart[U](stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]) extends Decision[U]
+	private case class ToRestart[U](stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]) extends Decision[U]
 
 	private case object ToStop extends Decision[Nothing]
 }
@@ -24,16 +23,16 @@ import Reactant.*
 /**
  *
  * @param admin the [[MatrixAdmin]] assigned to this instance.
- * @param oMsgHandlerExecutorService the [[ExecutorService]] used for executing the [[Behavior.handleMessage]] method.
+ * @param oHandlerExecutorService the [[ExecutorService]] used for executing [[Behavior.handleMsg]], [[Behavior.handleSignal]], and [[initialBehaviorBuilder]].
  * @tparam U the type of the messages this reactant understands.
  */
 abstract class Reactant[U](
-	serialNumber: SerialNumber,
+	val serial: SerialNumber,
 	progenitor: Spawner[MatrixAdmin],
 	override val admin: MatrixAdmin,
-	initialBehaviorBuilder: Reactant[U] => Behavior[U],
-	oMsgHandlerExecutorService: Maybe[MsgHandlerExecutorService]
-) extends ReactantRelay[U] {
+	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U],
+	oHandlerExecutorService: Maybe[HandlerExecutorService[U]]
+) extends ReactantRelay[U] { thisReactant =>
 
 	/** should be accessed within the [[admin]]. */
 	private var idleState = false
@@ -47,7 +46,7 @@ abstract class Reactant[U](
 
 	override val path: String = {
 		val parentPath = progenitor.owner.fold(java.lang.StringBuilder())(pr => java.lang.StringBuilder(pr.path))
-		parentPath.append('/').append(serialNumber).toString
+		parentPath.append('/').append(serial).toString
 	}
 
 	/** Should be the last field to be initialized, in order to ensure that the `initialBehaviorBuilder` is executed with the [[Reactant]] fully initialized. */
@@ -56,73 +55,123 @@ abstract class Reactant[U](
 	/**
 	 * Should be called only once and within the [[admin]].
 	 * Design note: This method is necessary to initialize the objects referenced by this [[Reactant]] that also need a reference to this [[Reactant]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
-	def initialize(): this.type = { // send Started signal after all the vals and vars have been initialized
+	def initialize(): admin.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
+		admin.checkWithin()
 		assert(currentBehavior == null)
-		currentBehavior = initialBehaviorBuilder(this)
-		executeSignalHandler(Started).foreach(_ => sleepUntilNextMessageArrives())
-			.triggerAndForget()
-		this
+		start(false, initialBehaviorBuilder).map(_ => thisReactant)
+	}
+
+	/** Starts or restarts this [[Reactant]].
+	 * Should be called only once and within the [[admin]].
+	 * */
+	private def start(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
+		executeBehaviorBuilder(behaviorBuilder)
+			.flatMap { initialBehavior =>
+				currentBehavior = initialBehavior
+				executeSignalHandler(if comesFromRestart then Restarted else Started)
+					.map(mapHrToDecision)
+					.flatMap {
+						case ToContinue => admin.Duty.ready(stayIdleUntilNextMessageArrives())
+						case ToStop => stopInternal()
+						case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder)
+					}
+			}
 	}
 
 	/** Should be called withing the [[admin]]. */
 	private def spawner: Spawner[admin.type] = oSpawner.fold {
-		val spawner = new Spawner[admin.type](Maybe.some(this), admin, serialNumber)
+		admin.checkWithin()
+		val spawner = new Spawner[admin.type](Maybe.some(thisReactant), admin, serial)
 		oSpawner = Maybe.some(spawner)
-		childrenRelays = spawner.childrenView.filterNot(_._2.isMarkedToStop)
+		childrenRelays = spawner.childrenView.filterNot(_._2.isMarkedToStop) // Note that the `isMarkedToStop` should be accessed withing the child's admin, and here we aren't. So this collection may contain reactants that are already marked to stop.
 		spawner
 	}(alreadyBuiltSpawner => alreadyBuiltSpawner)
 
-	/** Should be called withing the [[admin]]. */
-	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: Reactant[A] => Behavior[A]): admin.Duty[ReactantRelay[A]] = {
-		spawner.createReactant[A](childReactantFactory, initialChildBehaviorBuilder)
+	/** Should be called withing the [[admin]] when [[oHandlerExecutorService]] is empty. */
+	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]): admin.Duty[ReactantRelay[A]] = {
+		if oHandlerExecutorService.isEmpty then {
+			admin.checkWithin()
+			spawner.createReactant[A](childReactantFactory, initialChildBehaviorBuilder)
+		} else {
+			MatrixAdmin.checkOutside()
+			admin.Duty.mineFlat { () =>
+				spawner.createReactant[A](childReactantFactory, initialChildBehaviorBuilder)
+			}
+		}
 	}
 
-	/** Should be called withing the [[admin]]. */
-	override def getChildren: MapView[Long, ReactantRelay[?]] = childrenRelays
+	/** The children of this [[Reactant]] by serial number.
+	 * Does not include those children whose [[isMarkedToStop]] flag is set unless it was set recently. So it may contain some reactants that are already marked to stop.
+	 * Should be called withing the [[admin]]. */
+	override def getChildren: MapView[Long, ReactantRelay[?]] = {
+		admin.checkWithin()
+		childrenRelays
+	}
 
-	/** @return true if there is no pending messages to process. */
-	protected def noPendingMsg: Boolean
+	/** @return true if there is a message is queue to be processed. */
+	protected def aMsgIsPending: Boolean
 
 	/** is called within the [[admin]]. */
 	protected def withdrawNextMessage(): Maybe[U]
 
 	/** should be called within the [[admin]]. */
-	inline def isIdle: Boolean = idleState
+	inline def isIdle: Boolean = {
+		admin.checkWithin()
+		idleState
+	}
 
 	/** should be called within the [[admin]]. */
-	private final def sleepUntilNextMessageArrives(): Unit = {
+	private final def stayIdleUntilNextMessageArrives(): Unit = {
+		admin.checkWithin()
 		assert(!isIdle)
-		if noPendingMsg then idleState = true
-		else stimulate(withdrawNextMessage().get)
+		idleState = true
+		if aMsgIsPending then stimulate(withdrawNextMessage().get)
 	}
 
 	/** should be called within the [[admin]]. */
 	private final def executeSignalHandler(signal: Signal): admin.Duty[HandleResult[U]] = {
-		oMsgHandlerExecutorService.fold(admin.Duty.ready(currentBehavior.handleSignal(signal))) { msgHandlerExecutorService =>
+		admin.checkWithin()
+		oHandlerExecutorService.fold(admin.Duty.ready(currentBehavior.handleSignal(signal))) { handlerExecutorService =>
 			val covenant = new admin.Covenant[HandleResult[U]]
-			msgHandlerExecutorService.executeSignalHandler(currentBehavior, signal)(hr => covenant.fulfill(hr)())
+			handlerExecutorService.executeSignalHandler(currentBehavior, signal)(hr => covenant.fulfill(hr)())
 			covenant
 		}
 	}
 
 	/** should be called within the [[admin]]. */
-	private final def restart(stopChildren: Boolean, restartBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[Unit] = {
+	private final def executeBehaviorBuilder(behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Behavior[U]] = {
+		admin.checkWithin()
+		oHandlerExecutorService.fold(admin.Duty.ready(behaviorBuilder(thisReactant))) { handlerExecutorService =>
+			val covenant = new admin.Covenant[Behavior[U]]
+			handlerExecutorService.executeBehaviorBuilder(behaviorBuilder, thisReactant)(behavior => covenant.fulfill(behavior)())
+			covenant
+		}
+	}
+
+	/** should be called within the [[admin]]. */
+	private final def restart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
+		admin.checkWithin()
+
 		def restartMe(): admin.Duty[Unit] = {
 			// send RestartReceived signal
-			executeSignalHandler(RestartReceived).foreach {
-				case Stop => // if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
-					stopInternal()
-				case error@Error(exceptionHandlerError, originalCause) => // if the `handleSignal` responds `Error` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
-					admin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$currentBehavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the signal [$RestartReceived]", exceptionHandlerError))
-					stopInternal()
-				case _ =>
-					// change the behavior before signaling with Restarted
-					currentBehavior = restartBehaviorBuilder(this)
-					// send the Restarted signal
-					executeSignalHandler(Restarted)
-					admin.Duty.ready(sleepUntilNextMessageArrives())
-				// TODO notify parent
-			}
+			executeSignalHandler(RestartReceived)
+				.map(mapHrToDecision)
+				.flatMap {
+					case ToContinue => start(true, restartBehaviorBuilder)
+					case ToStop => stopInternal() // if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
+					case tr: ToRestart[U @unchecked] =>
+						// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one.
+						val stopsChildrenIfInstructed =
+							if tr.stopChildren && !stopChildren then {
+								oSpawner.fold(admin.dutyReadyUnit) { spawner =>
+									spawner.stopChildren()
+								}
+							}
+							else admin.dutyReadyUnit
+						stopsChildrenIfInstructed.flatMap(_ => start(true, tr.restartBehaviorBuilder))
+
+					// TODO notify parent
+				}
 		}
 
 		idleState = false
@@ -134,6 +183,32 @@ abstract class Reactant[U](
 	}
 
 	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
+
+	def watch(childSerial: SerialNumber): Boolean = {
+		admin.checkWithin()
+		oSpawner.fold(false) { spawner =>
+			Maybe(spawner.childrenView.getOrElse(childSerial, null)).fold(false) { child =>
+				child.stopDuty.onBehalfOf(admin).foreach { _ =>
+						// if a stop of this reactant is in progress, ignore the notification.
+						if thisReactant.isMarkedToStop then () // TODO corregir: el objetivo de este if (ignorar notificaciones cuando el reactant ya inició el stopping process) no se logra cuando oMsgHandlerExecutorService está definido porque la marca `isMarkedToStop` se pondría en true luego de que la ejecución asincrónica termine y para entonces el hilo de otra notificaciones ya pudo haver evaluado la condición de este if.
+						else executeSignalHandler(ChildStopped(child.serial))
+							.map(mapHrToDecision)
+							.map {
+								case ToContinue =>
+									()
+								case ToStop =>
+									stopInternal()
+										.triggerAndForget(true)
+								case tr: ToRestart[U @unchecked] =>
+									restart(tr.stopChildren, tr.restartBehaviorBuilder)
+										.triggerAndForget(true)
+							}.triggerAndForget(true)
+					}
+					.triggerAndForget(true)
+				true
+			}
+		}
+	}
 
 	/**
 	 * Instructs to stop this [[Reactant]].
@@ -157,13 +232,17 @@ abstract class Reactant[U](
 	 * Should be called within the [[admin]].
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	private final def stopInternal(): admin.Duty[Unit] = {
+		admin.checkWithin()
+
 		/** should be called within the [[admin]]. */
 		def stopMe(): admin.Duty[Unit] = {
+			admin.checkWithin()
 			// execute the StopReceived
-			executeSignalHandler(StopReceived).foreach { _ => // note that the result of the `signalHandler` is ignored.
+			executeSignalHandler(StopReceived).flatMap { _ => // note that the result of the `signalHandler` is ignored.
 				// remove myself form progenitor children
-				progenitor.removeChild(serialNumber)
-				stopCovenant.fulfill(())()
+				progenitor.admin.Duty.mine { () => progenitor.removeChild(serial) }
+					.onBehalfOf(admin)
+					.foreach(_ => stopCovenant.fulfill(())())
 
 				// TODO notify parent
 			}
@@ -176,11 +255,9 @@ abstract class Reactant[U](
 		}
 	}
 
-	/** Should be called within this [[MatrixAdmin]] and only if this reactant is idle. */
-	final def stimulate(firstMessage: U): Unit = {
-		assert(idleState && !isMarkedToStop)
-
-		def mapHmrToDecision(message: U, behavior: Behavior[U])(hmr: HandleResult[U]): Decision[U] = hmr match {
+	private final def mapHrToDecision(hr: HandleResult[U]): Decision[U] = {
+		admin.checkWithin()
+		hr match {
 			case cw: ContinueWith[U @unchecked] =>
 				currentBehavior = cw.behavior
 				ToContinue
@@ -193,20 +270,24 @@ abstract class Reactant[U](
 			case rw: RestartWith[U] =>
 				ToRestart[U](false, _ => rw.behavior)
 			case Unhandled =>
-				// TODO log it  
+				// TODO log it
 				ToContinue
-			case Error(exceptionHandlerError, originalCause) =>
-				admin.reportFailure(new ExceptionReport(s"The error handler of the behavior [$behavior] terminated abruptly when it tried to handle [$originalCause], which was throw when handling the message [$message]", exceptionHandlerError))
-				ToStop
 		}
+	}
 
-		inline def processMessagesWithSpecifiedExecutor(msgHandlerExecutorService: MsgHandlerExecutorService): Unit = {
+	/** Should be called within this [[MatrixAdmin]] and only if this reactant is idle. */
+	final def stimulate(firstMessage: U): Unit = {
+		admin.checkWithin()
+		assert(idleState && !isMarkedToStop, s"isIdle=$isIdle, isMarkedToStop=$isMarkedToStop")
+
+		/** should be called within the admin */
+		inline def processMessagesWithSpecifiedExecutor(handlerExecutorService: HandlerExecutorService[U]): Unit = {
 
 			/** should be called within the admin */
 			def handleMsg(message: U, behavior: Behavior[U]): admin.Duty[Decision[U]] = {
 				val covenant = new admin.Covenant[HandleResult[U]]
-				msgHandlerExecutorService.executeMsgHandler(behavior, message) { hmr => covenant.fulfill(hmr)() }
-				covenant.map(mapHmrToDecision(message, behavior))
+				handlerExecutorService.executeMsgHandler(behavior, message) { hmr => covenant.fulfill(hmr)() }
+				covenant.map(mapHrToDecision)
 			}
 
 			/** should be called within the admin */
@@ -218,19 +299,19 @@ abstract class Reactant[U](
 				val processMessage: admin.Duty[Maybe[Decision[U]]] =
 
 					// withdraw the next pending message considering all the inboxes the reactant has.
-					withdrawNextMessage().fold {
-						// if no pending message to process, return Maybe.some(continue) to exit the loop gracefully
-						admin.Duty.ready(Maybe.some(ToContinue))
-					} { nextMessage =>
-						// if a message was withdrawn, handle it, and return Maybe.empty to continue in the loop unless there were trouble.
-						handleMsg(nextMessage, currentBehavior).map { decision =>
-							if isMarkedToStop then Maybe.some(ToStop)
-							else if decision == ToContinue then Maybe.empty
-							else Maybe.some(decision)
+					admin.Duty.mineFlat { () =>
+						withdrawNextMessage().fold {
+							// if no pending message to process, return Maybe.some(continue) to exit the loop gracefully
+							admin.Duty.ready(Maybe.some(ToContinue))
+						} { nextMessage =>
+							// if a message was withdrawn, handle it, and return Maybe.empty to continue in the loop unless there were trouble.
+							handleMsg(nextMessage, currentBehavior).map { decision =>
+								if isMarkedToStop then Maybe.some(ToStop)
+								else if decision == ToContinue then Maybe.empty
+								else Maybe.some(decision)
+							}
 						}
 					}
-
-
 				// repeat the `handlesMessageAndUpdatesBehavior` task until pending messages are exhausted.
 				processMessage.repeatedUntilSome() { (count, hungryExhaustedOrAborted) => hungryExhaustedOrAborted }
 			}
@@ -244,7 +325,7 @@ abstract class Reactant[U](
 				}.flatMap {
 					case ToContinue =>
 						idleState = true
-						admin.Duty.ready(())
+						admin.dutyReadyUnit
 					case ToStop =>
 						stopInternal()
 					case tr: ToRestart[U @unchecked] =>
@@ -254,16 +335,18 @@ abstract class Reactant[U](
 			processAllPendingMessages.triggerAndForget()
 		}
 
+		/** should be called within the admin */
 		inline def processMessagesWithAdmin(): Unit = {
-
 			/** should be called within the admin */
 			def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = {
-				mapHmrToDecision(message, behavior)(behavior.handleMessage(message))
+				admin.checkWithin()
+				mapHrToDecision(behavior.handleMsg(message))
 			}
 
 			/** should be called within the admin */
 			@tailrec
 			def processNextPendingMessages(): Decision[U] = {
+				admin.checkWithin()
 				withdrawNextMessage().fold(ToContinue) { message =>
 					val decision = handleMsg(message, currentBehavior)
 					if isMarkedToStop then ToStop
@@ -286,6 +369,6 @@ abstract class Reactant[U](
 
 		// First line of the outer method.
 		idleState = false
-		oMsgHandlerExecutorService.fold(processMessagesWithAdmin())(processMessagesWithSpecifiedExecutor)
+		oHandlerExecutorService.fold(processMessagesWithAdmin())(processMessagesWithSpecifiedExecutor)
 	}
 }

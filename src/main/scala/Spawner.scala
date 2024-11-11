@@ -24,10 +24,13 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	/** Should be accessed within the [[admin]] only. */
 	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
 	
+	/** A view of the children that aren't fully stopped.
+	 * Should be accessed withing the [[admin]]. */
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
 	/** Should be called withing the [[admin]] only. */
-	def createReactant[U](reactantFactory: ReactantFactory, initialBehaviorBuilder: Reactant[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
+	def createReactant[U](reactantFactory: ReactantFactory, initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
+		admin.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
 		val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
@@ -41,10 +44,14 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 
 	/** should be called withing the admin */
 	def stopChildren(): admin.Duty[Unit] = {
+		admin.checkWithin()
 		val stopDuties = children.values.map(child => admin.Duty.foreign(child.admin)(child.stop()))
 		admin.Duty.sequence(stopDuties.toList).map(_ => ())
 	}
 
 	/** should be called withing the admin */
-	def removeChild(childSerial: Long): Unit = children -= childSerial
+	def removeChild(childSerial: Long): Unit = {
+		admin.checkWithin()
+		children -= childSerial
+	}
 }

@@ -33,10 +33,14 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 	}
 
 	override def withdraw(): Maybe[M] = {
+		admin.checkWithin()
 		if queue.isEmpty then Maybe.empty
 		else Maybe.some(queue.removeHead())
 	}
 
-	override def isEmpty: Boolean = queue.isEmpty
+	override def nonEmpty: Boolean = {
+		admin.checkWithin()
+		queue.nonEmpty
+	}
 
 }

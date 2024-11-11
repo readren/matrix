@@ -1,9 +1,11 @@
 package readren.matrix
 package rf
 
+import mhes.ForkJoinMhes
+
 import readren.taskflow.Maybe
 
-object RegularRf extends ReactantFactory {
+class RegularRf(executeHandlersWithSeparately: Boolean) extends ReactantFactory {
 	override type MsgBuffer[U] = FifoInbox[U]
 
 	override protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U] = new FifoInbox[U](reactant)
@@ -14,10 +16,10 @@ object RegularRf extends ReactantFactory {
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		admin: MatrixAdmin,
-		initialBehaviorBuilder: Reactant[U] => Behavior[U]		
+		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]		
 	): admin.Duty[Reactant[U]] = {
-		admin.Duty.mine { () =>
-			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, Maybe.empty) {
+		admin.Duty.mineFlat { () =>
+			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, if executeHandlersWithSeparately then Maybe.some(new ForkJoinMhes) else Maybe.empty) {
 
 				private val fifoInbox = createMsgBuffer(this)
 
@@ -25,8 +27,8 @@ object RegularRf extends ReactantFactory {
 
 				override def withdrawNextMessage(): Maybe[U] = fifoInbox.withdraw()
 
-				override def noPendingMsg: Boolean = fifoInbox.isEmpty
-			}.initialize()
+				override def aMsgIsPending: Boolean = fifoInbox.nonEmpty
+			}.initialize().castTypePath(admin)
 		}
 	}
 }

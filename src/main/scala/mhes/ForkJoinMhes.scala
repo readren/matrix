@@ -4,18 +4,24 @@ package mhes
 import java.util.concurrent.ForkJoinPool
 import scala.util.control.NonFatal
 
-class ForkJoinMhes extends MsgHandlerExecutorService {
+class ForkJoinMhes[U] extends HandlerExecutorService[U] {
 
 	val forkJoinPool:  ForkJoinPool = new ForkJoinPool()
 
-	override def executeMsgHandler[M](behavior: Behavior[M], message: M)(onComplete: HandleResult[M] => Unit): Unit = {
+	override def executeMsgHandler(behavior: Behavior[U], message: U)(onComplete: HandleResult[U] => Unit): Unit = {
 		 
-		forkJoinPool.execute(() => onComplete(behavior.handleMessage(message)))
+		forkJoinPool.execute(() => onComplete(behavior.handleMsg(message)))
 	}
 
-	override def executeSignalHandler[U](behavior: Behavior[U], signal: Signal)(onComplete: HandleResult[U] => Unit): Unit = {
+	override def executeSignalHandler(behavior: Behavior[U], signal: Signal)(onComplete: HandleResult[U] => Unit): Unit = {
 		forkJoinPool.execute { () =>
 			onComplete(behavior.handleSignal(signal))
+		}
+	}
+
+	override def executeBehaviorBuilder(builder: ReactantRelay[U] => Behavior[U], reactant: ReactantRelay[U])(onComplete: Behavior[U] => Unit): Unit = {
+		forkJoinPool.execute { () =>
+			onComplete(builder(reactant))
 		}
 	}
 }
