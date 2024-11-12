@@ -6,26 +6,40 @@ import rf.RegularRf
 import readren.taskflow.Doer
 
 import java.net.URI
-import java.util.concurrent.Executors
+import java.util.concurrent.{CompletableFuture, ExecutorService, Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{ExecutionContext, Future}
 
 object PruebaConForkJoin {
 
-	private val matrixAide = new Matrix.Aide { thisMatrixAide =>
+	class MatrixAide extends Matrix.Aide { thisMatrixAide =>
 		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 
+		private val executors: ArrayBuffer[ExecutorService] = ArrayBuffer.empty
 
 		override def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant = new Doer.Assistant {
 
-			private val doSiThEx = Executors.newSingleThreadExecutor()
+			private val doSiThEx = {
+				val newExecutor = Executors.newSingleThreadExecutor()
+				executors.addOne(newExecutor)
+				newExecutor
+			}
 
 			override def queueForSequentialExecution(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
 			override def reportFailure(cause: Throwable): Unit = thisMatrixAide.reportFailure(cause)
 		}
+
+		def shutdown(): Unit = {
+			CompletableFuture.runAsync(
+				() => executors.foreach(_.shutdown()),
+				CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
+				)
+		}
 	}
+
+	private val matrixAide = new MatrixAide
 
 	sealed trait Answer
 
@@ -80,6 +94,7 @@ object PruebaConForkJoin {
 							sbs(i).setLength(0)
 						}
 						println(lsb)
+						matrixAide.shutdown()
 				}
 			}
 
@@ -99,8 +114,9 @@ object PruebaConForkJoin {
 					parent.spawn[Int](RegularRf(true)) { child =>
 						MatrixAdmin.checkOutside()
 						Behavior.ignore.withMsgBehavior { n =>
+							MatrixAdmin.checkOutside()
 							if n >= 0 then {
-								replyTo.tell(Response(child.admin.id, child.serial, f"${child.serial}%3d <= $n%6d"))
+								replyTo.tell(Response(child.admin.id, child.serial, f"${child.serial}%3d <=$n%3d"))
 								Continue
 							} else {
 								parentEndpointForChild.tell(ChildStopped(child.serial, child.admin.id))
@@ -138,7 +154,7 @@ object PruebaConForkJoin {
 				csb.append(s"Future $j begin: ")
 				parentEndpoint.tell(Spawn(
 					childEndpoint => Future {
-						for i <- 0 to 99 do childEndpoint.tell(j * 1000 + i)
+						for i <- 0 to 99 do childEndpoint.tell(i)
 						childEndpoint.tell(-1)
 					}(ExecutionContext.global),
 					outEndpoint

@@ -3,29 +3,43 @@ package pruebas
 
 import rf.RegularRf
 
+import java.util.concurrent.{CompletableFuture, ExecutorService, Executors, TimeUnit}
 import readren.taskflow.Doer
 
 import java.net.URI
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{ExecutionContext, Future}
 
 object Prueba {
 
-	private val matrixAide = new Matrix.Aide { thisMatrixAide =>
+	class MatrixAide extends Matrix.Aide { thisMatrixAide =>
 		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 
+		private val executors: ArrayBuffer[ExecutorService] = ArrayBuffer.empty
 
 		override def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant = new Doer.Assistant {
 
-			private val doSiThEx = Executors.newSingleThreadExecutor()
+			private val doSiThEx = {
+				val newExecutor = Executors.newSingleThreadExecutor()
+				executors.addOne(newExecutor)
+				newExecutor
+			}
 
 			override def queueForSequentialExecution(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
 			override def reportFailure(cause: Throwable): Unit = thisMatrixAide.reportFailure(cause)
 		}
+
+		def shutdown(): Unit = {
+			CompletableFuture.runAsync(
+				() => executors.foreach(_.shutdown()),
+				CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
+			)
+		}
 	}
+
+	private val matrixAide = new MatrixAide
 
 	case class Response(adminId: Int, text: String)
 
@@ -62,6 +76,7 @@ object Prueba {
 						sbs(i).setLength(0)
 					}
 					sbs(0).append("\n----- More than one End message received.")
+					matrixAide.shutdown()
 				}
 			}
 

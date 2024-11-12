@@ -6,7 +6,7 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 @deprecated("See the MsgHandlerExecutorManager's deprecation comment")
-class MsgHandlerExecutor(assistant: Doer.Assistant) extends Doer(assistant) {
+class MsgHandlerExecutor(override protected val assistant: Doer.Assistant) extends Doer {
 
 	@volatile private var queuedExecutionsCounter: Int = 0
 	private var ongoingExecutionsCounter: Int = 0

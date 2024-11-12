@@ -21,27 +21,9 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 	 * The array with all the [[MatrixAdmin]] instances of this [[Matrix]]. */
 	val matrixAdmins: IArray[MatrixAdmin] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		val doerAssistantBuilder: Int => Doer.Assistant =
-			if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then { // TODO mover este if hacia MatrixAdmin cuando Doer deje de tener constructor parameters 
-				(id: Int) => {
-					new Doer.Assistant {
-						private val assistant = aide.buildDoerAssistantForAdmin(id)
-
-						override def queueForSequentialExecution(runnable: Runnable): Unit = {
-							assistant.queueForSequentialExecution { () =>
-								MatrixAdmin.adminIdThreadLocal.set(id)
-								runnable.run()
-							}
-						}
-
-						override def reportFailure(cause: Throwable): Unit = assistant.reportFailure(cause)
-					}
-				}
-			}
-			else aide.buildDoerAssistantForAdmin
 		IArray.tabulate(availableProcessors) { index =>
 			val adminId = index + 1
-			new MatrixAdmin(adminId, doerAssistantBuilder(adminId), thisMatrix)
+			new MatrixAdmin(adminId, aide.buildDoerAssistantForAdmin(adminId), thisMatrix)
 		}
 	}
 
@@ -70,5 +52,4 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 			spawner.createReactant[U](reactantFactory, initialBehaviorBuilder)
 				.map(_.endpointProvider.local[E])
 		}
-
 }
