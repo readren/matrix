@@ -5,7 +5,7 @@ import mhes.ForkJoinMhes
 
 import readren.taskflow.Maybe
 
-class RegularRf(executeHandlersWithSeparately: Boolean) extends ReactantFactory {
+object RegularRf extends ReactantFactory {
 	override type MsgBuffer[U] = FifoInbox[U]
 
 	override protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U] = new FifoInbox[U](reactant)
@@ -19,7 +19,7 @@ class RegularRf(executeHandlersWithSeparately: Boolean) extends ReactantFactory 
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]		
 	): admin.Duty[Reactant[U]] = {
 		admin.Duty.mineFlat { () =>
-			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder, if executeHandlersWithSeparately then Maybe.some(new ForkJoinMhes) else Maybe.empty) {
+			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder) {
 
 				private val fifoInbox = createMsgBuffer(this)
 

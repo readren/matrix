@@ -88,7 +88,7 @@ object PruebaConWatcher {
 						sbs(childSerial).append(f"(${counter.get()}%6d) <| Stopped; ")
 
 					case End =>
-						lsb.append(s"\n+++++++++ ${counter.get()}  +++++++++++++\n")
+						lsb.append(s"\n+++++++++ Total number of non-negative numbers sent to children: ${counter.get()}  +++++++++++++\n")
 						for i <- 0 until numberOfStringBuilders do {
 							lsb.append(f"$i%3d: ${sbs(i)}\n")
 							sbs(i).setLength(0)
@@ -103,13 +103,13 @@ object PruebaConWatcher {
 		val outEndpoint = LocalEndpoint(outReceiver)
 
 		csb.append("Matrix created\n")
-		matrix.spawn[Cmd, Spawn](RegularRf(false)) { parent =>
+		matrix.spawn[Cmd, Spawn](RegularRf) { parent =>
 			parent.admin.checkWithin()
 			Behavior.messageAndSignal {
 
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
-					parent.spawn[Int](RegularRf(false)) { child =>
+					parent.spawn[Int](RegularRf) { child =>
 						child.admin.checkWithin()
 						Behavior.ignore.withMsgBehavior { n =>
 							child.admin.checkWithin()
@@ -123,7 +123,7 @@ object PruebaConWatcher {
 					}.map { child =>
 						parent.admin.checkWithin()
 						parent.watch(child.serial)
-						println(s"Child ${child.serial} spawned. Active children: ${parent.getChildren.size}")
+						println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
 						child.endpointProvider.local[Int]
 					}.trigger(true)(childEndPointReceiver)
 					Continue
@@ -131,12 +131,12 @@ object PruebaConWatcher {
 			}(Behavior.handleSignal {
 				case ChildStopped(childSerial) =>
 					parent.admin.checkWithin()
-					if parent.getChildren.isEmpty then {
+					outEndpoint.tell(ChildWasStopped(childSerial))
+					if parent.children.isEmpty then {
 						outEndpoint.tell(End)
 						Stop
 					} else {
-						outEndpoint.tell(ChildWasStopped(childSerial))
-						println(s"Child $childSerial stopped. Active children: ${parent.getChildren.size}")
+						println(s"Child $childSerial stopped. Active children: ${parent.children.size}")
 						Continue
 					}
 				case s =>

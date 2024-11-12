@@ -22,9 +22,8 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 
 	override def submit(message: M): Unit = {
 		admin.queueForSequentialExecution {
-			val wasEmpty = queue.isEmpty
-			if owner.isIdle then {
-				assert(wasEmpty) 
+			if owner.isReady then {
+				assert(queue.isEmpty)
 				owner.stimulate(message)
 			} else {
 				queue.append(message)
