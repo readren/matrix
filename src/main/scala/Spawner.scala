@@ -45,7 +45,7 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	/** should be called withing the admin */
 	def stopChildren(): admin.Duty[Unit] = {
 		admin.checkWithin()
-		val stopDuties = children.values.map(child => admin.Duty.foreign(child.admin)(child.stop()))
+		val stopDuties = childrenView.values.map(child => admin.Duty.foreign(child.admin)(child.stop()))
 		admin.Duty.sequence(stopDuties.toList).map(_ => ())
 	}
 

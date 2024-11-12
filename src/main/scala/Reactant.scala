@@ -57,14 +57,16 @@ abstract class Reactant[U](
 	 * Design note: This method is necessary to initialize the objects referenced by this [[Reactant]] that also need a reference to this [[Reactant]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
 	def initialize(): admin.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
 		admin.checkWithin()
+		assert(!idleState)
 		assert(currentBehavior == null)
-		start(false, initialBehaviorBuilder).map(_ => thisReactant)
+		selfStart(false, initialBehaviorBuilder).map(_ => thisReactant) // TODO considerar hacer que selfStart devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
 	}
 
 	/** Starts or restarts this [[Reactant]].
 	 * Should be called only once and within the [[admin]].
 	 * */
-	private def start(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
+	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
+		admin.checkWithin()
 		executeBehaviorBuilder(behaviorBuilder)
 			.flatMap { initialBehavior =>
 				currentBehavior = initialBehavior
@@ -72,8 +74,8 @@ abstract class Reactant[U](
 					.map(mapHrToDecision)
 					.flatMap {
 						case ToContinue => admin.Duty.ready(stayIdleUntilNextMessageArrives())
-						case ToStop => stopInternal()
-						case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder)
+						case ToStop => selfStop()
+						case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder)
 					}
 			}
 	}
@@ -123,7 +125,7 @@ abstract class Reactant[U](
 	/** should be called within the [[admin]]. */
 	private final def stayIdleUntilNextMessageArrives(): Unit = {
 		admin.checkWithin()
-		assert(!isIdle)
+		assert(!idleState)
 		idleState = true
 		if aMsgIsPending then stimulate(withdrawNextMessage().get)
 	}
@@ -149,7 +151,7 @@ abstract class Reactant[U](
 	}
 
 	/** should be called within the [[admin]]. */
-	private final def restart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
+	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
 		admin.checkWithin()
 
 		def restartMe(): admin.Duty[Unit] = {
@@ -157,8 +159,8 @@ abstract class Reactant[U](
 			executeSignalHandler(RestartReceived)
 				.map(mapHrToDecision)
 				.flatMap {
-					case ToContinue => start(true, restartBehaviorBuilder)
-					case ToStop => stopInternal() // if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
+					case ToContinue => selfStart(true, restartBehaviorBuilder)
+					case ToStop => selfStop() // if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead.
 					case tr: ToRestart[U @unchecked] =>
 						// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one.
 						val stopsChildrenIfInstructed =
@@ -168,7 +170,7 @@ abstract class Reactant[U](
 								}
 							}
 							else admin.dutyReadyUnit
-						stopsChildrenIfInstructed.flatMap(_ => start(true, tr.restartBehaviorBuilder))
+						stopsChildrenIfInstructed.flatMap(_ => selfStart(true, tr.restartBehaviorBuilder))
 
 					// TODO notify parent
 				}
@@ -197,10 +199,10 @@ abstract class Reactant[U](
 								case ToContinue =>
 									()
 								case ToStop =>
-									stopInternal()
+									selfStop()
 										.triggerAndForget(true)
 								case tr: ToRestart[U @unchecked] =>
-									restart(tr.stopChildren, tr.restartBehaviorBuilder)
+									selfRestart(tr.stopChildren, tr.restartBehaviorBuilder)
 										.triggerAndForget(true)
 							}.triggerAndForget(true)
 					}
@@ -219,7 +221,7 @@ abstract class Reactant[U](
 		admin.Duty.mineFlat { () =>
 			if isIdle then {
 				idleState = false
-				stopInternal()
+				selfStop()
 			} else {
 				isMarkedToStop = true
 				stopCovenant
@@ -231,7 +233,7 @@ abstract class Reactant[U](
 	 * Stops this [[Reactant]].
 	 * Should be called within the [[admin]].
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
-	private final def stopInternal(): admin.Duty[Unit] = {
+	private final def selfStop(): admin.Duty[Unit] = {
 		admin.checkWithin()
 
 		/** should be called within the [[admin]]. */
@@ -327,9 +329,9 @@ abstract class Reactant[U](
 						idleState = true
 						admin.dutyReadyUnit
 					case ToStop =>
-						stopInternal()
+						selfStop()
 					case tr: ToRestart[U @unchecked] =>
-						restart(tr.stopChildren, tr.restartBehaviorBuilder)
+						selfRestart(tr.stopChildren, tr.restartBehaviorBuilder)
 				}
 			// Nothing happens until here where the duty built above is executed.
 			processAllPendingMessages.triggerAndForget()
@@ -362,8 +364,8 @@ abstract class Reactant[U](
 				else firstDecision
 			finalDecision match {
 				case ToContinue => idleState = true
-				case ToStop => stopInternal().triggerAndForget(true)
-				case tr: ToRestart[U @unchecked] => restart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+				case ToStop => selfStop().triggerAndForget(true)
+				case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 			}
 		}
 

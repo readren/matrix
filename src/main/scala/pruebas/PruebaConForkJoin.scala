@@ -58,7 +58,7 @@ object PruebaConForkJoin {
 
 	val numberOfChildren = 100
 
-	@main def pruebaConForkJoin(): Unit = {
+	@main def runPruebaConForkJoin(): Unit = {
 		val csb: StringBuffer = new StringBuffer(99999)
 		val matrix = new Matrix("myMatrix", matrixAide)
 		csb.append("Matrix created\n")
