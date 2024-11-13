@@ -31,7 +31,7 @@ object PruebaConWatcher {
 			override def reportFailure(cause: Throwable): Unit = thisMatrixAide.reportFailure(cause)
 		}
 
-		def shutdown(): Unit = {
+		def shutdown(): CompletableFuture[Void] = {
 			CompletableFuture.runAsync(
 				() => executors.foreach(_.shutdown()),
 				CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
@@ -70,31 +70,30 @@ object PruebaConWatcher {
 		val sbs: Array[StringBuilder] = Array.fill(numberOfStringBuilders)(new StringBuilder(9999))
 		val outReceiver = new Receiver[Answer] {
 			override def submit(answer: Answer): Unit = {
-				val lsb = new StringBuilder(99999)
 				answer match {
 					case message: Response =>
 						val counterValue = counter.incrementAndGet()
 						sbs(message.childSerial).append(f"($counterValue%6d)-${message.text}; ")
 
 						if false && (counterValue % 1) == 0 then {
+							val lsb = new StringBuilder(999999)
 							lsb.append("\n>>>>>>>>>>>>>")
 							for i <- 1 until numberOfStringBuilders if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
 							lsb.append("\n------------")
 							printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
-							lsb.setLength(0)
 						}
 
 					case ChildWasStopped(childSerial) =>
 						sbs(childSerial).append(f"(${counter.get()}%6d) <| Stopped; ")
 
 					case End =>
+						val lsb = new StringBuilder(999999)
 						lsb.append(s"\n+++++++++ Total number of non-negative numbers sent to children: ${counter.get()}  +++++++++++++\n")
 						for i <- 0 until numberOfStringBuilders do {
 							lsb.append(f"$i%3d: ${sbs(i)}\n")
 							sbs(i).setLength(0)
 						}
 						println(lsb)
-						matrixAide.shutdown()
 				}
 			}
 
@@ -103,7 +102,7 @@ object PruebaConWatcher {
 		val outEndpoint = LocalEndpoint(outReceiver)
 
 		csb.append("Matrix created\n")
-		matrix.spawn[Cmd, Spawn](RegularRf) { parent =>
+		matrix.spawn[Cmd](RegularRf) { parent =>
 			parent.admin.checkWithin()
 			Behavior.messageAndSignal {
 
@@ -143,7 +142,8 @@ object PruebaConWatcher {
 					println(s"Received signal: $s")
 					Continue
 			})
-		}.trigger() { parentEndpoint =>
+		}.trigger() { parent =>
+			val parentEndpoint = parent.endpointProvider.local[Spawn] 
 			csb.append("Parent started\n")
 			val futures = for j <- 0 until numberOfChildren yield Future {
 				csb.append(s"Future $j begin: ")
@@ -159,6 +159,8 @@ object PruebaConWatcher {
 			Future.sequence(futures)(ArrayBuffer, ExecutionContext.global).onComplete { _ =>
 				println(s"\nFutures completed: sb=[${csb.toString}]")
 			}(ExecutionContext.global)
+			
+			parent.stopDuty.trigger() { _ => matrixAide.shutdown().thenRun(() => println("Shutdown completed"))}
 		}
 	}
 }

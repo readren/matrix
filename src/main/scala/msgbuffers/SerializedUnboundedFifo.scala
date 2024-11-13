@@ -1,5 +1,5 @@
 package readren.matrix
-
+package msgbuffers
 
 import readren.taskflow.Maybe
 
@@ -8,10 +8,11 @@ import scala.collection.mutable
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
-class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
-	
+class SerializedUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
+
 	/** Should be accessed only within the [[admin]] */
 	private val queue: mutable.ArrayDeque[M] = mutable.ArrayDeque.empty
+	private var ownerIsReadyToProcess: Boolean = false
 
 	val admin: MatrixAdmin = owner.admin
 
@@ -22,14 +23,17 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 
 	override def submit(message: M): Unit = {
 		admin.queueForSequentialExecution {
-			if owner.isReady then {
+			// The next line stimulates the reactant in order to continue processing the messages that were submitted to the Receiver but were enqueued in the work queue of the executor instead of in this Receiver's queue.
+			// TODO try delegating the decision of processing readiness to the Receiver. This may allow to use AtomicBoolean for the isReadyToProcessAMsg flag only when necessary.
+			if ownerIsReadyToProcess then {
 				assert(queue.isEmpty)
-				owner.stimulate(message)
-			} else {
-				queue.append(message)
+				owner.processMessages(message)
 			}
+			else queue.append(message)
 		}
 	}
+
+	override def setOwnerReadyToProcessState(newState: Boolean): Unit = ownerIsReadyToProcess = newState
 
 	override def withdraw(): Maybe[M] = {
 		admin.checkWithin()
@@ -41,5 +45,4 @@ class FifoInbox[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoI
 		admin.checkWithin()
 		queue.nonEmpty
 	}
-
 }

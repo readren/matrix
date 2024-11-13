@@ -47,9 +47,8 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		matrixAdmins(serialNumber % matrixAdmins.length)
 
 	/** thread-safe */
-	def spawn[U, E <: U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Endpoint[E]] =
+	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] =
 		admin.Duty.mineFlat { () =>
 			spawner.createReactant[U](reactantFactory, initialBehaviorBuilder)
-				.map(_.endpointProvider.local[E])
 		}
 }

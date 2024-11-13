@@ -1,3 +1,4 @@
 1) Los Receiver cuyo submit corre en un admin no sirven cuando se usa la estrategia de muchos reactant por admin sin ejecutor separados para los handlers del behavior; porque el submit es siempre bloqueado y nunca llegan a tener siquiera un mensaje en la cola. En ese caso el submit debe ser concurrente.
 2) Probar la estrategia: un admin por cada reactant con un ExecutorService que los asocie con un ejecutor pero que cuando un ejecutor tiene la cola de runnables vacía robe un admin  de otro ejecutor siempre y cuando el admin tenga tarea pendiente y no esté siendo ejecutado por otro ejecutor.
 3) Considerar hacer que los handlers de Behavior devuelvan `Duty[HandleResult[X]]` en lugar de `HandleResult[X]` para darle más flexibilidad al usuario. Eso evitaría la necesidad de soportar stashing.
+4) Hacer que el return type de Behavior.handleSignal dependa de la señal recibida.

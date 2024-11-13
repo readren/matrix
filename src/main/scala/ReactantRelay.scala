@@ -14,16 +14,10 @@ trait ReactantRelay[-U] {
 	/** thread-safe */
 	val path: String
 
-	/** Tells if this [[Reactant]] is ready to be stimulated to process a message.
-	 * Should be set to false whenever [[isMarkedToStop]] is set to true. */
-	protected val isReadyToProcessAMsg: AtomicBoolean
 	
 	/** Tells if this [[Reactant]] was marked to be stopped.
-	 * CAUTION: Should never be true when [[isReadyToProcessAMsg]] is true. Set it to false before setting this member to true. */
+	 * CAUTION: Should never be true when [[isReadyToProcessAMsg]] is true. [[isReadyToProcessAMsg]] should be set to false before setting this member to true. */
 	protected val isMarkedToStop: AtomicBoolean
-
-	/** Tells if this [[Reactant]] is ready to be stimulated to process a message. */
-	inline def isReady: Boolean = isReadyToProcessAMsg.get
 
 	/** Tells if this [[Reactant]] was marked to be stopped. */
 	inline def isBeingStopped: Boolean = isMarkedToStop.get

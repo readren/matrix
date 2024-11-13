@@ -33,7 +33,6 @@ abstract class Reactant[U](
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 ) extends ReactantRelay[U] { thisReactant =>
 
-	override protected val isReadyToProcessAMsg: AtomicBoolean = AtomicBoolean(false)
 	override protected val isMarkedToStop: AtomicBoolean = AtomicBoolean(false)
 	private val stopCovenant = new admin.Covenant[Unit]
 
@@ -51,11 +50,7 @@ abstract class Reactant[U](
 	/** Should be the last field to be initialized, in order to ensure that the `initialBehaviorBuilder` is executed with the [[Reactant]] fully initialized. */
 	private var currentBehavior: Behavior[U] = uninitialized
 
-	/** @return true if there is a message queue to be processed. */
-	protected def aMsgIsPending: Boolean
-
-	/** is called within the [[admin]]. */
-	protected def withdrawNextMessage(): Maybe[U]
+	protected val inbox: Inbox[U]
 
 	/**
 	 * Should be called only once and within the [[admin]].
@@ -75,7 +70,9 @@ abstract class Reactant[U](
 		val handleResult = currentBehavior.handleSignal(if comesFromRestart then Restarted else Started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
-				stayIdleUntilNextMsgArrives()
+				inbox.setOwnerReadyToProcessState(true)
+				// the order of the previous and next line is important
+				inbox.withdraw().foreach(processMessages)
 				admin.dutyReadyUnit
 			case ToStop =>
 				selfStop()
@@ -102,13 +99,6 @@ abstract class Reactant[U](
 	override def children: MapView[Long, ReactantRelay[?]] = {
 		admin.checkWithin()
 		childrenRelays
-	}
-
-	/** should be called within the [[admin]]. */
-	private final def stayIdleUntilNextMsgArrives(): Unit = {
-		admin.checkWithin()
-		isReadyToProcessAMsg.set(true) // it's necessary that this line be before the next if
-		if aMsgIsPending then stimulate(withdrawNextMessage().get)
 	}
 
 	/** should be called within the [[admin]]. */
@@ -173,7 +163,7 @@ abstract class Reactant[U](
 	 * thread-safe
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	override final def stop(): admin.Duty[Unit] = {
-		isReadyToProcessAMsg.set(false)
+		inbox.setOwnerReadyToProcessState(false)
 		// the order of the previous and next line is important.
 		if isMarkedToStop.getAndSet(true) then stopCovenant.duty
 		else admin.Duty.mineFlat { () => selfStop() }
@@ -198,7 +188,7 @@ abstract class Reactant[U](
 			// TODO notify parent
 		}
 
-		isReadyToProcessAMsg.set(false)
+		inbox.setOwnerReadyToProcessState(false)
 		isMarkedToStop.set(true) // TODO  es necesaria esta linea?
 		oSpawner.fold(stopMe()) { spawner =>
 			spawner.stopChildren().flatMap(_ => stopMe())
@@ -225,18 +215,18 @@ abstract class Reactant[U](
 		}
 	}
 
-	/** Should be called within this [[MatrixAdmin]] and only if this reactant is idle. */
-	final def stimulate(firstMessage: U): Unit = {
+	/** Process the received message and all the pending messages queue in the [[Reactant.inbox]]
+	 * Should be called within the [[admin]]. */
+	final def processMessages(firstMessage: U): Unit = {
 		admin.checkWithin()
-		if !isReadyToProcessAMsg.getAndSet(false) then return
-
+		
 		inline def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = mapHrToDecision(behavior.handleMsg(message))
 
 		/** should be called within the admin */
 		@tailrec
 		def processNextPendingMessages(): Decision[U] = {
 			admin.checkWithin()
-			withdrawNextMessage().fold(ToContinue) { message =>
+			inbox.withdraw().fold(ToContinue) { message =>
 				val decision = handleMsg(message, currentBehavior)
 				if isMarkedToStop.get then ToStop
 				else if decision eq ToContinue then processNextPendingMessages()
@@ -251,7 +241,7 @@ abstract class Reactant[U](
 			else if firstDecision eq ToContinue then processNextPendingMessages()
 			else firstDecision
 		finalDecision match {
-			case ToContinue => isReadyToProcessAMsg.set(true)
+			case ToContinue => inbox.setOwnerReadyToProcessState(true)
 			case ToStop => selfStop().triggerAndForget(true)
 			case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 		}
