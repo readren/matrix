@@ -104,21 +104,24 @@ object PruebaConWatcher {
 		csb.append("Matrix created\n")
 		matrix.spawn[Cmd](RegularRf) { parent =>
 			parent.admin.checkWithin()
-			Behavior.messageAndSignal {
+			Behavior.handleMsgAndSignal {
 
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
 					parent.spawn[Int](RegularRf) { child =>
 						child.admin.checkWithin()
-						Behavior.ignore.withMsgBehavior { n =>
+						Behavior.ignore.withMsgBehavior[Int] { n =>
 							child.admin.checkWithin()
 							if n >= 0 then {
 								replyTo.tell(Response(child.admin.id, child.serial, f"${child.serial}%3d <=$n%3d"))
+
+								if n == 20 && child.serial == 20 then throw new Exception("a ver que onda")
+
 								Continue
 							} else {
 								Stop
 							}
-						}
+						}.supervised
 					}.map { child =>
 						parent.admin.checkWithin()
 						parent.watch(child.serial)

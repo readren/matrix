@@ -142,7 +142,7 @@ object Prueba {
 			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			var childrenCount = 0
 			var childrenIndexSeq = 0
-			Behavior.messageAndSignal {
+			Behavior.handleMsgAndSignal {
 
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
@@ -150,7 +150,7 @@ object Prueba {
 						val childIndex = childrenIndexSeq
 						childrenIndexSeq += 1
 						child.admin.checkWithin()
-						Behavior.ignore.withMsgBehavior { n =>
+						Behavior.supervise(Behavior.ignore.withMsgBehavior { n =>
 							child.admin.checkWithin()
 							if n >= 0 then {
 								replyTo.tell(Response(child.admin.id, childIndex, f"${child.serial}%3d <=$n%3d"))
@@ -159,7 +159,7 @@ object Prueba {
 								parentEndpointForChild.tell(ChildWasStopped(childIndex))
 								Stop
 							}
-						}
+						})
 					}.map { child =>
 						parent.watch(child.serial)
 						childrenCount += 1
