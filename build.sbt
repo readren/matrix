@@ -3,18 +3,24 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.5.2"
 
 lazy val root = (project in file("."))
-  .settings(
-    name := "matrix",
-    idePackagePrefix := Some("readren.matrix")
-  )
+	.settings(
+		name := "matrix",
+		idePackagePrefix := Some("readren.matrix")
+	)
 
 ThisBuild / libraryDependencies ++= Seq(
-    "readren" %% "taskflow-core" % "0.1.4-SNAPSHOT"
+	"readren" %% "taskflow-core" % "0.1.4-SNAPSHOT"
 )
 
 ThisBuild / scalacOptions ++= Seq(
-    "-experimental",
-    "-deprecation",
-    "-feature",
-    "-explain",
+	"-experimental",
+	"-deprecation",
+	"-feature",
+	"-explain",
 )
+
+lazy val checked = (project in file("checked")).dependsOn(root)
+	.settings(
+		name := "checked",
+		idePackagePrefix := Some("readren.matrix")
+	)

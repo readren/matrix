@@ -19,7 +19,7 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 
 	/**
 	 * The array with all the [[MatrixAdmin]] instances of this [[Matrix]]. */
-	val matrixAdmins: IArray[MatrixAdmin] = {
+	private val matrixAdmins: IArray[MatrixAdmin] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
 		IArray.tabulate(availableProcessors) { index =>
 			val adminId = index + 1
@@ -51,4 +51,15 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		admin.Duty.mineFlat { () =>
 			spawner.createReactant[U](reactantFactory, initialBehaviorBuilder)
 		}
+
+	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
+		val receiver = new Receiver[A]{
+			override def submit(message: A): Unit = callback(message)
+			override def uri: _root_.java.net.URI = thisMatrix.uri
+		}
+		// TODO register the receiver in order to be accessible from remote JVMs.
+		new EndpointProvider[A](receiver)
+	}
+
+	def buildEndpoint[A](receiver: A => Unit): Endpoint[A] = buildEndpointProvider[A](receiver).local
 }
