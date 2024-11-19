@@ -1,8 +1,7 @@
+package readren.matrix
 package pruebas
 
-import readren.matrix.pruebas.Shared
-import readren.matrix.rf.RegularRf
-import readren.matrix.{CheckedBehavior, Continue, Endpoint, Matrix}
+import rf.RegularRf
 
 object PruebaChecked {
 
@@ -23,7 +22,7 @@ object PruebaChecked {
 		val matrix = new Matrix("testChecked", matrixAide)
 
 		matrix.spawn[Cmd](RegularRf) { parent =>
-			val cb: CheckedBehavior[Cmd, MyException, NeverException] =
+			val cb: CheckedBehavior[Cmd, MyException] =
 				CheckedBehavior.factory[Cmd, MyException, NeverException] {
 					case cmd: DoWork =>
 						if (cmd.integer % 5) >= 3 then throw new MyException
@@ -32,8 +31,8 @@ object PruebaChecked {
 					case Relax(replyTo) =>
 						replyTo.tell(Response(null))
 						Continue
-				} { signal => Continue }
-			CheckedBehavior.makeSafe(cb) { (m: MyException) => cb } { (s: NeverException) => cb }
+				}
+			CheckedBehavior.makeSafe(cb) { (m: MyException) => cb }
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>

@@ -26,7 +26,7 @@ class MsgHandlerExecutor(override protected val assistant: Doer.Assistant) exten
 		override protected def engage(onComplete: Try[HandleResult[M]] => Unit): Unit = {
 			ongoingExecutionsCounter += 1
 			val result =
-				try Success(behavior.handleMsg(message))
+				try Success(behavior.handle(message))
 				finally {
 					ongoingExecutionsCounter -= 1
 					queuedExecutionsCounter -= 1

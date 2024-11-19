@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.annotation.tailrec
 import scala.collection.MapView
 import scala.compiletime.uninitialized
+import scala.reflect.TypeTest
 
 object Reactant {
 	type SerialNumber = Int
@@ -31,7 +32,7 @@ abstract class Reactant[U](
 	progenitor: Spawner[MatrixAdmin],
 	override val admin: MatrixAdmin,
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
-) extends ReactantRelay[U] { thisReactant =>
+)(using isSignalTest: IsSignalTest[U]) extends ReactantRelay[U] { thisReactant =>
 
 	override protected val isMarkedToStop: AtomicBoolean = AtomicBoolean(false)
 	private val stopCovenant = new admin.Covenant[Unit]
@@ -67,7 +68,7 @@ abstract class Reactant[U](
 	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
 		admin.checkWithin()
 		currentBehavior = behaviorBuilder(thisReactant)
-		val handleResult = currentBehavior.handleSignal(if comesFromRestart then Restarted else Started)
+		val handleResult = handleSignal(if comesFromRestart then Restarted else Started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				inbox.setOwnerReadyToProcessState(true)
@@ -107,7 +108,7 @@ abstract class Reactant[U](
 
 		def restartMe(): admin.Duty[Unit] = {
 			// send RestartReceived signal
-			val hr = currentBehavior.handleSignal(RestartReceived)
+			val hr = handleSignal(RestartReceived)
 			mapHrToDecision(hr) match {
 				case ToContinue => selfStart(true, restartBehaviorBuilder)
 				case ToStop =>
@@ -143,7 +144,7 @@ abstract class Reactant[U](
 					// if a stop of this reactant is in progress, ignore the notification.
 					if thisReactant.isMarkedToStop.get then ()
 					else {
-						val hr = currentBehavior.handleSignal(ChildStopped(child.serial))
+						val hr = handleSignal(ChildStopped(child.serial))
 						mapHrToDecision(hr) match {
 							case ToContinue => ()
 							case ToStop => selfStop().triggerAndForget(true)
@@ -179,7 +180,7 @@ abstract class Reactant[U](
 		/** should be called within the [[admin]]. */
 		def stopMe(): admin.Duty[Unit] = {
 			// execute the signal handler and ignore its result
-			currentBehavior.handleSignal(StopReceived)
+			handleSignal(StopReceived)
 			// remove myself form progenitor children
 			progenitor.admin.Duty.mine { () => progenitor.removeChild(thisReactant.serial) }
 				.onBehalfOf(thisReactant.admin)
@@ -194,6 +195,16 @@ abstract class Reactant[U](
 			spawner.stopChildren().flatMap(_ => stopMe())
 		}
 	}
+
+	private def handleSignal(signal: Signal): HandleResult[U] = {
+		isSignalTest.unapply(signal) match {
+			case Some(value) =>
+				currentBehavior.handle(value)
+			case None =>
+				Continue
+		}
+	}
+	
 
 	private final def mapHrToDecision(hr: HandleResult[U]): Decision[U] = {
 		admin.checkWithin()
@@ -220,7 +231,7 @@ abstract class Reactant[U](
 	final def processMessages(firstMessage: U): Unit = {
 		admin.checkWithin()
 		
-		inline def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = mapHrToDecision(behavior.handleMsg(message))
+		inline def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = mapHrToDecision(behavior.handle(message))
 
 		/** should be called within the admin */
 		@tailrec

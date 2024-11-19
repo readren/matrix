@@ -1,7 +1,7 @@
 package readren.matrix
 package pruebas
 
-import rf.RegularRf
+import rf.{RegularRf, SynchronousMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
@@ -33,12 +33,12 @@ object PruebaConWatcher {
 
 
 		var totalFuture = Future.successful(())
-		for i <- 1 to 1 do {
+		for i <- 1 to 4 do {
 			totalFuture = totalFuture.flatMap { _ =>
 				println(s"loop #$i")
 				for {
 					_ <- run(RegularRf)
-					//					_ <- run(SynchronousMsgBufferRf)
+					_ <- run(SynchronousMsgBufferRf)
 				} yield ()
 			}
 		}
@@ -114,8 +114,6 @@ object PruebaConWatcher {
 							} else {
 								Stop
 							}
-						} {
-							signal => Continue
 						})
 					}.map { child =>
 						parent.admin.checkWithin()
@@ -125,7 +123,6 @@ object PruebaConWatcher {
 					}.trigger(true)(childEndPointReceiver)
 					Continue
 
-			} {
 				case ChildStopped(childSerial) =>
 					parent.admin.checkWithin()
 					outEndpoint.tell(ChildWasStopped(childSerial))
@@ -136,7 +133,7 @@ object PruebaConWatcher {
 						// println(s"Child $childSerial stopped. Active children: ${parent.children.size}")
 						Continue
 					}
-				case s =>
+				case s: Signal =>
 					println(s"Received signal: $s")
 					Continue
 			}

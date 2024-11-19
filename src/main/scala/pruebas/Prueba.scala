@@ -59,7 +59,7 @@ object Prueba {
 
 		var printer: Future[Unit] = Future.successful(())
 		val numberOfStringBuilders = numberOfChildren
-		val sbs: Array[StringBuilder] = Array.fill(numberOfStringBuilders)(new StringBuilder(9999))
+		val sbs: Array[StringBuilder] = Array.fill(numberOfStringBuilders)(new StringBuilder(99999))
 
 		// SynchronousMsgBufferRf
 		val nanoAtStart = System.nanoTime()
@@ -100,8 +100,7 @@ object Prueba {
 			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			var childrenCount = 0
 			var childrenIndexSeq = 0
-			Behavior.fusion {
-
+			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
 					parent.spawn[Int](reactantFactory) { child =>
@@ -117,8 +116,6 @@ object Prueba {
 								parentEndpointForChild.tell(ChildWasStopped(childIndex))
 								Stop
 							}
-						} {
-							signal => Continue
 						}
 					}.map { child =>
 						parent.admin.checkWithin()
@@ -141,11 +138,7 @@ object Prueba {
 						Continue
 					}
 
-			}(Behavior.handleSignal { s =>
-				parent.admin.checkWithin()
-				// println(s"Parent has received the signal: $s")
-				Continue
-			})
+			}
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local[Spawn]
 			csb.append("Parent started\n")
