@@ -5,13 +5,15 @@ import readren.taskflow.Maybe
 
 import java.net.URI
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
+import scala.collection.AbstractIterator
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
 class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] {
 	private val queue = new ConcurrentLinkedQueue[M]()
-	private val ownerIsReadyToProcess: AtomicBoolean = new AtomicBoolean(false)
+
+	/** This mark is necessary because [[ConcurrentLinkedQueue.isEmpty]] may return true after calling [[ConcurrentLinkedQueue.offer]], and we need to be sure if a message maybe pending. */
+	@volatile private var aMsgWasSubmitted: Boolean = false
 
 	override val uri: URI = {
 		val mu = owner.admin.matrix.uri
@@ -19,17 +21,32 @@ class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	}
 
 	override def submit(message: M): Unit = {
-		if ownerIsReadyToProcess.getAndSet(false) then owner.admin.queueForSequentialExecution(owner.processMessages(message))
-		else queue.offer(message)
+		aMsgWasSubmitted = true
+		queue.offer(message)
+		owner.thereIsAPendingMsg()
 	}
 
-	override def setOwnerReadyToProcessState(newState: Boolean): Unit = ownerIsReadyToProcess.set(newState)
-
 	override def withdraw(): Maybe[M] = {
+		aMsgWasSubmitted = false
 		Maybe.apply(queue.poll())
 	}
 
-	override def nonEmpty: Boolean = {
-		!queue.isEmpty
+	override def maybeNonEmpty: Boolean = {
+		if aMsgWasSubmitted then {
+			aMsgWasSubmitted = false
+			true
+		} else !queue.isEmpty 
+	}
+
+	override def size: Int = {
+		queue.size()
+	}
+	
+	override def iterator: Iterator[M] = new AbstractIterator[M] {
+		private val javaIterator = queue.iterator()
+
+		override def hasNext: Boolean = javaIterator.hasNext
+
+		override def next(): M = javaIterator.next()
 	}
 }

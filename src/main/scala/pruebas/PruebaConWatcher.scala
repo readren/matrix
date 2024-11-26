@@ -1,7 +1,7 @@
 package readren.matrix
 package pruebas
 
-import rf.{RegularRf, SynchronousMsgBufferRf}
+import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
@@ -38,7 +38,7 @@ object PruebaConWatcher {
 				println(s"loop #$i")
 				for {
 					_ <- run(RegularRf)
-					_ <- run(SynchronousMsgBufferRf)
+					_ <- run(SequentialMsgBufferRf)
 				} yield ()
 			}
 		}
@@ -50,7 +50,7 @@ object PruebaConWatcher {
 	def run(reactantFactory: ReactantFactory): Future[Unit] = {
 		val csb: StringBuffer = new StringBuffer(2048)
 
-		val matrixAide = new Shared.MatrixAide
+		val matrixAide = new Shared.MatrixAide()
 		val matrix = new Matrix("myMatrix", matrixAide)
 		csb.append("Matrix created\n")
 

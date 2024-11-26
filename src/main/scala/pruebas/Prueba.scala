@@ -1,18 +1,19 @@
 package readren.matrix
 package pruebas
 
-import rf.{RegularRf, SynchronousMsgBufferRf}
+import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
+import scala.util.Success
 
 object Prueba {
 
 	sealed trait Answer
 
-	case class Response(adminId: Int, childIndex: Int, text: String) extends Answer
+	case class Response(admin: MatrixAdmin, childIndex: Int, text: String) extends Answer
 
 	case object End extends Answer
 
@@ -25,34 +26,44 @@ object Prueba {
 
 	case class SpawnResponse(endpoint: Endpoint[String])
 
-	val numberOfChildren = 1000
-	val numberOfMessagesPerChild = 1000
+	val numberOfChildren = 10000
+	val numberOfMessagesPerChild = 100
 
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
-
-		var totalFuture = Future.successful(())
-		for i <- 1 to 10 do {
-			totalFuture = totalFuture.flatMap { _ =>
+		val numberOfWarmUpRepetitions = 10
+		val numberOfMeasuredOfRepetitions = 40
+		var totalFuture = Future.successful[(Long, Long)]((0L, 0L))
+		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
+			totalFuture = totalFuture.flatMap { durationAccumulator =>
 				println(s"loop #$i")
 				for {
-					_ <- runPrueba(RegularRf)
-					_ <- runPrueba(SynchronousMsgBufferRf)
-				} yield ()
+					regularRfDuration <- runPrueba(RegularRf, i)
+					sequentialMsgBufferDuration <- runPrueba(SequentialMsgBufferRf, i)
+				} yield {
+					if i <= numberOfWarmUpRepetitions then durationAccumulator
+					else (durationAccumulator._1 + regularRfDuration, durationAccumulator._2 + sequentialMsgBufferDuration)
+				}
 			}
 		}
-		totalFuture.andThen(x => println(s"All matrix were shutdown returning: $x\nPress <enter> to exit"))
+		totalFuture.andThen { case Success(totalDuration) =>
+			println(
+				s"""All matrix were shutdown
+				   |Average duration: regularRf-> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, sequentialMsgBufferRfTotalDuration-> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
+				   |Press <enter> to exit""".stripMargin
+			)
+		}
 
 		StdIn.readLine()
+		println("Key caught. Main thread is ending.")
 	}
 
-	def runPrueba(reactantFactory: ReactantFactory): Future[Unit] = {
-		val csb: StringBuffer = new StringBuffer(99999)
+	def runPrueba(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 
-		val matrixAide = new Shared.MatrixAide
+		val matrixAide = new Shared.MatrixAide(true, s"loop: $loopId, factory: ${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", matrixAide)
-		csb.append("Matrix created\n")
+		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}\n")
 
 
 		val counter: AtomicInteger = new AtomicInteger(0)
@@ -61,26 +72,35 @@ object Prueba {
 		val numberOfStringBuilders = numberOfChildren
 		val sbs: Array[StringBuilder] = Array.fill(numberOfStringBuilders)(new StringBuilder(99999))
 
-		// SynchronousMsgBufferRf
+		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
-			case message: Response =>
+			case response: Response =>
+				response.admin.checkWithin()
 				val counterValue = counter.incrementAndGet()
-				sbs(message.childIndex).append(f"($counterValue%6d)-${message.text}; ")
+				val childSb = sbs(response.childIndex)
+				childSb.append(f"($counterValue%6d)-${response.text}; ")
 
+				if false then {
+					println(f"${response.childIndex}%3d: $childSb)")
+				}
 				if false then {
 					val lsb = new StringBuilder(99999)
 					lsb.append("\n>>>>>>>>>>>>>")
 					for i <- 0 until numberOfStringBuilders if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
-					lsb.append("\n------------")
+					lsb.append("\n<<<<<<<<<<<<<")
 					printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
 				}
 
-			case ChildWasStopped(childSerial) =>
-				sbs(childSerial).append(f"(${counter.get()}%6d) <| Stopped; ")
+			case ChildWasStopped(childIndex) =>
+				val childSb = sbs(childIndex)
+				childSb.append(f"(${counter.get()}%6d) <| Stopped; ")
+				if false then {
+					println(f"${childIndex}%3d: $childSb)")
+				}
 
 			case End =>
-				val nanoAtEnd = System.nanoTime()
+				nanoAtEnd = System.nanoTime()
 				val lsb = new StringBuilder(999999)
 				lsb.append(s"\n+++ Total number of non-negative numbers sent to children: ${counter.get()} +++\n")
 				lsb.append(s"\n+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++\n")
@@ -93,24 +113,24 @@ object Prueba {
 				println(lsb)
 		}
 
-		val result = Promise[Unit]
+		val result = Promise[Long]
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
 			parent.admin.checkWithin()
 			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			var childrenCount = 0
-			var childrenIndexSeq = 0
+			val childrenIndexSeq: AtomicInteger = new AtomicInteger(0)
 			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
 					parent.spawn[Int](reactantFactory) { child =>
-						val childIndex = childrenIndexSeq
-						childrenIndexSeq += 1
 						child.admin.checkWithin()
+						val childIndex = childrenIndexSeq.getAndIncrement()
+
 						Behavior.factory { (n: Int) =>
 							child.admin.checkWithin()
 							if n >= 0 then {
-								replyTo.tell(Response(child.admin.id, childIndex, f"${child.serial}%3d <=$n%3d"))
+								replyTo.tell(Response(child.admin, childIndex, f"${child.serial}%4d <=$n%d"))
 								Continue
 							} else {
 								parentEndpointForChild.tell(ChildWasStopped(childIndex))
@@ -140,7 +160,10 @@ object Prueba {
 
 			}
 		}.trigger() { parent =>
+			matrix.admin.checkWithin()
 			val parentEndpoint = parent.endpointProvider.local[Spawn]
+
+			val csb: StringBuffer = new StringBuffer(9999)
 			csb.append("Parent started\n")
 			val futures = for j <- 0 until numberOfChildren yield Future {
 				csb.append(s"Future $j begin: ")
@@ -150,7 +173,7 @@ object Prueba {
 						childEndpoint.tell(-1)
 					}(ExecutionContext.global),
 					outEndpoint
-					))
+				))
 				csb.append(s"Future $j end. ")
 			}(ExecutionContext.global)
 			if false then {
@@ -158,10 +181,29 @@ object Prueba {
 					println(s"\nFutures completed: csb=[${csb.toString}]")
 				}(ExecutionContext.global)
 			}
+			if true then {
+				matrixAide.addMonitor(() => {
+					parent.admin.Duty.mineFlat { () =>
+						val childrenDiagnosticsDuties = parent.children.values.map(child => {
+							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.admin)
+						})
+						val childrenDiagnostics: parent.admin.Duty[Array[String]] = parent.admin.Duty.sequenceToArray(childrenDiagnosticsDuties)
+						for {
+							parentDiagnostic <- parent.diagnose
+							childrenDiagnostic <- childrenDiagnostics
+						} yield
+							s"""
+							   |Parent's diagnostic: $parentDiagnostic
+							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}""".stripMargin
+					}.trigger()(println)
+				})
+			}
+
 			parent.stopDuty.trigger() { _ =>
+				println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
 				matrixAide.shutdown().thenRun { () =>
 					println("Shutdown completed normally")
-					result.success(())
+					result.success(nanoAtEnd - nanoAtStart)
 				}
 			}
 		}

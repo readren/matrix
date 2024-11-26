@@ -3,7 +3,7 @@ package readren.matrix
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.MapView
 
-trait ReactantRelay[-U] {
+abstract class ReactantRelay[-U] {
 
 	/** thread-safe */
 	val serial: Reactant.SerialNumber
@@ -15,12 +15,8 @@ trait ReactantRelay[-U] {
 	val path: String
 
 	
-	/** Tells if this [[Reactant]] was marked to be stopped.
-	 * CAUTION: Should never be true when [[isReadyToProcessAMsg]] is true. [[isReadyToProcessAMsg]] should be set to false before setting this member to true. */
-	protected val isMarkedToStop: AtomicBoolean
-
 	/** Tells if this [[Reactant]] was marked to be stopped. */
-	inline def isBeingStopped: Boolean = isMarkedToStop.get
+	def isBeingStopped: Boolean
 	
 	/** Should be called withing the [[admin]]. */
 	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]): admin.Duty[ReactantRelay[A]]
@@ -44,5 +40,7 @@ trait ReactantRelay[-U] {
 	 * Should be called within the [[admin]].
 	 * @return true if the registering is made, and false if the child is already fully stopped or does not exist. */
 	def watch(childSerial: Reactant.SerialNumber): Boolean
-	
+
+	/** Returns debug info about this reactant. */
+	def diagnose: admin.Duty[ReactantDiagnostic]
 }

@@ -6,18 +6,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.annotation.tailrec
 import scala.collection.MapView
 import scala.compiletime.uninitialized
-import scala.reflect.TypeTest
 
 object Reactant {
 	type SerialNumber = Int
 
 	private sealed trait Decision[+U]
 
-	private case object ToContinue extends Decision[Nothing]
+	private object ToContinue extends Decision[Nothing]
 
-	private case class ToRestart[U](stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]) extends Decision[U]
+	private class ToRestart[U](val stopChildren: Boolean, val restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]) extends Decision[U]
 
-	private case object ToStop extends Decision[Nothing]
+	private object ToStop extends Decision[Nothing]
 }
 
 import Reactant.*
@@ -34,7 +33,22 @@ abstract class Reactant[U](
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 )(using isSignalTest: IsSignalTest[U]) extends ReactantRelay[U] { thisReactant =>
 
-	override protected val isMarkedToStop: AtomicBoolean = AtomicBoolean(false)
+	/**
+	 * The mutations should be atomic from the viewpoint of this [[Reactant]].
+	 * The initial state should be `false` (not ready). */
+	private val isReadyToProcessMsg: AtomicBoolean = new AtomicBoolean(false)
+
+	/** Tells if this [[Reactant]] was marked to be stopped.
+	 * Is set to true by the [[Reactant.stop]] method which can be called at any moment.
+	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected). */
+	@volatile private var isMarkedToStop: Boolean = false
+	
+	/** Tells if the stop process was already started.
+	 * Is set to true by the [[Reactant.selfStop]] method which is called withing the [[admin]].
+	 * While it is true no more pending messages will be processed.
+	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected). */
+	private var stopWasStarted = false;
+	
 	private val stopCovenant = new admin.Covenant[Unit]
 
 	private var oSpawner: Maybe[Spawner[admin.type]] = Maybe.empty
@@ -71,9 +85,7 @@ abstract class Reactant[U](
 		val handleResult = handleSignal(if comesFromRestart then Restarted else Started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
-				inbox.setOwnerReadyToProcessState(true)
-				// the order of the previous and next line is important
-				inbox.withdraw().foreach(processMessages)
+				if !stopWasStarted then beReadyToProcess()
 				admin.dutyReadyUnit
 			case ToStop =>
 				selfStop()
@@ -134,6 +146,8 @@ abstract class Reactant[U](
 		} else restartMe()
 	}
 
+	override def isBeingStopped: Boolean = isMarkedToStop 
+	
 	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
 
 	def watch(childSerial: SerialNumber): Boolean = {
@@ -141,8 +155,8 @@ abstract class Reactant[U](
 		oSpawner.fold(false) { spawner =>
 			Maybe(spawner.childrenView.getOrElse(childSerial, null)).fold(false) { child =>
 				child.stopDuty.onBehalfOf(admin).foreach { _ =>
-					// if a stop of this reactant is in progress, ignore the notification.
-					if thisReactant.isMarkedToStop.get then ()
+					// if a stop of this reactant is in progress, ignore the notification. // TODO why? Shouldn't be fully stopped to ignore the child stopped signal?
+					if thisReactant.stopWasStarted then ()
 					else {
 						val hr = handleSignal(ChildStopped(child.serial))
 						mapHrToDecision(hr) match {
@@ -159,20 +173,23 @@ abstract class Reactant[U](
 
 	/**
 	 * Instructs to stop this [[Reactant]].
-	 * Supports being called at any moment.
-	 * If this covenant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
+	 * Supports being called at any moment and many times.
+	 * If this reactant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
 	 * thread-safe
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	override final def stop(): admin.Duty[Unit] = {
-		inbox.setOwnerReadyToProcessState(false)
 		// the order of the previous and next line is important.
-		if isMarkedToStop.getAndSet(true) then stopCovenant.duty
-		else admin.Duty.mineFlat { () => selfStop() }
+		if isMarkedToStop then stopCovenant.duty
+		else {
+			isMarkedToStop = true
+			admin.Duty.mineFlat { () => selfStop() }
+		}
 	}
 
 	/**
 	 * Stops this [[Reactant]].
 	 * Should be called within the [[admin]].
+	 * Supports being called more than one time.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	private final def selfStop(): admin.Duty[Unit] = {
 		admin.checkWithin()
@@ -189,10 +206,12 @@ abstract class Reactant[U](
 			// TODO notify parent
 		}
 
-		inbox.setOwnerReadyToProcessState(false)
-		isMarkedToStop.set(true) // TODO  es necesaria esta linea?
-		oSpawner.fold(stopMe()) { spawner =>
-			spawner.stopChildren().flatMap(_ => stopMe())
+		if stopWasStarted then stopCovenant.duty else {
+			stopWasStarted = true
+			isReadyToProcessMsg.set(false)
+			oSpawner.fold(stopMe()) { spawner =>
+				spawner.stopChildren().flatMap(_ => stopMe())
+			}
 		}
 	}
 
@@ -226,21 +245,54 @@ abstract class Reactant[U](
 		}
 	}
 
-	/** Process the received message and all the pending messages queue in the [[Reactant.inbox]]
-	 * Should be called within the [[admin]]. */
-	final def processMessages(firstMessage: U): Unit = {
+	@tailrec
+	private def beReadyToProcess(): Unit = {
+		assert(!stopWasStarted)
 		admin.checkWithin()
-		
+		isReadyToProcessMsg.set(true)
+		if inbox.maybeNonEmpty && isReadyToProcessMsg.getAndSet(false) then {
+			inbox.withdraw().fold {
+				if !stopWasStarted then beReadyToProcess()
+			}(processMessages)
+		}
+	}
+
+	/** Informs this [[Reactant]] that its [[Inbox]] contains a pending message in order to stimulate its processing.
+	 * This method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[admin]] of this reactant).
+	 * Is thread-safe. */
+	final def thereIsAPendingMsg(): Unit = {
+		if isReadyToProcessMsg.getAndSet(false) then admin.queueForSequentialExecution {
+			inbox.withdraw().fold {
+				if !stopWasStarted then beReadyToProcess()
+			} (processMessages)
+		}
+	}
+	
+	/** Stimulates the processing of pending messages starting with the received one.
+	 * This method is designed for implementations of the [[Receiver]] which queue messages within the [[admin]] of this reactant.
+	 * Should be called within the [[admin]] only.
+	 * @param firstMsg the message received while the inbox was empty.
+	 * @return true if the received message was not processed and should be queued in the inbox; false if it was processed. */
+	final def onInboxNotEmpty(firstMsg: U): Boolean = {
+		if isReadyToProcessMsg.getAndSet(false) then {
+			processMessages(firstMsg)
+			false
+		} else true 
+	}
+
+	/** Process the received message and all the pending messages queue in the [[Reactant.inbox]]
+	 * Should be called within the admin */
+	private final def processMessages(firstMessage: U): Unit = {
+		admin.checkWithin()
+
 		inline def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = mapHrToDecision(behavior.handle(message))
 
-		/** should be called within the admin */
 		@tailrec
-		def processNextPendingMessages(): Decision[U] = {
-			admin.checkWithin()
+		def processPendingMessages(): Decision[U] = {
 			inbox.withdraw().fold(ToContinue) { message =>
 				val decision = handleMsg(message, currentBehavior)
-				if isMarkedToStop.get then ToStop
-				else if decision eq ToContinue then processNextPendingMessages()
+				if isMarkedToStop then ToStop
+				else if decision eq ToContinue then processPendingMessages()
 				else decision
 			}
 		}
@@ -248,13 +300,19 @@ abstract class Reactant[U](
 		// First line of the outer method.
 		val firstDecision = handleMsg(firstMessage, currentBehavior)
 		val finalDecision =
-			if isMarkedToStop.get then ToStop
-			else if firstDecision eq ToContinue then processNextPendingMessages()
+			if isMarkedToStop then ToStop
+			else if firstDecision eq ToContinue then processPendingMessages()
 			else firstDecision
 		finalDecision match {
-			case ToContinue => inbox.setOwnerReadyToProcessState(true)
+			case ToContinue => beReadyToProcess()
 			case ToStop => selfStop().triggerAndForget(true)
 			case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 		}
 	}
+
+
+	override def diagnose: admin.Duty[ReactantDiagnostic] =
+		admin.Duty.mine { () =>
+			ReactantDiagnostic(thisReactant.isReadyToProcessMsg.get, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.maybeNonEmpty, inbox.size, inbox.iterator)
+		}
 }

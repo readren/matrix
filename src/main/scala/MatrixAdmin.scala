@@ -1,6 +1,6 @@
 package readren.matrix
 
-import readren.taskflow.Doer
+import readren.taskflow.{AbstractDoer, Doer}
 
 object MatrixAdmin {
 
@@ -18,7 +18,7 @@ object MatrixAdmin {
 	}
 }
 
-class MatrixAdmin(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) extends Doer {
+class MatrixAdmin(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) extends AbstractDoer {
 
 	override protected val assistant: Doer.Assistant = {
 		if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
@@ -43,13 +43,6 @@ class MatrixAdmin(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) 
 		inline if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
 			val idOnThread = MatrixAdmin.adminIdThreadLocal.get()
 			assert(idOnThread == id, s"expected=$id, onThread=$idOnThread")
-		}
-	}
-
-	inline def checkOutside(): Unit = {
-		inline if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
-			val idOnThread = MatrixAdmin.adminIdThreadLocal.get()
-			assert(idOnThread <= 0, s"expected<=0, onThread=$idOnThread")
 		}
 	}
 }

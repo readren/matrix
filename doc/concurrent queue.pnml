@@ -1,0 +1,462 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<pnml>
+  <net type="http://www.yasper.org/specs/epnml-1.1" id="do1">
+    <name>
+      <text>main</text>
+    </name>
+    <toolspecific tool="Yasper" version="1.2.4020.34351">
+      <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+        <role id="rl1">
+          <name>
+            <text>admin</text>
+          </name>
+          <actor />
+        </role>
+        <role id="rl2">
+          <name>
+            <text>other</text>
+          </name>
+          <actor />
+          <actor />
+          <actor />
+          <actor />
+        </role>
+        <role id="rl3">
+          <name>
+            <text>system</text>
+          </name>
+          <actor />
+        </role>
+      </roles>
+    </toolspecific>
+    <transition id="tr9">
+      <name>
+        <text>set ready</text>
+      </name>
+      <graphics>
+        <position x="627" y="33" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl1" />
+        </roles>
+      </toolspecific>
+    </transition>
+    <transition id="tr10">
+      <name>
+        <text>clear ready</text>
+      </name>
+      <graphics>
+        <position x="726" y="330" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl2" />
+        </roles>
+      </toolspecific>
+    </transition>
+    <transition id="tr17">
+      <name>
+        <text>enqueue task "process messages"</text>
+      </name>
+      <graphics>
+        <position x="429" y="429" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl3" />
+        </roles>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>10</text>
+          </mean>
+          <deviation>
+            <text>5</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr1">
+      <name>
+        <text>start enqueue of msg</text>
+      </name>
+      <graphics>
+        <position x="132" y="528" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl2" />
+        </roles>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>10</text>
+          </mean>
+          <deviation>
+            <text>5</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr2">
+      <name>
+        <text>process messages</text>
+      </name>
+      <graphics>
+        <position x="132" y="33" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl1" />
+        </roles>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>40</text>
+          </mean>
+          <deviation>
+            <text>38</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr3">
+      <name>
+        <text>submit message</text>
+      </name>
+      <graphics>
+        <position x="231" y="627" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <emitor xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </emitor>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>1</text>
+          </mean>
+          <deviation>
+            <text>0</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr4">
+      <graphics>
+        <position x="726" y="132" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr12">
+      <name>
+        <text>clear ready and direct to process messages</text>
+      </name>
+      <graphics>
+        <position x="429" y="330" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl1" />
+        </roles>
+      </toolspecific>
+    </transition>
+    <transition id="tr7">
+      <name>
+        <text>join</text>
+      </name>
+      <graphics>
+        <position x="231" y="330" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <type>
+        <text>XOR</text>
+      </type>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl1" />
+        </roles>
+        <connectionWeights xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
+      </toolspecific>
+    </transition>
+    <transition id="tr13">
+      <name>
+        <text>check if there are pending msgs</text>
+      </name>
+      <graphics>
+        <position x="429" y="132" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <type>
+        <text>XOR</text>
+      </type>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl1" />
+        </roles>
+        <connectionWeights xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
+      </toolspecific>
+    </transition>
+    <transition id="tr6">
+      <graphics>
+        <position x="330" y="231" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr8">
+      <name>
+        <text>stop reactant</text>
+      </name>
+      <graphics>
+        <position x="726" y="561" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <emitor xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </emitor>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>1</text>
+          </mean>
+          <deviation>
+            <text>0</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr16">
+      <name>
+        <text>check if reactant is ready</text>
+      </name>
+      <graphics>
+        <position x="627" y="429" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <role ref="rl2" />
+        </roles>
+      </toolspecific>
+    </transition>
+    <transition id="tr15">
+      <graphics>
+        <position x="627" y="627" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr5">
+      <name>
+        <text>complete enqueue of msg</text>
+      </name>
+      <graphics>
+        <position x="132" y="330" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <place id="pl11">
+      <name>
+        <text>reactant is ready to process</text>
+      </name>
+      <graphics>
+        <position x="627" y="330" />
+        <dimension x="20" y="20" />
+      </graphics>
+      <initialMarking>
+        <text>1</text>
+      </initialMarking>
+    </place>
+    <place id="pl13">
+      <name>
+        <text>pending messages</text>
+      </name>
+      <graphics>
+        <position x="132" y="165" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl16">
+      <name>
+        <text>pos task enqueued</text>
+      </name>
+      <graphics>
+        <position x="231" y="429" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl1">
+      <name>
+        <text>pre enqueue message</text>
+      </name>
+      <graphics>
+        <position x="132" y="627" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl2">
+      <name>
+        <text>pre set ready</text>
+      </name>
+      <graphics>
+        <position x="330" y="33" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl6">
+      <name>
+        <text>pre stop</text>
+      </name>
+      <graphics>
+        <position x="726" y="462" />
+        <dimension x="20" y="20" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <tokenCaseSensitive xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </tokenCaseSensitive>
+      </toolspecific>
+    </place>
+    <place id="pl7">
+      <name>
+        <text>stopped</text>
+      </name>
+      <graphics>
+        <position x="726" y="231" />
+        <dimension x="20" y="20" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <tokenCaseSensitive xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </tokenCaseSensitive>
+      </toolspecific>
+    </place>
+    <place id="pl4">
+      <name>
+        <text>pre check if there are pending msgs</text>
+      </name>
+      <graphics>
+        <position x="528" y="132" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl8">
+      <name>
+        <text>there are pending msgs</text>
+      </name>
+      <graphics>
+        <position x="429" y="231" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl12">
+      <name>
+        <text>have to process messages</text>
+      </name>
+      <graphics>
+        <position x="330" y="330" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl14">
+      <name>
+        <text>pre process msgs</text>
+      </name>
+      <graphics>
+        <position x="231" y="132" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl9">
+      <name>
+        <text>there are no pending msgs</text>
+      </name>
+      <graphics>
+        <position x="330" y="132" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl19">
+      <name>
+        <text>pre check if reactant is idle</text>
+      </name>
+      <graphics>
+        <position x="627" y="528" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl20">
+      <name>
+        <text>pre enqueue task "process messages"</text>
+      </name>
+      <graphics>
+        <position x="528" y="429" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl3">
+      <name>
+        <text>enqueuing msg</text>
+      </name>
+      <graphics>
+        <position x="132" y="429" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <arc id="a5" source="tr9" target="pl11" />
+    <arc id="a13" source="pl11" target="tr10" />
+    <arc id="a17" source="tr17" target="pl16" />
+    <arc id="a18" source="pl1" target="tr1" />
+    <arc id="a27" source="tr2" target="pl13">
+      <type>
+        <text>reset</text>
+      </type>
+    </arc>
+    <arc id="a35" source="tr2" target="pl2" />
+    <arc id="a36" source="pl2" target="tr9" />
+    <arc id="a37" source="pl6" target="tr10" />
+    <arc id="a38" source="tr10" target="pl7" />
+    <arc id="a39" source="pl7" target="tr4" />
+    <arc id="a40" source="tr9" target="pl4" />
+    <arc id="a41" source="pl8" target="tr12" />
+    <arc id="a42" source="pl11" target="tr12" />
+    <arc id="a43" source="tr12" target="pl12" />
+    <arc id="a44" source="tr7" target="pl14" />
+    <arc id="a45" source="pl14" target="tr2" />
+    <arc id="a46" source="pl16" target="tr7" />
+    <arc id="a47" source="pl4" target="tr13" />
+    <arc id="a48" source="tr13" target="pl8" />
+    <arc id="a49" source="tr13" target="pl9" />
+    <arc id="a50" source="pl9" target="tr6" />
+    <arc id="a51" source="tr8" target="pl6" />
+    <arc id="a52" source="tr3" target="pl1" />
+    <arc id="a53" source="tr1" target="pl19" />
+    <arc id="a54" source="pl19" target="tr16" />
+    <arc id="a55" source="pl11" target="tr16" />
+    <arc id="a56" source="tr16" target="pl20" />
+    <arc id="a57" source="pl20" target="tr17" />
+    <arc id="a58" source="pl19" target="tr15" />
+    <arc id="a59" source="pl12" target="tr7" />
+    <arc id="a60" source="tr1" target="pl3" />
+    <arc id="a61" source="pl3" target="tr5" />
+    <arc id="a62" source="tr5" target="pl13" />
+  </net>
+</pnml>
