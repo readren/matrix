@@ -2,7 +2,6 @@ package readren.matrix
 
 import readren.taskflow.Maybe
 
-import java.util.concurrent.atomic.AtomicBoolean
 import scala.annotation.tailrec
 import scala.collection.MapView
 import scala.compiletime.uninitialized
@@ -34,21 +33,30 @@ abstract class Reactant[U](
 )(using isSignalTest: IsSignalTest[U]) extends ReactantRelay[U] { thisReactant =>
 
 	/**
-	 * The mutations should be atomic from the viewpoint of this [[Reactant]].
-	 * The initial state should be `false` (not ready). */
-	private val isReadyToProcessMsg: AtomicBoolean = new AtomicBoolean(false)
+	 * The initial state is `false` (not ready).
+	 * Is set to `true` after consuming all the pending messages (of this reactant's [[Inbox]]) if the result of [[Behavior.handle]] for the last message returned [[Continue]] or [[ContinueWith]]; and the stop process was not started (e.g. the [[stopWasStarted]] is false).
+	 * Is set to `false` when [[stopWasStarted]] is set to `true` or after [[onInboxBecomesNonempty]] is called.
+	 * Its purpose is to avoid consuming messages while this [[Reactant]] is starting, restarting, or stopping.
+	 * It is set to true only by the [[beReadyToProcess()]] method, which ensures all pending messages are processed before the transition to `true`.
+	 * This flag should be the only one that determines when "inbox becomes nonempty" notifications (calls to [[onInboxBecomesNonempty]]) are ignored in order to compensate the ignored notifications when it is set to `true`.
+	 * Should be accessed within the [[admin]].
+	 **/
+	private var isReadyToProcessMsg: Boolean = false
 
 	/** Tells if this [[Reactant]] was marked to be stopped.
-	 * Is set to true by the [[Reactant.stop]] method which can be called at any moment.
-	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected). */
+	 * Is set to true by the [[Reactant.stop]] method which can be called at any moment .
+	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected).
+	 * It is volatile to achieve its only purpose: to avoid processing the next pending messages after [[stop]] was called from outside the [[admin]] thread; otherwise the [[stopWasStarted]] would be sufficient. */
 	@volatile private var isMarkedToStop: Boolean = false
-	
+
 	/** Tells if the stop process was already started.
 	 * Is set to true by the [[Reactant.selfStop]] method which is called withing the [[admin]].
-	 * While it is true no more pending messages will be processed.
-	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected). */
+	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected).
+	 * Its purpose is to avoid the [[processMessages()]] be called after the stop process has started.
+	 * Should be accessed within the [[admin]] only.
+	 * */
 	private var stopWasStarted = false;
-	
+
 	private val stopCovenant = new admin.Covenant[Unit]
 
 	private var oSpawner: Maybe[Spawner[admin.type]] = Maybe.empty
@@ -146,8 +154,8 @@ abstract class Reactant[U](
 		} else restartMe()
 	}
 
-	override def isBeingStopped: Boolean = isMarkedToStop 
-	
+	override def isBeingStopped: Boolean = isMarkedToStop
+
 	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
 
 	def watch(childSerial: SerialNumber): Boolean = {
@@ -178,8 +186,8 @@ abstract class Reactant[U](
 	 * thread-safe
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	override final def stop(): admin.Duty[Unit] = {
-		// the order of the previous and next line is important.
 		if isMarkedToStop then stopCovenant.duty
+		// Note that if [[stop]] is called simultaneously from many threads, the else branch might be executed more than once, but that is not harmful because [[selfStrop]] discards the repetitions. As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		else {
 			isMarkedToStop = true
 			admin.Duty.mineFlat { () => selfStop() }
@@ -208,7 +216,7 @@ abstract class Reactant[U](
 
 		if stopWasStarted then stopCovenant.duty else {
 			stopWasStarted = true
-			isReadyToProcessMsg.set(false)
+			isReadyToProcessMsg = false
 			oSpawner.fold(stopMe()) { spawner =>
 				spawner.stopChildren().flatMap(_ => stopMe())
 			}
@@ -223,7 +231,7 @@ abstract class Reactant[U](
 				Continue
 		}
 	}
-	
+
 
 	private final def mapHrToDecision(hr: HandleResult[U]): Decision[U] = {
 		admin.checkWithin()
@@ -245,39 +253,44 @@ abstract class Reactant[U](
 		}
 	}
 
-	@tailrec
+	/** Sets the "ready to process messages" flag of this reactant after processing all messages that were submitted to the [[Receiver]] but are not jet visible in the [[Inbox]].
+	 * This is the only method that sets the [[isReadyToProcessMsg]] flag to true.
+	 * Since the "inbox becomes nonempty" notifications from the [[Receiver]] are ignored while its value was false, the transition to `true` should be done after ensuring all pending messages were processed.
+	 * Should be called withing the [[admin]] only. */
 	private def beReadyToProcess(): Unit = {
-		assert(!stopWasStarted)
 		admin.checkWithin()
-		isReadyToProcessMsg.set(true)
-		if inbox.maybeNonEmpty && isReadyToProcessMsg.getAndSet(false) then {
-			inbox.withdraw().fold {
-				if !stopWasStarted then beReadyToProcess()
-			}(processMessages)
+		assert(!stopWasStarted && !isReadyToProcessMsg)
+		if inbox.maybeNonEmpty then admin.queueForSequentialExecution {
+			if !stopWasStarted then {
+				inbox.withdraw().fold(beReadyToProcess())(processMessages)
+			}
+		} else isReadyToProcessMsg = true
+	}
+
+	/** Should be called by the [[Receiver]] whenever it receives a message while the [[Inbox]] is empty.
+	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[admin]] of this reactant).
+	 * Should be called within the [[admin]] only.
+	 *  */
+	final def onInboxBecomesNonempty(): Unit = {
+		admin.checkWithin()
+		if isReadyToProcessMsg then {
+			isReadyToProcessMsg = false
+			inbox.withdraw().fold(beReadyToProcess())(processMessages)
 		}
 	}
 
-	/** Informs this [[Reactant]] that its [[Inbox]] contains a pending message in order to stimulate its processing.
-	 * This method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[admin]] of this reactant).
-	 * Is thread-safe. */
-	final def thereIsAPendingMsg(): Unit = {
-		if isReadyToProcessMsg.getAndSet(false) then admin.queueForSequentialExecution {
-			inbox.withdraw().fold {
-				if !stopWasStarted then beReadyToProcess()
-			} (processMessages)
-		}
-	}
-	
-	/** Stimulates the processing of pending messages starting with the received one.
-	 * This method is designed for implementations of the [[Receiver]] which queue messages within the [[admin]] of this reactant.
+	/** Should be called by the [[Receiver]] whenever it receives a message while the [[Inbox]] is empty.
+	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages within the [[admin]] of this reactant.
 	 * Should be called within the [[admin]] only.
 	 * @param firstMsg the message received while the inbox was empty.
 	 * @return true if the received message was not processed and should be queued in the inbox; false if it was processed. */
-	final def onInboxNotEmpty(firstMsg: U): Boolean = {
-		if isReadyToProcessMsg.getAndSet(false) then {
+	final def onInboxBecomesNonempty(firstMsg: U): Boolean = {
+		admin.checkWithin()
+		if isReadyToProcessMsg then {
+			isReadyToProcessMsg = false
 			processMessages(firstMsg)
 			false
-		} else true 
+		} else true
 	}
 
 	/** Process the received message and all the pending messages queue in the [[Reactant.inbox]]
@@ -313,6 +326,6 @@ abstract class Reactant[U](
 
 	override def diagnose: admin.Duty[ReactantDiagnostic] =
 		admin.Duty.mine { () =>
-			ReactantDiagnostic(thisReactant.isReadyToProcessMsg.get, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.maybeNonEmpty, inbox.size, inbox.iterator)
+			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.maybeNonEmpty, inbox.size, inbox.iterator)
 		}
 }

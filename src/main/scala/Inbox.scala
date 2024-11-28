@@ -3,7 +3,7 @@ package readren.matrix
 import readren.taskflow.Maybe
 
 /**
- * Implementation that are intended for a [[Reactant]] should, whenever this inbox starts to have a pending message, clear the "owner is ready to process" state and immediately after that should also call the [[Reactant.thereIsAPendingMsg()]] method passing the first pending message.
+ * Implementation that are intended for a [[Reactant]] should, whenever this inbox starts to have a pending message, clear the "owner is ready to process" state and immediately after that should also call the [[Reactant.onInboxBecomesNonempty()]] method passing the first pending message.
  * Design note: The responsibility of knowing if the owner is ready is delegated from the owner to the inbox in order to allow the [[Inbox]] implementation decide how to implement the atomicity of this boolean.
  *  */
 trait Inbox[+M] {

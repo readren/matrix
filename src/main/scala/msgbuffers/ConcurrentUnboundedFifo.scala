@@ -5,6 +5,7 @@ import readren.taskflow.Maybe
 
 import java.net.URI
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.AbstractIterator
 
 /**
@@ -12,8 +13,9 @@ import scala.collection.AbstractIterator
 class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] {
 	private val queue = new ConcurrentLinkedQueue[M]()
 
-	/** This mark is necessary because [[ConcurrentLinkedQueue.isEmpty]] may return true after calling [[ConcurrentLinkedQueue.offer]], and we need to be sure if a message maybe pending. */
-	@volatile private var aMsgWasSubmitted: Boolean = false
+	/** Incremented before a message is added, and decremented after a message is withdrawn. Therefore, its value tend to be equal to the queue's actual size but may be greater.
+	 * This mark is necessary because [[ConcurrentLinkedQueue.isEmpty]] is not accurate. There is a time window during which it returns true after [[ConcurrentLinkedQueue.offer]] was called. */
+	private val atomicSize: AtomicInteger = new AtomicInteger(0)
 
 	override val uri: URI = {
 		val mu = owner.admin.matrix.uri
@@ -21,21 +23,20 @@ class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	}
 
 	override def submit(message: M): Unit = {
-		aMsgWasSubmitted = true
-		queue.offer(message)
-		owner.thereIsAPendingMsg()
+		if atomicSize.getAndIncrement() == 0 then {
+			queue.offer(message)
+			owner.admin.queueForSequentialExecution(owner.onInboxBecomesNonempty())
+		} else queue.offer(message)
 	}
 
 	override def withdraw(): Maybe[M] = {
-		aMsgWasSubmitted = false
-		Maybe.apply(queue.poll())
+		val maybeMsg = Maybe.apply(queue.poll)
+		maybeMsg.foreach(_ => atomicSize.decrementAndGet())
+		maybeMsg
 	}
 
 	override def maybeNonEmpty: Boolean = {
-		if aMsgWasSubmitted then {
-			aMsgWasSubmitted = false
-			true
-		} else !queue.isEmpty 
+		atomicSize.get > 0
 	}
 
 	override def size: Int = {

@@ -12,8 +12,6 @@ object Behavior {
 
 	inline def ignore: Behavior[Any] = IgnoreAllBehavior
 
-	inline def handle[A](handler: Behavior[A]): Behavior[A] = handler
-
 	inline def factory[A](inline handler: A => HandleResult[A]): Behavior[A] =
 		(message: A) => handler(message)
 	

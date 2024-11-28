@@ -5,14 +5,14 @@ import readren.taskflow.Maybe
 
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
-import scala.collection.mutable
+import scala.collection.{AbstractIterator, mutable}
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
 class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
 
 	/** Should be accessed only within the [[admin]] */
-	private val queue: mutable.ArrayDeque[M] = mutable.ArrayDeque.empty
+	private val queue: java.util.ArrayDeque[M] = new java.util.ArrayDeque()
 	
 	val admin: MatrixAdmin = owner.admin
 
@@ -24,20 +24,20 @@ class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	override def submit(message: M): Unit = {
 		admin.queueForSequentialExecution {
 			if queue.isEmpty then {
-				if owner.onInboxNotEmpty(message) then queue.append(message) 
-			} else queue.append(message)
+				if owner.onInboxBecomesNonempty(message) then queue.add(message)
+			} else queue.add(message)
 		}
 	}
 
 	override def withdraw(): Maybe[M] = {
 		admin.checkWithin()
 		if queue.isEmpty then Maybe.empty
-		else Maybe.some(queue.removeHead())
+		else Maybe.some(queue.pollFirst())
 	}
 
 	override def maybeNonEmpty: Boolean = {
 		admin.checkWithin()
-		queue.nonEmpty
+		!queue.isEmpty
 	}
 	
 	override def size: Int = {
@@ -45,6 +45,12 @@ class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	}
 
 	override def iterator: Iterator[M] = {
-		queue.iterator
+		new AbstractIterator[M] {
+			private val javaIterator = queue.iterator()
+			
+			override def hasNext: Boolean = javaIterator.hasNext
+
+			override def next(): M = javaIterator.next()
+		}
 	}
 }
