@@ -139,7 +139,6 @@ object Prueba {
 						}
 					}.map { child =>
 						parent.admin.checkWithin()
-						parent.watch(child.serial)
 						childrenCount += 1
 						// println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
 						child.endpointProvider.local[Int]

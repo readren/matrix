@@ -10,7 +10,6 @@ sealed trait IsSignalTest[T] {
 	def restarted: Option[T]
 	def restartReceived: Option[T]
 	def stopReceived: Option[T]
-	def childStopped(signal: ChildStopped): Option[T]
 }
 
 object IsSignalTest {
@@ -19,8 +18,7 @@ object IsSignalTest {
 		ttStarted: MyTypeTest[Started.type, T],
 		ttRestarted: MyTypeTest[Restarted.type, T],
 		ttRestartReceived: MyTypeTest[RestartReceived.type, T],
-		ttStopReceived: MyTypeTest[StopReceived.type, T],
-		ttChildStopped: MyTypeTest[ChildStopped, T]
+		ttStopReceived: MyTypeTest[StopReceived.type, T]
 	): IsSignalTest[T] = new IsSignalTest[T] {
 		def started: Option[T] = ttStarted.unapply(Started)
 
@@ -29,8 +27,6 @@ object IsSignalTest {
 		def restartReceived: Option[T] = ttRestartReceived.unapply(RestartReceived)
 
 		def stopReceived: Option[T] = ttStopReceived.unapply(StopReceived)
-
-		def childStopped(childStopped: ChildStopped): Option[T] = ttChildStopped.unapply(childStopped)
 	}
 
 	/** For some obscure reason [[TypeTest]] does not work as expected: unapply returns [[Some]] even if [[Signal]] is not assignable to `T` and then a class-class exception is thrown).

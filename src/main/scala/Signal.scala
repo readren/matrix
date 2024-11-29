@@ -79,4 +79,3 @@ abstract class AlienSignal extends Signal {
 	override def isRestartReceived: Boolean = false
 }
 
-case class ChildStopped(serial: Reactant.SerialNumber) extends AlienSignal

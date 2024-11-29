@@ -29,7 +29,7 @@ abstract class Reactant[U](
 	val serial: SerialNumber,
 	progenitor: Spawner[MatrixAdmin],
 	override val admin: MatrixAdmin,
-	isSignalTest: IsSignalTest[U],	
+	isSignalTest: IsSignalTest[U],
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 ) extends ReactantRelay[U] { thisReactant =>
 
@@ -41,7 +41,7 @@ abstract class Reactant[U](
 	 * It is set to true only by the [[beReadyToProcess()]] method, which ensures all pending messages are processed before the transition to `true`.
 	 * This flag should be the only one that determines when "inbox becomes nonempty" notifications (calls to [[onInboxBecomesNonempty]]) are ignored in order to compensate the ignored notifications when it is set to `true`.
 	 * Should be accessed within the [[admin]].
-	 **/
+	 * */
 	private var isReadyToProcessMsg: Boolean = false
 
 	/** Tells if this [[Reactant]] was marked to be stopped.
@@ -155,42 +155,40 @@ abstract class Reactant[U](
 		} else restartMe()
 	}
 
-	override def isBeingStopped: Boolean = isMarkedToStop
+	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
 	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
 
-	def watch(childSerial: SerialNumber): Boolean = {
+	override def watchChild[CSM <: U](childSerial: SerialNumber, childStoppedSignal: CSM): Boolean = {
 		admin.checkWithin()
 		oSpawner.fold(false) { spawner =>
 			Maybe(spawner.childrenView.getOrElse(childSerial, null)).fold(false) { child =>
-				child.stopDuty.onBehalfOf(admin).foreach { _ =>
-					// if a stop of this reactant is in progress, ignore the notification. // TODO why? Shouldn't be fully stopped to ignore the child stopped signal?
-					if thisReactant.stopWasStarted then ()
-					else {
-						val hr = handleSignal(isSignalTest.childStopped(ChildStopped(child.serial)))
-						mapHrToDecision(hr) match {
-							case ToContinue => ()
-							case ToStop => selfStop()
-							case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
-						}
-					}
-				}.triggerAndForget(true)
+				watch(child, childStoppedSignal)
 				true
 			}
 		}
 	}
 
-	/**
-	 * Instructs to stop this [[Reactant]].
-	 * Supports being called at any moment and many times.
-	 * If this reactant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
-	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
-	 * thread-safe
-	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
+	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM): Unit = {
+		watchedReactant.stopDuty.onBehalfOf(admin).foreach { _ =>
+			// if a stop of this reactant is in progress, ignore the notification.
+			if thisReactant.stopWasStarted then ()
+			else {
+				val hr = thisReactant.currentBehavior.handle(stoppedSignal)
+				mapHrToDecision(hr) match {
+					case ToContinue => ()
+					case ToStop => selfStop()
+					case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+				}
+			}
+		}.triggerAndForget(true)
+	}
+
+
 	override final def stop(): admin.Duty[Unit] = {
 		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] duty might be triggered more than once, but that is not harmful because it discards repetitions.
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
-		if !isMarkedToStop then  {
+		if !isMarkedToStop then {
 			isMarkedToStop = true
 			admin.queueForSequentialExecution(selfStop())
 		}
@@ -270,7 +268,7 @@ abstract class Reactant[U](
 	/** Should be called by the [[Receiver]] whenever it receives a message while the [[Inbox]] is empty.
 	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[admin]] of this reactant).
 	 * Should be called within the [[admin]] only.
-	 *  */
+	 * */
 	final def onInboxBecomesNonempty(): Unit = {
 		admin.checkWithin()
 		if isReadyToProcessMsg then {

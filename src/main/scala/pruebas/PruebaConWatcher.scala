@@ -16,7 +16,7 @@ object PruebaConWatcher {
 
 	case object End extends Answer
 
-	case class ChildWasStopped(childSerial: Int) extends Answer
+	case class ChildWasStopped(childSerial: Int) extends Answer, Cmd
 
 	sealed trait Cmd
 
@@ -98,7 +98,7 @@ object PruebaConWatcher {
 
 		val result = Promise[Unit]
 
-		matrix.spawn[Cmd | ChildStopped](reactantFactory) { parent =>
+		matrix.spawn[Cmd](reactantFactory) { parent =>
 			parent.admin.checkWithin()
 			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
@@ -119,13 +119,14 @@ object PruebaConWatcher {
 						})
 					}.map { child =>
 						parent.admin.checkWithin()
-						parent.watch(child.serial)
+						val isWatching = parent.watchChild(child.serial, ChildWasStopped(child.serial))
+						assert(isWatching)
 						// println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
 						child.endpointProvider.local[Int]
 					}.trigger(true)(childEndPointReceiver)
 					Continue
 
-				case ChildStopped(childSerial) =>
+				case ChildWasStopped(childSerial) =>
 					parent.admin.checkWithin()
 					outEndpoint.tell(ChildWasStopped(childSerial))
 					if parent.children.isEmpty then {
