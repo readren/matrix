@@ -9,6 +9,7 @@ trait ReactantFactory {
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		reactantAdmin: MatrixAdmin,
+		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): reactantAdmin.Duty[Reactant[U]]
 

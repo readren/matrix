@@ -19,7 +19,7 @@ abstract class ReactantRelay[-U] {
 	def isBeingStopped: Boolean
 	
 	/** Should be called withing the [[admin]]. */
-	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]): admin.Duty[ReactantRelay[A]]
+	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): admin.Duty[ReactantRelay[A]]
 
 	/** Should be called within the [[admin]]. */
 	def children: MapView[Long, ReactantRelay[?]]

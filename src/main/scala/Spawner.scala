@@ -29,12 +29,12 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
 	/** Should be called withing the [[admin]] only. */
-	def createReactant[U](reactantFactory: ReactantFactory, initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
+	def createReactant[U](reactantFactory: ReactantFactory, isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
 		admin.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
 		val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
-		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, initialBehaviorBuilder)
+		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(admin)
 			.map { reactant =>
 				children.addOne(reactantSerial, reactant)
@@ -43,10 +43,10 @@ class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, 
 	}
 
 	/** should be called withing the admin */
-	def stopChildren(): admin.Duty[Unit] = {
+	def stopChildren(): admin.Duty[Array[Unit]] = {
 		admin.checkWithin()
 		val stopDuties = childrenView.values.map(child => admin.Duty.foreign(child.admin)(child.stop()))
-		admin.Duty.sequenceToArray(stopDuties).map(_ => ())
+		admin.Duty.sequenceToArray(stopDuties)
 	}
 
 	/** should be called withing the admin */

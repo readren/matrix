@@ -14,10 +14,11 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[MatrixAdmin],
 		admin: MatrixAdmin,
+		isSignalTest: IsSignalTest[U],		
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): admin.Duty[Reactant[U]] = {
 		admin.Duty.mineFlat { () =>
-			new Reactant[U](id, progenitor, admin, initialBehaviorBuilder) {
+			new Reactant[U](id, progenitor, admin, isSignalTest, initialBehaviorBuilder) {
 
 				protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
 

@@ -29,8 +29,9 @@ abstract class Reactant[U](
 	val serial: SerialNumber,
 	progenitor: Spawner[MatrixAdmin],
 	override val admin: MatrixAdmin,
+	isSignalTest: IsSignalTest[U],	
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
-)(using isSignalTest: IsSignalTest[U]) extends ReactantRelay[U] { thisReactant =>
+) extends ReactantRelay[U] { thisReactant =>
 
 	/**
 	 * The initial state is `false` (not ready).
@@ -55,7 +56,7 @@ abstract class Reactant[U](
 	 * Its purpose is to avoid the [[processMessages()]] be called after the stop process has started.
 	 * Should be accessed within the [[admin]] only.
 	 * */
-	private var stopWasStarted = false;
+	private var stopWasStarted = false
 
 	private val stopCovenant = new admin.Covenant[Unit]
 
@@ -90,7 +91,7 @@ abstract class Reactant[U](
 	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
 		admin.checkWithin()
 		currentBehavior = behaviorBuilder(thisReactant)
-		val handleResult = handleSignal(if comesFromRestart then Restarted else Started)
+		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
@@ -103,7 +104,7 @@ abstract class Reactant[U](
 	}
 
 	/** Should be called withing the [[admin]]. */
-	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]): admin.Duty[ReactantRelay[A]] = {
+	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): admin.Duty[ReactantRelay[A]] = {
 		admin.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[admin.type](Maybe.some(thisReactant), admin, serial)
@@ -111,7 +112,7 @@ abstract class Reactant[U](
 				childrenRelays = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
-			.createReactant[A](childReactantFactory, initialChildBehaviorBuilder)
+			.createReactant[A](childReactantFactory, isSignalTest, initialChildBehaviorBuilder)
 	}
 
 	/** The children of this [[Reactant]] by serial number.
@@ -128,7 +129,7 @@ abstract class Reactant[U](
 
 		def restartMe(): admin.Duty[Unit] = {
 			// send RestartReceived signal
-			val hr = handleSignal(RestartReceived)
+			val hr = handleSignal(isSignalTest.restartReceived)
 			mapHrToDecision(hr) match {
 				case ToContinue => selfStart(true, restartBehaviorBuilder)
 				case ToStop =>
@@ -166,10 +167,10 @@ abstract class Reactant[U](
 					// if a stop of this reactant is in progress, ignore the notification. // TODO why? Shouldn't be fully stopped to ignore the child stopped signal?
 					if thisReactant.stopWasStarted then ()
 					else {
-						val hr = handleSignal(ChildStopped(child.serial))
+						val hr = handleSignal(isSignalTest.childStopped(ChildStopped(child.serial)))
 						mapHrToDecision(hr) match {
 							case ToContinue => ()
-							case ToStop => selfStop().triggerAndForget(true)
+							case ToStop => selfStop()
 							case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 						}
 					}
@@ -183,53 +184,52 @@ abstract class Reactant[U](
 	 * Instructs to stop this [[Reactant]].
 	 * Supports being called at any moment and many times.
 	 * If this reactant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
+	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
 	 * thread-safe
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	override final def stop(): admin.Duty[Unit] = {
-		if isMarkedToStop then stopCovenant.duty
-		// Note that if [[stop]] is called simultaneously from many threads, the else branch might be executed more than once, but that is not harmful because [[selfStrop]] discards the repetitions. As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
-		else {
+		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] duty might be triggered more than once, but that is not harmful because it discards repetitions.
+		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
+		if !isMarkedToStop then  {
 			isMarkedToStop = true
-			admin.Duty.mineFlat { () => selfStop() }
+			admin.queueForSequentialExecution(selfStop())
 		}
+		stopCovenant.duty
 	}
 
 	/**
 	 * Stops this [[Reactant]].
 	 * Should be called within the [[admin]].
 	 * Supports being called more than one time.
+	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	private final def selfStop(): admin.Duty[Unit] = {
 		admin.checkWithin()
 
 		/** should be called within the [[admin]]. */
-		def stopMe(): admin.Duty[Unit] = {
+		def stopMe(): Unit = {
 			// execute the signal handler and ignore its result
-			handleSignal(StopReceived)
+			handleSignal(isSignalTest.stopReceived)
 			// remove myself form progenitor children
-			progenitor.admin.Duty.mine { () => progenitor.removeChild(thisReactant.serial) }
-				.onBehalfOf(thisReactant.admin)
-				.foreach(_ => stopCovenant.fulfill(())())
-
+			progenitor.admin.queueForSequentialExecution {
+				progenitor.removeChild(thisReactant.serial)
+				stopCovenant.fulfill(())()
+			}
 			// TODO notify parent
 		}
 
-		if stopWasStarted then stopCovenant.duty else {
+		if !stopWasStarted then {
 			stopWasStarted = true
 			isReadyToProcessMsg = false
 			oSpawner.fold(stopMe()) { spawner =>
-				spawner.stopChildren().flatMap(_ => stopMe())
+				spawner.stopChildren().trigger(true)(_ => stopMe())
 			}
 		}
+		stopCovenant.duty
 	}
 
-	private def handleSignal(signal: Signal): HandleResult[U] = {
-		isSignalTest.unapply(signal) match {
-			case Some(value) =>
-				currentBehavior.handle(value)
-			case None =>
-				Continue
-		}
+	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {
+		signal.fold(Continue)(currentBehavior.handle)
 	}
 
 
@@ -318,7 +318,7 @@ abstract class Reactant[U](
 			else firstDecision
 		finalDecision match {
 			case ToContinue => beReadyToProcess()
-			case ToStop => selfStop().triggerAndForget(true)
+			case ToStop => selfStop()
 			case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 		}
 	}

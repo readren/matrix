@@ -16,16 +16,16 @@ object PruebaConWatcher {
 
 	case object End extends Answer
 
-	sealed trait Cmd
+	case class ChildWasStopped(childSerial: Int) extends Answer
 
-	case class ChildWasStopped(childSerial: Int) extends Cmd, Answer
+	sealed trait Cmd
 
 	case class Spawn(childEndPointReceiver: Endpoint[Int] => Unit, replyTo: Endpoint[Response]) extends Cmd
 	//	case class Send(text: String)
 
 	case class SpawnResponse(endpoint: Endpoint[String])
 
-	val numberOfChildren = 100
+	val numberOfChildren = 10000
 	val numberOfMessagesPerChild = 100
 
 	@main def runPruebaConWatcher(): Unit = {
@@ -37,8 +37,8 @@ object PruebaConWatcher {
 			totalFuture = totalFuture.flatMap { _ =>
 				println(s"loop #$i")
 				for {
-					_ <- run(RegularRf)
-					_ <- run(SequentialMsgBufferRf)
+					_ <- run(RegularRf, i)
+					_ <- run(SequentialMsgBufferRf, i)
 				} yield ()
 			}
 		}
@@ -47,12 +47,11 @@ object PruebaConWatcher {
 		StdIn.readLine()
 	}
 
-	def run(reactantFactory: ReactantFactory): Future[Unit] = {
-		val csb: StringBuffer = new StringBuffer(2048)
+	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Unit] = {
 
-		val matrixAide = new Shared.MatrixAide()
+		val matrixAide = new Shared.MatrixAide(true, s"loop: $loopId, factory: ${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", matrixAide)
-		csb.append("Matrix created\n")
+		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}\n")
 
 
 		val counter: AtomicInteger = new AtomicInteger(0)
@@ -64,15 +63,19 @@ object PruebaConWatcher {
 		// SynchronousMsgBufferRf
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
-			case message: Response =>
+			case response: Response =>
 				val counterValue = counter.incrementAndGet()
-				sbs(message.childSerial).append(f"($counterValue%6d)-${message.text}; ")
+				val childSb = sbs(response.childSerial)
+				childSb.append(f"($counterValue%6d)-${response.text}; ")
 
+				if false then {
+					println(f"${response.childSerial}%3d: $childSb)")
+				}
 				if false then {
 					val lsb = new StringBuilder(99999)
 					lsb.append("\n>>>>>>>>>>>>>")
 					for i <- 0 until numberOfStringBuilders if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
-					lsb.append("\n------------")
+					lsb.append("\n<<<<<<<<<<<<<")
 					printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
 				}
 
@@ -84,9 +87,9 @@ object PruebaConWatcher {
 				val lsb = new StringBuilder(1024)
 				lsb.append(s"\n+++ Total number of non-negative numbers sent to children: ${counter.get()} +++\n")
 				lsb.append(s"\n+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++\n")
-				if true then {
+				if false then {
 					for i <- 0 until numberOfStringBuilders do {
-						lsb.append(f"$i%3d: ${sbs(i)}\n")
+						lsb.append(f"$i%4d: ${sbs(i)}\n")
 						sbs(i).setLength(0)
 					}
 				}
@@ -95,9 +98,8 @@ object PruebaConWatcher {
 
 		val result = Promise[Unit]
 
-		matrix.spawn[Cmd](reactantFactory) { parent =>
+		matrix.spawn[Cmd | ChildStopped](reactantFactory) { parent =>
 			parent.admin.checkWithin()
-			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
@@ -108,7 +110,7 @@ object PruebaConWatcher {
 							if n >= 0 then {
 								replyTo.tell(Response(child.admin.id, child.serial, f"${child.serial}%3d <=$n%3d"))
 
-								if n == 9 && (child.serial % 10) == 1 then throw new Exception("a ver que onda")
+								if n == 9 && (child.serial % 10) == 5 then throw new Exception("a ver que onda")
 
 								Continue
 							} else {
@@ -138,7 +140,10 @@ object PruebaConWatcher {
 					Continue
 			}
 		}.trigger() { parent =>
+			matrix.admin.checkWithin()
 			val parentEndpoint = parent.endpointProvider.local[Spawn]
+
+			val csb: StringBuffer = new StringBuffer(9999)
 			csb.append("Parent started\n")
 			val futures = for j <- 0 until numberOfChildren yield Future {
 				csb.append(s"Future $j begin: ")
@@ -156,6 +161,24 @@ object PruebaConWatcher {
 					println(s"\nFutures completed: csb=[${csb.toString}]")
 				}(ExecutionContext.global)
 			}
+			if true then {
+				matrixAide.addMonitor(() => {
+					parent.admin.Duty.mineFlat { () =>
+						val childrenDiagnosticsDuties = parent.children.values.map(child => {
+							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.admin)
+						})
+						val childrenDiagnostics: parent.admin.Duty[Array[String]] = parent.admin.Duty.sequenceToArray(childrenDiagnosticsDuties)
+						for {
+							parentDiagnostic <- parent.diagnose
+							childrenDiagnostic <- childrenDiagnostics
+						} yield
+							s"""
+							   |Parent's diagnostic: $parentDiagnostic
+							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}""".stripMargin
+					}.trigger()(println)
+				})
+			}
+
 			parent.stopDuty.trigger() { _ =>
 				matrixAide.shutdown().thenRun { () =>
 					println("Shutdown completed normally")
