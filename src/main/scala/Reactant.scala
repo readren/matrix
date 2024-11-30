@@ -2,9 +2,11 @@ package readren.matrix
 
 import readren.taskflow.Maybe
 
+import java.util
 import scala.annotation.tailrec
 import scala.collection.MapView
 import scala.compiletime.uninitialized
+import scala.runtime.AbstractFunction1
 
 object Reactant {
 	type SerialNumber = Int
@@ -75,6 +77,10 @@ abstract class Reactant[U](
 	private var currentBehavior: Behavior[U] = uninitialized
 
 	protected val inbox: Inbox[U]
+
+	/** Contains the observers subscribed to the [[Reactant.stopCovenant]] of other [[Reactant]] instances that were not unsubscribed calling [[WatchSubscription.unsubscribe()]].
+	 * @see [[watch]]. */
+	private val activeWatchSubscriptions: util.IdentityHashMap[ReactantRelay[?], List[WatchSubscription]] = new util.IdentityHashMap()
 
 	/**
 	 * Should be called only once and within the [[admin]].
@@ -157,33 +163,53 @@ abstract class Reactant[U](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: admin.Duty[Unit] = stopCovenant.duty
+	override def stopDuty: admin.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
 
-	override def watchChild[CSM <: U](childSerial: SerialNumber, childStoppedSignal: CSM): Boolean = {
+	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM, univocally: Boolean = true): Maybe[WatchSubscription] = {
 		admin.checkWithin()
-		oSpawner.fold(false) { spawner =>
-			Maybe(spawner.childrenView.getOrElse(childSerial, null)).fold(false) { child =>
-				watch(child, childStoppedSignal)
-				true
-			}
-		}
-	}
+		if stopWasStarted then Maybe.empty else {
+			object observer extends AbstractFunction1[Unit, Unit], WatchSubscription {
+				private def work(): Unit = {
+					// ignore the notification if a stop of this reactant is in progress or the subscription is not active.
+					if !stopWasStarted && activeWatchSubscriptions.getOrDefault(watchedReactant, Nil).contains(observer) then {
+						mapHrToDecision(currentBehavior.handle(stoppedSignal)) match {
+							case ToContinue => ()
+							case ToStop => selfStop()
+							case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+						}
+					}
+				}
 
-	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM): Unit = {
-		watchedReactant.stopDuty.onBehalfOf(admin).foreach { _ =>
-			// if a stop of this reactant is in progress, ignore the notification.
-			if thisReactant.stopWasStarted then ()
-			else {
-				val hr = thisReactant.currentBehavior.handle(stoppedSignal)
-				mapHrToDecision(hr) match {
-					case ToContinue => ()
-					case ToStop => selfStop()
-					case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+				override def apply(unit: Unit): Unit = {
+					if watchedReactant.admin eq thisReactant.admin then work()
+					else admin.queueForSequentialExecution(work())
+				}
+
+				override def unsubscribe(): Unit = {
+					admin.checkWithin()
+					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
+					activeWatchSubscriptions.computeIfPresent(watchedReactant, (_, list) => list.filterNot(_ eq observer))
+					// then undo the subscription, which may be asynchronous. 
+					if watchedReactant.admin eq thisReactant.admin then watchedReactant.stopDuty.unsubscribe(observer)
+					else watchedReactant.admin.queueForSequentialExecution(watchedReactant.stopDuty.unsubscribe(observer))
+					
 				}
 			}
-		}.triggerAndForget(true)
+			// first, add the observer to the active subscriptions record.
+			activeWatchSubscriptions.compute(
+				watchedReactant,
+				(_, list) =>
+					if list == null then List(observer)
+					else if univocally then {
+						list.foreach(_.unsubscribe())
+						List(observer)
+					} else observer :: list
+			)
+			// and then, make the subscription 
+			watchedReactant.stopDuty.subscribe(observer)
+			Maybe.some(observer)
+		}
 	}
-
 
 	override final def stop(): admin.Duty[Unit] = {
 		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] duty might be triggered more than once, but that is not harmful because it discards repetitions.
@@ -192,7 +218,7 @@ abstract class Reactant[U](
 			isMarkedToStop = true
 			admin.queueForSequentialExecution(selfStop())
 		}
-		stopCovenant.duty
+		stopCovenant.subscriptableDuty
 	}
 
 	/**
@@ -219,11 +245,12 @@ abstract class Reactant[U](
 		if !stopWasStarted then {
 			stopWasStarted = true
 			isReadyToProcessMsg = false
+			activeWatchSubscriptions.forEach { (k, v) => v.foreach(_.unsubscribe()) }
 			oSpawner.fold(stopMe()) { spawner =>
 				spawner.stopChildren().trigger(true)(_ => stopMe())
 			}
 		}
-		stopCovenant.duty
+		stopCovenant.subscriptableDuty
 	}
 
 	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {

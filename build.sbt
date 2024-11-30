@@ -9,7 +9,7 @@ lazy val root = (project in file("."))
 	)
 
 ThisBuild / libraryDependencies ++= Seq(
-	"readren" %% "taskflow-core" % "0.1.7-SNAPSHOT"
+	"readren" %% "taskflow-core" % "0.1.8-SNAPSHOT"
 )
 
 ThisBuild / scalacOptions ++= Seq(

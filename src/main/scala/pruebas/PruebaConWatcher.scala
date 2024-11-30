@@ -119,8 +119,7 @@ object PruebaConWatcher {
 						})
 					}.map { child =>
 						parent.admin.checkWithin()
-						val isWatching = parent.watchChild(child.serial, ChildWasStopped(child.serial))
-						assert(isWatching)
+						parent.watch(child, ChildWasStopped(child.serial))
 						// println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
 						child.endpointProvider.local[Int]
 					}.trigger(true)(childEndPointReceiver)
@@ -136,6 +135,7 @@ object PruebaConWatcher {
 						// println(s"Child $childSerial stopped. Active children: ${parent.children.size}")
 						Continue
 					}
+					
 				case s: Signal =>
 					println(s"Received signal: $s")
 					Continue

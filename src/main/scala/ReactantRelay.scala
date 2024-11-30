@@ -2,6 +2,8 @@ package readren.matrix
 
 import Reactant.SerialNumber
 
+import readren.taskflow.{Doer, Maybe}
+
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.MapView
 
@@ -33,27 +35,28 @@ abstract class ReactantRelay[-U] {
 	 * Supports being called from anywhere at any moment and many times.
 	 * If this reactant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
 	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
-	 * thread-safe
+	 * 
+	 * This method is thread-safe.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	def stop(): admin.Duty[Unit]
 	
-	/** A duty that completes when the [[Reactant]] behind this relay is fully stopped (after [[StopReceived]] signal was emitted and handled.
-	 * This duty complete at the same time as the [[Duty]] returned by [[stop]].
- 	 * thread-safe */
-	def stopDuty: admin.Duty[Unit]
+	/** A [[SubscriptableDuty]] that completes when this [[Reactant]] is fully stopped (after the [[StopReceived]] signal was handled and this [[Reactant]] was removed from its progenitor's children list).
+	 * 
+	 * This duty is the same as the returned by the [[stop]] method.
+	 * 
+ 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called withing the [[admin]]. */
+	def stopDuty: admin.SubscriptableDuty[Unit]
 
-	/** Registers this [[Reactant]] to be notified with the received signal when the specified child is fully stopped.
+	/** Registers this [[Reactant]] to be notified with the provided signal when the specified [[Reactant]] is fully stopped.
 	 * The notification is not sent to this [[Reactant]]'s [[Receiver]] as a regular messages. It behaves like signals: an execution of {{{behavior.handle(childStoppedSignal)}}} is queued directly in the task-queue of this [[Reactant.admin]]'s executor.
 	 * 
 	 * Should be called within the [[admin]].
-	 * @return true if the registering is made, and false if the child is already fully stopped or does not exist. */
-	def watchChild[CSS <: U](childSerial: SerialNumber, childStoppedSignal: CSS): Boolean
-
-	/** Registers this [[Reactant]] to be notified with the received signal when the specified [[ReactantRelay]] is fully stopped.
-	 * The notification is not sent to this [[Reactant]]'s [[Receiver]] as a regular messages. It behaves like signals: an execution of {{{behavior.handle(childStoppedSignal)}}} is queued directly in the task-queue of this [[Reactant.admin]]'s executor.
-	 * 
-	 * This method is thread-safe: may be called from any thread at any time. */
-	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS): Unit
+	 * @param watchedReactant the [[Reactant]] to be watched.
+	 * @param stoppedSignal the signal that the [[Behavior.handle]] method of this [[Reactant]]'s behavior will receive after the `watchedReactant` is fully stopped.
+	 * @param univocally when `true`, existing subscriptions to the `watchedReactant` are undone. This mode prevents undesired repeated subscriptions after a restart.
+	 *                   when `false`, the behavior should be responsible to avoid repeated subscriptions after a restart. This mode is particularly useful when two [[Behaviors]] united with [[Behavior.unitedNest]] watch the same [[Reactant]].
+	 * @return a [[WatchSubscription]] that may be used to undo the subscription. */
+	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true): Maybe[WatchSubscription]
 	
 	/** Returns debug info about this reactant. */
 	def diagnose: admin.Duty[ReactantDiagnostic]
