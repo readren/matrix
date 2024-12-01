@@ -10,3 +10,5 @@ DONE: ya no hay ejecutor separado para los handlers y además se agregó impleme
 5) Hacer que HandleResult sirva no solo para Behavior sino también para MsgBehavior, SignalBehavior, CheckedBehavior. Eso permitiría tratar con cada uno independientemente sin necesidad de cruzar a Behavior.
 
 6) Agregarle al Doer un inline constructor parameter llamado checkWithinIsEnabled y agregar chequeo de isWithinTheDoSiThEx donde corresponda.
+
+7) Hacer que ContinueWith y RestartWith tomen un builder en lugar del behavior literal, y ver si eso permite eliminar un parámetro en Behavior.restartNest.

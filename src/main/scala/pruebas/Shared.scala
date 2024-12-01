@@ -75,7 +75,7 @@ object Shared {
 		def diagnose(): StringBuilder = {
 			var totalCompletedTaskCount: Long = 0
 			val sb = StringBuilder()
-			sb.append(s"label: $label\n")
+			sb.append(label).append('\n')
 			for (info, i) <- executors.zipWithIndex do {
 				sb.append(i).append(") ")
 				sb.append(" queue.size=").append(info.executor.getQueue.size)

@@ -20,7 +20,7 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 		admin.Duty.mineFlat { () =>
 			new Reactant[U](id, progenitor, admin, isSignalTest, initialBehaviorBuilder) {
 
-				protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
+				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
 
 				override val endpointProvider: EndpointProvider[U] = createEndpointProvider(inbox)
 

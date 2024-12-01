@@ -4,164 +4,193 @@ package pruebas
 import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
-import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
+import scala.util.Success
 
 object PruebaConWatcher {
 
 	sealed trait Answer
 
-	case class Response(adminId: Int, childSerial: Int, text: String) extends Answer
+	case class Response(admin: MatrixAdmin, producerIndex: Int, consumerIndex: Int, text: String) extends Answer
 
 	case object End extends Answer
 
-	case class ChildWasStopped(childSerial: Int) extends Answer, Cmd
-
 	sealed trait Cmd
 
-	case class Spawn(childEndPointReceiver: Endpoint[Int] => Unit, replyTo: Endpoint[Response]) extends Cmd
+	case object ProducerWasStopped extends Cmd
+	case class ConsumerWasStopped(childIndex: Int) extends Cmd, Answer
+
 	//	case class Send(text: String)
 
 	case class SpawnResponse(endpoint: Endpoint[String])
 
-	val numberOfChildren = 10000
-	val numberOfMessagesPerChild = 100
+	case class Consumable(producerIndex: Int, value: Int)
+
+	private val NUMBER_OF_PRODUCERS = 1000
+	private val NUMBER_OF_CONSUMERS = 1000
+	private val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
 
 	@main def runPruebaConWatcher(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
-
-		var totalFuture = Future.successful(())
-		for i <- 1 to 4 do {
-			totalFuture = totalFuture.flatMap { _ =>
-				println(s"loop #$i")
+		val numberOfWarmUpRepetitions = 4
+		val numberOfMeasuredOfRepetitions = 16
+		var totalFuture = Future.successful[(Long, Long)]((0L, 0L))
+		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
+			totalFuture = totalFuture.flatMap { durationAccumulator =>
+				println(s"\n******* Loop #$i *******")
 				for {
-					_ <- run(RegularRf, i)
-					_ <- run(SequentialMsgBufferRf, i)
-				} yield ()
+					regularRfDuration <- run(RegularRf, i)
+					sequentialMsgBufferDuration <- run(SequentialMsgBufferRf, i)
+				} yield {
+					if i <= numberOfWarmUpRepetitions then durationAccumulator
+					else (durationAccumulator._1 + regularRfDuration, durationAccumulator._2 + sequentialMsgBufferDuration)
+				}
 			}
 		}
-		totalFuture.andThen(x => println(s"All matrix were shutdown returning: $x\nPress <enter> to exit"))
+		totalFuture.andThen { case Success(totalDuration) =>
+			println(
+				s"""All matrix were shutdown
+				   |Average duration: regularRf-> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, sequentialMsgBufferRfTotalDuration-> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
+				   |Press <enter> to exit""".stripMargin
+			)
+		}
 
 		StdIn.readLine()
 	}
 
-	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Unit] = {
+	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 
-		val matrixAide = new Shared.MatrixAide(true, s"loop: $loopId, factory: ${reactantFactory.getClass.getSimpleName}")
+		val matrixAide = new Shared.MatrixAide(true, s"Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", matrixAide)
-		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}\n")
+		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 
 
 		val counter: AtomicInteger = new AtomicInteger(0)
 
 		var printer: Future[Unit] = Future.successful(())
-		val numberOfStringBuilders = numberOfChildren + 3
-		val sbs: Array[StringBuilder] = Array.fill(numberOfStringBuilders)(new StringBuilder(9999))
+		val sbs: Array[StringBuilder] = Array.fill(NUMBER_OF_CONSUMERS)(new StringBuilder(99999))
 
-		// SynchronousMsgBufferRf
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
 			case response: Response =>
+				response.admin.checkWithin()
 				val counterValue = counter.incrementAndGet()
-				val childSb = sbs(response.childSerial)
-				childSb.append(f"($counterValue%6d)-${response.text}; ")
 
 				if false then {
-					println(f"${response.childSerial}%3d: $childSb)")
-				}
-				if false then {
-					val lsb = new StringBuilder(99999)
-					lsb.append("\n>>>>>>>>>>>>>")
-					for i <- 0 until numberOfStringBuilders if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
-					lsb.append("\n<<<<<<<<<<<<<")
-					printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
-				}
+					val consumerSb = sbs(response.consumerIndex)
+					consumerSb.append(f"($counterValue%6d)${response.text}; ")
 
-			case ChildWasStopped(childSerial) =>
-				sbs(childSerial).append(f"(${counter.get()}%6d) <| Stopped; ")
-
-			case End =>
-				val nanoAtEnd = System.nanoTime()
-				val lsb = new StringBuilder(1024)
-				lsb.append(s"\n+++ Total number of non-negative numbers sent to children: ${counter.get()} +++\n")
-				lsb.append(s"\n+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++\n")
-				if false then {
-					for i <- 0 until numberOfStringBuilders do {
-						lsb.append(f"$i%4d: ${sbs(i)}\n")
-						sbs(i).setLength(0)
+					if false then {
+						println(f"${response.consumerIndex}%3d: $consumerSb")
+					}
+					if false then {
+						val lsb = new StringBuilder(99999)
+						lsb.append("\n>>>>>>>>>>>>>")
+						for i <- 0 until NUMBER_OF_CONSUMERS if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
+						lsb.append("\n<<<<<<<<<<<<<")
+						printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
 					}
 				}
-				println(lsb)
+
+			case ConsumerWasStopped(consumerIndex) =>
+				val consumerSb = sbs(consumerIndex)
+				consumerSb.append(f"(${counter.get()}%6d) <| Stopped; ")
+				if false then {
+					println(f"$consumerIndex%3d: $consumerSb)")
+				}
+
+			case End =>
+				if false then {
+					val lsb = new StringBuilder(1024)
+					for i <- 0 until NUMBER_OF_CONSUMERS do {
+						lsb.append(f"$i%4d: ${sbs(i)}\n")
+					}
+					println(lsb)
+				}
 		}
 
-		val result = Promise[Unit]
+		val result = Promise[Long]
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
 			parent.admin.checkWithin()
-			Behavior.factory {
-				case spawn@Spawn(childEndPointReceiver, replyTo) =>
-					parent.admin.checkWithin()
-					parent.spawn[Int](reactantFactory) { child =>
-						child.admin.checkWithin()
-						Behavior.superviseNest(Behavior.factory { (n: Int) =>
-							child.admin.checkWithin()
-							if n >= 0 then {
-								replyTo.tell(Response(child.admin.id, child.serial, f"${child.serial}%3d <=$n%3d"))
 
-								if n == 9 && (child.serial % 10) == 5 then throw new Exception("a ver que onda")
-
+			parent.admin.Duty.sequenceToArray(
+				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
+					parent.spawn[Consumable](reactantFactory) { consumer =>
+						var completedCounter = 0
+						Behavior.factory { consumable =>
+							if consumable.value >= 0 then {
+								outEndpoint.tell(Response(consumer.admin, consumable.producerIndex, consumerIndex, f"${consumable.value}%4d <-${consumable.producerIndex}%4d"))
+								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
 								Continue
 							} else {
-								Stop
+								completedCounter += 1
+								if completedCounter == NUMBER_OF_PRODUCERS then Stop
+								else Continue
 							}
-						})
-					}.map { child =>
+						}
+					}.map { consumer =>
 						parent.admin.checkWithin()
-						parent.watch(child, ChildWasStopped(child.serial))
-						// println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
-						child.endpointProvider.local[Int]
-					}.trigger(true)(childEndPointReceiver)
-					Continue
+						parent.watch(consumer, ConsumerWasStopped(consumerIndex))
+						consumer.endpointProvider.local[Consumable]
+					}
+				}
+			).trigger(true) { consumersEndpoints =>
+				parent.admin.checkWithin()
+				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
+					parent.spawn[Started.type | Restarted.type](reactantFactory) { producer =>
+						producer.admin.checkWithin()
+						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = Behavior.factory {
+							case Started | Restarted =>
+								if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
+									for consumerEndpoint <- consumersEndpoints do
+										consumerEndpoint.tell(Consumable(producerIndex, restartCount))
+									RestartWith(producerBehavior(restartCount + 1))
+								} else {
+									for consumerEndpoint <- consumersEndpoints do
+										consumerEndpoint.tell(Consumable(producerIndex, -1))
+									Stop
+								}
+						}
+						producerBehavior(0)
+					}.trigger(true) { producer =>
+						parent.admin.checkWithin()
+						parent.watch(producer, ProducerWasStopped)
+					}
+				}
+			}
 
-				case ChildWasStopped(childSerial) =>
+			var activeConsumers = NUMBER_OF_CONSUMERS
+			var activeProducers = NUMBER_OF_PRODUCERS
+
+			Behavior.factory {
+				case cws@ConsumerWasStopped(consumerIndex) =>
 					parent.admin.checkWithin()
-					outEndpoint.tell(ChildWasStopped(childSerial))
-					if parent.children.isEmpty then {
+					outEndpoint.tell(cws)
+					activeConsumers -= 1
+					if activeProducers > 0 || activeConsumers > 0 then {
+						// println(s"Consumer $consumerIndex stopped. Active consumers: ${parent.children.size}")
+						Continue
+					} else {
 						outEndpoint.tell(End)
 						Stop
-					} else {
-						// println(s"Child $childSerial stopped. Active children: ${parent.children.size}")
-						Continue
 					}
-					
-				case s: Signal =>
-					println(s"Received signal: $s")
-					Continue
+				case ProducerWasStopped =>
+					parent.admin.checkWithin()
+					activeProducers -= 1
+					if activeProducers > 0 || activeConsumers > 0 then {
+						// println(s"Consumer $consumerIndex stopped. Active consumers: ${parent.children.size}")
+						Continue
+					} else {
+						outEndpoint.tell(End)
+						Stop
+					}
 			}
 		}.trigger() { parent =>
 			matrix.admin.checkWithin()
-			val parentEndpoint = parent.endpointProvider.local[Spawn]
 
-			val csb: StringBuffer = new StringBuffer(9999)
-			csb.append("Parent started\n")
-			val futures = for j <- 0 until numberOfChildren yield Future {
-				csb.append(s"Future $j begin: ")
-				parentEndpoint.tell(Spawn(
-					childEndpoint => Future {
-						for i <- 0 until numberOfMessagesPerChild do childEndpoint.tell(i)
-						childEndpoint.tell(-1)
-					}(ExecutionContext.global),
-					outEndpoint
-					))
-				csb.append(s"Future $j end. ")
-			}(ExecutionContext.global)
-			if false then {
-				Future.sequence(futures)(ArrayBuffer, ExecutionContext.global).onComplete { _ =>
-					println(s"\nFutures completed: csb=[${csb.toString}]")
-				}(ExecutionContext.global)
-			}
 			if true then {
 				matrixAide.addMonitor(() => {
 					parent.admin.Duty.mineFlat { () =>
@@ -173,17 +202,21 @@ object PruebaConWatcher {
 							parentDiagnostic <- parent.diagnose
 							childrenDiagnostic <- childrenDiagnostics
 						} yield
-							s"""
-							   |Parent's diagnostic: $parentDiagnostic
-							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}""".stripMargin
+							s"""Parent's diagnostic: $parentDiagnostic
+							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}\n>>>>""".stripMargin
 					}.trigger()(println)
 				})
 			}
 
 			parent.stopDuty.trigger() { _ =>
+				val nanoAtEnd = System.nanoTime()
+				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
+				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
+
+				// println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
 				matrixAide.shutdown().thenRun { () =>
 					println("Shutdown completed normally")
-					result.success(())
+					result.success(nanoAtEnd - nanoAtStart)
 				}
 			}
 		}

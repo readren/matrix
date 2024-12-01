@@ -61,7 +61,7 @@ object Prueba {
 
 	def runPrueba(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 
-		val matrixAide = new Shared.MatrixAide(true, s"loop: $loopId, factory: ${reactantFactory.getClass.getSimpleName}")
+		val matrixAide = new Shared.MatrixAide(true, s"<<<< Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", matrixAide)
 		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}\n")
 
@@ -96,17 +96,17 @@ object Prueba {
 				val childSb = sbs(childIndex)
 				childSb.append(f"(${counter.get()}%6d) <| Stopped; ")
 				if false then {
-					println(f"${childIndex}%3d: $childSb)")
+					println(f"$childIndex%3d: $childSb)")
 				}
 
 			case End =>
 				nanoAtEnd = System.nanoTime()
-				val lsb = new StringBuilder(999999)
+				val lsb = new StringBuilder(1024)
 				lsb.append(s"\n+++ Total number of non-negative numbers sent to children: ${counter.get()} +++\n")
 				lsb.append(s"\n+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++\n")
 				if false then {
 					for i <- 0 until numberOfStringBuilders do {
-						lsb.append(f"$i%3d: ${sbs(i)}\n")
+						lsb.append(f"$i%4d: ${sbs(i)}\n")
 						sbs(i).setLength(0)
 					}
 				}
@@ -119,18 +119,18 @@ object Prueba {
 			parent.admin.checkWithin()
 			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			var childrenCount = 0
-			val childrenIndexSeq: AtomicInteger = new AtomicInteger(0)
+			val childrenIndexSeq = new AtomicInteger(0)
 			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
 					parent.admin.checkWithin()
+					val childIndex = childrenIndexSeq.getAndIncrement()
 					parent.spawn[Int](reactantFactory) { child =>
 						child.admin.checkWithin()
-						val childIndex = childrenIndexSeq.getAndIncrement()
 
 						Behavior.factory { (n: Int) =>
 							child.admin.checkWithin()
 							if n >= 0 then {
-								replyTo.tell(Response(child.admin, childIndex, f"${child.serial}%4d <=$n%d"))
+								replyTo.tell(Response(child.admin, childIndex, f"$childIndex%4d <=$n%4d"))
 								Continue
 							} else {
 								parentEndpointForChild.tell(ChildWasStopped(childIndex))
@@ -191,9 +191,8 @@ object Prueba {
 							parentDiagnostic <- parent.diagnose
 							childrenDiagnostic <- childrenDiagnostics
 						} yield
-							s"""
-							   |Parent's diagnostic: $parentDiagnostic
-							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}""".stripMargin
+							s"""Parent's diagnostic: $parentDiagnostic
+							   |Children's diagnostics:\n${childrenDiagnostic.mkString("\n")}\n>>>>""".stripMargin
 					}.trigger()(println)
 				})
 			}
