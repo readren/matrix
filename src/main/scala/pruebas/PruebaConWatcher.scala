@@ -12,7 +12,7 @@ object PruebaConWatcher {
 
 	sealed trait Answer
 
-	case class Response(admin: MatrixAdmin, producerIndex: Int, consumerIndex: Int, text: String) extends Answer
+	case class Response(admin: MatrixAdmin, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
 
 	case object End extends Answer
 
@@ -27,9 +27,16 @@ object PruebaConWatcher {
 
 	case class Consumable(producerIndex: Int, value: Int)
 
-	private val NUMBER_OF_PRODUCERS = 1000
-	private val NUMBER_OF_CONSUMERS = 1000
-	private val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
+	private inline val NUMBER_OF_PRODUCERS = 32
+	private inline val NUMBER_OF_CONSUMERS = 32
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 16
+
+	private inline val haveToShowFinalPhoto = true
+	private inline val haveToShowPhotoEveryTime = false
+	private inline val haveToRecordPhoto = haveToShowFinalPhoto || haveToShowPhotoEveryTime
+	private inline val usePercentages = true
+
+	private class Entry(var value: Int, var updateSerial: Int)
 
 	@main def runPruebaConWatcher(): Unit = {
 		given ExecutionContext = ExecutionContext.global
@@ -70,45 +77,49 @@ object PruebaConWatcher {
 		val counter: AtomicInteger = new AtomicInteger(0)
 
 		var printer: Future[Unit] = Future.successful(())
-		val sbs: Array[StringBuilder] = Array.fill(NUMBER_OF_CONSUMERS)(new StringBuilder(99999))
+		val photo = Array.fill(NUMBER_OF_CONSUMERS, NUMBER_OF_PRODUCERS)(new Entry(-1, 0))
+		val consumerState = Array.fill(NUMBER_OF_CONSUMERS)(false)
 
+		def showPhoto(): Unit = {
+			val lastSerial = counter.get()
+			val lsb = new StringBuilder(99999)
+			lsb.append(">>> photo >>>>>\n")
+			lsb.append("consumer\\producer")
+			for p <- 0 until NUMBER_OF_PRODUCERS do
+				lsb.append(f"| $p%4d  ")
+			for c <- 0 until NUMBER_OF_CONSUMERS do {
+				lsb.append(f"\n  ${consumerState(c)}%5b  $c%5d:   ")
+				for p <- 0 until NUMBER_OF_CONSUMERS do {
+					if usePercentages then lsb.append(f"${(photo(c)(p).updateSerial*1000+500)/lastSerial}%7d ")
+					else lsb.append(f"${photo(c)(p).updateSerial}%7d ")
+				}
+			}
+			lsb.append("\n<<<<<<<<<<<<<")
+			printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
+		}
+
+		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
 			case response: Response =>
 				response.admin.checkWithin()
-				val counterValue = counter.incrementAndGet()
 
-				if false then {
-					val consumerSb = sbs(response.consumerIndex)
-					consumerSb.append(f"($counterValue%6d)${response.text}; ")
+				if haveToRecordPhoto then {
+					val counterValue = counter.incrementAndGet()
+					val entry = photo(response.consumerIndex)(response.producerIndex)
+					assert(response.value == entry.value + 1)
+					entry.value = response.value
+					entry.updateSerial = counterValue
 
-					if false then {
-						println(f"${response.consumerIndex}%3d: $consumerSb")
-					}
-					if false then {
-						val lsb = new StringBuilder(99999)
-						lsb.append("\n>>>>>>>>>>>>>")
-						for i <- 0 until NUMBER_OF_CONSUMERS if sbs(i).nonEmpty do lsb.append(f"\n$i%3d: ${sbs(i).toString}")
-						lsb.append("\n<<<<<<<<<<<<<")
-						printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
-					}
+					if haveToShowPhotoEveryTime then showPhoto()
 				}
 
 			case ConsumerWasStopped(consumerIndex) =>
-				val consumerSb = sbs(consumerIndex)
-				consumerSb.append(f"(${counter.get()}%6d) <| Stopped; ")
-				if false then {
-					println(f"$consumerIndex%3d: $consumerSb)")
-				}
+				consumerState(consumerIndex) = true
 
 			case End =>
-				if false then {
-					val lsb = new StringBuilder(1024)
-					for i <- 0 until NUMBER_OF_CONSUMERS do {
-						lsb.append(f"$i%4d: ${sbs(i)}\n")
-					}
-					println(lsb)
-				}
+				nanoAtEnd = System.nanoTime()
+				if haveToShowFinalPhoto then showPhoto()
 		}
 
 		val result = Promise[Long]
@@ -122,7 +133,7 @@ object PruebaConWatcher {
 						var completedCounter = 0
 						Behavior.factory { consumable =>
 							if consumable.value >= 0 then {
-								outEndpoint.tell(Response(consumer.admin, consumable.producerIndex, consumerIndex, f"${consumable.value}%4d <-${consumable.producerIndex}%4d"))
+								outEndpoint.tell(Response(consumer.admin, consumable.producerIndex, consumerIndex, consumable.value))
 								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
 								Continue
 							} else {
@@ -209,7 +220,6 @@ object PruebaConWatcher {
 			}
 
 			parent.stopDuty.trigger() { _ =>
-				val nanoAtEnd = System.nanoTime()
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
 
