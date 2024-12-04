@@ -12,7 +12,7 @@ object PruebaConWatcher {
 
 	sealed trait Answer
 
-	case class Response(admin: MatrixAdmin, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
+	case class Response(doer: MatrixDoer, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
 
 	case object End extends Answer
 
@@ -102,7 +102,7 @@ object PruebaConWatcher {
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
 			case response: Response =>
-				response.admin.checkWithin()
+				response.doer.checkWithin()
 
 				if haveToRecordPhoto then {
 					val counterValue = counter.incrementAndGet()
@@ -125,15 +125,15 @@ object PruebaConWatcher {
 		val result = Promise[Long]
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
-			parent.admin.checkWithin()
+			parent.doer.checkWithin()
 
-			parent.admin.Duty.sequenceToArray(
+			parent.doer.Duty.sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					parent.spawn[Consumable](reactantFactory) { consumer =>
 						var completedCounter = 0
 						Behavior.factory { consumable =>
 							if consumable.value >= 0 then {
-								outEndpoint.tell(Response(consumer.admin, consumable.producerIndex, consumerIndex, consumable.value))
+								outEndpoint.tell(Response(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
 								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
 								Continue
 							} else {
@@ -143,16 +143,16 @@ object PruebaConWatcher {
 							}
 						}
 					}.map { consumer =>
-						parent.admin.checkWithin()
+						parent.doer.checkWithin()
 						parent.watch(consumer, ConsumerWasStopped(consumerIndex))
 						consumer.endpointProvider.local[Consumable]
 					}
 				}
 			).trigger(true) { consumersEndpoints =>
-				parent.admin.checkWithin()
+				parent.doer.checkWithin()
 				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 					parent.spawn[Started.type | Restarted.type](reactantFactory) { producer =>
-						producer.admin.checkWithin()
+						producer.doer.checkWithin()
 						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = Behavior.factory {
 							case Started | Restarted =>
 								if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
@@ -167,7 +167,7 @@ object PruebaConWatcher {
 						}
 						producerBehavior(0)
 					}.trigger(true) { producer =>
-						parent.admin.checkWithin()
+						parent.doer.checkWithin()
 						parent.watch(producer, ProducerWasStopped)
 					}
 				}
@@ -178,7 +178,7 @@ object PruebaConWatcher {
 
 			Behavior.factory {
 				case cws@ConsumerWasStopped(consumerIndex) =>
-					parent.admin.checkWithin()
+					parent.doer.checkWithin()
 					outEndpoint.tell(cws)
 					activeConsumers -= 1
 					if activeProducers > 0 || activeConsumers > 0 then {
@@ -189,7 +189,7 @@ object PruebaConWatcher {
 						Stop
 					}
 				case ProducerWasStopped =>
-					parent.admin.checkWithin()
+					parent.doer.checkWithin()
 					activeProducers -= 1
 					if activeProducers > 0 || activeConsumers > 0 then {
 						// println(s"Consumer $consumerIndex stopped. Active consumers: ${parent.children.size}")
@@ -200,15 +200,15 @@ object PruebaConWatcher {
 					}
 			}
 		}.trigger() { parent =>
-			matrix.admin.checkWithin()
+			matrix.doer.checkWithin()
 
 			if true then {
 				matrixAide.addMonitor(() => {
-					parent.admin.Duty.mineFlat { () =>
+					parent.doer.Duty.mineFlat { () =>
 						val childrenDiagnosticsDuties = parent.children.values.map(child => {
-							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.admin)
+							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.doer)
 						})
-						val childrenDiagnostics: parent.admin.Duty[Array[String]] = parent.admin.Duty.sequenceToArray(childrenDiagnosticsDuties)
+						val childrenDiagnostics: parent.doer.Duty[Array[String]] = parent.doer.Duty.sequenceToArray(childrenDiagnosticsDuties)
 						for {
 							parentDiagnostic <- parent.diagnose
 							childrenDiagnostic <- childrenDiagnostics

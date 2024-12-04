@@ -18,7 +18,7 @@ class MsgHandlerExecutor(override protected val assistant: Doer.Assistant) exten
 
 	/** Returns a [[Task]] that, when executed, runs the received procedure. Similar to [[Task.mine]] */
 	inline def executeMsgHandler[M](currentBehavior: Behavior[M], message: M): Task[HandleResult[M]] = {
-		queuedExecutionsCounter += 1 // TODO avoid race condition here. Either with AtomicInteger or mutating it within an assigned MatrixAdmin. 
+		queuedExecutionsCounter += 1 // TODO avoid race condition here. Either with AtomicInteger or mutating it within an assigned MatrixDoer. 
 		new Monitored[M](currentBehavior, message)
 	}
 

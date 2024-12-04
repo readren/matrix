@@ -9,7 +9,7 @@ object Matrix {
 	trait Aide {
 		def reportFailure(cause: Throwable): Unit
 
-		def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant
+		def buildDoerAssistant(doerId: Int): Doer.Assistant
 	}
 }
 
@@ -18,18 +18,18 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 	import Matrix.*
 
 	/**
-	 * The array with all the [[MatrixAdmin]] instances of this [[Matrix]]. */
-	private val matrixAdmins: IArray[MatrixAdmin] = {
+	 * The array with all the [[MatrixDoer]] instances of this [[Matrix]]. */
+	private val matrixDoers: IArray[MatrixDoer] = {
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
 		IArray.tabulate(availableProcessors) { index =>
-			val adminId = index + 1
-			new MatrixAdmin(adminId, aide.buildDoerAssistantForAdmin(adminId), thisMatrix)
+			val doerId = index + 1
+			new MatrixDoer(doerId, aide.buildDoerAssistant(doerId), thisMatrix)
 		}
 	}
 
-	val admin: MatrixAdmin = matrixAdmins(0)
+	val doer: MatrixDoer = matrixDoers(0)
 
-	private val spawner: Spawner[admin.type] = new Spawner(Maybe.empty, admin, 0)
+	private val spawner: Spawner[doer.type] = new Spawner(Maybe.empty, doer, 0)
 
 	val uri: URI = {
 		val host = InetAddress.getLocalHost.getHostAddress // Or use getHostAddress for IP
@@ -43,12 +43,12 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	inline def pickAdmin(serialNumber: Reactant.SerialNumber): MatrixAdmin =
-		matrixAdmins(serialNumber % matrixAdmins.length)
+	inline def pickDoer(serialNumber: Reactant.SerialNumber): MatrixDoer =
+		matrixDoers(serialNumber % matrixDoers.length)
 
 	/** thread-safe */
-	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U])(using isSignalTest: IsSignalTest[U]): admin.Duty[ReactantRelay[U]] =
-		admin.Duty.mineFlat { () =>
+	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U])(using isSignalTest: IsSignalTest[U]): doer.Duty[ReactantRelay[U]] =
+		doer.Duty.mineFlat { () =>
 			spawner.createReactant[U](reactantFactory, isSignalTest, initialBehaviorBuilder)
 		}
 

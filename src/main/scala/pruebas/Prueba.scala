@@ -13,7 +13,7 @@ object Prueba {
 
 	sealed trait Answer
 
-	case class Response(admin: MatrixAdmin, childIndex: Int, text: String) extends Answer
+	case class Response(doer: MatrixDoer, childIndex: Int, text: String) extends Answer
 
 	case object End extends Answer
 
@@ -76,7 +76,7 @@ object Prueba {
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
 			case response: Response =>
-				response.admin.checkWithin()
+				response.doer.checkWithin()
 				val counterValue = counter.incrementAndGet()
 				val childSb = sbs(response.childIndex)
 				childSb.append(f"($counterValue%6d)-${response.text}; ")
@@ -116,21 +116,21 @@ object Prueba {
 		val result = Promise[Long]
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
-			parent.admin.checkWithin()
+			parent.doer.checkWithin()
 			val parentEndpointForChild = parent.endpointProvider.local[ChildWasStopped]
 			var childrenCount = 0
 			val childrenIndexSeq = new AtomicInteger(0)
 			Behavior.factory {
 				case spawn@Spawn(childEndPointReceiver, replyTo) =>
-					parent.admin.checkWithin()
+					parent.doer.checkWithin()
 					val childIndex = childrenIndexSeq.getAndIncrement()
 					parent.spawn[Int](reactantFactory) { child =>
-						child.admin.checkWithin()
+						child.doer.checkWithin()
 
 						Behavior.factory { (n: Int) =>
-							child.admin.checkWithin()
+							child.doer.checkWithin()
 							if n >= 0 then {
-								replyTo.tell(Response(child.admin, childIndex, f"$childIndex%4d <=$n%4d"))
+								replyTo.tell(Response(child.doer, childIndex, f"$childIndex%4d <=$n%4d"))
 								Continue
 							} else {
 								parentEndpointForChild.tell(ChildWasStopped(childIndex))
@@ -138,7 +138,7 @@ object Prueba {
 							}
 						}
 					}.map { child =>
-						parent.admin.checkWithin()
+						parent.doer.checkWithin()
 						childrenCount += 1
 						// println(s"Child ${child.serial} spawned. Active children: ${parent.children.size}")
 						child.endpointProvider.local[Int]
@@ -146,7 +146,7 @@ object Prueba {
 					Continue
 
 				case cws@ChildWasStopped(childIndex) =>
-					parent.admin.checkWithin()
+					parent.doer.checkWithin()
 					childrenCount -= 1
 					outEndpoint.tell(cws)
 					if childrenCount == 0 then {
@@ -159,7 +159,7 @@ object Prueba {
 
 			}
 		}.trigger() { parent =>
-			matrix.admin.checkWithin()
+			matrix.doer.checkWithin()
 			val parentEndpoint = parent.endpointProvider.local[Spawn]
 
 			val csb: StringBuffer = new StringBuffer(9999)
@@ -182,11 +182,11 @@ object Prueba {
 			}
 			if true then {
 				matrixAide.addMonitor(() => {
-					parent.admin.Duty.mineFlat { () =>
+					parent.doer.Duty.mineFlat { () =>
 						val childrenDiagnosticsDuties = parent.children.values.map(child => {
-							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.admin)
+							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.doer)
 						})
-						val childrenDiagnostics: parent.admin.Duty[Array[String]] = parent.admin.Duty.sequenceToArray(childrenDiagnosticsDuties)
+						val childrenDiagnostics: parent.doer.Duty[Array[String]] = parent.doer.Duty.sequenceToArray(childrenDiagnosticsDuties)
 						for {
 							parentDiagnostic <- parent.diagnose
 							childrenDiagnostic <- childrenDiagnostics

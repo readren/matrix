@@ -12,7 +12,7 @@ abstract class ReactantRelay[-U] {
 	/** thread-safe */
 	val serial: Reactant.SerialNumber
 	/** thread-safe */
-	val admin: MatrixAdmin
+	val doer: MatrixDoer
 	/** thread-safe */
 	val endpointProvider: EndpointProvider[U]
 	/** thread-safe */
@@ -24,10 +24,10 @@ abstract class ReactantRelay[-U] {
 	 * This method is thread-safe. */
 	def isMarkedToBeStopped: Boolean
 	
-	/** Should be called withing the [[admin]]. */
-	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): admin.Duty[ReactantRelay[A]]
+	/** Should be called withing the [[doer]]. */
+	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]]
 
-	/** Should be called within the [[admin]]. */
+	/** Should be called within the [[doer]]. */
 	def children: MapView[Long, ReactantRelay[?]]
 
 	/**
@@ -38,19 +38,19 @@ abstract class ReactantRelay[-U] {
 	 * 
 	 * This method is thread-safe.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
-	def stop(): admin.Duty[Unit]
+	def stop(): doer.Duty[Unit]
 	
 	/** A [[SubscriptableDuty]] that completes when this [[Reactant]] is fully stopped (after the [[StopReceived]] signal was handled and this [[Reactant]] was removed from its progenitor's children list).
 	 * 
 	 * This duty is the same as the returned by the [[stop]] method.
 	 * 
- 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called withing the [[admin]]. */
-	def stopDuty: admin.SubscriptableDuty[Unit]
+ 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called withing the [[doer]]. */
+	def stopDuty: doer.SubscriptableDuty[Unit]
 
 	/** Registers this [[Reactant]] to be notified with the provided signal when the specified [[Reactant]] is fully stopped.
-	 * The notification is not sent to this [[Reactant]]'s [[Receiver]] as a regular messages. It behaves like signals: an execution of {{{behavior.handle(childStoppedSignal)}}} is queued directly in the task-queue of this [[Reactant.admin]]'s executor.
+	 * The notification is not sent to this [[Reactant]]'s [[Receiver]] as a regular messages. It behaves like signals: an execution of {{{behavior.handle(childStoppedSignal)}}} is queued directly in the task-queue of this [[Reactant.doer]]'s executor.
 	 * 
-	 * Should be called within the [[admin]].
+	 * Should be called within the [[doer]].
 	 * @param watchedReactant the [[Reactant]] to be watched.
 	 * @param stoppedSignal the signal that the [[Behavior.handle]] method of this [[Reactant]]'s behavior will receive after the `watchedReactant` is fully stopped.
 	 * @param univocally when `true`, existing subscriptions to the `watchedReactant` are undone. This mode prevents undesired repeated subscriptions after a restart.
@@ -59,5 +59,5 @@ abstract class ReactantRelay[-U] {
 	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true): Maybe[WatchSubscription]
 	
 	/** Returns debug info about this reactant. */
-	def diagnose: admin.Duty[ReactantDiagnostic]
+	def diagnose: doer.Duty[ReactantDiagnostic]
 }

@@ -2,32 +2,32 @@ package readren.matrix
 
 import readren.taskflow.{AbstractDoer, Doer}
 
-object MatrixAdmin {
+object MatrixDoer {
 
-	inline val checkWeAreWithingTheAdminIsEnabled = true
+	inline val checkWeAreWithingTheDoerIsEnabled = true
 
-	val adminIdThreadLocal: ThreadLocal[Int] =
-		if checkWeAreWithingTheAdminIsEnabled then ThreadLocal.withInitial[Int](() => -1)
+	val doerIdThreadLocal: ThreadLocal[Int] =
+		if checkWeAreWithingTheDoerIsEnabled then ThreadLocal.withInitial[Int](() => -1)
 		else null
 
 	inline def checkOutside(): Unit = {
-		inline if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
-			val idOnThread = MatrixAdmin.adminIdThreadLocal.get()
+		inline if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
+			val idOnThread = MatrixDoer.doerIdThreadLocal.get()
 			assert(idOnThread <= 0, s"expected<=0, onThread=$idOnThread")
 		}
 	}
 }
 
-class MatrixAdmin(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) extends AbstractDoer {
+class MatrixDoer(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) extends AbstractDoer {
 
 	override protected val assistant: Doer.Assistant = {
-		if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
+		if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
 			new Doer.Assistant {
 				private val backingAssistant = anAssistant
 
 				override def queueForSequentialExecution(runnable: Runnable): Unit = {
 					backingAssistant.queueForSequentialExecution { () =>
-						MatrixAdmin.adminIdThreadLocal.set(id)
+						MatrixDoer.doerIdThreadLocal.set(id)
 						runnable.run()
 					}
 				}
@@ -40,8 +40,8 @@ class MatrixAdmin(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) 
 	val dutyReadyUnit: Duty[Unit] = Duty.ready(())
 
 	inline def checkWithin(): Unit = {
-		inline if MatrixAdmin.checkWeAreWithingTheAdminIsEnabled then {
-			val idOnThread = MatrixAdmin.adminIdThreadLocal.get()
+		inline if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
+			val idOnThread = MatrixDoer.doerIdThreadLocal.get()
 			assert(idOnThread == id, s"expected=$id, onThread=$idOnThread")
 		}
 	}

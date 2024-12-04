@@ -9,23 +9,23 @@ import readren.taskflow.Maybe
 trait Inbox[+M] {
 
 	/** Withdraws the next pending message.
-	 * The implementation may assume that this method is called withing the [[MatrixAdmin]] of the owning [[Reactant]] only. */
+	 * The implementation may assume that this method is called withing the [[MatrixDoer]] of the owning [[Reactant]] only. */
 	def withdraw(): Maybe[M]
 
 
 	/** Checks if there are no pending messages.
-	 * Should be called withing the [[MatrixAdmin]] of the owning [[Reactant]] only. */
+	 * Should be called withing the [[MatrixDoer]] of the owning [[Reactant]] only. */
 	def maybeNonEmpty: Boolean
 
-	/** Should be called within the [[MatrixAdmin]] of the owning [[Reactant]] only.
+	/** Should be called within the [[MatrixDoer]] of the owning [[Reactant]] only.
 	 * Used for diagnostic only.
-	 * The thread-safety of the returned [[Iterator]] depends on this [[Inbox]] implementation. To ensure correct usage use it withing said [[MatrixAdmin]] only.
+	 * The thread-safety of the returned [[Iterator]] depends on this [[Inbox]] implementation. To ensure correct usage use it withing said [[MatrixDoer]] only.
 	 * The returned iterator may be weakly consistent. */
 	def iterator: Iterator[M]
 
 	/** The number of pending messages.
 	 * Used for diagnostic only.
-	 * Should be called withing the [[MatrixAdmin]] of the owning [[Ractant]] only.
+	 * Should be called withing the [[MatrixDoer]] of the owning [[Ractant]] only.
 	 * */
 	def size: Int
 }

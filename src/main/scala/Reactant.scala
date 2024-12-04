@@ -24,13 +24,13 @@ import Reactant.*
 
 /**
  *
- * @param admin the [[MatrixAdmin]] assigned to this instance.
+ * @param doer the [[MatrixDoer]] assigned to this instance.
  * @tparam U the type of the messages this reactant understands.
  */
 abstract class Reactant[U](
 	val serial: SerialNumber,
-	progenitor: Spawner[MatrixAdmin],
-	override val admin: MatrixAdmin,
+	progenitor: Spawner[MatrixDoer],
+	override val doer: MatrixDoer,
 	isSignalTest: IsSignalTest[U],
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 ) extends ReactantRelay[U] { thisReactant =>
@@ -42,28 +42,28 @@ abstract class Reactant[U](
 	 * Its purpose is to avoid consuming messages while this [[Reactant]] is starting, restarting, or stopping.
 	 * It is set to true only by the [[beReadyToProcess()]] method, which ensures all pending messages are processed before the transition to `true`.
 	 * This flag should be the only one that determines when "inbox becomes nonempty" notifications (calls to [[onInboxBecomesNonempty]]) are ignored in order to compensate the ignored notifications when it is set to `true`.
-	 * Should be accessed within the [[admin]].
+	 * Should be accessed within the [[doer]].
 	 * */
 	private var isReadyToProcessMsg: Boolean = false
 
 	/** Tells if this [[Reactant]] was marked to be stopped.
 	 * Is set to true by the [[Reactant.stop]] method which can be called at any moment .
 	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected).
-	 * It is volatile to achieve its only purpose: to avoid processing the next pending messages after [[stop]] was called from outside the [[admin]] thread; otherwise the [[stopWasStarted]] would be sufficient. */
+	 * It is volatile to achieve its only purpose: to avoid processing the next pending messages after [[stop]] was called from outside the [[doer]] thread; otherwise the [[stopWasStarted]] would be sufficient. */
 	@volatile private var isMarkedToStop: Boolean = false
 
 	/** Tells if the stop process was already started.
-	 * Is set to true by the [[Reactant.selfStop]] method which is called withing the [[admin]].
+	 * Is set to true by the [[Reactant.selfStop]] method which is called withing the [[doer]].
 	 * It can't be cleared. Once it is true it will remain true forever (until it is garbage-collected).
 	 * Its purpose is to avoid the [[processMessages()]] be called after the stop process has started.
-	 * Should be accessed within the [[admin]] only.
+	 * Should be accessed within the [[doer]] only.
 	 * */
 	private var stopWasStarted = false
 
-	private val stopCovenant = new admin.Covenant[Unit]
+	private val stopCovenant = new doer.Covenant[Unit]
 
-	private var oSpawner: Maybe[Spawner[admin.type]] = Maybe.empty
-	/** Should be accessed withing the [[admin]] */
+	private var oSpawner: Maybe[Spawner[doer.type]] = Maybe.empty
+	/** Should be accessed withing the [[doer]] */
 	private var childrenRelays: MapView[Long, ReactantRelay[?]] = MapView.empty
 
 	override val endpointProvider: EndpointProvider[U]
@@ -83,25 +83,25 @@ abstract class Reactant[U](
 	private val activeWatchSubscriptions: util.IdentityHashMap[ReactantRelay[?], List[WatchSubscription]] = new util.IdentityHashMap()
 
 	/**
-	 * Should be called only once and within the [[admin]].
+	 * Should be called only once and within the [[doer]].
 	 * Design note: This method is necessary to initialize the objects referenced by this [[Reactant]] that also need a reference to this [[Reactant]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
-	def initialize(): admin.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
-		admin.checkWithin()
+	def initialize(): doer.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
+		doer.checkWithin()
 		assert(currentBehavior == null)
 		selfStart(false, initialBehaviorBuilder).map(_ => thisReactant) // TODO considerar hacer que selfStart devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
 	}
 
 	/** Starts or restarts this [[Reactant]].
-	 * Should be called only once and within the [[admin]].
+	 * Should be called only once and within the [[doer]].
 	 * */
-	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
-		admin.checkWithin()
+	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
+		doer.checkWithin()
 		currentBehavior = behaviorBuilder(thisReactant)
 		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
-				admin.dutyReadyUnit
+				doer.dutyReadyUnit
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart[U @unchecked] =>
@@ -109,11 +109,11 @@ abstract class Reactant[U](
 		}
 	}
 
-	/** Should be called withing the [[admin]]. */
-	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): admin.Duty[ReactantRelay[A]] = {
-		admin.checkWithin()
+	/** Should be called withing the [[doer]]. */
+	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]] = {
+		doer.checkWithin()
 		oSpawner.fold {
-				val spawner = new Spawner[admin.type](Maybe.some(thisReactant), admin, serial)
+				val spawner = new Spawner[doer.type](Maybe.some(thisReactant), doer, serial)
 				oSpawner = Maybe.some(spawner)
 				childrenRelays = spawner.childrenView
 				spawner
@@ -123,17 +123,17 @@ abstract class Reactant[U](
 
 	/** The children of this [[Reactant]] by serial number.
 	 *
-	 * Should be called withing the [[admin]]. */
+	 * Should be called withing the [[doer]]. */
 	override def children: MapView[Long, ReactantRelay[?]] = {
-		admin.checkWithin()
+		doer.checkWithin()
 		childrenRelays
 	}
 
-	/** should be called within the [[admin]]. */
-	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[Unit] = {
-		admin.checkWithin()
+	/** should be called within the [[doer]]. */
+	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
+		doer.checkWithin()
 
-		def restartMe(): admin.Duty[Unit] = {
+		def restartMe(): doer.Duty[Unit] = {
 			// send RestartReceived signal
 			val hr = handleSignal(isSignalTest.restartReceived)
 			mapHrToDecision(hr) match {
@@ -145,11 +145,11 @@ abstract class Reactant[U](
 					// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one. The signal handler is NOT called again.
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
-							oSpawner.fold(admin.dutyReadyUnit) { spawner =>
+							oSpawner.fold(doer.dutyReadyUnit) { spawner =>
 								spawner.stopChildren()
 							}
 						}
-						else admin.dutyReadyUnit
+						else doer.dutyReadyUnit
 					stopsChildrenIfInstructed.flatMap(_ => selfStart(true, tr.restartBehaviorBuilder))
 			}
 		}
@@ -163,10 +163,10 @@ abstract class Reactant[U](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: admin.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
+	override def stopDuty: doer.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
 
 	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM, univocally: Boolean = true): Maybe[WatchSubscription] = {
-		admin.checkWithin()
+		doer.checkWithin()
 		if stopWasStarted then Maybe.empty else {
 			object observer extends AbstractFunction1[Unit, Unit], WatchSubscription {
 				private def work(): Unit = {
@@ -181,17 +181,17 @@ abstract class Reactant[U](
 				}
 
 				override def apply(unit: Unit): Unit = {
-					if watchedReactant.admin eq thisReactant.admin then work()
-					else admin.queueForSequentialExecution(work())
+					if watchedReactant.doer eq thisReactant.doer then work()
+					else doer.queueForSequentialExecution(work())
 				}
 
 				override def unsubscribe(): Unit = {
-					admin.checkWithin()
+					doer.checkWithin()
 					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
 					activeWatchSubscriptions.computeIfPresent(watchedReactant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
-					if watchedReactant.admin eq thisReactant.admin then watchedReactant.stopDuty.unsubscribe(observer)
-					else watchedReactant.admin.queueForSequentialExecution(watchedReactant.stopDuty.unsubscribe(observer))
+					if watchedReactant.doer eq thisReactant.doer then watchedReactant.stopDuty.unsubscribe(observer)
+					else watchedReactant.doer.queueForSequentialExecution(watchedReactant.stopDuty.unsubscribe(observer))
 					
 				}
 			}
@@ -211,31 +211,31 @@ abstract class Reactant[U](
 		}
 	}
 
-	override final def stop(): admin.Duty[Unit] = {
+	override final def stop(): doer.Duty[Unit] = {
 		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] duty might be triggered more than once, but that is not harmful because it discards repetitions.
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
 			isMarkedToStop = true
-			admin.queueForSequentialExecution(selfStop())
+			doer.queueForSequentialExecution(selfStop())
 		}
 		stopCovenant.subscriptableDuty
 	}
 
 	/**
 	 * Stops this [[Reactant]].
-	 * Should be called within the [[admin]].
+	 * Should be called within the [[doer]].
 	 * Supports being called more than one time.
 	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
-	private final def selfStop(): admin.Duty[Unit] = {
-		admin.checkWithin()
+	private final def selfStop(): doer.Duty[Unit] = {
+		doer.checkWithin()
 
-		/** should be called within the [[admin]]. */
+		/** should be called within the [[doer]]. */
 		def stopMe(): Unit = {
 			// execute the signal handler and ignore its result
 			handleSignal(isSignalTest.stopReceived)
 			// remove myself form progenitor children
-			progenitor.admin.queueForSequentialExecution {
+			progenitor.doer.queueForSequentialExecution {
 				progenitor.removeChild(thisReactant.serial)
 				stopCovenant.fulfill(())()
 			}
@@ -259,7 +259,7 @@ abstract class Reactant[U](
 
 
 	private final def mapHrToDecision(hr: HandleResult[U]): Decision[U] = {
-		admin.checkWithin()
+		doer.checkWithin()
 		hr match {
 			case cw: ContinueWith[U @unchecked] =>
 				currentBehavior = cw.behavior
@@ -281,11 +281,11 @@ abstract class Reactant[U](
 	/** Sets the "ready to process messages" flag of this reactant after processing all messages that were submitted to the [[Receiver]] but are not jet visible in the [[Inbox]].
 	 * This is the only method that sets the [[isReadyToProcessMsg]] flag to true.
 	 * Since the "inbox becomes nonempty" notifications from the [[Receiver]] are ignored while its value was false, the transition to `true` should be done after ensuring all pending messages were processed.
-	 * Should be called withing the [[admin]] only. */
+	 * Should be called withing the [[doer]] only. */
 	private def beReadyToProcess(): Unit = {
-		admin.checkWithin()
+		doer.checkWithin()
 		assert(!stopWasStarted && !isReadyToProcessMsg)
-		if inbox.maybeNonEmpty then admin.queueForSequentialExecution {
+		if inbox.maybeNonEmpty then doer.queueForSequentialExecution {
 			if !stopWasStarted then {
 				inbox.withdraw().fold(beReadyToProcess())(processMessages)
 			}
@@ -293,11 +293,11 @@ abstract class Reactant[U](
 	}
 
 	/** Should be called by the [[Receiver]] whenever it receives a message while the [[Inbox]] is empty.
-	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[admin]] of this reactant).
-	 * Should be called within the [[admin]] only.
+	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages concurrently (not within the [[doer]] of this reactant).
+	 * Should be called within the [[doer]] only.
 	 * */
 	final def onInboxBecomesNonempty(): Unit = {
-		admin.checkWithin()
+		doer.checkWithin()
 		if isReadyToProcessMsg then {
 			isReadyToProcessMsg = false
 			inbox.withdraw().fold(beReadyToProcess())(processMessages)
@@ -305,12 +305,12 @@ abstract class Reactant[U](
 	}
 
 	/** Should be called by the [[Receiver]] whenever it receives a message while the [[Inbox]] is empty.
-	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages within the [[admin]] of this reactant.
-	 * Should be called within the [[admin]] only.
+	 * Differs from the other variant in that this method is designed for implementations of the [[Receiver]] which queue messages within the [[doer]] of this reactant.
+	 * Should be called within the [[doer]] only.
 	 * @param firstMsg the message received while the inbox was empty.
 	 * @return true if the received message was not processed and should be queued in the inbox; false if it was processed. */
 	final def onInboxBecomesNonempty(firstMsg: U): Boolean = {
-		admin.checkWithin()
+		doer.checkWithin()
 		if isReadyToProcessMsg then {
 			isReadyToProcessMsg = false
 			processMessages(firstMsg)
@@ -319,9 +319,9 @@ abstract class Reactant[U](
 	}
 
 	/** Process the received message and all the pending messages queue in the [[Reactant.inbox]]
-	 * Should be called within the admin */
+	 * Should be called within the doer */
 	private final def processMessages(firstMessage: U): Unit = {
-		admin.checkWithin()
+		doer.checkWithin()
 
 		inline def handleMsg(message: U, behavior: Behavior[U]): Decision[U] = mapHrToDecision(behavior.handle(message))
 
@@ -349,8 +349,8 @@ abstract class Reactant[U](
 	}
 
 
-	override def diagnose: admin.Duty[ReactantDiagnostic] =
-		admin.Duty.mine { () =>
+	override def diagnose: doer.Duty[ReactantDiagnostic] =
+		doer.Duty.mine { () =>
 			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.maybeNonEmpty, inbox.size, inbox.iterator)
 		}
 }

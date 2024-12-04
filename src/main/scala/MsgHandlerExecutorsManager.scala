@@ -34,11 +34,11 @@ class MsgHandlerExecutorsManager(aide: MsgHandlerExecutorsManager.Aide) {
 			if previousIndex == 0 then leastLoadedDoer
 			else {
 				val index = previousIndex - 1
-				val doer = msgHandlerExecutors(index)
-				val load = doer.load
+				val executor = msgHandlerExecutors(index)
+				val load = executor.load
 				loadByIndex(index) = load
 				if load < minLoad then {
-					findLeastLoadedDoerUsingCurrentMetrics(index, load, doer)
+					findLeastLoadedDoerUsingCurrentMetrics(index, load, executor)
 				} else {
 					findLeastLoadedDoerUsingCurrentMetrics(index, minLoad, leastLoadedDoer)
 				}
@@ -50,7 +50,6 @@ class MsgHandlerExecutorsManager(aide: MsgHandlerExecutorsManager.Aide) {
 			if previousIndex == 0 then leastLoadedDoerIndex
 			else {
 				val index = previousIndex - 1
-				val doer = msgHandlerExecutors(index)
 				val load = loadByIndex(index)
 				if load == 0 then index
 				else if load < minLoad then {

@@ -18,7 +18,7 @@ object Shared {
 		private val monitoringSchedule = if isMonitoringEnabled then Maybe.some(startMonitoring()) else Maybe.empty
 		var scheduler: Maybe[ScheduledExecutorService] = Maybe.empty
 
-		override def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant = new Doer.Assistant {
+		override def buildDoerAssistant(doerId: Int): Doer.Assistant = new Doer.Assistant {
 
 			private val doSiThExInfo = {
 

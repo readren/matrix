@@ -10,48 +10,48 @@ object Spawner {
 }
 
 /** A progenitor of [[Reactant]]s.
- * @param admin the [[MatrixAdmin]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createReactant]].
- * If this [[Spawner]] has an owner then the [[MatrixAdmin]] referred by this parameter should be the same as the assigned to the `owner`.
- * @param initialReactantSerial child reactants' serial will start at this value. Allows to distribute the load of [[MatrixAdmin]] more evenly among siblings.
- * @tparam MA the singleton type of the [[MatrixAdmin]] assigned to the `owner`.  
+ * @param doer the [[MatrixDoer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createReactant]].
+ * If this [[Spawner]] has an owner then the [[MatrixDoer]] referred by this parameter should be the same as the assigned to the `owner`.
+ * @param initialReactantSerial child reactants' serial will start at this value. Allows to distribute the load of [[MatrixDoer]] more evenly among siblings.
+ * @tparam MA the singleton type of the [[MatrixDoer]] assigned to the `owner`.
  * */
-class Spawner[+MA <: MatrixAdmin](val owner: Maybe[Reactant[?]], val admin: MA, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
-	assert(owner.fold(true)(_.admin eq admin))
+class Spawner[+MA <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MA, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
+	assert(owner.fold(true)(_.doer eq doer))
 
-	/** Should be accessed only within the [[admin]] */
+	/** Should be accessed only within the [[doer]] */
 	private var reactantSerialSequencer: Reactant.SerialNumber = initialReactantSerial
 
-	/** Should be accessed within the [[admin]] only. */
+	/** Should be accessed within the [[doer]] only. */
 	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
 	
 	/** A view of the children that aren't fully stopped.
-	 * Should be accessed withing the [[admin]]. */
+	 * Should be accessed withing the [[doer]]. */
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
-	/** Should be called withing the [[admin]] only. */
-	def createReactant[U](reactantFactory: ReactantFactory, isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): admin.Duty[ReactantRelay[U]] = {
-		admin.checkWithin()
+	/** Should be called withing the [[doer]] only. */
+	def createReactant[U](reactantFactory: ReactantFactory, isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[ReactantRelay[U]] = {
+		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
-		val reactantAdmin = admin.matrix.pickAdmin(reactantSerial)
-		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantAdmin, isSignalTest, initialBehaviorBuilder)
-			.onBehalfOf(admin)
+		val reactantDoer = doer.matrix.pickDoer(reactantSerial)
+		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantDoer, isSignalTest, initialBehaviorBuilder)
+			.onBehalfOf(doer)
 			.map { reactant =>
 				children.addOne(reactantSerial, reactant)
 				reactant
 			}
 	}
 
-	/** should be called withing the admin */
-	def stopChildren(): admin.Duty[Array[Unit]] = {
-		admin.checkWithin()
-		val stopDuties = childrenView.values.map(child => admin.Duty.foreign(child.admin)(child.stop()))
-		admin.Duty.sequenceToArray(stopDuties)
+	/** should be called withing the doer */
+	def stopChildren(): doer.Duty[Array[Unit]] = {
+		doer.checkWithin()
+		val stopDuties = childrenView.values.map(child => doer.Duty.foreign(child.doer)(child.stop()))
+		doer.Duty.sequenceToArray(stopDuties)
 	}
 
-	/** should be called withing the admin */
+	/** should be called withing the doer */
 	def removeChild(childSerial: Long): Unit = {
-		admin.checkWithin()
+		doer.checkWithin()
 		children -= childSerial
 	}
 }

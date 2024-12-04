@@ -8,7 +8,7 @@ class DefaultAide extends Matrix.Aide { thisAide =>
 
 	override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 	
-	override def buildDoerAssistantForAdmin(adminId: Int): Doer.Assistant = new Doer.Assistant {
+	override def buildDoerAssistant(doerId: Int): Doer.Assistant = new Doer.Assistant {
 		private val doSiThEx = Executors.newSingleThreadExecutor()
 
 		override def queueForSequentialExecution(runnable: Runnable): Unit = doSiThEx.execute(runnable)
