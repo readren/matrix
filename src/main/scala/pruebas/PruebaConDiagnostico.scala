@@ -8,7 +8,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
 import scala.util.{Success, Failure}
 
-object PruebaConWatcher {
+object PruebaConDiagnostico {
 
 	sealed trait Answer
 
@@ -39,7 +39,7 @@ object PruebaConWatcher {
 
 	private class Entry(var value: Int, var updateSerial: Int)
 
-	@main def runPruebaConWatcher(): Unit = {
+	@main def runPruebaConDiagnostico(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
 		val numberOfWarmUpRepetitions = 1
@@ -68,6 +68,7 @@ object PruebaConWatcher {
 		}
 
 		StdIn.readLine()
+		println("Key caught. Main thread is ending.")
 	}
 
 	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
@@ -229,10 +230,9 @@ object PruebaConWatcher {
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
 
 				// println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
-				matrix.doerProvider.shutdown().thenRun { () =>
-					println("Shutdown completed normally")
-					result.success(nanoAtEnd - nanoAtStart)
-				}
+				matrix.doerProvider.shutdown()
+				println("Shutdown completed normally")
+				result.success(nanoAtEnd - nanoAtStart)
 			}
 		}
 		result.future

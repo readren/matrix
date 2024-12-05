@@ -20,8 +20,7 @@ object Shared {
 
 		private val executors: ArrayBuffer[ExecutorInfo] = ArrayBuffer.empty
 		private var activityEvidence: Boolean = false
-		private val monitoringSchedule = if isMonitoringEnabled then Maybe.some(startMonitoring()) else Maybe.empty
-		private var oScheduler: Maybe[ScheduledExecutorService] = Maybe.empty
+		private val oScheduler = if isMonitoringEnabled then Maybe.some(startMonitoring()) else Maybe.empty
 
 		private val matrixDoers: IArray[MatrixDoer] = {
 			val availableProcessors = Runtime.getRuntime.availableProcessors()
@@ -51,29 +50,23 @@ object Shared {
 			override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 		}
 
-		def shutdown(): CompletableFuture[Void] = {
-			monitoringSchedule.foreach(_.cancel(false))
+		def shutdown(): Unit = {
 			oScheduler.foreach { s =>
 				s.shutdown()
 				s.awaitTermination(1, TimeUnit.SECONDS)
 			}
-			CompletableFuture.runAsync(
-				() => {
-					executors.foreach { ei =>
-						ei.executor.shutdown()
-					}
-					executors.foreach { ei =>
-						ei.executor.awaitTermination(1, TimeUnit.SECONDS)
-					}
-				},
-				CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS)
-			).thenRunAsync(() => (), CompletableFuture.delayedExecutor(10, TimeUnit.MILLISECONDS))
+			executors.foreach { ei =>
+				ei.executor.shutdown()
+			}
+			executors.foreach { ei =>
+				ei.executor.awaitTermination(1, TimeUnit.SECONDS)
+			}
 		}
 
-		private def startMonitoring(): ScheduledFuture[?] = {
+		private def startMonitoring(): ScheduledExecutorService = {
 			val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
-			oScheduler = Maybe.some(scheduler)
 			scheduler.scheduleWithFixedDelay(monitor, 2000, 2000, TimeUnit.MILLISECONDS)
+			scheduler
 		}
 
 		private object monitor extends Runnable {
