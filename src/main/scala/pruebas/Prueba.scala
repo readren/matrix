@@ -61,7 +61,7 @@ object Prueba {
 
 	def runPrueba(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 
-		val matrixAide = new Shared.MatrixAide(true, s"<<<< Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
+		val matrixAide = new Shared.TestingAide(true, s"<<<< Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", matrixAide)
 		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}\n")
 
@@ -181,7 +181,7 @@ object Prueba {
 				}(ExecutionContext.global)
 			}
 			if true then {
-				matrixAide.addMonitor(() => {
+				matrix.doerProvider.addMonitor(() => {
 					parent.doer.Duty.mineFlat { () =>
 						val childrenDiagnosticsDuties = parent.children.values.map(child => {
 							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.doer)
@@ -198,8 +198,8 @@ object Prueba {
 			}
 
 			parent.stopDuty.trigger() { _ =>
-				println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
-				matrixAide.shutdown().thenRun { () =>
+				println(s"After successful completion diagnostic: ${matrix.doerProvider.diagnose()}")
+				matrix.doerProvider.shutdown().thenRun { () =>
 					println("Shutdown completed normally")
 					result.success(nanoAtEnd - nanoAtStart)
 				}

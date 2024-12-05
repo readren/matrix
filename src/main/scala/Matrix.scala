@@ -6,28 +6,22 @@ import java.net.{InetAddress, URI}
 
 
 object Matrix {
-	trait Aide {
-		def reportFailure(cause: Throwable): Unit
+	trait DoerProvider {
+		def pick(serial: Int): MatrixDoer
+	}
 
-		def buildDoerAssistant(doerId: Int): Doer.Assistant
+	trait Aide[DP <: DoerProvider] {
+		def buildDoerProvider(owner: Matrix[DP]): DP
 	}
 }
 
-class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
+class Matrix[+DP <: Matrix.DoerProvider](val name: String, aide: Matrix.Aide[DP]) { thisMatrix =>
 
 	import Matrix.*
 
-	/**
-	 * The array with all the [[MatrixDoer]] instances of this [[Matrix]]. */
-	private val matrixDoers: IArray[MatrixDoer] = {
-		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		IArray.tabulate(availableProcessors) { index =>
-			val doerId = index + 1
-			new MatrixDoer(doerId, aide.buildDoerAssistant(doerId), thisMatrix)
-		}
-	}
+	val doerProvider: DP = aide.buildDoerProvider(thisMatrix)
 
-	val doer: MatrixDoer = matrixDoers(0)
+	val doer: MatrixDoer = pickDoer(0)
 
 	private val spawner: Spawner[doer.type] = new Spawner(Maybe.empty, doer, 0)
 
@@ -43,8 +37,7 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	inline def pickDoer(serialNumber: Reactant.SerialNumber): MatrixDoer =
-		matrixDoers(serialNumber % matrixDoers.length)
+	inline def pickDoer(serialNumber: Reactant.SerialNumber): MatrixDoer = doerProvider.pick(serialNumber)
 
 	/** thread-safe */
 	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U])(using isSignalTest: IsSignalTest[U]): doer.Duty[ReactantRelay[U]] =
@@ -53,8 +46,9 @@ class Matrix(val name: String, aide: Matrix.Aide) { thisMatrix =>
 		}
 
 	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
-		val receiver = new Receiver[A]{
+		val receiver = new Receiver[A] {
 			override def submit(message: A): Unit = callback(message)
+
 			override def uri: _root_.java.net.URI = thisMatrix.uri
 		}
 		// TODO register the receiver in order to be accessible from remote JVMs.

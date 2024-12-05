@@ -6,7 +6,7 @@ import rf.{RegularRf, SequentialMsgBufferRf}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
-import scala.util.Success
+import scala.util.{Success, Failure}
 
 object PruebaConWatcher {
 
@@ -19,6 +19,7 @@ object PruebaConWatcher {
 	sealed trait Cmd
 
 	case object ProducerWasStopped extends Cmd
+
 	case class ConsumerWasStopped(childIndex: Int) extends Cmd, Answer
 
 	//	case class Send(text: String)
@@ -41,8 +42,8 @@ object PruebaConWatcher {
 	@main def runPruebaConWatcher(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
-		val numberOfWarmUpRepetitions = 4
-		val numberOfMeasuredOfRepetitions = 16
+		val numberOfWarmUpRepetitions = 1
+		val numberOfMeasuredOfRepetitions = 3
 		var totalFuture = Future.successful[(Long, Long)]((0L, 0L))
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
 			totalFuture = totalFuture.flatMap { durationAccumulator =>
@@ -56,12 +57,14 @@ object PruebaConWatcher {
 				}
 			}
 		}
-		totalFuture.andThen { case Success(totalDuration) =>
-			println(
-				s"""All matrix were shutdown
-				   |Average duration: regularRf-> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, sequentialMsgBufferRfTotalDuration-> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
-				   |Press <enter> to exit""".stripMargin
-			)
+		totalFuture.andThen {
+			case Success(totalDuration) =>
+				println(
+					s"""All matrix were shutdown
+					   |Average duration: regularRf-> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, sequentialMsgBufferRfTotalDuration-> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Press <enter> to exit""".stripMargin
+				)
+			case Failure(cause) => cause.printStackTrace()	
 		}
 
 		StdIn.readLine()
@@ -69,8 +72,8 @@ object PruebaConWatcher {
 
 	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 
-		val matrixAide = new Shared.MatrixAide(true, s"Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
-		val matrix = new Matrix("myMatrix", matrixAide)
+		val testingAide = new Shared.TestingAide(true, s"Executors diagnostic corresponding to: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
+		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 
 
@@ -90,7 +93,7 @@ object PruebaConWatcher {
 			for c <- 0 until NUMBER_OF_CONSUMERS do {
 				lsb.append(f"\n  ${consumerState(c)}%5b  $c%5d:   ")
 				for p <- 0 until NUMBER_OF_CONSUMERS do {
-					if usePercentages then lsb.append(f"${(photo(c)(p).updateSerial*1000+500)/lastSerial}%7d ")
+					if usePercentages then lsb.append(f"${(photo(c)(p).updateSerial * 1000 + 500) / lastSerial}%7d ")
 					else lsb.append(f"${photo(c)(p).updateSerial}%7d ")
 				}
 			}
@@ -153,6 +156,7 @@ object PruebaConWatcher {
 				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 					parent.spawn[Started.type | Restarted.type](reactantFactory) { producer =>
 						producer.doer.checkWithin()
+
 						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = Behavior.factory {
 							case Started | Restarted =>
 								if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
@@ -165,6 +169,7 @@ object PruebaConWatcher {
 									Stop
 								}
 						}
+
 						producerBehavior(0)
 					}.trigger(true) { producer =>
 						parent.doer.checkWithin()
@@ -203,7 +208,7 @@ object PruebaConWatcher {
 			matrix.doer.checkWithin()
 
 			if true then {
-				matrixAide.addMonitor(() => {
+				matrix.doerProvider.addMonitor(() => {
 					parent.doer.Duty.mineFlat { () =>
 						val childrenDiagnosticsDuties = parent.children.values.map(child => {
 							child.diagnose.map(d => s"child ${child.serial}: $d").onBehalfOf(parent.doer)
@@ -224,7 +229,7 @@ object PruebaConWatcher {
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
 
 				// println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
-				matrixAide.shutdown().thenRun { () =>
+				matrix.doerProvider.shutdown().thenRun { () =>
 					println("Shutdown completed normally")
 					result.success(nanoAtEnd - nanoAtStart)
 				}

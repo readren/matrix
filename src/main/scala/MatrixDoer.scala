@@ -18,7 +18,7 @@ object MatrixDoer {
 	}
 }
 
-class MatrixDoer(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix) extends AbstractDoer {
+class MatrixDoer(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix[?]) extends AbstractDoer {
 
 	override protected val assistant: Doer.Assistant = {
 		if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {

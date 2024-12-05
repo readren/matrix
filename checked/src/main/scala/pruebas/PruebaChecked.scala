@@ -18,7 +18,7 @@ object PruebaChecked {
 
 	@main def runPruebaChecked(): Unit = {
 
-		val matrixAide = new Shared.MatrixAide
+		val matrixAide = new Shared.TestingAide()
 		val matrix = new Matrix("testChecked", matrixAide)
 
 		matrix.spawn[Cmd](RegularRf) { parent =>
@@ -36,7 +36,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text == null then matrixAide.shutdown()
+				if response.text == null then matrix.doerProvider.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

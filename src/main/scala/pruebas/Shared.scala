@@ -8,17 +8,30 @@ import scala.collection.mutable.ArrayBuffer
 
 object Shared {
 
-	class MatrixAide(isMonitoringEnabled: Boolean = false, label: String = "") extends Matrix.Aide { thisMatrixAide =>
-		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
+	class TestingAide(isMonitoringEnabled: Boolean = false, label: String = "") extends Matrix.Aide[DoerProvider] {
+		override def buildDoerProvider(owner: Matrix[DoerProvider]): DoerProvider = new DoerProvider(owner, isMonitoringEnabled, label)
+	}
+
+	class DoerProvider(owner: Matrix[DoerProvider], isMonitoringEnabled: Boolean = false, label: String = "") extends Matrix.DoerProvider { thisDoerProvider =>
+		
+		override def pick(serial: Int): MatrixDoer = matrixDoers(serial % matrixDoers.length)
 
 		class ExecutorInfo(val executor: ThreadPoolExecutor, var lastRunnable: Maybe[Runnable])
 
 		private val executors: ArrayBuffer[ExecutorInfo] = ArrayBuffer.empty
 		private var activityEvidence: Boolean = false
 		private val monitoringSchedule = if isMonitoringEnabled then Maybe.some(startMonitoring()) else Maybe.empty
-		var scheduler: Maybe[ScheduledExecutorService] = Maybe.empty
+		private var oScheduler: Maybe[ScheduledExecutorService] = Maybe.empty
 
-		override def buildDoerAssistant(doerId: Int): Doer.Assistant = new Doer.Assistant {
+		private val matrixDoers: IArray[MatrixDoer] = {
+			val availableProcessors = Runtime.getRuntime.availableProcessors()
+			IArray.tabulate(availableProcessors) { index =>
+				val doerId = index + 1
+				new MatrixDoer(doerId, buildDoerAssistant(doerId), owner)
+			}
+		}
+		
+		private def buildDoerAssistant(doerId: Int): Doer.Assistant = new Doer.Assistant {
 
 			private val doSiThExInfo = {
 
@@ -35,12 +48,12 @@ object Shared {
 				doSiThExInfo.executor.execute(runnable)
 			}
 
-			override def reportFailure(cause: Throwable): Unit = thisMatrixAide.reportFailure(cause)
+			override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 		}
 
 		def shutdown(): CompletableFuture[Void] = {
 			monitoringSchedule.foreach(_.cancel(false))
-			scheduler.foreach { s =>
+			oScheduler.foreach { s =>
 				s.shutdown()
 				s.awaitTermination(1, TimeUnit.SECONDS)
 			}
@@ -59,6 +72,7 @@ object Shared {
 
 		private def startMonitoring(): ScheduledFuture[?] = {
 			val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+			oScheduler = Maybe.some(scheduler)
 			scheduler.scheduleWithFixedDelay(monitor, 2000, 2000, TimeUnit.MILLISECONDS)
 		}
 
@@ -93,8 +107,9 @@ object Shared {
 			sb.append("totalCompletedTasks=").append(totalCompletedTaskCount)
 			sb
 		}
-		
-		private val extraMonitors = new java.util.concurrent.ConcurrentLinkedQueue[Runnable]() 
+
+		private val extraMonitors = new java.util.concurrent.ConcurrentLinkedQueue[Runnable]()
+
 		def addMonitor(monitor: Runnable): Unit = {
 			extraMonitors.offer(monitor)
 		}
