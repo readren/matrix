@@ -1,14 +1,14 @@
 package readren.matrix
 package pruebas
 
-import doerproviders.SimpleDoerProvider
+import doerproviders.{AutoBalancedDoerProvider, SimpleDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.{Executors, LinkedBlockingQueue, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
@@ -30,32 +30,66 @@ object Prueba {
 
 	case class Consumable(producerIndex: Int, value: Int)
 
-	private inline val NUMBER_OF_PRODUCERS = 100
-	private inline val NUMBER_OF_CONSUMERS = 100
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
+	private inline val NUMBER_OF_PRODUCERS = 10
+	private inline val NUMBER_OF_CONSUMERS = 10
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
 
-	private inline val haveToShowFinalPhoto = false
+	private inline val haveToShowFinalPhoto = true
 	private inline val haveToShowPhotoEveryTime = false
 	private inline val haveToRecordPhoto = haveToShowFinalPhoto || haveToShowPhotoEveryTime
-	private inline val usePercentages = true
+	private inline val usePercentages = false
 
-	private class Entry(var value: Int, var updateSerial: Int)
+	trait Closer[-S <: ShutdownAble] {
+		def close(shutdownAble: S): Unit
+
+		def diagnose(shutdownAble: S): StringBuilder
+	}
+
+	given Closer[ShutdownAble] = new Closer[ShutdownAble] {
+		override def close(shutdownAble: ShutdownAble): Unit = {
+			shutdownAble.shutdown()
+			Try(shutdownAble.awaitTermination(1, TimeUnit.SECONDS)) match {
+				case Success(x) => println("Shutdown completed normally")
+				case Failure(cause) => println(s"Shutdown is not completed after one seconds: $cause")
+			}
+		}
+
+		override def diagnose(shutdownAble: ShutdownAble): StringBuilder = shutdownAble.diagnose(new StringBuilder())
+	}
+
+	private class Pixel(var value: Int, var updateSerial: Int)
 
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
+		object simpleAide extends Matrix.Aide[SimpleDoerProvider] {
+			override def buildDoerProvider(owner: Matrix[SimpleDoerProvider]): SimpleDoerProvider =
+				new SimpleDoerProvider(owner)
+
+			override def buildLogger(owner: Matrix[SimpleDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+		}
+
+		object balancedAide extends Matrix.Aide[AutoBalancedDoerProvider] {
+			override def buildDoerProvider(owner: Matrix[AutoBalancedDoerProvider]): AutoBalancedDoerProvider =
+				new AutoBalancedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
+
+			override def buildLogger(owner: Matrix[AutoBalancedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+		}
+
 		val numberOfWarmUpRepetitions = 4
 		val numberOfMeasuredOfRepetitions = 6
-		var totalFuture = Future.successful[(Long, Long)]((0L, 0L))
+		var totalFuture = Future.successful[(Long, Long, Long, Long)]((0L, 0L, 0L, 0L))
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
 			totalFuture = totalFuture.flatMap { durationAccumulator =>
 				println(s"\n******* Loop #$i *******")
 				for {
-					regularRfDuration <- run(RegularRf, i)
-					sequentialMsgBufferDuration <- run(SequentialMsgBufferRf, i)
+					balancedRegularRfDuration <- run(balancedAide, RegularRf, i)
+					balancedSequentialMsgBufferDuration <- run(balancedAide, SequentialMsgBufferRf, i)
+					simpleRegularRfDuration <- run(simpleAide, RegularRf, i)
+					simpleSequentialMsgBufferDuration <- run(simpleAide, SequentialMsgBufferRf, i)
 				} yield {
 					if i <= numberOfWarmUpRepetitions then durationAccumulator
-					else (durationAccumulator._1 + regularRfDuration, durationAccumulator._2 + sequentialMsgBufferDuration)
+					else (durationAccumulator._1 + simpleRegularRfDuration, durationAccumulator._2 + balancedRegularRfDuration, durationAccumulator._3 + simpleSequentialMsgBufferDuration, durationAccumulator._4 + balancedSequentialMsgBufferDuration)
 				}
 			}
 		}
@@ -63,7 +97,8 @@ object Prueba {
 			case Success(totalDuration) =>
 				println(
 					s"""All matrix were shutdown
-					   |Average duration: regularRf-> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, sequentialMsgBufferRfTotalDuration-> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for regularRf: simple -> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, balanced -> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration._3 / (numberOfMeasuredOfRepetitions * 1000000)}, balanced-> ${totalDuration._4 / (numberOfMeasuredOfRepetitions * 1000000)}
 					   |Press <enter> to exit""".stripMargin
 				)
 			case Failure(cause) => cause.printStackTrace()
@@ -73,38 +108,38 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	def run(reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
+	def run[DP <: Matrix.DoerProvider & ShutdownAble](testingAide: Matrix.Aide[DP], reactantFactory: ReactantFactory, loopId: Int)(using closer: Closer[DP]): Future[Long] = {
 
-		val testingAide = new Matrix.Aide[SimpleDoerProvider]() {
-			override def buildDoerProvider(owner: Matrix[SimpleDoerProvider]): SimpleDoerProvider =
-				new SimpleDoerProvider(owner)
-		}
 		val matrix = new Matrix("myMatrix", testingAide)
-		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
-
+		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}, doerProvider=${matrix.doerProvider.getClass.getSimpleName}")
 
 		val counter: AtomicInteger = new AtomicInteger(0)
 
 		var printer: Future[Unit] = Future.successful(())
-		val photo = Array.fill(NUMBER_OF_CONSUMERS, NUMBER_OF_PRODUCERS)(new Entry(-1, 0))
+		val photo = Array.fill(NUMBER_OF_CONSUMERS, NUMBER_OF_PRODUCERS)(new Pixel(-1, 0))
 		val consumerState = Array.fill(NUMBER_OF_CONSUMERS)(false)
+		var previousTable: String = ""
 
 		def showPhoto(): Unit = {
 			val lastSerial = counter.get()
-			val lsb = new StringBuilder(99999)
-			lsb.append(">>> photo >>>>>\n")
-			lsb.append("consumer\\producer")
+			val sb = new StringBuilder(99999)
+			sb.append("<<< photo <<<\n")
+			sb.append("consumer\\producer   ")
 			for p <- 0 until NUMBER_OF_PRODUCERS do
-				lsb.append(f"| $p%4d  ")
+				sb.append(f"| $p%4d  ")
 			for c <- 0 until NUMBER_OF_CONSUMERS do {
-				lsb.append(f"\n  ${consumerState(c)}%5b  $c%5d:   ")
+				sb.append(f"\n  ${if consumerState(c) then "stopped" else "running"}%8s  $c%5d:   ")
 				for p <- 0 until NUMBER_OF_CONSUMERS do {
-					if usePercentages then lsb.append(f"${(photo(c)(p).updateSerial * 1000 + 500) / lastSerial}%7d ")
-					else lsb.append(f"${photo(c)(p).updateSerial}%7d ")
+					if usePercentages then sb.append(f"${(photo(c)(p).updateSerial * 1000 + 500) / lastSerial}%7d ")
+					else sb.append(f"${photo(c)(p).updateSerial}%7d ")
 				}
 			}
-			lsb.append("\n<<<<<<<<<<<<<")
-			printer = printer.andThen { _ => println(lsb.toString()) }(ExecutionContext.global)
+			sb.append("\n>>> photo >>>")
+			val table = sb.toString()
+			if table != previousTable then {
+				previousTable = table
+				printer = printer.andThen { _ => println(table) }(ExecutionContext.global)
+			}
 		}
 
 		var nanoAtEnd: Long = 0
@@ -213,19 +248,38 @@ object Prueba {
 		}.trigger() { parent =>
 			matrix.doer.checkWithin()
 
+			val scheduler = new Scheduler
+			scheduler.schedule(2000, TimeUnit.MILLISECONDS) { () =>
+
+				try {
+					val sb = new StringBuilder
+					sb.append("\n<<< Inspector <<<\n")
+					matrix.doerProvider.diagnose(sb)
+					sb.append(
+						s"""Parent's diagnostic: ${parent.staleDiagnose}""".stripMargin
+					)
+					sb.append("\n>>> Inspector >>>\n")
+					println(sb)
+				} catch {
+					case e: Throwable =>
+						e.printStackTrace()
+						throw e
+				}
+			}
+
 			parent.stopDuty.trigger() { _ =>
+				scheduler.shutdown()
+
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
+				println(s"After successful completion diagnostic:\n${closer.diagnose(matrix.doerProvider)}")
 
-				// println(s"After successful completion diagnostic: ${matrixAide.diagnose()}")
-				matrix.doerProvider.shutdown()
-				matrix.doerProvider.awaitTermination(1, TimeUnit.SECONDS) match {
-					case Success(()) => println("Shutdown completed normally")
-					case Failure(cause) =>  println(s"Shutdown is not completed after one seconds: $cause")
-				}
 				result.success(nanoAtEnd - nanoAtStart)
 			}
 		}
-		result.future
+		result.future.andThen { tryDuration =>
+			println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
+			closer.close(matrix.doerProvider)
+		}(ExecutionContext.global)
 	}
 }

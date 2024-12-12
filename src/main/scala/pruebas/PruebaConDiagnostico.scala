@@ -37,7 +37,7 @@ object PruebaConDiagnostico {
 	private inline val haveToRecordPhoto = haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = true
 
-	private class Entry(var value: Int, var updateSerial: Int)
+	private class Pixel(var value: Int, var updateSerial: Int)
 
 	@main def runPruebaConDiagnostico(): Unit = {
 		given ExecutionContext = ExecutionContext.global
@@ -81,7 +81,7 @@ object PruebaConDiagnostico {
 		val counter: AtomicInteger = new AtomicInteger(0)
 
 		var printer: Future[Unit] = Future.successful(())
-		val photo = Array.fill(NUMBER_OF_CONSUMERS, NUMBER_OF_PRODUCERS)(new Entry(-1, 0))
+		val photo = Array.fill(NUMBER_OF_CONSUMERS, NUMBER_OF_PRODUCERS)(new Pixel(-1, 0))
 		val consumerState = Array.fill(NUMBER_OF_CONSUMERS)(false)
 
 		def showPhoto(): Unit = {

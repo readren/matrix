@@ -58,6 +58,9 @@ abstract class ReactantRelay[-U] {
 	 * @return a [[WatchSubscription]] that may be used to undo the subscription. */
 	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true): Maybe[WatchSubscription]
 	
-	/** Returns debug info about this reactant. */
+	/** Provides diagnostic information about the current instance. */
 	def diagnose: doer.Duty[ReactantDiagnostic]
+
+	/** Provides diagnostic information about the current instance that may be stale due to cache visibility issues across processor cores. */
+	def staleDiagnose: ReactantDiagnostic
 }

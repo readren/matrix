@@ -17,8 +17,10 @@ trait Inbox[+M] {
 	 * Should be called withing the [[MatrixDoer]] of the owning [[Reactant]] only. */
 	def maybeNonEmpty: Boolean
 
-	/** Should be called within the [[MatrixDoer]] of the owning [[Reactant]] only.
-	 * Used for diagnostic only.
+
+	/** 
+	 * Exposes the pending messages for diagnostic only.
+	 * Should be called within the [[MatrixDoer]] of the owning [[Reactant]] only.
 	 * The thread-safety of the returned [[Iterator]] depends on this [[Inbox]] implementation. To ensure correct usage use it withing said [[MatrixDoer]] only.
 	 * The returned iterator may be weakly consistent. */
 	def iterator: Iterator[M]

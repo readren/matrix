@@ -239,7 +239,7 @@ abstract class Reactant[U](
 				progenitor.removeChild(thisReactant.serial)
 				stopCovenant.fulfill(())()
 			}
-			// TODO notify parent
+			// TODO notify parent and DoerProvider
 		}
 
 		if !stopWasStarted then {
@@ -351,6 +351,11 @@ abstract class Reactant[U](
 
 	override def diagnose: doer.Duty[ReactantDiagnostic] =
 		doer.Duty.mine { () =>
-			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.maybeNonEmpty, inbox.size, inbox.iterator)
+			val childrenDiagnostic = children.map(_._2.staleDiagnose).toArray
+			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.size, inbox.iterator, childrenDiagnostic)
 		}
+
+	override def staleDiagnose: ReactantDiagnostic =
+		val childrenDiagnostic = childrenRelays.map(_._2.staleDiagnose).toArray
+		ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.size, Iterator.empty, childrenDiagnostic)
 }

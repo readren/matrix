@@ -3,6 +3,7 @@ package pruebas
 
 import readren.taskflow.{Doer, Maybe}
 
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{CompletableFuture, ExecutorService, Executors, LinkedBlockingQueue, ScheduledExecutorService, ScheduledFuture, ThreadPoolExecutor, TimeUnit}
 import scala.collection.mutable.ArrayBuffer
 
@@ -10,11 +11,15 @@ object Shared {
 
 	class TestingAide(isMonitoringEnabled: Boolean = false, label: String = "") extends Matrix.Aide[DoerProvider] {
 		override def buildDoerProvider(owner: Matrix[DoerProvider]): DoerProvider = new DoerProvider(owner, isMonitoringEnabled, label)
+
+		override def buildLogger(owner: Matrix[DoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 	}
 
 	class DoerProvider(owner: Matrix[DoerProvider], isMonitoringEnabled: Boolean = false, label: String = "") extends Matrix.DoerProvider { thisDoerProvider =>
+
+		private val serialSequencer = new AtomicInteger(0)
 		
-		override def pick(serial: Int): MatrixDoer = matrixDoers(serial % matrixDoers.length)
+		override def pick(): MatrixDoer = matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length)
 
 		class ExecutorInfo(val executor: ThreadPoolExecutor, var lastRunnable: Maybe[Runnable])
 

@@ -3,12 +3,15 @@ package doerproviders
 
 import readren.taskflow.Doer
 
-import java.util.concurrent.{ExecutorService, Executors, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{ExecutorService, Executors, LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
 import scala.util.Try
 
-class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerProvider { thisProvider =>
+class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerProvider, ShutdownAble { thisProvider =>
 
-	private class Entry(val doer: MatrixDoer, val executor: ExecutorService)
+	private class Entry(val doer: MatrixDoer, val executor: ThreadPoolExecutor)
+
+	private val serialSequencer = new AtomicInteger(0)
 	
 	/**
 	 * The array with all the [[MatrixDoer]] instances of this [[Matrix]]. */
@@ -16,13 +19,14 @@ class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerP
 		val availableProcessors = Runtime.getRuntime.availableProcessors()
 		IArray.tabulate(availableProcessors) { index =>
 			val doerId = index + 1
-			val doSiThEx = Executors.newSingleThreadExecutor()
+			val queue = new LinkedBlockingQueue[Runnable]()
+			val doSiThEx = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queue)
 			val doer = new MatrixDoer(doerId, new Assistant(doSiThEx), owner)
 			Entry(doer, doSiThEx)
 		}
 	}
 
-	override def pick(serial: Int): MatrixDoer = matrixDoers(serial % matrixDoers.length).doer
+	override def pick(): MatrixDoer = matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length).doer
 
 	private class Assistant(doSiThEx: ExecutorService) extends Doer.Assistant {
 
@@ -31,17 +35,37 @@ class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerP
 		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 	}
 	
-	def shutdown(): Unit = {
+	override def shutdown(): Unit = {
 		for md <- matrixDoers do {
 			md.executor.shutdown()
 		}
 	}
 
-	def awaitTermination(timeout: Long, unit: TimeUnit): Try[Unit] = {
-		Try {
-			for md <- matrixDoers do {
-				md.executor.awaitTermination(timeout, unit)
-			}
-		}
+	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
+		// TODO subtract already waited time
+		matrixDoers.forall(_.executor.awaitTermination(timeout, unit))
 	}
+
+	override def diagnose(sb: StringBuilder): StringBuilder = {
+		var totalCompletedTaskCount: Long = 0
+		sb.append("<<<\n")
+		for (info, i) <- matrixDoers.zipWithIndex do {
+			sb.append(i).append(") ")
+			sb.append(" queue.size=").append(info.executor.getQueue.size)
+			sb.append(", activeCount=").append(info.executor.getActiveCount)
+			sb.append(", taskCount=").append(info.executor.getTaskCount)
+			sb.append(", completedTaskCount=").append(info.executor.getCompletedTaskCount)
+			// sb.append(", largestPoolSize=").append(info.executor.getLargestPoolSize)
+			sb.append(", isTerminating=").append(info.executor.isTerminating)
+			sb.append(", isTerminated=").append(info.executor.isTerminated)
+			sb.append(", isShutdown=").append(info.executor.isShutdown)
+			sb.append('\n')
+			// info.lastRunnable.foreach(r => sb.append("Last runnable:\n").append(r.toString).append('\n'))
+			totalCompletedTaskCount += info.executor.getCompletedTaskCount
+		}
+		sb.append("totalCompletedTasks=").append(totalCompletedTaskCount)
+		sb.append("\n>>>\n")
+		sb
+	}
+
 }

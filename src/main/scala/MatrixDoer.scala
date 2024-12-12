@@ -4,10 +4,12 @@ import readren.taskflow.{AbstractDoer, Doer}
 
 object MatrixDoer {
 
+	type Id = Long
+	
 	inline val checkWeAreWithingTheDoerIsEnabled = true
 
-	val doerIdThreadLocal: ThreadLocal[Int] =
-		if checkWeAreWithingTheDoerIsEnabled then ThreadLocal.withInitial[Int](() => -1)
+	val doerIdThreadLocal: ThreadLocal[Id] =
+		if checkWeAreWithingTheDoerIsEnabled then ThreadLocal.withInitial[Id](() => -1)
 		else null
 
 	inline def checkOutside(): Unit = {
@@ -18,7 +20,7 @@ object MatrixDoer {
 	}
 }
 
-class MatrixDoer(val id: Int, anAssistant: Doer.Assistant, val matrix: Matrix[?]) extends AbstractDoer {
+class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix: AbstractMatrix) extends AbstractDoer {
 
 	override protected val assistant: Doer.Assistant = {
 		if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
