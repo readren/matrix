@@ -24,7 +24,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	def pickDoer(): MatrixDoer
+	def provideDoer(): MatrixDoer
 
 	/** thread-safe */
 	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U])(using isSignalTest: IsSignalTest[U]): doer.Duty[ReactantRelay[U]] =

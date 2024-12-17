@@ -19,7 +19,7 @@ object Shared {
 
 		private val serialSequencer = new AtomicInteger(0)
 		
-		override def pick(): MatrixDoer = matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length)
+		override def provide(): MatrixDoer = matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length)
 
 		class ExecutorInfo(val executor: ThreadPoolExecutor, var lastRunnable: Maybe[Runnable])
 

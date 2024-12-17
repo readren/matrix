@@ -4,15 +4,14 @@ package doerproviders
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ExecutorService, Executors, LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
-import scala.util.Try
+import java.util.concurrent.{ExecutorService, LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
 
 class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerProvider, ShutdownAble { thisProvider =>
 
 	private class Entry(val doer: MatrixDoer, val executor: ThreadPoolExecutor)
 
 	private val serialSequencer = new AtomicInteger(0)
-	
+
 	/**
 	 * The array with all the [[MatrixDoer]] instances of this [[Matrix]]. */
 	private val matrixDoers: IArray[Entry] = {
@@ -26,7 +25,8 @@ class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerP
 		}
 	}
 
-	override def pick(): MatrixDoer = matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length).doer
+	override def provide(): MatrixDoer =
+		matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length).doer
 
 	private class Assistant(doSiThEx: ExecutorService) extends Doer.Assistant {
 
@@ -34,7 +34,7 @@ class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerP
 
 		override def reportFailure(cause: Throwable): Unit = cause.printStackTrace()
 	}
-	
+
 	override def shutdown(): Unit = {
 		for md <- matrixDoers do {
 			md.executor.shutdown()

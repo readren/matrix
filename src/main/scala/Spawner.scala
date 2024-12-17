@@ -33,7 +33,7 @@ class Spawner[+MA <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MA, in
 		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
-		val reactantDoer = doer.matrix.pickDoer()
+		val reactantDoer = doer.matrix.provideDoer()
 		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantDoer, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(doer)
 			.map { reactant =>

@@ -1,40 +1,40 @@
 package readren.matrix
 package pruebas
 
-import doerproviders.{AutoBalancedDoerProvider, SimpleDoerProvider}
+import doerproviders.{SimpleDoerProvider, AutoBalancedDoerProvider, DynamicallyBalancedDoerProvider as TestedDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
-import java.util.concurrent.{Executors, LinkedBlockingQueue, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{Executors, TimeUnit}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
 import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	sealed trait Answer
+	private sealed trait Answer
 
-	case class Response(doer: MatrixDoer, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
+	private case class Response(doer: MatrixDoer, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
 
-	case object End extends Answer
+	private case object End extends Answer
 
-	sealed trait Cmd
+	private sealed trait Cmd
 
-	case object ProducerWasStopped extends Cmd
+	private case object ProducerWasStopped extends Cmd
 
-	case class ConsumerWasStopped(childIndex: Int) extends Cmd, Answer
+	private case class ConsumerWasStopped(childIndex: Int) extends Cmd, Answer
 
 	//	case class Send(text: String)
 
-	case class SpawnResponse(endpoint: Endpoint[String])
+	private case class SpawnResponse(endpoint: Endpoint[String])
 
-	case class Consumable(producerIndex: Int, value: Int)
+	private case class Consumable(producerIndex: Int, value: Int)
 
-	private inline val NUMBER_OF_PRODUCERS = 10
-	private inline val NUMBER_OF_CONSUMERS = 10
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
+	private inline val NUMBER_OF_PRODUCERS = 100
+	private inline val NUMBER_OF_CONSUMERS = 100
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
 
-	private inline val haveToShowFinalPhoto = true
+	private inline val haveToShowFinalPhoto = false
 	private inline val haveToShowPhotoEveryTime = false
 	private inline val haveToRecordPhoto = haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = false
@@ -49,7 +49,8 @@ object Prueba {
 		override def close(shutdownAble: ShutdownAble): Unit = {
 			shutdownAble.shutdown()
 			Try(shutdownAble.awaitTermination(1, TimeUnit.SECONDS)) match {
-				case Success(x) => println("Shutdown completed normally")
+				case Success(true) => println("Shutdown completed normally")
+				case Success(false) => println("Await termination timeout elapsed")
 				case Failure(cause) => println(s"Shutdown is not completed after one seconds: $cause")
 			}
 		}
@@ -58,6 +59,7 @@ object Prueba {
 	}
 
 	private class Pixel(var value: Int, var updateSerial: Int)
+	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var autoBalancedRegularRf: Long = 0L, var autoBalancedSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
 
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
@@ -69,27 +71,43 @@ object Prueba {
 			override def buildLogger(owner: Matrix[SimpleDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
-		object balancedAide extends Matrix.Aide[AutoBalancedDoerProvider] {
+		object autoBalancedAide extends Matrix.Aide[AutoBalancedDoerProvider] {
 			override def buildDoerProvider(owner: Matrix[AutoBalancedDoerProvider]): AutoBalancedDoerProvider =
 				new AutoBalancedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
 
 			override def buildLogger(owner: Matrix[AutoBalancedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
+		object testedAide extends Matrix.Aide[TestedDoerProvider] {
+			override def buildDoerProvider(owner: Matrix[TestedDoerProvider]): TestedDoerProvider =
+				new TestedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
+
+			override def buildLogger(owner: Matrix[TestedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+		}
+
 		val numberOfWarmUpRepetitions = 4
 		val numberOfMeasuredOfRepetitions = 6
-		var totalFuture = Future.successful[(Long, Long, Long, Long)]((0L, 0L, 0L, 0L))
+		var totalFuture = Future.successful[Durations](Durations())
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
 			totalFuture = totalFuture.flatMap { durationAccumulator =>
 				println(s"\n******* Loop #$i *******")
 				for {
-					balancedRegularRfDuration <- run(balancedAide, RegularRf, i)
-					balancedSequentialMsgBufferDuration <- run(balancedAide, SequentialMsgBufferRf, i)
+					autoBalancedRegularRfDuration <- run(autoBalancedAide, RegularRf, i)
+					autoBalancedSequentialMsgBufferDuration <- run(autoBalancedAide, SequentialMsgBufferRf, i)
+					testedRegularRfDuration <- run(testedAide, RegularRf, i)
+					testedSequentialMsgBufferDuration <- run(testedAide, SequentialMsgBufferRf, i)
 					simpleRegularRfDuration <- run(simpleAide, RegularRf, i)
 					simpleSequentialMsgBufferDuration <- run(simpleAide, SequentialMsgBufferRf, i)
 				} yield {
-					if i <= numberOfWarmUpRepetitions then durationAccumulator
-					else (durationAccumulator._1 + simpleRegularRfDuration, durationAccumulator._2 + balancedRegularRfDuration, durationAccumulator._3 + simpleSequentialMsgBufferDuration, durationAccumulator._4 + balancedSequentialMsgBufferDuration)
+					if i > numberOfWarmUpRepetitions then {
+						durationAccumulator.autoBalancedRegularRf += autoBalancedRegularRfDuration
+						durationAccumulator.autoBalancedSequentialMsBufferRf += autoBalancedSequentialMsgBufferDuration
+						durationAccumulator.testedRegularRf += testedRegularRfDuration
+						durationAccumulator.testedSequentialMsgBufferRf += testedSequentialMsgBufferDuration
+						durationAccumulator.simpleRegularRf += simpleRegularRfDuration
+						durationAccumulator.simpleSequentialMsgBufferRf += simpleSequentialMsgBufferDuration
+					}
+					durationAccumulator
 				}
 			}
 		}
@@ -97,8 +115,8 @@ object Prueba {
 			case Success(totalDuration) =>
 				println(
 					s"""All matrix were shutdown
-					   |Average duration for regularRf: simple -> ${totalDuration._1 / (numberOfMeasuredOfRepetitions * 1000000)}, balanced -> ${totalDuration._2 / (numberOfMeasuredOfRepetitions * 1000000)}
-					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration._3 / (numberOfMeasuredOfRepetitions * 1000000)}, balanced-> ${totalDuration._4 / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for regularRf: simple -> ${totalDuration.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, autoBalanced -> ${totalDuration.autoBalancedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, autoBalanced-> ${totalDuration.autoBalancedSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
 					   |Press <enter> to exit""".stripMargin
 				)
 			case Failure(cause) => cause.printStackTrace()
@@ -108,10 +126,10 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	def run[DP <: Matrix.DoerProvider & ShutdownAble](testingAide: Matrix.Aide[DP], reactantFactory: ReactantFactory, loopId: Int)(using closer: Closer[DP]): Future[Long] = {
-
+	private def run[DP <: Matrix.DoerProvider & ShutdownAble](testingAide: Matrix.Aide[DP], reactantFactory: ReactantFactory, loopId: Int)(using closer: Closer[DP]): Future[Long] = {
+		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
-		println(s"Matrix created: loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}, doerProvider=${matrix.doerProvider.getClass.getSimpleName}")
+		println(s"Matrix created: doerProvider=${matrix.doerProvider.getClass.getSimpleName}")
 
 		val counter: AtomicInteger = new AtomicInteger(0)
 
@@ -129,7 +147,7 @@ object Prueba {
 				sb.append(f"| $p%4d  ")
 			for c <- 0 until NUMBER_OF_CONSUMERS do {
 				sb.append(f"\n  ${if consumerState(c) then "stopped" else "running"}%8s  $c%5d:   ")
-				for p <- 0 until NUMBER_OF_CONSUMERS do {
+				for p <- 0 until NUMBER_OF_PRODUCERS do {
 					if usePercentages then sb.append(f"${(photo(c)(p).updateSerial * 1000 + 500) / lastSerial}%7d ")
 					else sb.append(f"${photo(c)(p).updateSerial}%7d ")
 				}
@@ -166,14 +184,35 @@ object Prueba {
 				if haveToShowFinalPhoto then showPhoto()
 		}
 
+		val diagnosticScheduler = new Scheduler
+
+		diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
+
+			try {
+				val sb = new StringBuilder
+				sb.append("\n<<< InspectorA <<<\n")
+				matrix.doerProvider.diagnose(sb)
+				sb.append("\n>>> InspectorA >>>\n")
+				println(sb)
+			} catch {
+				case e: Throwable =>
+					e.printStackTrace()
+					throw e
+			}
+		}
+
 		val result = Promise[Long]
 
+		println(matrix.doerProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
+
 		matrix.spawn[Cmd](reactantFactory) { parent =>
+			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Duty.sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					parent.spawn[Consumable](reactantFactory) { consumer =>
+						consumer.doer.checkWithin()
 						var completedCounter = 0
 						Behavior.factory { consumable =>
 							if consumable.value >= 0 then {
@@ -247,18 +286,17 @@ object Prueba {
 			}
 		}.trigger() { parent =>
 			matrix.doer.checkWithin()
+			// println("Parent created")
 
-			val scheduler = new Scheduler
-			scheduler.schedule(2000, TimeUnit.MILLISECONDS) { () =>
+			diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
 
 				try {
 					val sb = new StringBuilder
-					sb.append("\n<<< Inspector <<<\n")
-					matrix.doerProvider.diagnose(sb)
+					sb.append("\n<<< InspectorB <<<\n")
 					sb.append(
 						s"""Parent's diagnostic: ${parent.staleDiagnose}""".stripMargin
 					)
-					sb.append("\n>>> Inspector >>>\n")
+					sb.append("\n>>> InspectorB >>>\n")
 					println(sb)
 				} catch {
 					case e: Throwable =>
@@ -268,7 +306,6 @@ object Prueba {
 			}
 
 			parent.stopDuty.trigger() { _ =>
-				scheduler.shutdown()
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
@@ -278,8 +315,9 @@ object Prueba {
 			}
 		}
 		result.future.andThen { tryDuration =>
-			println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
+			// println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
 			closer.close(matrix.doerProvider)
+			diagnosticScheduler.shutdown()
 		}(ExecutionContext.global)
 	}
 }

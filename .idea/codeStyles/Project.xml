@@ -1,5 +1,10 @@
 <component name="ProjectCodeStyleConfiguration">
   <code_scheme name="Project" version="173">
+    <option name="OTHER_INDENT_OPTIONS">
+      <value>
+        <option name="USE_TAB_CHARACTER" value="true" />
+      </value>
+    </option>
     <option name="RIGHT_MARGIN" value="240" />
     <ScalaCodeStyleSettings>
       <option name="PLACE_SELF_TYPE_ON_NEW_LINE" value="false" />

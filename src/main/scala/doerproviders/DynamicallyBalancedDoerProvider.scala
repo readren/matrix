@@ -1,15 +1,17 @@
 package readren.matrix
 package doerproviders
 
+import collections.ConcurrentList
 import doerproviders.AutoBalancedDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal}
 
 import readren.taskflow.Doer
 
 import java.util
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicLong}
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, ThreadFactory, TimeUnit}
+import scala.annotation.tailrec
 
-object AutoBalancedDoerProvider {
+object DynamicallyBalancedDoerProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
@@ -21,18 +23,16 @@ object AutoBalancedDoerProvider {
 	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 }
 
-class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisAutoBalancedDoerProvider =>
+class DynamicallyBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisAutoBalancedDoerProvider =>
 	private val serialSequencer = new AtomicLong(0)
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
 
-	/** Queue of [[DoerAssistant]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
-	 *
-	 * Invariant: this queue contains no duplicate elements due to the [[DoerAssistant.queueForSequentialExecution]] logic.
-	 * TODO try using my own implementation of concurrent queue that avoids dynamic memory allocation. */
-	private val queuedDoersAssistants = new ConcurrentLinkedQueue[DoerAssistant]()
+	private val doersAssistants: ConcurrentList[DoerAssistant] = new ConcurrentList
 
 	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(Worker.apply)
+
+	private val assignedDoerAssistantByWorkerIndex = Array.fill[DoerAssistant | Null](workers.length)(null)
 
 	private val runningWorkersLatch: CountDownLatch = new CountDownLatch(workers.length)
 	/** Usually equal to the number of workers that whose [[Worker.isSleeping]] flat is set, but may be temporarily greater. Never smaller.
@@ -44,7 +44,8 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 		workers.foreach(_.start())
 	}
 
-	private class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant { thisDoerAssistant =>
+	private class DoerAssistant(val id: MatrixDoer.Id) extends ConcurrentList.Node, Doer.Assistant { thisDoerAssistant =>
+		override type Self = DoerAssistant
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 
@@ -53,10 +54,7 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 		override def queueForSequentialExecution(task: Runnable): Unit = {
 			if taskQueueSize.getAndIncrement() == 0 then {
 				taskQueue.offer(task)
-				if !wakeUpASleepingWorkerIfAny(thisDoerAssistant) then {
-					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
-					queuedDoersAssistants.offer(thisDoerAssistant)
-				}
+				wakeUpASleepingWorkerIfAny(thisDoerAssistant)
 			} else {
 				taskQueue.offer(task)
 			}
@@ -64,52 +62,45 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 
-
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 *
 		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
-		 * This ensures that another thread invoking `queuedForSequentialExecution` does not call [[wakeUpASleepingWorkerIfAny]] passing this [[DoerAssistant]] or enqueue this [[DoerAssistant]] into the [[queuedDoersAssistants]] queue,
-		 * which would violate the constraint that prevents two workers from being assigned to the same [[DoerAssistant]] instance simultaneously.
+		 * This prevents that [[queueForSequentialExecution]] to awake another worker before the stimulating [[DoerAssistant]] becomes free to be assigned to said worker.
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
+		@tailrec
 		final def executePendingTasks(): Unit = {
 			doerAssistantThreadLocal.set(this)
 
-			if debugEnabled then assert(taskQueueSize.get > 0)
-			var taskQueueSizeIsPositive = true
-			var aDecrementIsPending = false
-			try {
-				var task = taskQueue.poll()
-				while task != null && taskQueueSizeIsPositive do {
-					aDecrementIsPending = true
-					task.run()
-					aDecrementIsPending = false
-					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `queuedForSequentialExecution` to enqueue this DoerAssistant into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same DoerAssistant.
-					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-					if taskQueueSizeIsPositive then task = taskQueue.poll()
-				}
-			} finally {
-				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-				if taskQueueSizeIsPositive then {
-					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
-					queuedDoersAssistants.offer(thisDoerAssistant)
-				}
+			val task = taskQueue.poll()
+			if task != null then {
+				task.run()
+				taskQueueSize.decrementAndGet()
+				executePendingTasks()
 			}
 		}
 
+		/** Should be called within a synchronized block on the [[assignedDoerAssistantByWorkerIndex]] array's intrinsic lock.
+		 * @return `true` if this [[DoerAssistant]] is not assigned to a [[Worker]] */
+		def isFree: Boolean = {
+			var workerIndex = workers.length
+			while workerIndex > 0 do {
+				workerIndex -= 1
+				if assignedDoerAssistantByWorkerIndex(workerIndex) eq this then return false
+			}
+			true
+
+		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 	}
 
-
 	/** @return `true` if a worker was awakened.
-	 * The provided [[DoerAssistant]] will be assigned to the awakened worker.
-	 * Asumes the provided [[DoerAssistant]] is and will not be enqueued in [[queuedDoersAssistants]], which ensures it will not be assigned to any other worker simultaneously. */
+	 * The provided [[DoerAssistant]] will be assigned to the awakened worker if no other [[Worker]] was assigned to it before. */
 	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistant): Boolean = {
-		if debugEnabled then assert(!queuedDoersAssistants.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
 			var workerIndex = workers.length
 			while workerIndex > 0 do {
@@ -149,6 +140,8 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 		 * and is cleared by this worker after it is awakened. */
 		private var queueJumper: DoerAssistant | Null = null
 
+		/** Used by [[findALoadedAndFreeDoerAssistant()]] method to iterate through the [[doersAssistants]] list and remember where to continue in the following calls. */
+		private val circularIterator = doersAssistants.circularIterator
 
 		/**
 		 * Remember the greatest value that [[refusedTriesToSleepsCounter]] reached before it has been reset because a pending task becomes visible.
@@ -174,8 +167,13 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 		override def run(): Unit = {
 			while keepRunning do {
 				val assignedDoerAssistant: DoerAssistant | Null =
-					if queueJumper != null then queueJumper
-					else queuedDoersAssistants.poll()
+					assignedDoerAssistantByWorkerIndex.synchronized {
+						val unassignedDoerAssistant =
+							if queueJumper != null && queueJumper.isFree then queueJumper
+							else findALoadedAndFreeDoerAssistant()
+						assignedDoerAssistantByWorkerIndex(index) = unassignedDoerAssistant
+						unassignedDoerAssistant
+					}
 				queueJumper = null
 				if assignedDoerAssistant == null then tryToSleep()
 				else {
@@ -185,14 +183,12 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 						assignedDoerAssistant.executePendingTasks()
 						completedMainLoopsCounter += 1
 					}
-					catch { // TODO analyze if clarity would suffer too much if [[DoerAssistant.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
+					catch {
 						case e: Throwable =>
 							if thread.getUncaughtExceptionHandler == null && Thread.getDefaultUncaughtExceptionHandler == null then failureReporter(e)
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
 								thread = threadFactory.newThread(this)
-								// Memorize the assigned DoerAssistant such that the new thread be assigned to the same [[DoerAssistant]]. It will continue with the task after the one that threw the exception.
-								queueJumper = assignedDoerAssistant
 							}
 							thread.start()
 							// Terminate the thread abruptly to skip the `runningWorkersLatch` decremental.
@@ -205,17 +201,28 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 			isStopped = true
 		}
 
+		/** Starting after the last [[DoerInstance]] returned by the previous call to this method, looks in the [[doersAssistants]] list for a [[DoerAssistant]] that is not assigned to a worker and whose task-queue is not empty.
+		 * Should be called within a synchronized block on the [[DynamicallyBalancedDoerProvider.assignedDoerAssistantByWorkerIndex]] array's intrinsic lock. */
+		private def findALoadedAndFreeDoerAssistant(): DoerAssistant | Null = {
+			val firstCandidate = circularIterator.next()
+			if firstCandidate != null then {
+				var candidate = firstCandidate
+
+				// This is an example of why removing do-while from scala was a bad idea.
+				while true do {
+					if candidate.isFree && candidate.hasPendingTasks then return candidate
+					candidate = circularIterator.next()
+					if candidate eq firstCandidate then return null
+				}
+			}
+			null
+		}
+
 		/** Should be called immediately before the main-loop's exit condition evaluation. */
 		private def tryToSleep(): Unit = {
 			val sleepingCounter = sleepingWorkersCount.incrementAndGet()
-			// The purpose of this `if` is to avoid all workers go to sleep when maybe there is work to do.
-			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:
-			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a DoerAssistants was enqueued into `enqueuedDoerAssistants` by an external thread and is still not visible from the threads of the workers that were awake)
-			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
-			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than the necessary but are free.
-			// If other worker's thread is leaving the sleeping state
+			// refuse to sleep if this worker is the only worker awake and haven't checked that no new task were enqueued during N consecutive main loops since all other workers went to sleep. The value of N should be greater than zero in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than the necessary but are free.
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
-				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoersAssistants`.
 				sleepingWorkersCount.getAndDecrement()
 				refusedTriesToSleepsCounter += 1
 			} else {
@@ -296,6 +303,7 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 	override def provide(): MatrixDoer = {
 		val serial = serialSequencer.getAndIncrement()
 		val newDoerAssistant = new DoerAssistant(serial)
+		doersAssistants.add(newDoerAssistant)
 		new MatrixDoer(serial, newDoerAssistant, owner)
 	}
 
@@ -319,18 +327,24 @@ class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFacto
 	override def diagnose(sb: StringBuilder): StringBuilder = {
 		sb.append("AutoBalancedDoerProvider:\n")
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
-		sb.append("\tqueuedDoersAssistants: ")
-		val doersAssistantsIterator = queuedDoersAssistants.iterator()
-		while doersAssistantsIterator.hasNext do {
-			val doerAssistant = doersAssistantsIterator.next()
-			doerAssistant.diagnose(sb)
-			sb.append(", ")
+		sb.append(s"\tsleepingWorkersCount=${sleepingWorkersCount.get}\n")
+		sb.append("\tdoers' assistants with pending tasks: ")
+		var doerAssistant = doersAssistants.nextOf(null)
+		while doerAssistant != null do {
+			if doerAssistant.hasPendingTasks then {
+				doerAssistant.diagnose(sb)
+				sb.append(", ")
+			}
+			doerAssistant = doersAssistants.nextOf(doerAssistant)
 		}
 
 		sb.append("\n\tworkers:\n")
 		for workerIndex <- workers.indices do {
 			sb.append("\t\t")
 			workers(workerIndex).diagnose(sb)
+			sb.append(s"\t\tassigned to\t")
+			val assignedDoerAssistant = assignedDoerAssistantByWorkerIndex(workerIndex)
+			if assignedDoerAssistant != null then assignedDoerAssistant.diagnose(sb) else sb.append("nothing")
 			sb.append('\n')
 		}
 		sb.append("\n")

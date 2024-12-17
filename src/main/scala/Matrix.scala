@@ -5,7 +5,7 @@ import readren.taskflow.Maybe
 
 object Matrix {
 	trait DoerProvider {
-		def pick(): MatrixDoer
+		def provide(): MatrixDoer
 	}
 
 	trait Aide[DP <: DoerProvider] {
@@ -20,9 +20,9 @@ class Matrix[+DP <: Matrix.DoerProvider](name: String, aide: Matrix.Aide[DP]) ex
 
 	val doerProvider: DP = aide.buildDoerProvider(thisMatrix)
 
-	override def pickDoer(): MatrixDoer = doerProvider.pick()
+	override def provideDoer(): MatrixDoer = doerProvider.provide()
 
-	override val doer: MatrixDoer = pickDoer()
+	override val doer: MatrixDoer = provideDoer()
 
 	override protected val spawner: Spawner[doer.type] = new Spawner(Maybe.empty, doer, 0)
 	

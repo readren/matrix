@@ -6,10 +6,9 @@ import Matrix.DoerProvider
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{BlockingQueue, ExecutorService, LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
-import scala.util.Try
+import java.util.concurrent.{BlockingQueue, ExecutorService, ThreadPoolExecutor, TimeUnit}
 
-class BalancingDoerProvider(matrix: AbstractMatrix, queueFactory: () => BlockingQueue[Runnable], failureReporter: Throwable => Unit) extends DoerProvider, ShutdownAble {
+class FixedBalanceDoerProvider(matrix: AbstractMatrix, queueFactory: () => BlockingQueue[Runnable], failureReporter: Throwable => Unit) extends DoerProvider, ShutdownAble {
 
 	private val availableProcessors = Runtime.getRuntime.availableProcessors()
 
@@ -25,7 +24,7 @@ class BalancingDoerProvider(matrix: AbstractMatrix, queueFactory: () => Blocking
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
 
-	override def pick(): MatrixDoer = {
+	override def provide(): MatrixDoer = {
 		val serial = serialSequencer.getAndIncrement()
 		val executorsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
 		val pickedExecutor =
@@ -83,5 +82,5 @@ class BalancingDoerProvider(matrix: AbstractMatrix, queueFactory: () => Blocking
 		sb.append("totalCompletedTasks=").append(totalCompletedTaskCount)
 		sb.append("\n>>>\n")
 		sb
-	}	
+	}
 }
