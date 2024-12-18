@@ -1,12 +1,12 @@
 package readren.matrix.collections;
 
-abstract class Node<E> {
+public abstract class Node<E> {
     volatile Node<E> next;
 
     /**
      * Constructs a dead dummy node.
      */
-    Node() {
+    public Node() {
     }
 
     void appendRelaxed(Node<E> next) {

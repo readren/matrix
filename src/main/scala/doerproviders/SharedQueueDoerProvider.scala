@@ -1,7 +1,7 @@
 package readren.matrix
 package doerproviders
 
-import doerproviders.AutoBalancedDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal}
+import doerproviders.SharedQueueDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal}
 
 import readren.taskflow.Doer
 
@@ -9,7 +9,7 @@ import java.util
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, ThreadFactory, TimeUnit}
 
-object AutoBalancedDoerProvider {
+object SharedQueueDoerProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
@@ -21,7 +21,7 @@ object AutoBalancedDoerProvider {
 	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 }
 
-class AutoBalancedDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisAutoBalancedDoerProvider =>
+class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisAutoBalancedDoerProvider =>
 	private val serialSequencer = new AtomicLong(0)
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)

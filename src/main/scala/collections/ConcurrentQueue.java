@@ -36,7 +36,7 @@ public class ConcurrentQueue<E extends Node<E>> extends Node<E> {
      */
     private transient volatile Node<E> tail;
 
-    ConcurrentQueue() {
+    public ConcurrentQueue() {
         head = this;
         tail = this;
         next = null;

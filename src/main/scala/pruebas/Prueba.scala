@@ -1,7 +1,7 @@
 package readren.matrix
 package pruebas
 
-import doerproviders.{SimpleDoerProvider, AutoBalancedDoerProvider, DynamicallyBalancedDoerProvider as TestedDoerProvider}
+import doerproviders.{SimpleDoerProvider, SharedQueueDoerProvider, DynamicallyBalancedDoerProvider as TestedDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -59,7 +59,7 @@ object Prueba {
 	}
 
 	private class Pixel(var value: Int, var updateSerial: Int)
-	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var autoBalancedRegularRf: Long = 0L, var autoBalancedSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
+	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var sharedQueueRegularRf: Long = 0L, var sharedQueueSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
 
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
@@ -71,11 +71,11 @@ object Prueba {
 			override def buildLogger(owner: Matrix[SimpleDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
-		object autoBalancedAide extends Matrix.Aide[AutoBalancedDoerProvider] {
-			override def buildDoerProvider(owner: Matrix[AutoBalancedDoerProvider]): AutoBalancedDoerProvider =
-				new AutoBalancedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
+		object sharedQueueAide extends Matrix.Aide[SharedQueueDoerProvider] {
+			override def buildDoerProvider(owner: Matrix[SharedQueueDoerProvider]): SharedQueueDoerProvider =
+				new SharedQueueDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
 
-			override def buildLogger(owner: Matrix[AutoBalancedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+			override def buildLogger(owner: Matrix[SharedQueueDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
 		object testedAide extends Matrix.Aide[TestedDoerProvider] {
@@ -92,16 +92,16 @@ object Prueba {
 			totalFuture = totalFuture.flatMap { durationAccumulator =>
 				println(s"\n******* Loop #$i *******")
 				for {
-					autoBalancedRegularRfDuration <- run(autoBalancedAide, RegularRf, i)
-					autoBalancedSequentialMsgBufferDuration <- run(autoBalancedAide, SequentialMsgBufferRf, i)
+					sharedQueueRegularRfDuration <- run(sharedQueueAide, RegularRf, i)
+					sharedQueueSequentialMsgBufferDuration <- run(sharedQueueAide, SequentialMsgBufferRf, i)
 					testedRegularRfDuration <- run(testedAide, RegularRf, i)
 					testedSequentialMsgBufferDuration <- run(testedAide, SequentialMsgBufferRf, i)
 					simpleRegularRfDuration <- run(simpleAide, RegularRf, i)
 					simpleSequentialMsgBufferDuration <- run(simpleAide, SequentialMsgBufferRf, i)
 				} yield {
 					if i > numberOfWarmUpRepetitions then {
-						durationAccumulator.autoBalancedRegularRf += autoBalancedRegularRfDuration
-						durationAccumulator.autoBalancedSequentialMsBufferRf += autoBalancedSequentialMsgBufferDuration
+						durationAccumulator.sharedQueueRegularRf += sharedQueueRegularRfDuration
+						durationAccumulator.sharedQueueSequentialMsBufferRf += sharedQueueSequentialMsgBufferDuration
 						durationAccumulator.testedRegularRf += testedRegularRfDuration
 						durationAccumulator.testedSequentialMsgBufferRf += testedSequentialMsgBufferDuration
 						durationAccumulator.simpleRegularRf += simpleRegularRfDuration
@@ -115,8 +115,8 @@ object Prueba {
 			case Success(totalDuration) =>
 				println(
 					s"""All matrix were shutdown
-					   |Average duration for regularRf: simple -> ${totalDuration.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, autoBalanced -> ${totalDuration.autoBalancedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
-					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, autoBalanced-> ${totalDuration.autoBalancedSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for regularRf: simple -> ${totalDuration.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue -> ${totalDuration.sharedQueueRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue-> ${totalDuration.sharedQueueSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
 					   |Press <enter> to exit""".stripMargin
 				)
 			case Failure(cause) => cause.printStackTrace()
