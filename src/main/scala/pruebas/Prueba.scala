@@ -1,11 +1,11 @@
 package readren.matrix
 package pruebas
 
-import doerproviders.{SimpleDoerProvider, SharedQueueDoerProvider, DynamicallyBalancedDoerProvider as TestedDoerProvider}
+import doerproviders.{SharedQueueDoerProvider, SimpleDoerProvider, BalancedDoerProvider as TestedDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{Executors, TimeUnit}
+import java.util.concurrent.{Executors, LinkedBlockingQueue, TimeUnit}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
 import scala.util.{Failure, Success, Try}
@@ -20,9 +20,9 @@ object Prueba {
 
 	private sealed trait Cmd
 
-	private case object ProducerWasStopped extends Cmd
+	private case class ProducerWasStopped(producerIndex: Int, producerDoer: MatrixDoer) extends Cmd
 
-	private case class ConsumerWasStopped(childIndex: Int) extends Cmd, Answer
+	private case class ConsumerWasStopped(consumerIndex: Int) extends Cmd, Answer
 
 	//	case class Send(text: String)
 
@@ -34,9 +34,10 @@ object Prueba {
 	private inline val NUMBER_OF_CONSUMERS = 100
 	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
 
+	private inline val haveToCountAndCheck = true
 	private inline val haveToShowFinalPhoto = false
 	private inline val haveToShowPhotoEveryTime = false
-	private inline val haveToRecordPhoto = haveToShowFinalPhoto || haveToShowPhotoEveryTime
+	private inline val haveToRecordPhoto = haveToCountAndCheck || haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = false
 
 	trait Closer[-S <: ShutdownAble] {
@@ -59,6 +60,7 @@ object Prueba {
 	}
 
 	private class Pixel(var value: Int, var updateSerial: Int)
+
 	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var sharedQueueRegularRf: Long = 0L, var sharedQueueSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
 
 	@main def runPrueba(): Unit = {
@@ -80,7 +82,7 @@ object Prueba {
 
 		object testedAide extends Matrix.Aide[TestedDoerProvider] {
 			override def buildDoerProvider(owner: Matrix[TestedDoerProvider]): TestedDoerProvider =
-				new TestedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
+				new TestedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace(), () => LinkedBlockingQueue[Runnable]())
 
 			override def buildLogger(owner: Matrix[TestedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
@@ -192,7 +194,7 @@ object Prueba {
 				val sb = new StringBuilder
 				sb.append("\n<<< InspectorA <<<\n")
 				matrix.doerProvider.diagnose(sb)
-				sb.append("\n>>> InspectorA >>>\n")
+				sb.append(">>> InspectorA >>>\n")
 				println(sb)
 			} catch {
 				case e: Throwable =>
@@ -203,7 +205,7 @@ object Prueba {
 
 		val result = Promise[Long]
 
-		println(matrix.doerProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
+		// println(matrix.doerProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
 			// println("Parent initialization")
@@ -253,7 +255,7 @@ object Prueba {
 						producerBehavior(0)
 					}.trigger(true) { producer =>
 						parent.doer.checkWithin()
-						parent.watch(producer, ProducerWasStopped)
+						parent.watch(producer, ProducerWasStopped(producerIndex, producer.doer))
 					}
 				}
 			}
@@ -267,17 +269,17 @@ object Prueba {
 					outEndpoint.tell(cws)
 					activeConsumers -= 1
 					if activeProducers > 0 || activeConsumers > 0 then {
-						// println(s"Consumer $consumerIndex stopped. Active consumers: ${parent.children.size}")
+						// println(s"Consumer $consumerIndex stopped. Active children: ${parent.children.size}")
 						Continue
 					} else {
 						outEndpoint.tell(End)
 						Stop
 					}
-				case ProducerWasStopped =>
+				case ProducerWasStopped(producerIndex, producerDoer) =>
 					parent.doer.checkWithin()
 					activeProducers -= 1
 					if activeProducers > 0 || activeConsumers > 0 then {
-						// println(s"Consumer $consumerIndex stopped. Active consumers: ${parent.children.size}")
+						// println(s"Producer $producerIndex (#${producerDoer.id}) stopped. Active children: ${parent.children.size}")
 						Continue
 					} else {
 						outEndpoint.tell(End)
@@ -315,7 +317,7 @@ object Prueba {
 			}
 		}
 		result.future.andThen { tryDuration =>
-			// println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
+			println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
 			closer.close(matrix.doerProvider)
 			diagnosticScheduler.shutdown()
 		}(ExecutionContext.global)

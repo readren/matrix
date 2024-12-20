@@ -1,7 +1,7 @@
 package readren.matrix
 package doerproviders
 
-import doerproviders.SharedQueueDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal}
+import doerproviders.SharedQueueDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal, workerIndexThreadLocal}
 
 import readren.taskflow.Doer
 
@@ -18,10 +18,14 @@ object SharedQueueDoerProvider {
 
 	inline val debugEnabled = false
 
+	val workerIndexThreadLocal: ThreadLocal[Int] = ThreadLocal.withInitial(() => -1)
 	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 }
 
-class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisAutoBalancedDoerProvider =>
+class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisSharedQueueDoerProvider =>
+
+	override type Doer = MatrixDoer
+	
 	private val serialSequencer = new AtomicLong(0)
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
@@ -123,7 +127,7 @@ class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactor
 	private class Worker(val index: Int) extends Runnable { thisWorker =>
 
 		/** The [[Thread]] that executes this worker. */
-		private var thread: Thread = threadFactory.newThread(this)
+		private var thread: Thread = threadFactory.newThread(thisWorker)
 
 		/** This field is updated only within a synchronized block on this [[Worker]]'s intrinsic lock. */
 		private var keepRunning: Boolean = true
@@ -172,6 +176,7 @@ class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactor
 
 		/** Worker main loop. */
 		override def run(): Unit = {
+			workerIndexThreadLocal.set(index)
 			while keepRunning do {
 				val assignedDoerAssistant: DoerAssistant | Null =
 					if queueJumper != null then queueJumper
@@ -212,7 +217,7 @@ class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactor
 			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:
 			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a DoerAssistants was enqueued into `enqueuedDoerAssistants` by an external thread and is still not visible from the threads of the workers that were awake)
 			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
-			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than the necessary but are free.
+			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
 			// If other worker's thread is leaving the sleeping state
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
 				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoersAssistants`.
@@ -317,7 +322,8 @@ class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactor
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append("AutoBalancedDoerProvider:\n")
+		sb.append(thisSharedQueueDoerProvider.getClass.getSimpleName)
+		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
 		sb.append("\tqueuedDoersAssistants: ")
 		val doersAssistantsIterator = queuedDoersAssistants.iterator()

@@ -5,6 +5,7 @@ import readren.taskflow.Maybe
 
 object Matrix {
 	trait DoerProvider {
+		type Doer <: MatrixDoer
 		def provide(): MatrixDoer
 	}
 

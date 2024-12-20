@@ -8,6 +8,8 @@ import java.util.concurrent.{ExecutorService, LinkedBlockingQueue, ThreadPoolExe
 
 class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerProvider, ShutdownAble { thisProvider =>
 
+	override type Doer = MatrixDoer
+	
 	private class Entry(val doer: MatrixDoer, val executor: ThreadPoolExecutor)
 
 	private val serialSequencer = new AtomicInteger(0)
