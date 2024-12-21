@@ -3,6 +3,8 @@ package pruebas
 
 import rf.RegularRf
 
+import readren.matrix.dap.SharedQueueDoerAssistantProvider
+
 object PruebaChecked {
 
 	case class Response(text: String)
@@ -18,7 +20,13 @@ object PruebaChecked {
 
 	@main def runPruebaChecked(): Unit = {
 
-		val matrixAide = new Shared.TestingAide()
+		object matrixAide extends Matrix.Aide[SharedQueueDoerAssistantProvider] {
+			override def buildDoerAssistantProvider(owner: Matrix[SharedQueueDoerAssistantProvider]): SharedQueueDoerAssistantProvider =
+				new SharedQueueDoerAssistantProvider
+
+			override def buildLogger(owner: Matrix[SharedQueueDoerAssistantProvider]): Logger = new SimpleLogger(Logger.Level.info)
+		}
+
 		val matrix = new Matrix("testChecked", matrixAide)
 
 		matrix.spawn[Cmd](RegularRf) { parent =>
@@ -36,7 +44,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text == null then matrix.doerProvider.shutdown()
+				if response.text == null then matrix.doerAssistantProvider.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

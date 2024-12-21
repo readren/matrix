@@ -1,15 +1,15 @@
 package readren.matrix
-package doerproviders
+package dap
 
-import doerproviders.SharedQueueDoerProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal, workerIndexThreadLocal}
+import dap.SharedQueueDoerAssistantProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal, workerIndexThreadLocal}
 
 import readren.taskflow.Doer
 
 import java.util
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, ThreadFactory, TimeUnit}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Executors, ThreadFactory, TimeUnit}
 
-object SharedQueueDoerProvider {
+object SharedQueueDoerAssistantProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
@@ -22,11 +22,11 @@ object SharedQueueDoerProvider {
 	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 }
 
-class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit) extends Matrix.DoerProvider, ShutdownAble { thisSharedQueueDoerProvider =>
-
-	override type Doer = MatrixDoer
-	
-	private val serialSequencer = new AtomicLong(0)
+class SharedQueueDoerAssistantProvider(
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	failureReporter: Throwable => Unit = _.printStackTrace(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+) extends Matrix.DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
 
@@ -298,14 +298,12 @@ class SharedQueueDoerProvider(owner: AbstractMatrix, threadFactory: ThreadFactor
 		}
 	}
 
-	override def provide(): MatrixDoer = {
-		val serial = serialSequencer.getAndIncrement()
-		val newDoerAssistant = new DoerAssistant(serial)
-		new MatrixDoer(serial, newDoerAssistant, owner)
+	override def provide(serial: MatrixDoer.Id): Doer.Assistant = {
+		new DoerAssistant(serial)
 	}
 
 	/**
-	 * Makes this [[Matrix.DoerProvider]] to shut down when all the workers are sleeping.
+	 * Makes this [[Matrix.DoerAssistantProvider]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.

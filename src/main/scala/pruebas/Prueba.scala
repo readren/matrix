@@ -1,11 +1,11 @@
 package readren.matrix
 package pruebas
 
-import doerproviders.{SharedQueueDoerProvider, SimpleDoerProvider, BalancedDoerProvider as TestedDoerProvider}
+import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider, BalancedDoerAssistantProvider as TestedDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{Executors, LinkedBlockingQueue, TimeUnit}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.io.StdIn
 import scala.util.{Failure, Success, Try}
@@ -66,23 +66,23 @@ object Prueba {
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
-		object simpleAide extends Matrix.Aide[SimpleDoerProvider] {
-			override def buildDoerProvider(owner: Matrix[SimpleDoerProvider]): SimpleDoerProvider =
-				new SimpleDoerProvider(owner)
+		object simpleAide extends Matrix.Aide[SimpleDoerAssistantProvider] {
+			override def buildDoerAssistantProvider(owner: Matrix[SimpleDoerAssistantProvider]): SimpleDoerAssistantProvider =
+				new SimpleDoerAssistantProvider
 
-			override def buildLogger(owner: Matrix[SimpleDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+			override def buildLogger(owner: Matrix[SimpleDoerAssistantProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
-		object sharedQueueAide extends Matrix.Aide[SharedQueueDoerProvider] {
-			override def buildDoerProvider(owner: Matrix[SharedQueueDoerProvider]): SharedQueueDoerProvider =
-				new SharedQueueDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace())
+		object sharedQueueAide extends Matrix.Aide[SharedQueueDoerAssistantProvider] {
+			override def buildDoerAssistantProvider(owner: Matrix[SharedQueueDoerAssistantProvider]): SharedQueueDoerAssistantProvider =
+				new SharedQueueDoerAssistantProvider
 
-			override def buildLogger(owner: Matrix[SharedQueueDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
+			override def buildLogger(owner: Matrix[SharedQueueDoerAssistantProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
 		object testedAide extends Matrix.Aide[TestedDoerProvider] {
-			override def buildDoerProvider(owner: Matrix[TestedDoerProvider]): TestedDoerProvider =
-				new TestedDoerProvider(owner, Executors.defaultThreadFactory(), Runtime.getRuntime.availableProcessors(), _.printStackTrace(), () => LinkedBlockingQueue[Runnable]())
+			override def buildDoerAssistantProvider(owner: Matrix[TestedDoerProvider]): TestedDoerProvider =
+				new TestedDoerProvider
 
 			override def buildLogger(owner: Matrix[TestedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
@@ -128,10 +128,10 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DP <: Matrix.DoerProvider & ShutdownAble](testingAide: Matrix.Aide[DP], reactantFactory: ReactantFactory, loopId: Int)(using closer: Closer[DP]): Future[Long] = {
+	private def run[DP <: Matrix.DoerAssistantProvider & ShutdownAble](testingAide: Matrix.Aide[DP], reactantFactory: ReactantFactory, loopId: Int)(using closer: Closer[DP]): Future[Long] = {
 		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
-		println(s"Matrix created: doerProvider=${matrix.doerProvider.getClass.getSimpleName}")
+		println(s"Matrix created: doerAssistantProvider=${matrix.doerAssistantProvider.getClass.getSimpleName}")
 
 		val counter: AtomicInteger = new AtomicInteger(0)
 
@@ -193,7 +193,7 @@ object Prueba {
 			try {
 				val sb = new StringBuilder
 				sb.append("\n<<< InspectorA <<<\n")
-				matrix.doerProvider.diagnose(sb)
+				matrix.doerAssistantProvider.diagnose(sb)
 				sb.append(">>> InspectorA >>>\n")
 				println(sb)
 			} catch {
@@ -205,7 +205,7 @@ object Prueba {
 
 		val result = Promise[Long]
 
-		// println(matrix.doerProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
+		// println(matrix.doerAssistantProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
 
 		matrix.spawn[Cmd](reactantFactory) { parent =>
 			// println("Parent initialization")
@@ -311,14 +311,14 @@ object Prueba {
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
-				println(s"After successful completion diagnostic:\n${closer.diagnose(matrix.doerProvider)}")
+				println(s"After successful completion diagnostic:\n${closer.diagnose(matrix.doerAssistantProvider)}")
 
 				result.success(nanoAtEnd - nanoAtStart)
 			}
 		}
 		result.future.andThen { tryDuration =>
 			println(s"Before closing: duration=${tryDuration.map(_/1000000)}")
-			closer.close(matrix.doerProvider)
+			closer.close(matrix.doerAssistantProvider)
 			diagnosticScheduler.shutdown()
 		}(ExecutionContext.global)
 	}

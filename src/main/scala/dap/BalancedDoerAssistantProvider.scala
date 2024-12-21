@@ -1,19 +1,23 @@
 package readren.matrix
-package doerproviders
+package dap
 
-import Matrix.DoerProvider
+import Matrix.DoerAssistantProvider
 
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{BlockingQueue, ExecutorService, ThreadFactory, ThreadPoolExecutor, TimeUnit}
+import java.util.concurrent.{BlockingQueue, ExecutorService, Executors, LinkedBlockingQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit}
 
-class BalancedDoerProvider(matrix: AbstractMatrix, threadFactory: ThreadFactory, threadPoolSize: Int, failureReporter: Throwable => Unit, queueFactory: () => BlockingQueue[Runnable]) extends DoerProvider, ShutdownAble {
-	override type Doer = MatrixDoer
+class BalancedDoerAssistantProvider(
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	failureReporter: Throwable => Unit = _.printStackTrace(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+) extends DoerAssistantProvider, ShutdownAble {
 
 	private val executors = Array.tabulate[Executor](threadPoolSize)(index => new Executor(index))
 
-	private val serialSequencer = new AtomicInteger(0)
+	private val switcher = new AtomicInteger(0)
 
 	private class Executor(index: Int) extends ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), threadFactory)
 
@@ -23,16 +27,15 @@ class BalancedDoerProvider(matrix: AbstractMatrix, threadFactory: ThreadFactory,
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
 
-	override def provide(): MatrixDoer = {
-		val serial = serialSequencer.getAndIncrement()
+	override def provide(serial: MatrixDoer.Id): Doer.Assistant = {
 		val executorsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
 		val pickedExecutor =
 			if executorsWithShortestWorkQueue.tail == Nil then executorsWithShortestWorkQueue.head
 			else {
-				val pickedExecutorIndex = serial % executorsWithShortestWorkQueue.size
+				val pickedExecutorIndex = switcher.getAndIncrement() % executorsWithShortestWorkQueue.size
 				executorsWithShortestWorkQueue(pickedExecutorIndex)
 			}
-		new MatrixDoer(serial, new Assistant(pickedExecutor), matrix)
+		new Assistant(pickedExecutor)
 	}
 
 	private def findExecutorsWithShortestWorkQueue(): List[Executor] = {

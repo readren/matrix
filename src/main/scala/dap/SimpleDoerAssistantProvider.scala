@@ -1,34 +1,33 @@
 package readren.matrix
-package doerproviders
+package dap
 
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ExecutorService, LinkedBlockingQueue, ThreadPoolExecutor, TimeUnit}
+import java.util.concurrent.{BlockingQueue, ExecutorService, Executors, LinkedBlockingQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit}
 
-class SimpleDoerProvider(owner: Matrix[SimpleDoerProvider]) extends Matrix.DoerProvider, ShutdownAble { thisProvider =>
+class SimpleDoerAssistantProvider(
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	failureReporter: Throwable => Unit = _.printStackTrace(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+) extends Matrix.DoerAssistantProvider, ShutdownAble { thisProvider =>
 
-	override type Doer = MatrixDoer
-	
-	private class Entry(val doer: MatrixDoer, val executor: ThreadPoolExecutor)
+	private class Entry(val assistant: Doer.Assistant, val executor: ThreadPoolExecutor)
 
-	private val serialSequencer = new AtomicInteger(0)
+	private val switcher = new AtomicInteger(0)
 
 	/**
 	 * The array with all the [[MatrixDoer]] instances of this [[Matrix]]. */
 	private val matrixDoers: IArray[Entry] = {
-		val availableProcessors = Runtime.getRuntime.availableProcessors()
-		IArray.tabulate(availableProcessors) { index =>
-			val doerId = index + 1
-			val queue = new LinkedBlockingQueue[Runnable]()
-			val doSiThEx = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queue)
-			val doer = new MatrixDoer(doerId, new Assistant(doSiThEx), owner)
-			Entry(doer, doSiThEx)
+		IArray.tabulate(threadPoolSize) { index =>
+			val doSiThEx = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory())
+			Entry(new Assistant(doSiThEx), doSiThEx)
 		}
 	}
 
-	override def provide(): MatrixDoer =
-		matrixDoers(serialSequencer.getAndIncrement() % matrixDoers.length).doer
+	override def provide(serial: MatrixDoer.Id): Doer.Assistant =
+		matrixDoers(switcher.getAndIncrement() % matrixDoers.length).assistant
 
 	private class Assistant(doSiThEx: ExecutorService) extends Doer.Assistant {
 

@@ -1,27 +1,33 @@
 package readren.matrix
 
-import readren.taskflow.Maybe
+import readren.taskflow.{Doer, Maybe}
+
+import java.util.concurrent.atomic.AtomicLong
 
 
 object Matrix {
-	trait DoerProvider {
-		type Doer <: MatrixDoer
-		def provide(): MatrixDoer
+	trait DoerAssistantProvider {
+		def provide(serial: MatrixDoer.Id): Doer.Assistant
 	}
 
-	trait Aide[DP <: DoerProvider] {
+	trait Aide[DP <: DoerAssistantProvider] {
 		def buildLogger(owner: Matrix[DP]): Logger
-		def buildDoerProvider(owner: Matrix[DP]): DP
+		def buildDoerAssistantProvider(owner: Matrix[DP]): DP
 	}
 }
 
-class Matrix[+DP <: Matrix.DoerProvider](name: String, aide: Matrix.Aide[DP]) extends AbstractMatrix(name) { thisMatrix =>
+class Matrix[+DP <: Matrix.DoerAssistantProvider](name: String, aide: Matrix.Aide[DP]) extends AbstractMatrix(name) { thisMatrix =>
 
 	import Matrix.*
+	
+	private val matrixDoerIdSequencer = new AtomicLong(0)
 
-	val doerProvider: DP = aide.buildDoerProvider(thisMatrix)
+	val doerAssistantProvider: DP = aide.buildDoerAssistantProvider(thisMatrix)
 
-	override def provideDoer(): MatrixDoer = doerProvider.provide()
+	override def provideDoer(): MatrixDoer = {
+		val serial = matrixDoerIdSequencer.getAndIncrement()
+		new MatrixDoer(serial, doerAssistantProvider.provide(serial), thisMatrix) 
+	}
 
 	override val doer: MatrixDoer = provideDoer()
 

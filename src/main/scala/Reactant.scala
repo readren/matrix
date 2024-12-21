@@ -239,7 +239,7 @@ abstract class Reactant[U](
 				progenitor.removeChild(thisReactant.serial)
 				stopCovenant.fulfill(())()
 			}
-			// TODO notify parent and DoerProvider
+			// TODO notify parent
 		}
 
 		if !stopWasStarted then {
