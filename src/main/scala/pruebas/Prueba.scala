@@ -1,7 +1,7 @@
 package readren.matrix
 package pruebas
 
-import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider, BalancedDoerAssistantProvider as TestedDoerProvider}
+import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider, BalancedDoerAssistantProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
 import java.util.concurrent.TimeUnit
@@ -11,6 +11,8 @@ import scala.io.StdIn
 import scala.util.{Failure, Success, Try}
 
 object Prueba {
+
+	type TestedDoerProvider = SharedQueueDoerAssistantProvider
 
 	private sealed trait Answer
 

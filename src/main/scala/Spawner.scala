@@ -13,9 +13,9 @@ object Spawner {
  * @param doer the [[MatrixDoer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createReactant]].
  * If this [[Spawner]] has an owner then the [[MatrixDoer]] referred by this parameter should be the same as the assigned to the `owner`.
  * @param initialReactantSerial child reactants' serial will start at this value. Allows to distribute the load of [[MatrixDoer]] more evenly among siblings.
- * @tparam MA the singleton type of the [[MatrixDoer]] assigned to the `owner`.
+ * @tparam MD the singleton type of the [[MatrixDoer]] assigned to the `owner`.
  * */
-class Spawner[+MA <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MA, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
+class Spawner[+MD <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MD, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
 	assert(owner.fold(true)(_.doer eq doer))
 
 	/** Should be accessed only within the [[doer]] */

@@ -3,6 +3,7 @@ package dap
 
 import dap.SharedQueueDoerAssistantProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal, workerIndexThreadLocal}
 
+import jdk.internal.misc.Unsafe
 import readren.taskflow.Doer
 
 import java.util
@@ -16,10 +17,12 @@ object SharedQueueDoerAssistantProvider {
 		case keepRunning, shutdownWhenAllWorkersSleep, terminated
 	}
 
-	inline val debugEnabled = false
+	inline val debugEnabled = true
 
 	val workerIndexThreadLocal: ThreadLocal[Int] = ThreadLocal.withInitial(() => -1)
 	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+
+	// val UNSAFE: Unsafe = Unsafe.getUnsafe
 }
 
 class SharedQueueDoerAssistantProvider(
@@ -51,12 +54,13 @@ class SharedQueueDoerAssistantProvider(
 	private class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant { thisDoerAssistant =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
+		@volatile private var firstTaskInQueue: Runnable = null
 
 		inline def hasPendingTasks: Boolean = taskQueueSize.get > 0
 
 		override def queueForSequentialExecution(task: Runnable): Unit = {
 			if taskQueueSize.getAndIncrement() == 0 then {
-				taskQueue.offer(task)
+				firstTaskInQueue = task
 				if !wakeUpASleepingWorkerIfAny(thisDoerAssistant) then {
 					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
 					queuedDoersAssistants.offer(thisDoerAssistant)
@@ -77,29 +81,35 @@ class SharedQueueDoerAssistantProvider(
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
-		final def executePendingTasks(): Unit = {
+		final def executePendingTasks(): Int = {
 			doerAssistantThreadLocal.set(this)
-
 			if debugEnabled then assert(taskQueueSize.get > 0)
+			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
 			var aDecrementIsPending = false
+			// UNSAFE.loadLoadFence() // The memory fence
 			try {
-				var task = taskQueue.poll()
+				var task = firstTaskInQueue
+				firstTaskInQueue = null
+				if task	== null then task = taskQueue.poll()
 				while task != null && taskQueueSizeIsPositive do {
 					aDecrementIsPending = true
 					task.run()
+					processedTasksCounter += 1
 					aDecrementIsPending = false
 					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `queuedForSequentialExecution` to enqueue this DoerAssistant into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same DoerAssistant.
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 					if taskQueueSizeIsPositive then task = taskQueue.poll()
 				}
 			} finally {
+				// UNSAFE.storeStoreFence()
 				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 				if taskQueueSizeIsPositive then {
 					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
 					queuedDoersAssistants.offer(thisDoerAssistant)
 				}
 			}
+			processedTasksCounter
 		}
 
 
@@ -153,7 +163,6 @@ class SharedQueueDoerAssistantProvider(
 		 * and is cleared by this worker after it is awakened. */
 		private var queueJumper: DoerAssistant | Null = null
 
-
 		/**
 		 * Remember the greatest value that [[refusedTriesToSleepsCounter]] reached before it has been reset because a pending task becomes visible.
 		 * Used for diagnostic only to calibrate the limit of [[refusedTriesToSleepsCounter]] at which the worker can safely go to sleep.
@@ -171,6 +180,7 @@ class SharedQueueDoerAssistantProvider(
 		 * Used for diagnostic only.
 		 * This field is updated exclusively within this worker [[thread]]. */
 		private var completedMainLoopsCounter: Int = 0
+		private var processedTasksCounter: Int = 0
 
 		inline def start(): Unit = thread.start()
 
@@ -187,7 +197,7 @@ class SharedQueueDoerAssistantProvider(
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
 					try {
-						assignedDoerAssistant.executePendingTasks()
+						processedTasksCounter += assignedDoerAssistant.executePendingTasks()
 						completedMainLoopsCounter += 1
 					}
 					catch { // TODO analyze if clarity would suffer too much if [[DoerAssistant.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
@@ -286,7 +296,7 @@ class SharedQueueDoerAssistantProvider(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=${potentiallySleeping}%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper != null}%5b")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=${potentiallySleeping}%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper != null}%5b")
 		}
 	}
 
