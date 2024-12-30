@@ -6,6 +6,7 @@ import dap.SharedQueueDoerAssistantProvider.{State, TaskQueue, debugEnabled, doe
 import jdk.internal.misc.Unsafe
 import readren.taskflow.Doer
 
+import java.lang.invoke.VarHandle
 import java.util
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Executors, ThreadFactory, TimeUnit}
@@ -25,10 +26,15 @@ object SharedQueueDoerAssistantProvider {
 	// val UNSAFE: Unsafe = Unsafe.getUnsafe
 }
 
+/**
+ * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
+ * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
+ */
 class SharedQueueDoerAssistantProvider(
+	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends Matrix.DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
@@ -87,7 +93,7 @@ class SharedQueueDoerAssistantProvider(
 			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
 			var aDecrementIsPending = false
-			// UNSAFE.loadLoadFence() // The memory fence
+			if applyMemoryFence then VarHandle.loadLoadFence()
 			try {
 				var task = firstTaskInQueue
 				firstTaskInQueue = null
@@ -102,7 +108,7 @@ class SharedQueueDoerAssistantProvider(
 					if taskQueueSizeIsPositive then task = taskQueue.poll()
 				}
 			} finally {
-				// UNSAFE.storeStoreFence()
+				if applyMemoryFence then VarHandle.storeStoreFence()
 				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 				if taskQueueSizeIsPositive then {
 					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
@@ -241,7 +247,8 @@ class SharedQueueDoerAssistantProvider(
 					thisWorker.synchronized {
 						isSleeping = true
 						thisWorker.wait() // TODO analyse if the interrupted exception should be handled
-						if debugEnabled then assert(keepRunning != isSleeping)
+						// if a spurious wakeup occur then act as if the worker was awakened with `wakeUpIfSleeping(null)`, unless it was simultaneously stopped (very unlikely to occur if it is possible at all), in which case act as if the worker was stopped while sleeping.
+						if keepRunning == isSleeping then isSleeping = !keepRunning
 						isAwakened = !isSleeping
 					}
 					if isAwakened then {

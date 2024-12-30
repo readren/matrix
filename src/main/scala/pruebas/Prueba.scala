@@ -34,7 +34,7 @@ object Prueba {
 
 	private inline val NUMBER_OF_PRODUCERS = 100
 	private inline val NUMBER_OF_CONSUMERS = 100
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 1000
 
 	private inline val haveToCountAndCheck = true
 	private inline val haveToShowFinalPhoto = false
@@ -64,6 +64,7 @@ object Prueba {
 	private class Pixel(var value: Int, var updateSerial: Int)
 
 	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var sharedQueueRegularRf: Long = 0L, var sharedQueueSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
+	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
@@ -84,16 +85,16 @@ object Prueba {
 
 		object testedAide extends Matrix.Aide[TestedDoerProvider] {
 			override def buildDoerAssistantProvider(owner: Matrix[TestedDoerProvider]): TestedDoerProvider =
-				new TestedDoerProvider
+				new TestedDoerProvider(false)
 
 			override def buildLogger(owner: Matrix[TestedDoerProvider]): Logger = new SimpleLogger(Logger.Level.info)
 		}
 
 		val numberOfWarmUpRepetitions = 4
 		val numberOfMeasuredOfRepetitions = 6
-		var totalFuture = Future.successful[Durations](Durations())
+		var totalFuture = Future.successful[Iteration](Iteration())
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
-			totalFuture = totalFuture.flatMap { durationAccumulator =>
+			totalFuture = totalFuture.flatMap { iteration =>
 				println(s"\n******* Loop #$i *******")
 				for {
 					sharedQueueRegularRfDuration <- run(sharedQueueAide, RegularRf, i)
@@ -104,14 +105,22 @@ object Prueba {
 					simpleSequentialMsgBufferDuration <- run(simpleAide, SequentialMsgBufferRf, i)
 				} yield {
 					if i > numberOfWarmUpRepetitions then {
-						durationAccumulator.sharedQueueRegularRf += sharedQueueRegularRfDuration
-						durationAccumulator.sharedQueueSequentialMsBufferRf += sharedQueueSequentialMsgBufferDuration
-						durationAccumulator.testedRegularRf += testedRegularRfDuration
-						durationAccumulator.testedSequentialMsgBufferRf += testedSequentialMsgBufferDuration
-						durationAccumulator.simpleRegularRf += simpleRegularRfDuration
-						durationAccumulator.simpleSequentialMsgBufferRf += simpleSequentialMsgBufferDuration
+						iteration.accumulated.sharedQueueRegularRf += sharedQueueRegularRfDuration
+						iteration.accumulated.sharedQueueSequentialMsBufferRf += sharedQueueSequentialMsgBufferDuration
+						iteration.accumulated.testedRegularRf += testedRegularRfDuration
+						iteration.accumulated.testedSequentialMsgBufferRf += testedSequentialMsgBufferDuration
+						iteration.accumulated.simpleRegularRf += simpleRegularRfDuration
+						iteration.accumulated.simpleSequentialMsgBufferRf += simpleSequentialMsgBufferDuration
 					}
-					durationAccumulator
+
+					if sharedQueueRegularRfDuration < iteration.minimum.sharedQueueRegularRf then iteration.minimum.sharedQueueRegularRf = sharedQueueRegularRfDuration
+					if sharedQueueSequentialMsgBufferDuration < iteration.minimum.sharedQueueSequentialMsBufferRf then iteration.minimum.sharedQueueSequentialMsBufferRf = sharedQueueSequentialMsgBufferDuration
+					if testedRegularRfDuration < iteration.minimum.testedRegularRf then iteration.minimum.testedRegularRf = testedRegularRfDuration
+					if testedSequentialMsgBufferDuration < iteration.minimum.testedSequentialMsgBufferRf then iteration.minimum.testedSequentialMsgBufferRf = testedSequentialMsgBufferDuration
+					if simpleRegularRfDuration < iteration.minimum.simpleRegularRf then iteration.minimum.simpleRegularRf = simpleRegularRfDuration
+					if simpleSequentialMsgBufferDuration < iteration.minimum.simpleSequentialMsgBufferRf then iteration.minimum.simpleSequentialMsgBufferRf = simpleSequentialMsgBufferDuration
+
+					iteration
 				}
 			}
 		}
@@ -119,8 +128,10 @@ object Prueba {
 			case Success(totalDuration) =>
 				println(
 					s"""All matrix were shutdown
-					   |Average duration for regularRf: simple -> ${totalDuration.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue -> ${totalDuration.sharedQueueRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
-					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue-> ${totalDuration.sharedQueueSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for regularRf: simple -> ${totalDuration.accumulated.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue -> ${totalDuration.accumulated.sharedQueueRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.accumulated.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue-> ${totalDuration.accumulated.sharedQueueSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Minimum duration for regularRf: simple -> ${totalDuration.minimum.simpleRegularRf / 1000000}, sharedQueue -> ${totalDuration.minimum.sharedQueueRegularRf / 1000000}, tested -> ${totalDuration.minimum.testedRegularRf / 1000000}
+					   |Minimum duration for sequentialMsgBuffer: simple -> ${totalDuration.minimum.simpleSequentialMsgBufferRf / 1000000}, sharedQueue-> ${totalDuration.minimum.sharedQueueSequentialMsBufferRf / 1000000}, tested -> ${totalDuration.minimum.testedSequentialMsgBufferRf / 1000000}
 					   |Press <enter> to exit""".stripMargin
 				)
 			case Failure(cause) => cause.printStackTrace()

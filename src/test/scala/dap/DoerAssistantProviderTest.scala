@@ -16,11 +16,15 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 
 	private def testVisibility(provider: Matrix.DoerAssistantProvider & ShutdownAble, minimumThreadSwaps: Int): Future[Any] = {
 
-		class Counter { var count: Int = 0 }
+		class Counter {
+			var count: Int = 0
+			// Padding to ensure the counter occupies a distinct cache line
+			val p1, p2, p3, p4, p5, p6, p7, p8: Long = 0
+		}
 		class AssistantData(serial: Long) {
 			val assistant: Doer.Assistant = provider.provide(serial)
 			val promise: Promise[Int] = Promise()
-			val counter: Counter = new Counter
+			var counter: Counter | Null = null
 			var previousTaskWorkerIndex: Int = -1
 			var workerIndexChangesCounter: Int = 0
 		}
@@ -36,6 +40,12 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 					if assistantData.previousTaskWorkerIndex != currentWorkerIndex then {
 						assistantData.workerIndexChangesCounter += 1
 						assistantData.previousTaskWorkerIndex = currentWorkerIndex
+					}
+					// allocate the counters on different threads to encourage allocation on a memory regions separated from the one where the assistantData object is stored.
+					if assistantData.counter == null then {
+						// allocate large unrelated objects between counters to avoid
+						val dummy = new Array[Long](1024)
+						assistantData.counter = new Counter
 					}
 					if assistantData.counter.count != expected then assistantData.promise.failure(new AssertionError(s"expected: $expected, found: $assistantData.counter"))
 					assistantData.counter.count = assistantData.counter.count + 1
@@ -54,20 +64,20 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
 			}
-			.andThen { _ => for assistant <- assistantsData do println(s"workerIndexChangesCounter=${assistant.workerIndexChangesCounter}") }
+			// .andThen { _ => for assistant <- assistantsData do println(s"workerIndexChangesCounter=${assistant.workerIndexChangesCounter}") }
 
 	}
 
-	test("SimpleDoerAssistant: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+	test("SharedQueueDoerAssistantProvider: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SimpleDoerAssistantProvider, 0)
+		testVisibility(new SharedQueueDoerAssistantProvider(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
 	}
 	test("BalancedDoerAssistantProvider: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
 		testVisibility(new BalancedDoerAssistantProvider, 0)
 	}
-	test("SharedQueueDoerAssistantProvider: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+	test("SimpleDoerAssistant: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SharedQueueDoerAssistantProvider, NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
+		testVisibility(new SimpleDoerAssistantProvider, 0)
 	}
 }
