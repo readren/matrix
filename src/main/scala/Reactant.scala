@@ -110,7 +110,7 @@ abstract class Reactant[U](
 	}
 
 	/** Should be called withing the [[doer]]. */
-	override def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]] = {
+	override def spawn[A](childReactantFactory: ReactantFactory, doerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?])(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]] = {
 		doer.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[doer.type](Maybe.some(thisReactant), doer, serial)
@@ -118,7 +118,7 @@ abstract class Reactant[U](
 				childrenRelays = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
-			.createReactant[A](childReactantFactory, isSignalTest, initialChildBehaviorBuilder)
+			.createReactant[A](childReactantFactory, doerAssistantProviderRef, isSignalTest, initialChildBehaviorBuilder)
 	}
 
 	/** The children of this [[Reactant]] by serial number.

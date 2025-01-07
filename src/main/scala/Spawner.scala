@@ -29,11 +29,11 @@ class Spawner[+MD <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MD, in
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
 	/** Should be called withing the [[doer]] only. */
-	def createReactant[U](reactantFactory: ReactantFactory, isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[ReactantRelay[U]] = {
+	def createReactant[U](reactantFactory: ReactantFactory, doerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?], isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[ReactantRelay[U]] = {
 		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
-		val reactantDoer = doer.matrix.provideDoer()
+		val reactantDoer = doer.matrix.provideDoer(doerAssistantProviderRef)
 		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantDoer, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(doer)
 			.map { reactant =>

@@ -23,6 +23,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 		}
 		class AssistantData(serial: Long) {
 			val assistant: Doer.Assistant = provider.provide(serial)
+			var failed: Boolean = false
 			val promise: Promise[Int] = Promise()
 			var counter: Counter | Null = null
 			var previousTaskWorkerIndex: Int = -1
@@ -36,24 +37,28 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 			for assistantDataIndex <- assistantsData.indices yield {
 				val assistantData = assistantsData(assistantDataIndex)
 				assistantData.assistant.queueForSequentialExecution { () =>
+					// Track the number of times this code is executed by a different worker thread than the previous time.
 					val currentWorkerIndex = SharedQueueDoerAssistantProvider.workerIndexThreadLocal.get()
 					if assistantData.previousTaskWorkerIndex != currentWorkerIndex then {
 						assistantData.workerIndexChangesCounter += 1
 						assistantData.previousTaskWorkerIndex = currentWorkerIndex
 					}
-					// allocate the counters on different threads to encourage allocation on a memory regions separated from the one where the assistantData object is stored.
+					// allocate the counters on different threads to encourage allocation on memory regions separated from the one where the assistantData object is stored.
 					if assistantData.counter == null then {
 						// allocate large unrelated objects between counters to avoid
 						val dummy = new Array[Long](1024)
 						assistantData.counter = new Counter
 					}
-					if assistantData.counter.count != expected then assistantData.promise.failure(new AssertionError(s"expected: $expected, found: $assistantData.counter"))
+					if assistantData.counter.count != expected then {
+						assistantData.failed = true
+						assistantData.promise.failure(new AssertionError(s"expected: $expected, found: $assistantData.counter"))
+					}
 					assistantData.counter.count = assistantData.counter.count + 1
 				}
 			}
 		}
 		for assistantData <- assistantsData do assistantData.assistant.queueForSequentialExecution { () =>
-			assistantData.promise.success(assistantData.workerIndexChangesCounter)
+			if !assistantData.failed then assistantData.promise.success(assistantData.workerIndexChangesCounter)
 		}
 
 		given ExecutionContext = ExecutionContext.global

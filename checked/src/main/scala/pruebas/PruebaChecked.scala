@@ -1,9 +1,8 @@
 package readren.matrix
 package pruebas
 
+import dap.SharedQueueDoerAssistantProvider
 import rf.RegularRf
-
-import readren.matrix.dap.SharedQueueDoerAssistantProvider
 
 object PruebaChecked {
 
@@ -20,12 +19,7 @@ object PruebaChecked {
 
 	@main def runPruebaChecked(): Unit = {
 
-		object matrixAide extends Matrix.Aide[SharedQueueDoerAssistantProvider] {
-			override def buildDoerAssistantProvider(owner: Matrix[SharedQueueDoerAssistantProvider]): SharedQueueDoerAssistantProvider =
-				new SharedQueueDoerAssistantProvider
-
-			override def buildLogger(owner: Matrix[SharedQueueDoerAssistantProvider]): Logger = new SimpleLogger(Logger.Level.info)
-		}
+		val matrixAide = new AideImpl[SharedQueueDoerAssistantProvider]((owner: Matrix.DoerAssistantProviderManager) => new SharedQueueDoerAssistantProvider(false))
 
 		val matrix = new Matrix("testChecked", matrixAide)
 
@@ -44,7 +38,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text == null then matrix.doerAssistantProvider.shutdown()
+				if response.text == null then matrix.doerAssistantProviderManager.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

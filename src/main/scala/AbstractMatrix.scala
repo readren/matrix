@@ -12,6 +12,8 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 
 	val logger: Logger
 
+	val defaultDoerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?]
+	
 	val uri: URI = {
 		val host = InetAddress.getLocalHost.getHostAddress // Or use getHostAddress for IP
 
@@ -24,13 +26,21 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	def provideDoer(): MatrixDoer
+	def provideDoer[A <: Matrix.DoerAssistantProvider](ref: Matrix.DoerAssistantProviderRef[A]): MatrixDoer
 
 	/** thread-safe */
-	def spawn[U](reactantFactory: ReactantFactory)(initialBehaviorBuilder: ReactantRelay[U] => Behavior[U])(using isSignalTest: IsSignalTest[U]): doer.Duty[ReactantRelay[U]] =
+	def spawn[U](
+		reactantFactory: ReactantFactory,
+		ref: Matrix.DoerAssistantProviderRef[?] = defaultDoerAssistantProviderRef
+	)(
+		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
+	)(
+		using isSignalTest: IsSignalTest[U]
+	): doer.Duty[ReactantRelay[U]] = {
 		doer.Duty.mineFlat { () =>
-			spawner.createReactant[U](reactantFactory, isSignalTest, initialBehaviorBuilder)
+			spawner.createReactant[U](reactantFactory, ref, isSignalTest, initialBehaviorBuilder)
 		}
+	}
 
 	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
 		val receiver = new Receiver[A] {

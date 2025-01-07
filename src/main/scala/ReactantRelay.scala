@@ -25,7 +25,14 @@ abstract class ReactantRelay[-U] {
 	def isMarkedToBeStopped: Boolean
 	
 	/** Should be called withing the [[doer]]. */
-	def spawn[A](childReactantFactory: ReactantFactory)(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]]
+	def spawn[A](
+		childReactantFactory: ReactantFactory,
+		doerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?] = doer.matrix.defaultDoerAssistantProviderRef
+	)(
+		initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]
+	)(
+		using isSignalTest: IsSignalTest[A]
+	): doer.Duty[ReactantRelay[A]]
 
 	/** Should be called within the [[doer]]. */
 	def children: MapView[Long, ReactantRelay[?]]
