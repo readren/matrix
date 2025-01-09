@@ -1,4 +1,7 @@
 package readren.matrix
+package logger
+
+import core.{Logger, Receiver}
 
 import java.net.URI
 

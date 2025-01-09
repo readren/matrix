@@ -1,12 +1,13 @@
 package readren.matrix
 package dap
 
-import Matrix.DoerAssistantProvider
+import core.Matrix.DoerAssistantProvider
+import core.MatrixDoer
 
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{BlockingQueue, ExecutorService, Executors, LinkedBlockingQueue, ThreadFactory, ThreadPoolExecutor, TimeUnit}
+import java.util.concurrent.*
 
 class BalancedDoerAssistantProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),

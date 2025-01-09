@@ -1,6 +1,5 @@
 package readren.matrix
-
-import Behavior.defaultCatcher
+package core
 
 import scala.reflect.TypeTest
 

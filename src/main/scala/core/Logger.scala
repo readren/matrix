@@ -1,6 +1,7 @@
 package readren.matrix
+package core
 
-import Logger.Level
+import core.Logger.Level
 
 object Logger {
 	enum Level { case debug, info, warn, error }

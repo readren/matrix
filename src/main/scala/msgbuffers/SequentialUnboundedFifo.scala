@@ -1,11 +1,12 @@
 package readren.matrix
 package msgbuffers
 
+import core.{Inbox, MatrixDoer, Reactant, Receiver}
+
 import readren.taskflow.Maybe
 
 import java.net.URI
-import java.util.concurrent.atomic.AtomicBoolean
-import scala.collection.{AbstractIterator, mutable}
+import scala.collection.AbstractIterator
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */

@@ -1,5 +1,5 @@
 package readren.matrix
-
+package core
 
 trait ReactantFactory {
 

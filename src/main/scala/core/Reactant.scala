@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 import readren.taskflow.Maybe
 
@@ -20,7 +21,7 @@ object Reactant {
 	private object ToStop extends Decision[Nothing]
 }
 
-import Reactant.*
+import core.Reactant.*
 
 /**
  *

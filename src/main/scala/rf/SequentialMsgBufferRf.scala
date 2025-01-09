@@ -1,6 +1,7 @@
 package readren.matrix
 package rf
 
+import core.Reactant
 import msgbuffers.SequentialUnboundedFifo
 
 object SequentialMsgBufferRf extends TemplateRf[SequentialUnboundedFifo] {

@@ -1,10 +1,8 @@
 package readren.matrix
+package core
 
-import Reactant.SerialNumber
+import readren.taskflow.Maybe
 
-import readren.taskflow.{Doer, Maybe}
-
-import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.MapView
 
 abstract class ReactantRelay[-U] {

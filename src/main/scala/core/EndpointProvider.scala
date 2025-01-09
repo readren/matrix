@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 class EndpointProvider[-U](receiver: Receiver[U]) {
 

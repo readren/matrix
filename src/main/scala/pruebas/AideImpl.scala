@@ -1,7 +1,9 @@
 package readren.matrix
 package pruebas
 
+import core.{Logger, Matrix}
 import dap.CloseableDoerAssistantProvidersManager
+import logger.SimpleLogger
 
 class AideImpl[DefaultDAP <: Matrix.DoerAssistantProvider](override val defaultDapRef: Matrix.DoerAssistantProviderRef[DefaultDAP]) extends Matrix.Aide[AideImpl[DefaultDAP]] {
 	override type DapMan = CloseableDoerAssistantProvidersManager
@@ -9,5 +11,5 @@ class AideImpl[DefaultDAP <: Matrix.DoerAssistantProvider](override val defaultD
 
 	override def buildDoerAssistantProviderManager(owner: Matrix[AideImpl[DefaultDAP]]): DapMan = new CloseableDoerAssistantProvidersManager
 
-	override def buildLogger(owner: Matrix[AideImpl[DefaultDAP]]): _root_.readren.matrix.Logger = new SimpleLogger(Logger.Level.info)
+	override def buildLogger(owner: Matrix[AideImpl[DefaultDAP]]): Logger = new SimpleLogger(Logger.Level.info)
 }

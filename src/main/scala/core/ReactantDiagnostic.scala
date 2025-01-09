@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 import readren.taskflow.Maybe
 

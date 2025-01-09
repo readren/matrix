@@ -1,15 +1,15 @@
 package readren.matrix
 package dap
 
-import dap.SharedQueueDoerAssistantProvider.{State, TaskQueue, debugEnabled, doerAssistantThreadLocal, workerIndexThreadLocal}
+import core.{Matrix, MatrixDoer}
+import dap.SharedQueueDoerAssistantProvider.*
 
-import jdk.internal.misc.Unsafe
 import readren.taskflow.Doer
 
 import java.lang.invoke.VarHandle
 import java.util
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Executors, ThreadFactory, TimeUnit}
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.*
 
 object SharedQueueDoerAssistantProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]

@@ -1,6 +1,5 @@
 package readren.matrix
-
-import readren.taskflow.Maybe
+package core
 
 import java.net.{InetAddress, URI}
 

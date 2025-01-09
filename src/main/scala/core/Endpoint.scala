@@ -1,10 +1,7 @@
 package readren.matrix
-
-import readren.taskflow.{Doer, Maybe}
+package core
 
 import java.net.URI
-
-
 
 /** A facade that only exposes the functionality intended for message suppliers (in opposition to message consumers).
  * @tparam M type of the message this inbox receives. */

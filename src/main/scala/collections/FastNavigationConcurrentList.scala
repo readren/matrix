@@ -3,6 +3,7 @@ package collections
 
 import collections.FastNavigationConcurrentList.Node
 
+@deprecated("not used")
 object FastNavigationConcurrentList {
 	abstract class Node {
 		type Self <: Node
@@ -21,6 +22,7 @@ object FastNavigationConcurrentList {
  * This clas was created as an alternative to [[ConcurrentList]] with improved navigation speed, but it is not being used because of the "skips elements when the current element is concurrently removed" problem that affect both [[nextOf]] and [[CircularIterator]]   
  * @tparam A the type of the elements
  */
+@deprecated("not used")
 final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 
 	private var head: A | Null = null

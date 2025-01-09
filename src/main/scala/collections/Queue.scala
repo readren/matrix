@@ -4,6 +4,7 @@ package collections
 import scala.annotation.nowarn
 import scala.collection.AbstractIterator
 
+@deprecated("not used")
 object Queue {
 	abstract class Node {
 		type Self <: Node
@@ -11,6 +12,8 @@ object Queue {
 		private[Queue] var next: Self | Null = null
 	}
 }
+
+@deprecated("not used")
 class Queue[A <: Queue.Node { type Self = A }] extends Queue.Node {
 	type Self = A
 

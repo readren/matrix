@@ -1,6 +1,7 @@
 package readren.matrix
 package pruebas
 
+import core.{Continue, Endpoint, Matrix}
 import dap.SharedQueueDoerAssistantProvider
 import rf.RegularRf
 

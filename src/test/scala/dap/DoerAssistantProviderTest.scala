@@ -1,6 +1,8 @@
 package readren.matrix
 package dap
 
+import core.Matrix
+
 import munit.ScalaCheckEffectSuite
 import readren.taskflow.Doer
 

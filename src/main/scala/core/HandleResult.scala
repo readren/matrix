@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 sealed trait HandleResult[-A] {
 	def mapMsg[B, A1 <: A](f: Behavior[A1] => Behavior[B]): HandleResult[B]

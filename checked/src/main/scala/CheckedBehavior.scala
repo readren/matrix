@@ -1,5 +1,7 @@
 package readren.matrix
 
+import core.{Behavior, Continue, ContinueWith, HandleResult}
+
 import scala.language.experimental.saferExceptions
 import scala.reflect.Typeable
 

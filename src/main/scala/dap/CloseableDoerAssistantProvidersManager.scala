@@ -1,7 +1,7 @@
 package readren.matrix
 package dap
 
-import Matrix.*
+import core.Matrix.*
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}

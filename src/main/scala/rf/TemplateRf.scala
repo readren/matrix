@@ -1,6 +1,8 @@
 package readren.matrix
 package rf
 
+import core.*
+
 abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFactory {
 	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */
 	type MsgBuffer[u] = MS[u]

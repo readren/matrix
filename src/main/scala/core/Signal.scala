@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 /** Type of the signal sent to the [[Behavior.handleSignal]] method. */
 sealed trait Signal {

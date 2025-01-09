@@ -1,4 +1,5 @@
 package readren.matrix
+package core
 
 trait WatchSubscription {
 	/** Undo this subscription instantly.

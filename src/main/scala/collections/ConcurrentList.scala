@@ -3,6 +3,7 @@ package collections
 
 import ConcurrentList.Node
 
+@deprecated("not used")
 object ConcurrentList {
 	abstract class Node {
 		type Self <: Node
@@ -24,6 +25,7 @@ object ConcurrentList {
  * Constant time [[add]] and [[Node.remove]] operations.
  * @tparam A the type of the elements
  */
+@deprecated("not used")
 final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 
 	private var head: A | Null = null

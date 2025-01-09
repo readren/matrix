@@ -1,6 +1,8 @@
 package readren.matrix
 package msgbuffers
 
+import core.{Inbox, Reactant, Receiver}
+
 import readren.taskflow.Maybe
 
 import java.net.URI
