@@ -7,7 +7,7 @@ object MatrixDoer {
 
 	type Id = Long
 	
-	inline val checkWeAreWithingTheDoerIsEnabled = true
+	inline val checkWeAreWithingTheDoerIsEnabled = false
 
 	val doerIdThreadLocal: ThreadLocal[Id] =
 		if checkWeAreWithingTheDoerIsEnabled then ThreadLocal.withInitial[Id](() => -1)
@@ -23,9 +23,9 @@ object MatrixDoer {
 
 class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix: AbstractMatrix) extends AbstractDoer {
 
-	override protected val assistant: Doer.Assistant = {
+	override val assistant: Doer.Assistant = {
 		if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
-			new Doer.Assistant {
+			new Doer.Assistant { thisAssistant =>
 				private val backingAssistant = anAssistant
 
 				override def queueForSequentialExecution(runnable: Runnable): Unit = {
@@ -34,6 +34,8 @@ class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix:
 						runnable.run()
 					}
 				}
+				
+				override def current: Doer.Assistant = anAssistant.current
 
 				override def reportFailure(cause: Throwable): Unit = backingAssistant.reportFailure(cause)
 			}
@@ -45,7 +47,7 @@ class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix:
 	inline def checkWithin(): Unit = {
 		inline if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
 			val idOnThread = MatrixDoer.doerIdThreadLocal.get()
-			assert(idOnThread == id, s"expected=$id, onThread=$idOnThread")
-		}
+			assert(idOnThread == id, s"The current thread is not executing this MatrixDoer: expectedId=$id, onThread=$idOnThread")
+		} else assert(assistant.isCurrentAssistant, s"The current thread does not correspond to the assistant of this MatrixDoer: expected=$assistant, current=${assistant.current}")
 	}
 }

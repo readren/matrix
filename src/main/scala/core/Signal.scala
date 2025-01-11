@@ -41,7 +41,7 @@ case object Restarted extends Initialization {
 	override final def isRestarted: Boolean = true
 }
 
-/** After a stop or restart command but before the reactant is terminated. */
+/** After a stop or restart command but before the reactant is terminated or restarted. */
 sealed abstract class CmdReceived extends Signal {
 	override final def isInitialization: Boolean = false
 
@@ -59,7 +59,7 @@ case object StopReceived extends CmdReceived {
 	override final def isRestartReceived: Boolean = false
 }
 
-/** After a restart command but before the reactant is terminated. */
+/** After a restart command but before the reactant is restarted. */
 case object RestartReceived extends CmdReceived {
 	override final def isStopReceived: Boolean = false
 

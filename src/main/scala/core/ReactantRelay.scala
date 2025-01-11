@@ -52,16 +52,23 @@ abstract class ReactantRelay[-U] {
  	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called withing the [[doer]]. */
 	def stopDuty: doer.SubscriptableDuty[Unit]
 
-	/** Registers this [[Reactant]] to be notified with the provided signal when the specified [[Reactant]] is fully stopped.
-	 * The notification is not sent to this [[Reactant]]'s [[Receiver]] as a regular messages. It behaves like signals: an execution of {{{behavior.handle(childStoppedSignal)}}} is queued directly in the task-queue of this [[Reactant.doer]]'s executor.
-	 * 
-	 * Should be called within the [[doer]].
-	 * @param watchedReactant the [[Reactant]] to be watched.
-	 * @param stoppedSignal the signal that the [[Behavior.handle]] method of this [[Reactant]]'s behavior will receive after the `watchedReactant` is fully stopped.
-	 * @param univocally when `true`, existing subscriptions to the `watchedReactant` are undone. This mode prevents undesired repeated subscriptions after a restart.
-	 *                   when `false`, the behavior should be responsible to avoid repeated subscriptions after a restart. This mode is particularly useful when two [[Behaviors]] united with [[Behavior.unitedNest]] watch the same [[Reactant]].
-	 * @return a [[WatchSubscription]] that may be used to undo the subscription. */
-	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true): Maybe[WatchSubscription]
+	/** Registers this [[Reactant]] to be notified with the specified signal when the given `watchedReactant` is fully stopped.
+	 *
+	 * **Note:** The `watchedReactant` does not send the notification to this [[Reactant]]'s [[Receiver]] (via the inbox) as a regular message.
+	 * Instead, the notification behaves like a signal: an execution of `behavior.handle(childStoppedSignal)` is queued directly in the task queue of this [[Reactant.doer]]'s executor.
+	 * Consequently, the [[Behavior.handler]] will handle the notification before processing any messages pending in the inbox if this reactant uses a concurrent message buffer (e.g., [[ConcurrentUnboundedFifo]]).
+	 * **Note:** This method may return before the subscription is completed. The optional `subscriptionCompleted` parameter may be used to know when that happens.  
+	 * **Usage:** This method must be called within the [[doer]].
+	 *
+	 * @param watchedReactant The [[Reactant]] to be observed.
+	 * @param stoppedSignal   The signal to be passed to the `[[Behavior.handle]]` method of this [[Reactant]]'s behavior after the `watchedReactant` is fully stopped.
+	 * @param univocally      When `true`, any existing subscriptions to the `watchedReactant` are cleared. This mode avoids redundant subscriptions that might occur after a restart.
+	 *                        When `false`, the behavior must handle potential duplicate subscriptions after a restart. This mode is useful when two [[Behaviors]] combined with
+	 *                        [[Behavior.unitedNest]] watch the same [[Reactant]].
+	 * @param subscriptionCompleted An optional [[Doer.Covenant]] that will be fulfilled when the subscription process completes.
+	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
+	 */
+	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 	
 	/** Provides diagnostic information about the current instance. */
 	def diagnose: doer.Duty[ReactantDiagnostic]

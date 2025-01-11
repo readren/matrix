@@ -18,11 +18,12 @@ object SharedQueueDoerAssistantProvider {
 		case keepRunning, shutdownWhenAllWorkersSleep, terminated
 	}
 
-	inline val debugEnabled = true
+	inline val debugEnabled = false
 
-	val workerIndexThreadLocal: ThreadLocal[Int] = ThreadLocal.withInitial(() => -1)
-	val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	private val workerIndexThreadLocal: ThreadLocal[Int] = ThreadLocal.withInitial(() => -1)
+	private val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 
+	def currentWorkerIndex: Int = workerIndexThreadLocal.get
 	// val UNSAFE: Unsafe = Unsafe.getUnsafe
 }
 
@@ -76,6 +77,8 @@ class SharedQueueDoerAssistantProvider(
 			}
 		}
 
+		override def current: Doer.Assistant = doerAssistantThreadLocal.get()
+
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 
 
@@ -88,7 +91,7 @@ class SharedQueueDoerAssistantProvider(
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
 		final def executePendingTasks(): Int = {
-			doerAssistantThreadLocal.set(this)
+			doerAssistantThreadLocal.set(thisDoerAssistant)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
@@ -303,7 +306,7 @@ class SharedQueueDoerAssistantProvider(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=${potentiallySleeping}%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper != null}%5b")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper != null}%5b")
 		}
 	}
 

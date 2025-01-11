@@ -142,6 +142,7 @@ object Prueba {
 			}
 		}
 
+		System.gc()
 		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Answer] {
@@ -196,7 +197,7 @@ object Prueba {
 					parent.spawn[Consumable](reactantFactory) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
-						Behavior.factory { consumable =>
+						consumable =>
 							if consumable.value >= 0 then {
 								outEndpoint.tell(Response(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
 								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
@@ -206,7 +207,6 @@ object Prueba {
 								if completedCounter == NUMBER_OF_PRODUCERS then Stop
 								else Continue
 							}
-						}
 					}.map { consumer =>
 						parent.doer.checkWithin()
 						parent.watch(consumer, ConsumerWasStopped(consumerIndex))
@@ -219,7 +219,7 @@ object Prueba {
 					parent.spawn[Started.type | Restarted.type](reactantFactory) { producer =>
 						producer.doer.checkWithin()
 
-						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = Behavior.factory {
+						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = {
 							case Started | Restarted =>
 								if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
 									for consumerEndpoint <- consumersEndpoints do
@@ -243,7 +243,7 @@ object Prueba {
 			var activeConsumers = NUMBER_OF_CONSUMERS
 			var activeProducers = NUMBER_OF_PRODUCERS
 
-			Behavior.factory {
+			{
 				case cws@ConsumerWasStopped(consumerIndex) =>
 					parent.doer.checkWithin()
 					outEndpoint.tell(cws)

@@ -52,7 +52,7 @@ class Queue[A <: Queue.Node { type Self = A }] extends Queue.Node {
 			nextA match {
 				case null =>
 					throw new NoSuchElementException()
-				case a: A @nowarn =>
+				case a: A @unchecked =>
 					nextA = a.next
 					a
 			}

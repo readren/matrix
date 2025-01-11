@@ -1,4 +1,5 @@
 package readren.matrix
+package behaviors
 
 import core.{Behavior, Continue, ContinueWith, HandleResult}
 

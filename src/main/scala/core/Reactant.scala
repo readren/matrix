@@ -166,9 +166,10 @@ abstract class Reactant[U](
 
 	override def stopDuty: doer.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
 
-	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM, univocally: Boolean = true): Maybe[WatchSubscription] = {
+	override def watch[CSM <: U](watchedReactant: ReactantRelay[?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
-		if stopWasStarted then Maybe.empty else {
+		if stopWasStarted then Maybe.empty
+		else {
 			object observer extends AbstractFunction1[Unit, Unit], WatchSubscription {
 				private def work(): Unit = {
 					// ignore the notification if a stop of this reactant is in progress or the subscription is not active.
@@ -191,9 +192,8 @@ abstract class Reactant[U](
 					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
 					activeWatchSubscriptions.computeIfPresent(watchedReactant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
-					if watchedReactant.doer eq thisReactant.doer then watchedReactant.stopDuty.unsubscribe(observer)
+					if watchedReactant.doer.assistant eq thisReactant.doer.assistant then watchedReactant.stopDuty.unsubscribe(observer)
 					else watchedReactant.doer.queueForSequentialExecution(watchedReactant.stopDuty.unsubscribe(observer))
-					
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -206,8 +206,14 @@ abstract class Reactant[U](
 						List(observer)
 					} else observer :: list
 			)
-			// and then, make the subscription 
-			watchedReactant.stopDuty.subscribe(observer)
+			// and then, make the subscription
+			if watchedReactant.doer.assistant eq thisReactant.doer.assistant then {
+				watchedReactant.stopDuty.subscribe(observer)
+				subscriptionCompleted.foreach(_.fulfillHere(())())
+			} else watchedReactant.doer.queueForSequentialExecution {
+				watchedReactant.stopDuty.subscribe(observer)
+				subscriptionCompleted.foreach(_.fulfill(())())
+			}
 			Maybe.some(observer)
 		}
 	}
