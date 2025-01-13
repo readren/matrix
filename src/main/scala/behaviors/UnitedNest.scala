@@ -5,10 +5,6 @@ import core.{Behavior, HandleResult, Unhandled}
 
 import scala.reflect.TypeTest
 
-
-inline def unitedNest[A, B](bA: Behavior[A], bB: Behavior[B])(using ttA: TypeTest[A | B, A], ttB: TypeTest[A | B, B]): Behavior[A | B] =
-	new UnitedNest(bA, bB)
-
 private class UnitedNest[A, B](
 	var bA: Behavior[A],
 	var bB: Behavior[B]

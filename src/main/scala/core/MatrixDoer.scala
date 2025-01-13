@@ -7,9 +7,9 @@ object MatrixDoer {
 
 	type Id = Long
 	
-	inline val checkWeAreWithingTheDoerIsEnabled = false
+	private inline val checkWeAreWithingTheDoerIsEnabled = false
 
-	val doerIdThreadLocal: ThreadLocal[Id] =
+	private val doerIdThreadLocal: ThreadLocal[Id] =
 		if checkWeAreWithingTheDoerIsEnabled then ThreadLocal.withInitial[Id](() => -1)
 		else null
 

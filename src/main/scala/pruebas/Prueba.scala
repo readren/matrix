@@ -1,6 +1,7 @@
 package readren.matrix
 package pruebas
 
+import behaviors.Inquisitive
 import core.*
 import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
@@ -15,23 +16,20 @@ object Prueba {
 
 	type TestedDoerProvider = SharedQueueDoerAssistantProvider
 
-	private sealed trait Answer
+	private sealed trait Report
 
-	private case class Response(doer: MatrixDoer, producerIndex: Int, consumerIndex: Int, value: Int) extends Answer
+	private case class ConsumedReport(doer: MatrixDoer, producerIndex: Int, consumerIndex: Int, value: Int) extends Report
 
-	private case object End extends Answer
+	private case class ConsumerWasStopped(consumerIndex: Int) extends Report
 
-	private sealed trait Cmd
+	private case object End extends Report
 
-	private case class ProducerWasStopped(producerIndex: Int, producerDoer: MatrixDoer) extends Cmd
 
-	private case class ConsumerWasStopped(consumerIndex: Int) extends Cmd, Answer
+	private case class ProducerWasStopped(producerIndex: Int, producerDoer: MatrixDoer)
 
-	//	case class Send(text: String)
+	private case class Acknowledge(override val toQuestion: Inquisitive.QuestionId) extends Inquisitive.Answer
 
-	private case class SpawnResponse(endpoint: Endpoint[String])
-
-	private case class Consumable(producerIndex: Int, value: Int)
+	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question
 
 	private inline val NUMBER_OF_PRODUCERS = 1000
 	private inline val NUMBER_OF_CONSUMERS = 1000
@@ -42,6 +40,8 @@ object Prueba {
 	private inline val haveToShowPhotoEveryTime = false
 	private inline val haveToRecordPhoto = haveToCountAndCheck || haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = false
+
+	private inline val useInquisitiveProducer = true
 
 	private class Pixel(var value: Int, var updateSerial: Int)
 
@@ -145,15 +145,15 @@ object Prueba {
 		System.gc()
 		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
-		val outEndpoint = matrix.buildEndpoint[Answer] {
-			case response: Response =>
-				response.doer.checkWithin()
+		val outEndpoint = matrix.buildEndpoint[Report] {
+			case consumedReport: ConsumedReport =>
+				consumedReport.doer.checkWithin()
 
 				if haveToRecordPhoto then {
 					val counterValue = counter.incrementAndGet()
-					val entry = photo(response.consumerIndex)(response.producerIndex)
-					assert(response.value == entry.value + 1)
-					entry.value = response.value
+					val entry = photo(consumedReport.consumerIndex)(consumedReport.producerIndex)
+					assert(consumedReport.value == entry.value + 1)
+					entry.value = consumedReport.value
 					entry.updateSerial = counterValue
 
 					if haveToShowPhotoEveryTime then showPhoto()
@@ -188,7 +188,7 @@ object Prueba {
 
 		// println(matrix.doerAssistantProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
 
-		matrix.spawn[Cmd](reactantFactory) { parent =>
+		matrix.spawn[ProducerWasStopped | ConsumerWasStopped](reactantFactory) { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
@@ -199,8 +199,9 @@ object Prueba {
 						var completedCounter = 0
 						consumable =>
 							if consumable.value >= 0 then {
-								outEndpoint.tell(Response(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
+								outEndpoint.tell(ConsumedReport(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
 								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
+								if useInquisitiveProducer then consumable.replyTo.tell(Acknowledge(consumable.questionId))
 								Continue
 							} else {
 								completedCounter += 1
@@ -216,24 +217,73 @@ object Prueba {
 			).trigger(true) { consumersEndpoints =>
 				parent.doer.checkWithin()
 				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
-					parent.spawn[Started.type | Restarted.type](reactantFactory) { producer =>
-						producer.doer.checkWithin()
 
-						def producerBehavior(restartCount: Int): Behavior[Started.type | Restarted.type] = {
-							case Started | Restarted =>
-								if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
-									for consumerEndpoint <- consumersEndpoints do
-										consumerEndpoint.tell(Consumable(producerIndex, restartCount))
-									RestartWith(producerBehavior(restartCount + 1))
-								} else {
-									for consumerEndpoint <- consumersEndpoints do
-										consumerEndpoint.tell(Consumable(producerIndex, -1))
-									Stop
-								}
+					/** Creates a Duty that builds a producer with operates as follows:
+					 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
+					 * - The Consumables are sent one after the other without waiting any response.
+					 * */
+					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization]] = {
+						parent.spawn[Initialization](reactantFactory) { producer =>
+							producer.doer.checkWithin()
+
+							def loop(restartCount: Int): Behavior[Initialization] = {
+								_ =>
+									if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
+										for consumerEndpoint <- consumersEndpoints do
+											consumerEndpoint.tell(Consumable(producerIndex, restartCount))
+										RestartWith(loop(restartCount + 1))
+									} else {
+										for consumerEndpoint <- consumersEndpoints do
+											consumerEndpoint.tell(Consumable(producerIndex, -1))
+										Stop
+									}
+							}
+
+							loop(0)
 						}
+					}
 
-						producerBehavior(0)
-					}.trigger(true) { producer =>
+					/**
+					 * Creates a Duty that builds a producer which operates as follows:
+					 * - For each consumer, the following actions are performed sequentially, repeated NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times:
+					 *   - A Consumable is sent to the consumer.
+					 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
+					 * - These actions are performed concurrently across all consumers.
+					 */
+					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge]] = {
+						parent.spawn[Started.type | Acknowledge](reactantFactory) { producer =>
+							producer.doer.checkWithin()
+							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
+
+							behaviors.inquisitiveNest[Started.type, Acknowledge, producer.doer.type](producer.doer) { started =>
+								import Inquisitive.*
+								var completedConsumersCounter = 0
+								// for each consumer simultaneously do: send a Consumable to it and wait for the Acknowledge before sending the next Consumable to it, repeating this cycle NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
+								for (consumerEndpoint, consumerIndex) <- consumersEndpoints.zipWithIndex do {
+									def loop(numberOfMessagesAlreadySentToConsumer: Int): Unit = {
+
+										if numberOfMessagesAlreadySentToConsumer < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
+											consumerEndpoint.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfEndpoint))
+												.andThen(_ => loop(numberOfMessagesAlreadySentToConsumer + 1))
+												.triggerAndForget(true)
+										} else {
+											consumerEndpoint.tell(Consumable(producerIndex, -1))
+											completedConsumersCounter += 1
+											if completedConsumersCounter == NUMBER_OF_CONSUMERS then producer.stop()
+										}
+									}
+
+									loop(0)
+								}
+								Continue
+							}()
+						}
+					}
+
+					val buildsProducer: parent.doer.Duty[ReactantRelay[?]] =
+						if useInquisitiveProducer then buildsInquisitiveProducer
+						else buildsRegularProducer
+					buildsProducer.trigger(true) { producer =>
 						parent.doer.checkWithin()
 						parent.watch(producer, ProducerWasStopped(producerIndex, producer.doer))
 					}

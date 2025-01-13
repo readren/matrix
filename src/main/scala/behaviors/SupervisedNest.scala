@@ -3,9 +3,6 @@ package behaviors
 
 import core.{Behavior, HandleResult, Stop}
 
-inline def supervised[A](behavior: Behavior[A]): SupervisedNest[A] =
-	new SupervisedNest[A](behavior, SupervisedNest.defaultCatcher)
-
 object SupervisedNest {
 	def defaultCatcher[A]: PartialFunction[Throwable, HandleResult[A]] = {
 		case scala.util.control.NonFatal(e) => Stop
