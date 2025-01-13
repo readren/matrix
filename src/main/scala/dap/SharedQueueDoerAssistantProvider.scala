@@ -53,6 +53,9 @@ class SharedQueueDoerAssistantProvider(
 	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepingWorkersCount.get <= workers.length }}} */
 	private val sleepingWorkersCount = AtomicInteger(0)
 
+	/** Tracks the worker that was awakened during the last call to [[wakeUpASleepingWorkerIfAny]], with the sole purpose of distributing the load more evenly across physical processors.
+	 * This variable is exclusive to the [[wakeUpASleepingWorkerIfAny]] method and is not intended to be accessed from anywhere else. */
+	private var lastAwakenedWorkerIndex = 0
 
 	{
 		workers.foreach(_.start())
@@ -127,17 +130,20 @@ class SharedQueueDoerAssistantProvider(
 		}
 	}
 
-
 	/** @return `true` if a worker was awakened.
 	 * The provided [[DoerAssistant]] will be assigned to the awakened worker.
 	 * Asumes the provided [[DoerAssistant]] is and will not be enqueued in [[queuedDoersAssistants]], which ensures it will not be assigned to any other worker simultaneously. */
 	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistant): Boolean = {
 		if debugEnabled then assert(!queuedDoersAssistants.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
-			var workerIndex = workers.length
-			while workerIndex > 0 do {
+			var workerIndex = lastAwakenedWorkerIndex - 1
+			while workerIndex != lastAwakenedWorkerIndex do {
+				if workerIndex <= 0 then workerIndex = workers.length
 				workerIndex -= 1
-				if workers(workerIndex).wakeUpIfSleeping(stimulator) then return true
+				if workers(workerIndex).wakeUpIfSleeping(stimulator) then return {
+					lastAwakenedWorkerIndex = workerIndex
+					true
+				}
 			}
 			false
 		} else false
