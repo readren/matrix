@@ -29,11 +29,11 @@ object Prueba {
 
 	private case class Acknowledge(override val toQuestion: Inquisitive.QuestionId) extends Inquisitive.Answer
 
-	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question
+	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
-	private inline val NUMBER_OF_PRODUCERS = 1000
-	private inline val NUMBER_OF_CONSUMERS = 1000
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
+	private inline val NUMBER_OF_PRODUCERS = 100
+	private inline val NUMBER_OF_CONSUMERS = 100
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
 
 	private inline val haveToCountAndCheck = true
 	private inline val haveToShowFinalPhoto = false
