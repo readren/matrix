@@ -27,7 +27,7 @@ class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	override def submit(message: M): Unit = {
 		if atomicSize.getAndIncrement() == 0 then {
 			queue.offer(message)
-			owner.doer.queueForSequentialExecution(owner.onInboxBecomesNonempty())
+			owner.doer.executeSequentially(owner.onInboxBecomesNonempty())
 		} else queue.offer(message)
 	}
 

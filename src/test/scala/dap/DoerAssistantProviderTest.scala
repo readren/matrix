@@ -38,7 +38,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 
 			for assistantDataIndex <- assistantsData.indices yield {
 				val assistantData = assistantsData(assistantDataIndex)
-				assistantData.assistant.queueForSequentialExecution { () =>
+				assistantData.assistant.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
 					val currentWorkerIndex = SharedQueueDoerAssistantProvider.currentWorkerIndex
 					if assistantData.previousTaskWorkerIndex != currentWorkerIndex then {
@@ -59,7 +59,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 				}
 			}
 		}
-		for assistantData <- assistantsData do assistantData.assistant.queueForSequentialExecution { () =>
+		for assistantData <- assistantsData do assistantData.assistant.executeSequentially { () =>
 			if !assistantData.failed then assistantData.promise.success(assistantData.workerIndexChangesCounter)
 		}
 

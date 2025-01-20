@@ -68,7 +68,7 @@ class SharedQueueDoerAssistantProvider(
 
 		inline def hasPendingTasks: Boolean = taskQueueSize.get > 0
 
-		override def queueForSequentialExecution(task: Runnable): Unit = {
+		override def executeSequentially(task: Runnable): Unit = {
 			if taskQueueSize.getAndIncrement() == 0 then {
 				firstTaskInQueue = task
 				if !wakeUpASleepingWorkerIfAny(thisDoerAssistant) then {

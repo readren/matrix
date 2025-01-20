@@ -34,7 +34,7 @@ class BalancedDoerAssistantProvider(
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
 		}
 		
-		override def queueForSequentialExecution(runnable: Runnable): Unit = doSiThEx.execute(runnable)
+		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
 		override def current: Doer.Assistant = currentAssistant.get
 		

@@ -184,7 +184,7 @@ abstract class Reactant[U](
 
 				override def apply(unit: Unit): Unit = {
 					if watchedReactant.doer eq thisReactant.doer then work()
-					else doer.queueForSequentialExecution(work())
+					else doer.executeSequentially(work())
 				}
 
 				override def unsubscribe(): Unit = {
@@ -193,7 +193,7 @@ abstract class Reactant[U](
 					activeWatchSubscriptions.computeIfPresent(watchedReactant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
 					if watchedReactant.doer.assistant eq thisReactant.doer.assistant then watchedReactant.stopDuty.unsubscribe(observer)
-					else watchedReactant.doer.queueForSequentialExecution(watchedReactant.stopDuty.unsubscribe(observer))
+					else watchedReactant.doer.executeSequentially(watchedReactant.stopDuty.unsubscribe(observer))
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -209,10 +209,10 @@ abstract class Reactant[U](
 			// and then, make the subscription
 			if watchedReactant.doer.assistant eq thisReactant.doer.assistant then {
 				watchedReactant.stopDuty.subscribe(observer)
-				subscriptionCompleted.foreach(_.fulfillHere(())())
-			} else watchedReactant.doer.queueForSequentialExecution {
+				subscriptionCompleted.foreach(_.fulfill((), true)())
+			} else watchedReactant.doer.executeSequentially {
 				watchedReactant.stopDuty.subscribe(observer)
-				subscriptionCompleted.foreach(_.fulfill(())())
+				subscriptionCompleted.foreach(_.fulfill((), false)())
 			}
 			Maybe.some(observer)
 		}
@@ -223,7 +223,7 @@ abstract class Reactant[U](
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
 			isMarkedToStop = true
-			doer.queueForSequentialExecution(selfStop())
+			doer.executeSequentially(selfStop())
 		}
 		stopCovenant.subscriptableDuty
 	}
@@ -242,7 +242,7 @@ abstract class Reactant[U](
 			// execute the signal handler and ignore its result
 			handleSignal(isSignalTest.stopReceived)
 			// remove myself form progenitor children
-			progenitor.doer.queueForSequentialExecution {
+			progenitor.doer.executeSequentially {
 				progenitor.removeChild(thisReactant.serial)
 				stopCovenant.fulfill(())()
 			}
@@ -292,7 +292,7 @@ abstract class Reactant[U](
 	private def beReadyToProcess(): Unit = {
 		doer.checkWithin()
 		assert(!stopWasStarted && !isReadyToProcessMsg)
-		if inbox.maybeNonEmpty then doer.queueForSequentialExecution {
+		if inbox.maybeNonEmpty then doer.executeSequentially {
 			if !stopWasStarted then {
 				inbox.withdraw().fold(beReadyToProcess())(processMessages)
 			}

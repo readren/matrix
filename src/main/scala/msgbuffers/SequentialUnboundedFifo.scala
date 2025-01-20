@@ -23,7 +23,7 @@ class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	}
 
 	override def submit(message: M): Unit = {
-		doer.queueForSequentialExecution {
+		doer.executeSequentially {
 			if queue.isEmpty then {
 				if owner.onInboxBecomesNonempty(message) then queue.add(message)
 			} else queue.add(message)

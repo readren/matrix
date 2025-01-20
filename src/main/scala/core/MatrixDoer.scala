@@ -28,8 +28,8 @@ class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix:
 			new Doer.Assistant { thisAssistant =>
 				private val backingAssistant = anAssistant
 
-				override def queueForSequentialExecution(runnable: Runnable): Unit = {
-					backingAssistant.queueForSequentialExecution { () =>
+				override def executeSequentially(runnable: Runnable): Unit = {
+					backingAssistant.executeSequentially { () =>
 						MatrixDoer.doerIdThreadLocal.set(id)
 						runnable.run()
 					}
@@ -48,6 +48,6 @@ class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix:
 		inline if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
 			val idOnThread = MatrixDoer.doerIdThreadLocal.get()
 			assert(idOnThread == id, s"The current thread is not executing this MatrixDoer: expectedId=$id, onThread=$idOnThread")
-		} else assert(assistant.isCurrentAssistant, s"The current thread does not correspond to the assistant of this MatrixDoer: expected=$assistant, current=${assistant.current}")
+		} else assert(assistant.isWithinDoSiThEx, s"The current thread does not correspond to the assistant of this MatrixDoer: expected=$assistant, current=${assistant.current}")
 	}
 }
