@@ -5,6 +5,7 @@ import core.{Behavior, HandleResult, Unhandled}
 
 import scala.reflect.TypeTest
 
+/** Note that the type parameter would be contravariant if this class was immutable. Change it if contravariance is necessary. */
 private class UnitedNest[A, B](
 	var bA: Behavior[A],
 	var bB: Behavior[B]
@@ -24,7 +25,7 @@ private class UnitedNest[A, B](
 					case Some(b) => handleB(b)
 					case None => Unhandled
 				} else {
-					hrA.mapMsg { nbA => update(nbA, bB) }
+					hrA.mapBehavior { nbA => update(nbA, bB) }
 				}
 
 			case ttB(b) => handleB(b)
@@ -32,7 +33,7 @@ private class UnitedNest[A, B](
 	}
 
 	private def handleB(b: B): HandleResult[A | B] =
-		bB.handle(b).mapMsg { nmbB =>
+		bB.handle(b).mapBehavior { nmbB =>
 			update(bA, nmbB)
 		}
 

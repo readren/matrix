@@ -9,6 +9,7 @@ object SupervisedNest {
 	}
 }
 
+/** Note that the type parameter would be contravariant if this class was immutable. Change it if contravariance is necessary. */
 class SupervisedNest[A](
 	var backingBehavior: Behavior[A],
 	var baseCatcher: PartialFunction[Throwable, HandleResult[A]]

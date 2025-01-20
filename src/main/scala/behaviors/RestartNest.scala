@@ -3,7 +3,7 @@ package behaviors
 
 import core.{Behavior, ContinueWith, HandleResult, Restart, RestartWith}
 
-
+/** Note that the type parameter would be contravariant if this class was immutable. Change it if contravariance is necessary. */
 private class RestartNest[A](var nestedBehavior: Behavior[A], initializer: () => Behavior[A], cleaner: () => Unit) extends Behavior[A] {
 	private def update(newBehavior: Behavior[A]): this.type = {
 		this.nestedBehavior = newBehavior

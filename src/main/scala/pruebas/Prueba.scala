@@ -255,7 +255,7 @@ object Prueba {
 							producer.doer.checkWithin()
 							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
 
-							behaviors.inquisitiveNest[Started.type, Acknowledge, producer.doer.type](producer.doer) { started =>
+							behaviors.inquisitiveNest(producer) { (started: Started.type) =>
 								import Inquisitive.*
 								var completedConsumersCounter = 0
 								// for each consumer simultaneously do: send a Consumable to it and wait for the Acknowledge before sending the next Consumable to it, repeating this cycle NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.

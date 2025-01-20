@@ -2,9 +2,7 @@ package readren.matrix
 package behaviors
 
 import behaviors.Inquisitive.{Answer, Question}
-import core.{Behavior, Continue, Endpoint, HandleResult}
-
-import readren.taskflow.Doer
+import core.*
 
 import scala.collection.mutable
 
@@ -13,9 +11,9 @@ object Inquisitive {
 	type QuestionId = Long
 
 	/**
-	 * Specifies the requirements for questions asked by means of the [[ask]] method.
+	 * Specifies the requirements for questions sent using the [[ask]] method.
 	 *
-	 * The `Question` trait defines the structure and constraints that a message must satisfy to be processed as a valid question.
+	 * @tparam A The type of the corresponding answer.
 	 */
 	trait Question[A <: Answer] {
 		val questionId: QuestionId
@@ -23,43 +21,66 @@ object Inquisitive {
 	}
 
 	/**
-	 * Specifies the requirements for a message to be used as an answer to a `Question`.
+	 * Specifies the requirements for a valid response to a `Question`.
 	 *
-	 * The `Answer` trait defines the structure and constraints that a message must satisfy to be processed as a valid answer to a corresponding `Question`.
+	 * **Usage**: Always set `toQuestion` to the `questionId` of the corresponding `Question`.
 	 */
 	trait Answer {
 		/**
 		 * The identifier of the [[Question]] this [[Answer]] corresponds to.
-		 *
-		 * **Purpose**: This field is required to allow the [[Inquisitive]] behavior, when acting as an interceptor, to determine which specific [[Question]] this [[Answer]] corresponds to.
-		 *
-		 * **Usage**: When creating an [[Answer]], set this value to the `questionId` of the [[Question]] being answered.
 		 */
 		val toQuestion: QuestionId
 	}
 
-	extension [A <: Answer, Q <: Question[A]](endpoint: Endpoint[Q]) {
-		def ask[D <: Doer](questionBuilder: Inquisitive.QuestionId => Q)(using inquisitive: Inquisitive[A, D]): inquisitive.reactantDoer.SubscriptableDuty[A] = {
+	extension [A <: Answer, Q <: Question[A], U >: A](endpoint: Endpoint[Q]) 
+		/**
+		 * Sends a question constructed by the provided `questionBuilder` to the specified endpoint, and returns an instance of {{{ inquisitive.reactant.doer.SubscriptableDuty[A] }}} that will be completed when the corresponding answer is received.
+		 *
+		 * @param questionBuilder A function that takes a unique [[QuestionId]] and builds a [[Question]] of type `Q`.
+		 * @param inquisitive The instance of [[Inquisitive]] responsible for managing the interaction. It is the interceptor 
+		 * @return A subscriptable duty of type `SubscriptableDuty[A]`, representing the eventual answer to the question.
+		 */
+		def ask(questionBuilder: Inquisitive.QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.reactant.doer.SubscriptableDuty[A] = {
 			inquisitive.ask(endpoint, questionBuilder)
 		}
-	}	
+	
 }
 
 /**
- * A behavior that represents an entity capable of asking questions and handling corresponding answers.
+ * Represents a behavior capable of asking questions and handling corresponding answers.
+ * 
+ * This class is intended to be used as the interceptor behavior of an [[UnitedNest]]. See [[behaviors.inquisitiveNest]].
  *
- * @param reactantDoer The `Doer` instance responsible for fulfilling covenants associated with questions.
- * @param unaskedAnswersBehavior A fallback behavior to handle answers that were not explicitly asked for. Defaults to `Ignore`.
- * @tparam A The type of answers handled by this behavior. Must extend the `Answer` trait.
- * @tparam D The type of doer used within this behavior. Must extend the `Doer` trait.
+ * The `Inquisitive` class encapsulates the logic for managing the lifecycle of questions and answers.
+ * It allows components to send **questions** to specific endpoints, track the pending requests, 
+ * and handle **answers** when they are received.
+ *
+ * @param reactant The `ReactantRelay` responsible for relaying answers.
+ * @param unaskedAnswersBehavior A fallback behavior to handle unexpected answers (default is `Ignore`).
+ * @tparam A The type of answers that this behavior manages. Must extend the `Answer` trait.
+ * @tparam U A supertype of `A`, representing the broader category of compatible answers.
  */
-class Inquisitive[A <: Answer, D <: Doer](val reactantDoer: D, unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
+class Inquisitive[A <: Answer, U >: A](val reactant: ReactantRelay[U], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
 	private var lastQuestionId = 0L
-	private val pendingQuestions: mutable.LongMap[reactantDoer.Covenant[A]] = mutable.LongMap.empty
+	private val pendingQuestions: mutable.LongMap[reactant.doer.Covenant[A]] = mutable.LongMap.empty
 
+	/**
+	 * Handles answers received for previously sent questions.
+	 *
+	 * **Behavior**:
+	 * - If the `Answer` corresponds to a tracked `Question` (via its `toQuestion` field):
+	 *   - Removes the corresponding question from the `pendingQuestions` map.
+	 *   - Fulfills the associated `Covenant`.
+	 *   - Returns `Continue` to indicate successful processing.
+	 * - If the `Answer` does NOT correspond to any known `Question`:
+	 *   - Delegates handling to the `unaskedAnswersBehavior` fallback.
+	 *
+	 * @param answer The `Answer` to handle.
+	 * @return A `HandleResult` indicating the status of handling this message.
+	 */
 	override final def handle(answer: A): HandleResult[A] = {
 		pendingQuestions.getOrElse(answer.toQuestion, null) match {
-			case covenant: reactantDoer.Covenant[A] =>
+			case covenant: reactant.doer.Covenant[A] =>
 				pendingQuestions.subtractOne(answer.toQuestion)
 				covenant.fulfill(answer)()
 				Continue
@@ -68,10 +89,17 @@ class Inquisitive[A <: Answer, D <: Doer](val reactantDoer: D, unaskedAnswersBeh
 		}
 	}
 
-	// TODO add a timeout
-	def ask[Q <: Question[A]](endpoint: Endpoint[Q], questionBuilder: Inquisitive.QuestionId => Q): reactantDoer.SubscriptableDuty[A] = {
-		assert(reactantDoer.assistant.isCurrentAssistant)
-		val covenant = new reactantDoer.Covenant[A]
+	/**
+	 * Sends a question to a specified `Endpoint` 
+	 *
+	 * @param endpoint The target `Endpoint` to send the question to.
+	 * @param questionBuilder A function that builds the `Question` using a `QuestionId`.
+	 * @tparam Q The type of the `Question`, constrained to match `A`.
+	 * @return A {{{ reactant.doer.SubscriptableDuty[A] }}} instance that will be completed when the answer is received.
+	 */
+	def ask[Q <: Question[A]](endpoint: Endpoint[Q], questionBuilder: Inquisitive.QuestionId => Q): reactant.doer.SubscriptableDuty[A] = {
+		assert(reactant.doer.assistant.isCurrentAssistant)
+		val covenant = new reactant.doer.Covenant[A]
 		lastQuestionId += 1
 		pendingQuestions.update(lastQuestionId, covenant)
 		val question = questionBuilder(lastQuestionId)
