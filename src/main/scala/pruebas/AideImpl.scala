@@ -5,11 +5,15 @@ import core.{Logger, Matrix}
 import dap.CloseableDoerAssistantProvidersManager
 import logger.SimpleLogger
 
-class AideImpl[DefaultDAP <: Matrix.DoerAssistantProvider](override val defaultDapRef: Matrix.DoerAssistantProviderRef[DefaultDAP]) extends Matrix.Aide[AideImpl[DefaultDAP]] {
+import readren.taskflow.Doer
+
+class AideImpl[Dap <: Matrix.DoerAssistantProvider](
+	override val defaultDapKind: Matrix.DapKind[Dap]
+) extends Matrix.Aide[AideImpl[Dap]] {
 	override type DapMan = CloseableDoerAssistantProvidersManager
-	override type DefaultDap = DefaultDAP
+	override type DefaultDap = Dap
 
-	override def buildDoerAssistantProviderManager(owner: Matrix[AideImpl[DefaultDAP]]): DapMan = new CloseableDoerAssistantProvidersManager
+	override def buildDoerAssistantProviderManager(owner: Matrix[AideImpl[Dap]]): DapMan = new CloseableDoerAssistantProvidersManager
 
-	override def buildLogger(owner: Matrix[AideImpl[DefaultDAP]]): Logger = new SimpleLogger(Logger.Level.debug)
+	override def buildLogger(owner: Matrix[AideImpl[Dap]]): Logger = new SimpleLogger(Logger.Level.debug)
 }

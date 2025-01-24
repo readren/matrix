@@ -20,12 +20,13 @@ class BalancedDoerAssistantProvider(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 ) extends DoerAssistantProvider, ShutdownAble {
+	override type ProvidedAssistant = AssistantImpl
 
-	private val assistants = Array.tabulate[Assistant](threadPoolSize)(index => new Assistant(index))
+	private val assistants = Array.tabulate[AssistantImpl](threadPoolSize)(index => new ProvidedAssistant(index))
 
 	private val switcher = new AtomicInteger(0)
 
-	private class Assistant(val index: Int) extends Doer.Assistant { thisAssistant =>
+	class AssistantImpl(val index: Int) extends Doer.Assistant { thisAssistant =>
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				currentAssistant.set(thisAssistant)
@@ -41,7 +42,7 @@ class BalancedDoerAssistantProvider(
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
 
-	override def provide(serial: MatrixDoer.Id): Doer.Assistant = {
+	override def provide(serial: MatrixDoer.Id): ProvidedAssistant = {
 		val assistantsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
 		val pickedAssistant =
 			if assistantsWithShortestWorkQueue.tail == Nil then assistantsWithShortestWorkQueue.head
@@ -52,9 +53,9 @@ class BalancedDoerAssistantProvider(
 		pickedAssistant
 	}
 
-	private def findExecutorsWithShortestWorkQueue(): List[Assistant] = {
+	private def findExecutorsWithShortestWorkQueue(): List[AssistantImpl] = {
 		var shortestSize = Integer.MAX_VALUE
-		var result: List[Assistant] = Nil
+		var result: List[AssistantImpl] = Nil
 
 		for assistant <- assistants do {
 			val executor = assistant.doSiThEx

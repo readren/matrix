@@ -3,28 +3,30 @@ package dap
 
 import core.Matrix.*
 
+import readren.taskflow.Doer
+
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 
-class CloseableDoerAssistantProvidersManager extends DoerAssistantProviderManager, ShutdownAble {
+class CloseableDoerAssistantProvidersManager extends DapManager, ShutdownAble {
 
-	private val registeredDaps: ConcurrentHashMap[DoerAssistantProviderRef[DoerAssistantProvider], DoerAssistantProvider] = new ConcurrentHashMap()
+	private val registeredDaps: ConcurrentHashMap[DapKind[?], DoerAssistantProvider] = new ConcurrentHashMap()
 	private val wasShutdown: AtomicBoolean = new AtomicBoolean(false)
 
-	/** Gets the [[DoerAssistantProvider]] associated with the provided [[DoerAssistantProviderRef]]. If none exists one is created.
+	/** Gets the [[DoerAssistantProvider]] associated with the provided [[DapKind]]. If none exists one is created.
 	 * @throws IllegalStateException if both, this method is called after [[shutdown]] has been called, and it is the first time that this method receives this reference or an equivalent one. */
-	override def get[A <: DoerAssistantProvider](ref: DoerAssistantProviderRef[A]): A = {
-		val dap = registeredDaps.computeIfAbsent(ref, ref => {
+	override def get[Dap <: DoerAssistantProvider](dapKind: DapKind[Dap]): Dap = {
+		val dap = registeredDaps.computeIfAbsent(dapKind, dapKind => {
 			if wasShutdown.get() then null
-			else ref.build(this)
-		}).asInstanceOf[A]
+			else dapKind.build(this)
+		}).asInstanceOf[Dap]
 		if dap == null then throw new IllegalStateException("Instances of CloseableDoerAssistantProviderManager that were shutdown should not build new instances of DoerAssistantProvider")
 		else dap
 	}
 
 	def shutdown(): Unit = {
 		if wasShutdown.compareAndSet(false, true) then {
-			registeredDaps.forEach((ref, dap) =>
+			registeredDaps.forEach((dapKind, dap) =>
 				dap match {
 					case s: ShutdownAble => s.shutdown()
 					case _ => // do nothing

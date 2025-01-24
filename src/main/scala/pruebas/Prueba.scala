@@ -6,6 +6,8 @@ import core.*
 import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
 
+import readren.matrix.core.Matrix.DapKind
+
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -49,13 +51,24 @@ object Prueba {
 
 	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
+	object simpleDapKind extends DapKind[SimpleDoerAssistantProvider]("simple") {
+		override def build(owner: Matrix.DapManager): SimpleDoerAssistantProvider = new SimpleDoerAssistantProvider()
+	}
+
+	object sharedQueueDapKind extends DapKind[SharedQueueDoerAssistantProvider]("sharedQueue") {
+		override def build(owner: Matrix.DapManager): SharedQueueDoerAssistantProvider = new SharedQueueDoerAssistantProvider(true)
+	}
+
+	object testedDapKind extends DapKind[SharedQueueDoerAssistantProvider]("tested") {
+		override def build(owner: Matrix.DapManager): TestedDoerProvider = new TestedDoerProvider(false)
+	}
+
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
 
-		val simpleAide = new AideImpl((owner: Matrix.DoerAssistantProviderManager) => new SimpleDoerAssistantProvider())
-		val sharedQueueAide = new AideImpl((owner: Matrix.DoerAssistantProviderManager) => new SharedQueueDoerAssistantProvider(true))
-		val testedAide = new AideImpl((owner: Matrix.DoerAssistantProviderManager) => new TestedDoerProvider(false))
-
+		val simpleAide = new AideImpl(simpleDapKind)
+		val sharedQueueAide = new AideImpl(sharedQueueDapKind)
+		val testedAide = new AideImpl(testedDapKind)
 
 		val numberOfWarmUpRepetitions = 4
 		val numberOfMeasuredOfRepetitions = 6
@@ -111,7 +124,7 @@ object Prueba {
 	private def run[DefaultDAP <: Matrix.DoerAssistantProvider](testingAide: AideImpl[DefaultDAP], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
-		println(s"Matrix created: doerAssistantProvider=${matrix.doerAssistantProviderManager.get(testingAide.defaultDapRef).getClass.getSimpleName}")
+		println(s"Matrix created: doerAssistantProvider=${matrix.dapManager.get(testingAide.defaultDapKind).getClass.getSimpleName}")
 
 		val counter: AtomicInteger = new AtomicInteger(0)
 
@@ -174,7 +187,7 @@ object Prueba {
 			try {
 				val sb = new StringBuilder
 				sb.append("\n<<< InspectorA <<<\n")
-				matrix.doerAssistantProviderManager.diagnose(sb)
+				matrix.dapManager.diagnose(sb)
 				sb.append(">>> InspectorA >>>\n")
 				println(sb)
 			} catch {
@@ -341,15 +354,15 @@ object Prueba {
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
-				println(s"After successful completion diagnostic:\n${matrix.doerAssistantProviderManager.diagnose(new StringBuilder())}")
+				println(s"After successful completion diagnostic:\n${matrix.dapManager.diagnose(new StringBuilder())}")
 
 				result.success(nanoAtEnd - nanoAtStart)
 			}
 		}
 		result.future.andThen { tryDuration =>
 			println(s"Before closing: duration=${tryDuration.map(_ / 1000000)}")
-			matrix.doerAssistantProviderManager.shutdown()
-			Try(matrix.doerAssistantProviderManager.awaitTermination(1, TimeUnit.SECONDS)) match {
+			matrix.dapManager.shutdown()
+			Try(matrix.dapManager.awaitTermination(1, TimeUnit.SECONDS)) match {
 				case Success(true) => println("Shutdown completed normally")
 				case Success(false) => println("Await termination timeout elapsed")
 				case Failure(cause) => println(s"Shutdown is not completed after one seconds: $cause")

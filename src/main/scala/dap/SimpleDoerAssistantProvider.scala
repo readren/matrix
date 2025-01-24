@@ -19,16 +19,17 @@ class SimpleDoerAssistantProvider(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 ) extends Matrix.DoerAssistantProvider, ShutdownAble { thisProvider =>
+	override type ProvidedAssistant = Doer.Assistant
 
 	private val switcher = new AtomicInteger(0)
 
-	private val assistants: IArray[Assistant] = IArray.tabulate(threadPoolSize) { index => new Assistant(index) }
-	
+	private val assistants: IArray[AssistantImpl] = IArray.tabulate(threadPoolSize) { index => new AssistantImpl(index) }
 
-	override def provide(serial: MatrixDoer.Id): Doer.Assistant =
+
+	override def provide(serial: MatrixDoer.Id): AssistantImpl =
 		assistants(switcher.getAndIncrement() % assistants.length)
 
-	private class Assistant(val index: Int) extends Doer.Assistant { thisAssistant =>
+	class AssistantImpl(val index: Int) extends Doer.Assistant { thisAssistant =>
 
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
@@ -38,7 +39,7 @@ class SimpleDoerAssistantProvider(
 
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
 		}
-		
+
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
 		override def current: Doer.Assistant = currentAssistant.get

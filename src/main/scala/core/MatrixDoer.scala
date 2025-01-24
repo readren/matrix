@@ -6,7 +6,7 @@ import readren.taskflow.{AbstractDoer, Doer}
 object MatrixDoer {
 
 	type Id = Long
-	
+
 	private inline val checkWeAreWithingTheDoerIsEnabled = false
 
 	private val doerIdThreadLocal: ThreadLocal[Id] =
@@ -22,7 +22,7 @@ object MatrixDoer {
 }
 
 class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix: AbstractMatrix) extends AbstractDoer {
-
+	override type Assistant = Doer.Assistant
 	override val assistant: Doer.Assistant = {
 		if MatrixDoer.checkWeAreWithingTheDoerIsEnabled then {
 			new Doer.Assistant { thisAssistant =>
@@ -34,7 +34,7 @@ class MatrixDoer(val id: MatrixDoer.Id, anAssistant: Doer.Assistant, val matrix:
 						runnable.run()
 					}
 				}
-				
+
 				override def current: Doer.Assistant = anAssistant.current
 
 				override def reportFailure(cause: Throwable): Unit = backingAssistant.reportFailure(cause)

@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.taskflow.Maybe
+import readren.taskflow.{Doer, Maybe}
 
 import java.util
 import scala.annotation.tailrec
@@ -111,7 +111,14 @@ abstract class Reactant[U](
 	}
 
 	/** Should be called withing the [[doer]]. */
-	override def spawn[A](childReactantFactory: ReactantFactory, doerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?])(initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A])(using isSignalTest: IsSignalTest[A]): doer.Duty[ReactantRelay[A]] = {
+	override def spawn[V](
+		childReactantFactory: ReactantFactory,
+		dapKind: Matrix.DapKind[?]
+	)(
+		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
+	)(
+		using isSignalTest: IsSignalTest[V]
+	): doer.Duty[ReactantRelay[V]] = {
 		doer.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[doer.type](Maybe.some(thisReactant), doer, serial)
@@ -119,7 +126,7 @@ abstract class Reactant[U](
 				childrenRelays = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
-			.createReactant[A](childReactantFactory, doerAssistantProviderRef, isSignalTest, initialChildBehaviorBuilder)
+			.createReactant[V](childReactantFactory, dapKind, isSignalTest, initialChildBehaviorBuilder)
 	}
 
 	/** The children of this [[Reactant]] by serial number.

@@ -3,6 +3,7 @@ package pruebas
 
 import behaviors.Inquisitive.*
 import core.*
+import core.Matrix.DapKind
 import dap.SharedQueueDoerAssistantProvider
 import rf.RegularRf
 
@@ -13,9 +14,13 @@ object ExampleWithAskCapability {
 
 	case class SumResult(result: Int, toQuestion: QuestionId) extends Answer
 
+	object sharedQueueDapKind extends DapKind[SharedQueueDoerAssistantProvider]("sharedQueue") {
+		override def build(owner: Matrix.DapManager): SharedQueueDoerAssistantProvider = new SharedQueueDoerAssistantProvider(false)
+	}
+	
 	@main def runAskCapabilityExample(): Unit = {
 
-		val aide = new AideImpl((owner: Matrix.DoerAssistantProviderManager) => new SharedQueueDoerAssistantProvider(false))
+		val aide = new AideImpl(sharedQueueDapKind)
 
 		val matrix = new Matrix("example", aide)
 
@@ -42,6 +47,6 @@ object ExampleWithAskCapability {
 
 		}.triggerAndForget()
 
-		matrix.doerAssistantProviderManager.shutdown()
+		matrix.dapManager.shutdown()
 	}
 }

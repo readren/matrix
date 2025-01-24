@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.taskflow.Maybe
+import readren.taskflow.{Doer, Maybe}
 
 import scala.collection.MapView
 
@@ -23,14 +23,14 @@ abstract class ReactantRelay[-U] {
 	def isMarkedToBeStopped: Boolean
 	
 	/** Should be called withing the [[doer]]. */
-	def spawn[A](
+	def spawn[V](
 		childReactantFactory: ReactantFactory,
-		doerAssistantProviderRef: Matrix.DoerAssistantProviderRef[?] = doer.matrix.defaultDoerAssistantProviderRef
+		dapKind: Matrix.DapKind[?] = doer.matrix.defaultDapKind
 	)(
-		initialChildBehaviorBuilder: ReactantRelay[A] => Behavior[A]
+		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
 	)(
-		using isSignalTest: IsSignalTest[A]
-	): doer.Duty[ReactantRelay[A]]
+		using isSignalTest: IsSignalTest[V]
+	): doer.Duty[ReactantRelay[V]]
 
 	/** Should be called within the [[doer]]. */
 	def children: MapView[Long, ReactantRelay[?]]

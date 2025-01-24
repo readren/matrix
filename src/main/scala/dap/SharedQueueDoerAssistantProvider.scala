@@ -38,6 +38,8 @@ class SharedQueueDoerAssistantProvider(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends Matrix.DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
 
+	override type ProvidedAssistant = DoerAssistant
+
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
 
 	/** Queue of [[DoerAssistant]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
@@ -61,7 +63,7 @@ class SharedQueueDoerAssistantProvider(
 		workers.foreach(_.start())
 	}
 
-	private class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant { thisDoerAssistant =>
+	class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant { thisDoerAssistant =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
@@ -93,7 +95,7 @@ class SharedQueueDoerAssistantProvider(
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
-		final def executePendingTasks(): Int = {
+		private[SharedQueueDoerAssistantProvider] final def executePendingTasks(): Int = {
 			doerAssistantThreadLocal.set(thisDoerAssistant)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
@@ -324,7 +326,7 @@ class SharedQueueDoerAssistantProvider(
 		}
 	}
 
-	override def provide(serial: MatrixDoer.Id): Doer.Assistant = {
+	override def provide(serial: MatrixDoer.Id): ProvidedAssistant = {
 		new DoerAssistant(serial)
 	}
 
