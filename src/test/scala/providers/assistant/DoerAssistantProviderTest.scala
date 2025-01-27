@@ -4,6 +4,7 @@ package providers.assistant
 import providers.ShutdownAble
 
 import munit.ScalaCheckEffectSuite
+import readren.matrix.providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 import readren.taskflow.Doer
 
 import java.util.concurrent.TimeUnit

@@ -3,10 +3,8 @@ package pruebas
 
 import behaviors.Inquisitive.*
 import core.*
-import core.Matrix.{DoerProvider, DoerProviderDescriptor}
-import providers.assistant.SharedQueueDoerAssistantProvider
+import core.Matrix.DoerProviderDescriptor
 import providers.doer.SharedQueueDoerProvider
-import pruebas.AideImpl
 import rf.RegularRf
 
 object ExampleWithAskCapability {
@@ -44,7 +42,7 @@ object ExampleWithAskCapability {
 								println(s"3 + 7 = ${answer.result}")
 								userReactant.stop()
 							}
-						Stop
+						Continue
 				})()
 			}
 
