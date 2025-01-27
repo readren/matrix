@@ -1,15 +1,17 @@
 package readren.matrix
-package dap
+package providers.assistant
 
 import core.{Matrix, MatrixDoer}
-import dap.SharedQueueDoerAssistantProvider.*
+import providers.ShutdownAble
+import providers.assistant.SharedQueueDoerAssistantProvider.*
+import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
 
 import java.lang.invoke.VarHandle
 import java.util
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicInteger
 
 object SharedQueueDoerAssistantProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
@@ -27,7 +29,15 @@ object SharedQueueDoerAssistantProvider {
 	// val UNSAFE: Unsafe = Unsafe.getUnsafe
 }
 
-/**
+/** A dynamically balanced [[Doer.Assistant]] provider.
+ * How it works:
+ * 		- every call to [[provide]] returns a new [[Doer.Assistant]] instance.
+ *		- When an assistant (provided by this provider) starts having pending tasks it is enqueued in a queue.
+ *		- When a thread-worker of the pool gets free it polls an assistant from said queue and processes all the pending messages that the thread-worker can sse before continuing with the next assistant from the queue.
+ *		- After processing all the visible task, if there is a non-visible one, the assistant is enqueue back.	
+ *		- If the queue is empty the thread-worker goes to sleep.
+ *		- When an assistant is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there are ones.
+ * Effective for all purposes. Shines when the processor demand of long-living doers is very variant.   		
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
@@ -36,7 +46,7 @@ class SharedQueueDoerAssistantProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends Matrix.DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
+) extends DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
 
 	override type ProvidedAssistant = DoerAssistant
 

@@ -1,19 +1,20 @@
 package readren.matrix
 package core
 
-import core.Matrix.{DapKind, DoerAssistantProvider}
+import core.Matrix.{DoerProvider, DoerProviderDescriptor, DoerProvidersManager}
 
 import java.net.{InetAddress, URI}
+import java.util.concurrent.atomic.AtomicLong
 
 abstract class AbstractMatrix(val name: String) { thisMatrix =>
 
-	val doer: MatrixDoer
+	type DefaultDoer <: MatrixDoer
+	
+	val doer: DefaultDoer
 
 	protected val spawner: Spawner[doer.type]
 
 	val logger: Logger
-
-	val defaultDapKind: Matrix.DapKind[?]
 
 	val uri: URI = {
 		val host = InetAddress.getLocalHost.getHostAddress // Or use getHostAddress for IP
@@ -27,19 +28,26 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 		new URI(scheme, null, host, port, path, null, null)
 	}
 
-	def provideDoer[Dap <: DoerAssistantProvider](dapKind: DapKind[Dap]): MatrixDoer
+	private val matrixDoerIdSequencer = new AtomicLong(0)
+	
+	def genDoerId(): MatrixDoer.Id =
+		matrixDoerIdSequencer.getAndIncrement()
+
+	def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D, ?]): D
+	
+	def provideDefaultDoer: MatrixDoer
 
 	/** thread-safe */
 	def spawn[U](
-		reactantFactory: ReactantFactory,
-		dapKind: Matrix.DapKind[?] = defaultDapKind
+		childFactory: ReactantFactory,
+		childDoer: MatrixDoer = provideDefaultDoer
 	)(
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
 	): doer.Duty[ReactantRelay[U]] = {
 		doer.Duty.mineFlat { () =>
-			spawner.createReactant[U](reactantFactory, dapKind, isSignalTest, initialBehaviorBuilder)
+			spawner.createReactant[U](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}
 
@@ -53,5 +61,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 		new EndpointProvider[A](receiver)
 	}
 
-	def buildEndpoint[A](receiver: A => Unit): Endpoint[A] = buildEndpointProvider[A](receiver).local
+	def buildEndpoint[A](receiver: A => Unit): Endpoint[A] =
+		buildEndpointProvider[A](receiver).local
+
 }

@@ -1,32 +1,34 @@
 package readren.matrix
-package dap
+package providers
 
 import core.Matrix.*
+import core.MatrixDoer
+import utils.CompileTime.getTypeName
 
 import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 
-class CloseableDoerAssistantProvidersManager extends DapManager, ShutdownAble {
+class CloseableDoerProvidersManager extends DoerProvidersManager, ShutdownAble {
 
-	private val registeredDaps: ConcurrentHashMap[DapKind[?], DoerAssistantProvider] = new ConcurrentHashMap()
+	private val registeredProviders: ConcurrentHashMap[DoerProviderDescriptor[?, ?], DoerProvider[?]] = new ConcurrentHashMap()
 	private val wasShutdown: AtomicBoolean = new AtomicBoolean(false)
 
-	/** Gets the [[DoerAssistantProvider]] associated with the provided [[DapKind]]. If none exists one is created.
+	/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created.
 	 * @throws IllegalStateException if both, this method is called after [[shutdown]] has been called, and it is the first time that this method receives this reference or an equivalent one. */
-	override def get[Dap <: DoerAssistantProvider](dapKind: DapKind[Dap]): Dap = {
-		val dap = registeredDaps.computeIfAbsent(dapKind, dapKind => {
+	override def get[D <: MatrixDoer, DP <: DoerProvider[D]](descriptor: DoerProviderDescriptor[D, DP]): DP = {
+		val provider = registeredProviders.computeIfAbsent(descriptor, descriptor => {
 			if wasShutdown.get() then null
-			else dapKind.build(this)
-		}).asInstanceOf[Dap]
-		if dap == null then throw new IllegalStateException("Instances of CloseableDoerAssistantProviderManager that were shutdown should not build new instances of DoerAssistantProvider")
-		else dap
+			else descriptor.build(this)
+		}).asInstanceOf[DP]
+		if provider == null then throw new IllegalStateException(s"A ${getTypeName[CloseableDoerProvidersManager]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
+		else provider
 	}
 
 	def shutdown(): Unit = {
 		if wasShutdown.compareAndSet(false, true) then {
-			registeredDaps.forEach((dapKind, dap) =>
+			registeredProviders.forEach((dapKind, dap) =>
 				dap match {
 					case s: ShutdownAble => s.shutdown()
 					case _ => // do nothing
@@ -44,28 +46,28 @@ class CloseableDoerAssistantProvidersManager extends DapManager, ShutdownAble {
 	 * @throws InterruptedException if interrupted while waiting
 	 */
 	def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
-		var allDapsAreTerminated = true
-		val enumeration = registeredDaps.elements()
+		var allProvidersAreTerminated = true
+		val enumeration = registeredProviders.elements()
 		var remainingNanos = unit.toNanos(timeout)
 		var startingNanoTime = System.nanoTime()
-		while enumeration.hasMoreElements && allDapsAreTerminated && remainingNanos > 0 do {
+		while enumeration.hasMoreElements && allProvidersAreTerminated && remainingNanos > 0 do {
 			enumeration.nextElement() match {
-				case dap: ShutdownAble =>
-					allDapsAreTerminated = dap.awaitTermination(remainingNanos, TimeUnit.NANOSECONDS)
+				case provider: ShutdownAble =>
+					allProvidersAreTerminated = provider.awaitTermination(remainingNanos, TimeUnit.NANOSECONDS)
 					val currentNanoTime = System.nanoTime()
 					remainingNanos -= currentNanoTime - startingNanoTime
 					startingNanoTime = currentNanoTime
 				case _ => // do nothing
 			}
 		}
-		allDapsAreTerminated
+		allProvidersAreTerminated
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		val enumeration = registeredDaps.elements()
+		val enumeration = registeredProviders.elements()
 		while enumeration.hasMoreElements do {
 			enumeration.nextElement() match {
-				case dap: ShutdownAble => dap.diagnose(sb)
+				case provider: ShutdownAble => provider.diagnose(sb)
 				case _ => // do nothing
 			}
 		}

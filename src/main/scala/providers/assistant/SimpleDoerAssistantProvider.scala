@@ -1,8 +1,10 @@
 package readren.matrix
-package dap
+package providers.assistant
 
 import core.{Matrix, MatrixDoer}
-import dap.SimpleDoerAssistantProvider.currentAssistant
+import providers.ShutdownAble
+import providers.assistant.SimpleDoerAssistantProvider.currentAssistant
+import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
 
@@ -13,12 +15,13 @@ object SimpleDoerAssistantProvider {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal
 }
 
+/** A [[Doer.Assistant]] provider */
 class SimpleDoerAssistantProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends Matrix.DoerAssistantProvider, ShutdownAble { thisProvider =>
+) extends DoerAssistantProvider, ShutdownAble { thisProvider =>
 	override type ProvidedAssistant = Doer.Assistant
 
 	private val switcher = new AtomicInteger(0)

@@ -2,9 +2,9 @@ package readren.matrix
 package pruebas
 
 import behaviors.CheckedBehavior
-import core.Matrix.DapKind
-import core.{Continue, Endpoint, Matrix}
-import dap.SharedQueueDoerAssistantProvider
+import core.Matrix.DoerProviderDescriptor
+import core.{Continue, Endpoint, Matrix, MatrixDoer}
+import providers.doer.SharedQueueDoerProvider
 import rf.RegularRf
 
 object PruebaChecked {
@@ -20,13 +20,13 @@ object PruebaChecked {
 	private class MyException extends Exception
 	private class NeverException extends MyException
 
-	private object sharedQueueDapKind extends DapKind[SharedQueueDoerAssistantProvider]("sharedQueue") {
-		override def build(owner: Matrix.DapManager): SharedQueueDoerAssistantProvider = new SharedQueueDoerAssistantProvider(false)
+	private object sharedQueueDpd extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
+		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider(false)
 	}
 
 	@main def runPruebaChecked(): Unit = {
 
-		val matrixAide = new AideImpl[SharedQueueDoerAssistantProvider](sharedQueueDapKind)
+		val matrixAide = new AideImpl(sharedQueueDpd)
 
 		val matrix = new Matrix("testChecked", matrixAide)
 
@@ -45,7 +45,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text == null then matrix.dapManager.shutdown()
+				if response.text == null then matrix.doerProvidersManager.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

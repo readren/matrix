@@ -1,8 +1,6 @@
 package readren.matrix
 package core
 
-import core.Matrix.DoerAssistantProvider
-
 import readren.taskflow.{Doer, Maybe}
 
 import scala.collection.{MapView, mutable}
@@ -32,12 +30,16 @@ class Spawner[+MD <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MD, in
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
 	/** Should be called withing the [[doer]] only. */
-	def createReactant[U](reactantFactory: ReactantFactory, dapKind: Matrix.DapKind[?], isSignalTest: IsSignalTest[U], initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[ReactantRelay[U]] = {
+	def createReactant[U](
+		childFactory: ReactantFactory, 
+		childDoer: MatrixDoer, 
+		isSignalTest: IsSignalTest[U], 
+		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
+	): doer.Duty[ReactantRelay[U]] = {
 		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer
-		val reactantDoer = doer.matrix.provideDoer(dapKind)
-		reactantFactory.createReactant(reactantSerial, thisSpawner, reactantDoer, isSignalTest, initialBehaviorBuilder)
+		childFactory.createReactant(reactantSerial, thisSpawner, childDoer, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(doer)
 			.map { reactant =>
 				children.addOne(reactantSerial, reactant)

@@ -1,9 +1,10 @@
 package readren.matrix
-package dap
+package providers.assistant
 
-import core.Matrix.DoerAssistantProvider
 import core.MatrixDoer
-import dap.BalancedDoerAssistantProvider.currentAssistant
+import providers.ShutdownAble
+import providers.assistant.BalancedDoerAssistantProvider.currentAssistant
+import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
 
@@ -14,6 +15,13 @@ object BalancedDoerAssistantProvider {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 }
 
+/** A [[Doer.Assistant]] provider with a rudimentary thread-load balancing mechanism.
+ * How it works:
+ * - Manages a fixed number of assistants equal to the thread pool size, each of which owns a thread-worker.
+ * - A call to the [[provide]] method returns the assistant with the shortest task queue at the moment of the call.
+ * - All tasks submitted to an assistant are executed by the same thread-worker.
+ * Effective for short-living doers that are created when the work is demanded.
+ * Not suited for long-living doers. */
 class BalancedDoerAssistantProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),

@@ -113,7 +113,7 @@ abstract class Reactant[U](
 	/** Should be called withing the [[doer]]. */
 	override def spawn[V](
 		childReactantFactory: ReactantFactory,
-		dapKind: Matrix.DapKind[?]
+		childDoer: MatrixDoer
 	)(
 		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
 	)(
@@ -126,7 +126,7 @@ abstract class Reactant[U](
 				childrenRelays = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
-			.createReactant[V](childReactantFactory, dapKind, isSignalTest, initialChildBehaviorBuilder)
+			.createReactant[V](childReactantFactory, childDoer, isSignalTest, initialChildBehaviorBuilder)
 	}
 
 	/** The children of this [[Reactant]] by serial number.

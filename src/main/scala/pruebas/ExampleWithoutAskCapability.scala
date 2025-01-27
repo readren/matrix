@@ -2,8 +2,8 @@ package readren.matrix
 package pruebas
 
 import core.*
-import core.Matrix.DapKind
-import dap.{SharedQueueDoerAssistantProvider, SimpleDoerAssistantProvider}
+import core.Matrix.DoerProviderDescriptor
+import providers.doer.SharedQueueDoerProvider
 import rf.RegularRf
 
 object ExampleWithoutAskCapability {
@@ -13,12 +13,12 @@ object ExampleWithoutAskCapability {
 
 	private case class SumResult(result: Int)
 
-	private object sharedQueueDapKind extends DapKind[SharedQueueDoerAssistantProvider]("sharedQueue") {
-		override def build(owner: Matrix.DapManager): SharedQueueDoerAssistantProvider = new SharedQueueDoerAssistantProvider(false)
+	object sharedQueueDpd extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
+		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider
 	}
 
 	@main def runExample(): Unit = {
-		val aide = new AideImpl(sharedQueueDapKind)
+		val aide = new AideImpl(sharedQueueDpd)
 		val matrix = new Matrix("example", aide)
 
 		matrix.spawn[CalcCmd](RegularRf)(calculatorRelay => {
@@ -44,6 +44,6 @@ object ExampleWithoutAskCapability {
 
 		}.triggerAndForget()
 
-		matrix.dapManager.shutdown()
+		matrix.doerProvidersManager.shutdown()
 	}
 }

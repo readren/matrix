@@ -24,8 +24,8 @@ abstract class ReactantRelay[-U] {
 	
 	/** Should be called withing the [[doer]]. */
 	def spawn[V](
-		childReactantFactory: ReactantFactory,
-		dapKind: Matrix.DapKind[?] = doer.matrix.defaultDapKind
+		childFactory: ReactantFactory,
+		childDoer: MatrixDoer = doer.matrix.provideDefaultDoer
 	)(
 		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
 	)(
