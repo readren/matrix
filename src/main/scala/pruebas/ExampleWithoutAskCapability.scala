@@ -33,7 +33,8 @@ object ExampleWithoutAskCapability {
 				val userEndpoint = userReactant.endpointProvider.local[SumResult]
 
 				{
-					case _: Started.type => endpointForCalculator.tell(Sum(3, 7, userEndpoint))
+					case _: Started.type =>
+						endpointForCalculator.tell(Sum(3, 7, userEndpoint))
 						Continue
 
 					case SumResult(result) =>
