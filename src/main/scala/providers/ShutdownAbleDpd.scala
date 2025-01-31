@@ -10,7 +10,9 @@ import readren.taskflow.Doer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 
-class CloseableDoerProvidersManager extends DoerProvidersManager, ShutdownAble {
+/** An implementation of the [[DoerProvidersManager]] trait that is [[ShutdownAble]].
+ * Call to methods inherited from [[ShutdownAble]] are propagated to all the [[DoerProvider]] instances managed by this instance, provided the [[DoerProvider]] are [[ShutdownAble]].  */
+class ShutdownAbleDpd extends DoerProvidersManager, ShutdownAble {
 
 	private val registeredProviders: ConcurrentHashMap[DoerProviderDescriptor[?, ?], DoerProvider[?]] = new ConcurrentHashMap()
 	private val wasShutdown: AtomicBoolean = new AtomicBoolean(false)
@@ -22,7 +24,7 @@ class CloseableDoerProvidersManager extends DoerProvidersManager, ShutdownAble {
 			if wasShutdown.get() then null
 			else descriptor.build(this)
 		}).asInstanceOf[DP]
-		if provider == null then throw new IllegalStateException(s"A ${getTypeName[CloseableDoerProvidersManager]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
+		if provider == null then throw new IllegalStateException(s"A ${getTypeName[ShutdownAbleDpd]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
 		else provider
 	}
 

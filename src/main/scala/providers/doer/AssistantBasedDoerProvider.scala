@@ -41,7 +41,7 @@ object AssistantBasedDoerProvider {
  * allowing the use of assistants provided by the former to create [[MatrixDoer]] instances. It also delegates
  * lifecycle management operations (e.g., shutdown) to the underlying assistant provider.
  */
-abstract class AssistantBasedDoerProvider extends DoerProvider[MatrixDoer], ShutdownAble {
+abstract class AssistantBasedDoerProvider[MD <: MatrixDoer] extends DoerProvider[MD], ShutdownAble {
 
 	/** The underlying assistant provider that this adapter wraps. */
 	protected val assistantProvider: DoerAssistantProvider & ShutdownAble
@@ -54,10 +54,7 @@ abstract class AssistantBasedDoerProvider extends DoerProvider[MatrixDoer], Shut
 	 * @return
 	 *   A new [[MatrixDoer]] instance initialized with the provided assistant and the given matrix.
 	 */
-	override def provide(matrix: AbstractMatrix): MatrixDoer = {
-		val doerId = matrix.genDoerId()
-		new MatrixDoer(doerId, assistantProvider.provide(doerId), matrix)
-	}
+	override def provide(matrix: AbstractMatrix): MD
 
 	/**
 	 * Shuts down the underlying assistant provider.

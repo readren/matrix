@@ -38,7 +38,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 	def provideDefaultDoer: MatrixDoer
 
 	/** thread-safe */
-	def spawn[U](
+	def spawns[U](
 		childFactory: ReactantFactory,
 		childDoer: MatrixDoer = provideDefaultDoer
 	)(
@@ -47,7 +47,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 		using isSignalTest: IsSignalTest[U]
 	): doer.Duty[ReactantRelay[U]] = {
 		doer.Duty.mineFlat { () =>
-			spawner.createReactant[U](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
+			spawner.createsReactant[U](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}
 

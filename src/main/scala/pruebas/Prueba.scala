@@ -200,13 +200,13 @@ object Prueba {
 
 		// println(matrix.doerAssistantProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
 
-		matrix.spawn[ProducerWasStopped | ConsumerWasStopped](reactantFactory) { parent =>
+		matrix.spawns[ProducerWasStopped | ConsumerWasStopped](reactantFactory) { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Duty.sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
-					parent.spawn[Consumable](reactantFactory) { consumer =>
+					parent.spawns[Consumable](reactantFactory) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
@@ -235,7 +235,7 @@ object Prueba {
 					 * - The Consumables are sent one after the other without waiting any response.
 					 * */
 					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization]] = {
-						parent.spawn[Initialization](reactantFactory) { producer =>
+						parent.spawns[Initialization](reactantFactory) { producer =>
 							producer.doer.checkWithin()
 
 							def loop(restartCount: Int): Behavior[Initialization] = {
@@ -263,7 +263,7 @@ object Prueba {
 					 * - These actions are performed concurrently across all consumers.
 					 */
 					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge]] = {
-						parent.spawn[Started.type | Acknowledge](reactantFactory) { producer =>
+						parent.spawns[Started.type | Acknowledge](reactantFactory) { producer =>
 							producer.doer.checkWithin()
 							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
 

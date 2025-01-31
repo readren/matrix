@@ -22,8 +22,8 @@ abstract class ReactantRelay[-U] {
 	 * This method is thread-safe. */
 	def isMarkedToBeStopped: Boolean
 	
-	/** Should be called withing the [[doer]]. */
-	def spawn[V](
+	/** Calls must be within the [[doer]]. */
+	def spawns[V](
 		childFactory: ReactantFactory,
 		childDoer: MatrixDoer = doer.matrix.provideDefaultDoer
 	)(
@@ -32,7 +32,7 @@ abstract class ReactantRelay[-U] {
 		using isSignalTest: IsSignalTest[V]
 	): doer.Duty[ReactantRelay[V]]
 
-	/** Should be called within the [[doer]]. */
+	/** Calls must be within the [[doer]]. */
 	def children: MapView[Long, ReactantRelay[?]]
 
 	/**
@@ -49,7 +49,7 @@ abstract class ReactantRelay[-U] {
 	 * 
 	 * This duty is the same as the returned by the [[stop]] method.
 	 * 
- 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called withing the [[doer]]. */
+ 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called within the [[doer]]. */
 	def stopDuty: doer.SubscriptableDuty[Unit]
 
 	/** Registers this [[Reactant]] to be notified with the specified signal when the given `watchedReactant` is fully stopped.
@@ -71,7 +71,7 @@ abstract class ReactantRelay[-U] {
 	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 	
 	/** Provides diagnostic information about the current instance. */
-	def diagnose: doer.Duty[ReactantDiagnostic]
+	def diagnoses: doer.Duty[ReactantDiagnostic]
 
 	/** Provides diagnostic information about the current instance that may be stale due to cache visibility issues across processor cores. */
 	def staleDiagnose: ReactantDiagnostic

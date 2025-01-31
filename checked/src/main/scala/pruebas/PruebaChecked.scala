@@ -30,7 +30,7 @@ object PruebaChecked {
 
 		val matrix = new Matrix("testChecked", matrixAide)
 
-		matrix.spawn[Cmd](RegularRf) { parent =>
+		matrix.spawns[Cmd](RegularRf) { parent =>
 			val cb: CheckedBehavior[Cmd, MyException] =
 				CheckedBehavior.factory[Cmd, MyException, NeverException] {
 					case cmd: DoWork =>

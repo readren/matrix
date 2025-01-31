@@ -6,7 +6,7 @@ import providers.ShutdownAble
 import providers.assistant.TimedAssistantProvider.*
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
-import readren.taskflow.TimersExtension.TimerKey
+import readren.taskflow.TimersExtension.{FixedRateLike, NanoDuration}
 import readren.taskflow.{Doer, TimersExtension}
 
 import java.lang.invoke.VarHandle
@@ -14,6 +14,7 @@ import java.util
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
+import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
 
 object TimedAssistantProvider {
@@ -150,31 +151,65 @@ class TimedAssistantProvider(
 			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 
-		override def executeSequentiallyWithDelay(key: TimerKey, delay: FiniteDuration, runnable: Runnable): Unit = {
-			val delayNanos = delay.toNanos
-			if delayNanos <= 0 then executeSequentially(runnable)
-			else {
-				val delayedTask = new DelayedTask(thisDoerAssistant, key, System.nanoTime() + delayNanos, 0, runnable)
-				delayedTasksQueue.schedule(delayedTask)
+		override type Schedule = ScheduleImpl
+
+		override def newDelaySchedule(delay: NanoDuration): Schedule =
+			new ScheduleImpl(thisDoerAssistant, delay, 0L, false)
+
+		override def newFixedRateSchedule(initialDelay: NanoDuration, interval: NanoDuration): Schedule & FixedRateLike =
+			new ScheduleImpl(thisDoerAssistant, initialDelay, interval, true)
+
+		override def newFixedDelaySchedule(initialDelay: NanoDuration, delay: NanoDuration): Schedule =
+			new ScheduleImpl(thisDoerAssistant, initialDelay, delay, false)
+
+		override def executeSequentiallyScheduled(schedule: Schedule, originalRunnable: Runnable): Unit = {
+			val currentTime = System.nanoTime()
+
+			object fixedDelayWrapper extends Runnable {
+				override def run(): Unit = {
+					originalRunnable.run()
+					// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
+					schedule.scheduledTime = System.nanoTime() + schedule.interval
+					scheduler.schedule(schedule)
+				}
 			}
+
+			object fixedRateWrapper extends Runnable {
+				override def run(): Unit = {
+					@tailrec
+					def loop(currentTime: NanoTime): Unit = {
+						schedule.startingTime = currentTime
+						schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
+						originalRunnable.run()
+						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
+						val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
+						val newCurrentTime = System.nanoTime()
+						if nextTime <= newCurrentTime then loop(newCurrentTime)
+						else {
+							schedule.scheduledTime = nextTime
+							scheduler.schedule(schedule)
+						}
+					}
+					loop(System.nanoTime())
+				}
+			}
+
+			val scheduledRunnable: Runnable =
+				if schedule.interval > 0 then {
+					if schedule.isFixedRate then fixedRateWrapper
+					else fixedDelayWrapper
+				} else originalRunnable
+			schedule.scheduledTime = currentTime + schedule.initialDelay
+			schedule.runnable = scheduledRunnable
+			if schedule.initialDelay <= 0 then executeSequentially(scheduledRunnable)
+			else scheduler.schedule(schedule)
 		}
 
-		override def executeSequentiallyAtFixedRate(key: TimerKey, delay: FiniteDuration, interval: FiniteDuration, runnable: Runnable): Unit = {
-			var delayNanos = delay.toNanos
-			val intervalNanos = interval.toNanos
-			if delayNanos <= 0 then {
-				executeSequentially(runnable)
-				delayNanos = intervalNanos + (delayNanos % intervalNanos)
-			}
-			val delayedTask = new DelayedTask(thisDoerAssistant, key, System.nanoTime() + delayNanos, intervalNanos, runnable)
-			delayedTasksQueue.schedule(delayedTask)
-		}
+		override def cancel(schedule: Schedule): Unit = scheduler.cancel(schedule)
 
-		override def cancelDelayedExecution(key: TimerKey): Unit = ???
+		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisDoerAssistant)
 
-		override def cancelAll(): Unit = ???
-
-		override def isTimerActive(key: TimerKey): Boolean = ???
+		override def isActive(schedule: Schedule): Boolean = schedule.heapIndex >= 0
 	}
 
 	/** @return `true` if a worker was awakened.
@@ -375,128 +410,147 @@ class TimedAssistantProvider(
 		new DoerAssistant(serial)
 	}
 
-	private object delayedTasksQueue extends Runnable {
-		private val schedulesQueue = new ConcurrentLinkedQueue[DelayedTask]()
-		private var heap: Array[DelayedTask | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
+	private object scheduler extends Runnable {
+		private var commandsQueue = new ConcurrentLinkedQueue[Runnable]()
+		private var heap: Array[ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var size: Int = 0
 
-		private var keepRunning = true
+		private var isRunning = true
 		private val lock = new ReentrantLock()
 		/**
-		 * Condition signalled when a newer task becomes available at the
-		 * head of the queue or a new thread may need to become leader.
+		 * Condition signalled when a command is enqueued into [[commandsQueue]].
 		 */
-		private val available = lock.newCondition()
+		private val commandPending = lock.newCondition()
 
 		private val timeWaitingThread: Thread = threadFactory.newThread(this)
 		timeWaitingThread.start()
 
-		def schedule(delayedTask: DelayedTask): Unit = {
-			schedulesQueue.offer(delayedTask)
-			available.signal()
+		def schedule(schedule: ScheduleImpl): Unit = {
+			commandsQueue.offer(() => enqueue(schedule))
+			lock.lock()
+			try commandPending.signal()
+			finally lock.unlock()
+		}
+
+		def cancel(schedule: ScheduleImpl): Unit = {
+			commandsQueue.offer(() => remove(schedule))
+			lock.lock()
+			try commandPending.signal()
+			finally lock.unlock()
+		}
+
+		def cancelAllBelongingTo(assistant: DoerAssistant): Unit = {
+			commandsQueue.offer { () =>
+				var index = size
+				while index > 0 do {
+					index -= 1
+					val schedule = heap(index)
+					if schedule.owner eq assistant then remove(schedule)
+				}
+			}
+			lock.lock()
+			try commandPending.signal()
+			finally lock.unlock()
 		}
 
 		def stop(): Unit = {
-			keepRunning = false
-			available.signal()
+			isRunning = false
+			lock.lock()
+			try commandPending.signal()
+			finally lock.unlock()
 		}
 
 		override def run(): Unit = {
-			while state.getPlain == State.keepRunning.ordinal do {
-				val delayedTask: DelayedTask | Null = schedulesQueue.poll()
-				if delayedTask != null then enqueue(delayedTask)
+			while isRunning do {
+				var command: Runnable | Null = commandsQueue.poll()
+				while command != null do {
+					command.run()
+					command = commandsQueue.poll()
+				}
 
 				var firstTask = peek
 				var currentNanoTime = System.nanoTime()
-				while firstTask != null && firstTask.time <= currentNanoTime do {
+				while firstTask != null && firstTask.scheduledTime <= currentNanoTime do {
 					finishPoll(firstTask)
 					firstTask.owner.executeSequentially(firstTask.runnable)
-					if firstTask.interval > 0 then {
-						firstTask.time += firstTask.interval
-						if firstTask.time <= currentNanoTime then {
-							val numberOfSkippedExecutions = 1L + (currentNanoTime - firstTask.time) / firstTask.interval
-							firstTask.time += firstTask.interval * numberOfSkippedExecutions
-							firstTask.numberOfSkippedExecutions = numberOfSkippedExecutions.toInt
-						} else firstTask.numberOfSkippedExecutions = 0
-						enqueue(firstTask)
-					}
 					currentNanoTime = System.nanoTime()
 					firstTask = peek
 				}
 				lock.lock()
-				try if firstTask == null then available.wait()
-				else {
-					val delay = firstTask.time - currentNanoTime
-					firstTask = null
-					available.awaitNanos(delay)
+				try {
+					if firstTask == null then commandPending.await()
+					else {
+						val delay = firstTask.scheduledTime - currentNanoTime
+						firstTask = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+						commandPending.awaitNanos(delay)
+					}
 				}
 				finally lock.unlock()
 			}
+			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			commandsQueue = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 		}
 
-		private inline def peek: DelayedTask | Null = heap(0)
+		private inline def peek: ScheduleImpl | Null = heap(0)
 
-		private def enqueue(task: DelayedTask): Unit = {
+		/** Adds the provided element to this min-heap based priority queue.  */
+		private def enqueue(element: ScheduleImpl): Unit = {
 			val holeIndex = size
-			if (holeIndex >= heap.length) grow()
+			if holeIndex >= heap.length then grow()
 			size = holeIndex + 1
-			if (holeIndex == 0) {
-				heap(0) = task
-				task.heapIndex = 0
+			if holeIndex == 0 then {
+				heap(0) = element
+				element.heapIndex = 0
 			}
-			else siftUp(holeIndex, task)
+			else siftUp(holeIndex, element)
 		}
 
 		/**
-		 * Performs common bookkeeping for poll and take: Replaces first element with last and sifts it down.  Call only when holding lock.
-		 * @param task the task to remove and return.
+		 * Polls the element that was peeked: replaces first element with last and sifts it down.
+		 * Assumes the provided element is the same as the returned by [[peek]].
+		 * @param peekedElement the [[ScheduleImpl]] to remove and return.
 		 */
-		private def finishPoll(task: DelayedTask): DelayedTask = {
+		private def finishPoll(peekedElement: ScheduleImpl): ScheduleImpl = {
 			size -= 1;
 			val s = size
-			val x = heap(s)
+			val replacement = heap(s)
 			heap(s) = null
-			if (s != 0) siftDown(0, x)
-			task.heapIndex = -1
-			task
+			if s != 0 then siftDown(0, replacement)
+			peekedElement.heapIndex = -1
+			peekedElement
 		}
 
-		private def poll(currentNanoTime: NanoTime = System.nanoTime()): DelayedTask = {
-			val first = heap(0)
-			if first == null || first.time > currentNanoTime then null
-			else finishPoll(first)
-		}
-
-		private def remove(task: DelayedTask): Boolean = {
-			val taskIndex = indexOf(task)
-			if (taskIndex < 0) return false
-			heap(taskIndex).heapIndex = -1
+		/** Removes the provided element from this queue.
+		 * @return true if the element was removed; false if it is not contained by this queue. */
+		private def remove(element: ScheduleImpl): Boolean = {
+			val elemIndex = indexOf(element)
+			if elemIndex < 0 then return false
+			element.heapIndex = -1
 			size -= 1
 			val s = size
 			val replacement = heap(s)
 			heap(s) = null
-			if (s != taskIndex) {
-				siftDown(taskIndex, replacement)
-				if (heap(taskIndex) eq replacement) siftUp(taskIndex, replacement)
+			if s != elemIndex then {
+				siftDown(elemIndex, replacement)
+				if heap(elemIndex) eq replacement then siftUp(elemIndex, replacement)
 			}
 			true
 		}
 
-		private inline def indexOf(task: DelayedTask): Int = task.heapIndex
+		private inline def indexOf(task: ScheduleImpl): Int = task.heapIndex
 
 		/**
 		 * Replaces the element at position `holeIndex` of the heap-based array with the `providedElement` and rearranges it and its parents as necessary to ensure that all parents are less than or equal to their children.
 		 * Note that for the entire heap to satisfy the min-heap property, the `providedElement` must be less than or equal to the children of `holeIndex`.
 		 * Sifts element added at bottom up to its heap-ordered spot.
-		 * Call only when holding lock.
 		 */
-		private def siftUp(holeIndex: Int, providedElement: DelayedTask): Unit = {
+		private def siftUp(holeIndex: Int, providedElement: ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var zero = 0
 			while (gapIndex > zero) {
 				val parentIndex = (gapIndex - 1) >>> 1
 				val parent = heap(parentIndex)
-				if providedElement.time >= parent.time then zero = Int.MaxValue
+				if providedElement.scheduledTime >= parent.scheduledTime then zero = Int.MaxValue
 				else {
 					heap(gapIndex) = parent
 					parent.heapIndex = gapIndex
@@ -510,20 +564,19 @@ class TimedAssistantProvider(
 		/**
 		 * Replaces the element that is currently at position `holeIndex` of the heap-based array with the `providedElement` and rearranges the elements in the subtree rooted at `holeIndex` such that the subtree conform to the min-heap property.
 		 * Sifts element added at top down to its heap-ordered spot.
-		 * Call only when holding lock.
 		 */
-		private def siftDown(holeIndex: Int, providedElement: DelayedTask): Unit = {
+		private def siftDown(holeIndex: Int, providedElement: ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var half = size >>> 1
 			while gapIndex < half do {
 				var childIndex = (gapIndex << 1) + 1
 				var child = heap(childIndex)
 				val rightIndex = childIndex + 1
-				if (rightIndex < size && child.time > heap(rightIndex).time) {
+				if rightIndex < size && child.scheduledTime > heap(rightIndex).scheduledTime then {
 					childIndex = rightIndex
 					child = heap(childIndex)
 				}
-				if providedElement.time <= child.time then half = 0
+				if providedElement.scheduledTime <= child.scheduledTime then half = 0
 				else {
 					heap(gapIndex) = child
 					child.heapIndex = gapIndex
@@ -535,21 +588,24 @@ class TimedAssistantProvider(
 		}
 
 		/**
-		 * Resizes the heap array.  Call only when holding lock.
+		 * Resizes the heap array.
 		 */
 		private def grow(): Unit = {
 			val oldCapacity = heap.length
 			var newCapacity = oldCapacity + (oldCapacity >> 1) // grow 50%
 
-			if (newCapacity < 0) newCapacity = Integer.MAX_VALUE // overflow
+			if newCapacity < 0 then newCapacity = Integer.MAX_VALUE // overflow
 
 			heap = util.Arrays.copyOf(heap, newCapacity)
 		}
 	}
 
-	private class DelayedTask(val owner: DoerAssistant, val timerKey: TimerKey, var time: NanoTime, val interval: Duration, val runnable: Runnable)  {
-		var heapIndex: Int = -1
-		var numberOfSkippedExecutions: Int = 0
+	class ScheduleImpl(val owner: DoerAssistant, val initialDelay: NanoTime, val interval: Duration, val isFixedRate: Boolean) extends FixedRateLike {
+		var scheduledTime: NanoTime = 0L
+		var runnable: Runnable | Null = null
+		@volatile var heapIndex: Int = -1
+		var numOfSkippedExecutions: Long = 0
+		var startingTime: NanoTime = 0L
 	}
 
 	/**
@@ -561,7 +617,7 @@ class TimedAssistantProvider(
 	 * @throws SecurityException @inheritDoc
 	 */
 	override def shutdown(): Unit = {
-		delayedTasksQueue.stop()
+		scheduler.stop()
 		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers()
 	}
 

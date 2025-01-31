@@ -21,7 +21,7 @@ object ExampleWithoutAskCapability {
 		val aide = new AideImpl(sharedQueueDpd)
 		val matrix = new Matrix("example", aide)
 
-		matrix.spawn[CalcCmd](RegularRf)(calculatorRelay => {
+		matrix.spawns[CalcCmd](RegularRf)(calculatorRelay => {
 			case Sum(a, b, replyTo) =>
 				replyTo.tell(SumResult(a + b))
 				Continue
@@ -29,7 +29,7 @@ object ExampleWithoutAskCapability {
 		).flatMap { calculatorReactant =>
 			val endpointForCalculator = calculatorReactant.endpointProvider.local[CalcCmd]
 
-			matrix.spawn[Started.type | SumResult](RegularRf) { userReactant =>
+			matrix.spawns[Started.type | SumResult](RegularRf) { userReactant =>
 				val userEndpoint = userReactant.endpointProvider.local[SumResult]
 
 				{

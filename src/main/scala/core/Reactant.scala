@@ -89,13 +89,13 @@ abstract class Reactant[U](
 	def initialize(): doer.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
 		doer.checkWithin()
 		assert(currentBehavior == null)
-		selfStart(false, initialBehaviorBuilder).map(_ => thisReactant) // TODO considerar hacer que selfStart devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
+		selfStarts(false, initialBehaviorBuilder).map(_ => thisReactant) // TODO considerar hacer que selfStarts devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
 	}
 
 	/** Starts or restarts this [[Reactant]].
 	 * Should be called only once and within the [[doer]].
 	 * */
-	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
+	private def selfStarts(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
 		doer.checkWithin()
 		currentBehavior = behaviorBuilder(thisReactant)
 		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
@@ -106,12 +106,12 @@ abstract class Reactant[U](
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart[U @unchecked] =>
-				selfRestart(tr.stopChildren, tr.restartBehaviorBuilder)
+				selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder)
 		}
 	}
 
 	/** Should be called withing the [[doer]]. */
-	override def spawn[V](
+	override def spawns[V](
 		childReactantFactory: ReactantFactory,
 		childDoer: MatrixDoer
 	)(
@@ -126,26 +126,26 @@ abstract class Reactant[U](
 				childrenRelays = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
-			.createReactant[V](childReactantFactory, childDoer, isSignalTest, initialChildBehaviorBuilder)
+			.createsReactant[V](childReactantFactory, childDoer, isSignalTest, initialChildBehaviorBuilder)
 	}
 
 	/** The children of this [[Reactant]] by serial number.
 	 *
-	 * Should be called withing the [[doer]]. */
+	 * Calls must be within the [[doer]]. */
 	override def children: MapView[Long, ReactantRelay[?]] = {
 		doer.checkWithin()
 		childrenRelays
 	}
 
-	/** should be called within the [[doer]]. */
-	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
+	/** Calls must be within the [[doer]]. */
+	private final def selfRestarts(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U] => Behavior[U]): doer.Duty[Unit] = {
 		doer.checkWithin()
 
 		def restartMe(): doer.Duty[Unit] = {
 			// send RestartReceived signal
 			val hr = handleSignal(isSignalTest.restartReceived)
 			mapHrToDecision(hr) match {
-				case ToContinue => selfStart(true, restartBehaviorBuilder)
+				case ToContinue => selfStarts(true, restartBehaviorBuilder)
 				case ToStop =>
 					// if the `handleSignal` responds `Stop` to the `RestartReceived` signal, then the restart is canceled and the reactant is stopped instead, which provokes the signal handler be called again with a `StopReceived` signal.
 					selfStop()
@@ -154,17 +154,17 @@ abstract class Reactant[U](
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
 							oSpawner.fold(doer.dutyReadyUnit) { spawner =>
-								spawner.stopChildren()
+								spawner.stopsChildren()
 							}
 						}
 						else doer.dutyReadyUnit
-					stopsChildrenIfInstructed.flatMap(_ => selfStart(true, tr.restartBehaviorBuilder))
+					stopsChildrenIfInstructed.flatMap(_ => selfStarts(true, tr.restartBehaviorBuilder))
 			}
 		}
 
 		if stopChildren then {
 			oSpawner.fold(restartMe()) { spawner =>
-				spawner.stopChildren().flatMap(_ => restartMe())
+				spawner.stopsChildren().flatMap(_ => restartMe())
 			}
 		} else restartMe()
 	}
@@ -184,7 +184,7 @@ abstract class Reactant[U](
 						mapHrToDecision(currentBehavior.handle(stoppedSignal)) match {
 							case ToContinue => ()
 							case ToStop => selfStop()
-							case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+							case tr: ToRestart[U @unchecked] => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 						}
 					}
 				}
@@ -261,7 +261,7 @@ abstract class Reactant[U](
 			isReadyToProcessMsg = false
 			activeWatchSubscriptions.forEach { (k, v) => v.foreach(_.unsubscribe()) }
 			oSpawner.fold(stopMe()) { spawner =>
-				spawner.stopChildren().trigger(true)(_ => stopMe())
+				spawner.stopsChildren().trigger(true)(_ => stopMe())
 			}
 		}
 		stopCovenant.subscriptableDuty
@@ -358,12 +358,12 @@ abstract class Reactant[U](
 		finalDecision match {
 			case ToContinue => beReadyToProcess()
 			case ToStop => selfStop()
-			case tr: ToRestart[U @unchecked] => selfRestart(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+			case tr: ToRestart[U @unchecked] => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 		}
 	}
 
 
-	override def diagnose: doer.Duty[ReactantDiagnostic] =
+	override def diagnoses: doer.Duty[ReactantDiagnostic] =
 		doer.Duty.mine { () =>
 			val childrenDiagnostic = children.map(_._2.staleDiagnose).toArray
 			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.size, inbox.iterator, childrenDiagnostic)

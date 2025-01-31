@@ -9,12 +9,12 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */
 	type MsgBuffer[u] = MS[u]
 
-	/** Creates the pending messages buffer needed by the [[createReactant]] method. */
+	/** Creates the pending messages buffer needed by the [[createsReactant]] method. */
 	protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U]
 
 	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
 
-	override def createReactant[U, MD <: MatrixDoer](
+	override def createsReactant[U, MD <: MatrixDoer](
 		id: Reactant.SerialNumber,
 		progenitor: Spawner[?],
 		reactantDoer: MD,
