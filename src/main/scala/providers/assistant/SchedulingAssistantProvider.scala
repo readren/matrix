@@ -3,11 +3,11 @@ package providers.assistant
 
 import core.{Matrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.assistant.TimedAssistantProvider.*
+import providers.assistant.SchedulingAssistantProvider.*
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
-import readren.taskflow.TimersExtension.{FixedRateLike, NanoDuration}
-import readren.taskflow.{Doer, TimersExtension}
+import readren.taskflow.SchedulingExtension.NanoDuration
+import readren.taskflow.{Doer, SchedulingExtension}
 
 import java.lang.invoke.VarHandle
 import java.util
@@ -17,7 +17,7 @@ import java.util.concurrent.locks.ReentrantLock
 import scala.annotation.tailrec
 import scala.concurrent.duration.FiniteDuration
 
-object TimedAssistantProvider {
+object SchedulingAssistantProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 	/** A nano time based on the [[System.nanoTime]] method. */
 	type NanoTime = Long
@@ -51,7 +51,7 @@ object TimedAssistantProvider {
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class TimedAssistantProvider(
+class SchedulingAssistantProvider(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
@@ -83,7 +83,7 @@ class TimedAssistantProvider(
 		workers.foreach(_.start())
 	}
 
-	class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant, TimersExtension.Assistant { thisDoerAssistant =>
+	class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant, SchedulingExtension.Assistant { thisDoerAssistant =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
@@ -115,7 +115,7 @@ class TimedAssistantProvider(
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
-		private[TimedAssistantProvider] final def executePendingTasks(): Int = {
+		private[SchedulingAssistantProvider] final def executePendingTasks(): Int = {
 			doerAssistantThreadLocal.set(thisDoerAssistant)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
@@ -156,13 +156,13 @@ class TimedAssistantProvider(
 		override def newDelaySchedule(delay: NanoDuration): Schedule =
 			new ScheduleImpl(thisDoerAssistant, delay, 0L, false)
 
-		override def newFixedRateSchedule(initialDelay: NanoDuration, interval: NanoDuration): Schedule & FixedRateLike =
+		override def newFixedRateSchedule(initialDelay: NanoDuration, interval: NanoDuration): Schedule =
 			new ScheduleImpl(thisDoerAssistant, initialDelay, interval, true)
 
 		override def newFixedDelaySchedule(initialDelay: NanoDuration, delay: NanoDuration): Schedule =
 			new ScheduleImpl(thisDoerAssistant, initialDelay, delay, false)
 
-		override def executeSequentiallyScheduled(schedule: Schedule, originalRunnable: Runnable): Unit = {
+		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
 			val currentTime = System.nanoTime()
 
 			object fixedDelayWrapper extends Runnable {
@@ -178,18 +178,18 @@ class TimedAssistantProvider(
 				override def run(): Unit = {
 					@tailrec
 					def loop(currentTime: NanoTime): Unit = {
+						if schedule.heapIndex < 0 then return
 						schedule.startingTime = currentTime
 						schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
 						originalRunnable.run()
 						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
 						val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
+						schedule.scheduledTime = nextTime
 						val newCurrentTime = System.nanoTime()
 						if nextTime <= newCurrentTime then loop(newCurrentTime)
-						else {
-							schedule.scheduledTime = nextTime
-							scheduler.schedule(schedule)
-						}
+						else scheduler.schedule(schedule)
 					}
+
 					loop(System.nanoTime())
 				}
 			}
@@ -493,7 +493,7 @@ class TimedAssistantProvider(
 
 		private inline def peek: ScheduleImpl | Null = heap(0)
 
-		/** Adds the provided element to this min-heap based priority queue.  */
+		/** Adds the provided element to this min-heap based priority queue. */
 		private def enqueue(element: ScheduleImpl): Unit = {
 			val holeIndex = size
 			if holeIndex >= heap.length then grow()
@@ -600,11 +600,24 @@ class TimedAssistantProvider(
 		}
 	}
 
-	class ScheduleImpl(val owner: DoerAssistant, val initialDelay: NanoTime, val interval: Duration, val isFixedRate: Boolean) extends FixedRateLike {
+	class ScheduleImpl(val owner: DoerAssistant, val initialDelay: NanoTime, val interval: Duration, val isFixedRate: Boolean) {
+		/** The [[Runnable]] that this [[TimersExtension.Assistant.Schedule]] schedules. */
+		private[SchedulingAssistantProvider] var runnable: Runnable | Null = null
+		/** Exposes the time the [[Runnable]] is expected to be run.
+		 * Updated after the [[Runnable]] execution is completed. */
 		var scheduledTime: NanoTime = 0L
-		var runnable: Runnable | Null = null
 		@volatile var heapIndex: Int = -1
+		/** Exposes the number of executions of the [[Runnable]] that were skipped before the current one due to processing power saturation or negative `initialDelay`.
+		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
+		 * {{{ (actualTime - scheduledTime) / interval }}}
+		 * Updated before the [[Runnable]] is run.
+		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be. 
+		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
 		var numOfSkippedExecutions: Long = 0
+		/** Exposes the [[System.nanoTime]] when the current execution started.
+		 * The [[numOfSkippedExecutions]] is calculated based on this time.
+		 * Updated before the [[Runnable]] is run.
+		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
 		var startingTime: NanoTime = 0L
 	}
 

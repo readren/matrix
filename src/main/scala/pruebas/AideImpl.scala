@@ -18,5 +18,5 @@ class AideImpl[D <: MatrixDoer, DP <: Matrix.DoerProvider[D]](
 
 	override def buildDoerProviderManager(owner: Matrix[AideImpl[D, DP]]): DPsManager = new ShutdownAbleDpd
 
-	override def buildLogger(owner: Matrix[AideImpl[D, DP]]): Logger = new SimpleLogger(Logger.Level.debug)
+	override def buildLogger(owner: Matrix[AideImpl[D, DP]]): Logger = new SimpleLogger(Logger.Level.info)
 }

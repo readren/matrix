@@ -46,5 +46,12 @@ build/
 ### Mac OS ###
 .DS_Store
 
+### VSC & metals ###
+.bloop
+.metals
+.vscode
+metals.sbt
+
 ### Scala ###
-.bsp/
+.bsp
+
