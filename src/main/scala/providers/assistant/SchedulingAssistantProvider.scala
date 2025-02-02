@@ -1,7 +1,7 @@
 package readren.matrix
 package providers.assistant
 
-import core.{Matrix, MatrixDoer}
+import core.MatrixDoer
 import providers.ShutdownAble
 import providers.assistant.SchedulingAssistantProvider.*
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
@@ -15,7 +15,7 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import scala.annotation.tailrec
-import scala.concurrent.duration.FiniteDuration
+import scala.collection.mutable
 
 object SchedulingAssistantProvider {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
@@ -154,23 +154,26 @@ class SchedulingAssistantProvider(
 		override type Schedule = ScheduleImpl
 
 		override def newDelaySchedule(delay: NanoDuration): Schedule =
-			new ScheduleImpl(thisDoerAssistant, delay, 0L, false)
+			new ScheduleImpl(delay, 0L, false)
 
 		override def newFixedRateSchedule(initialDelay: NanoDuration, interval: NanoDuration): Schedule =
-			new ScheduleImpl(thisDoerAssistant, initialDelay, interval, true)
+			new ScheduleImpl(initialDelay, interval, true)
 
 		override def newFixedDelaySchedule(initialDelay: NanoDuration, delay: NanoDuration): Schedule =
-			new ScheduleImpl(thisDoerAssistant, initialDelay, delay, false)
+			new ScheduleImpl(initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
 			val currentTime = System.nanoTime()
+			assert(!schedule.isActive)
+			schedule.isActive = true
 
 			object fixedDelayWrapper extends Runnable {
 				override def run(): Unit = {
-					originalRunnable.run()
-					// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
-					schedule.scheduledTime = System.nanoTime() + schedule.interval
-					scheduler.schedule(schedule)
+					if schedule.isActive then {
+						originalRunnable.run()
+						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
+						scheduler.schedule(schedule, System.nanoTime() + schedule.interval)
+					}
 				}
 			}
 
@@ -178,38 +181,73 @@ class SchedulingAssistantProvider(
 				override def run(): Unit = {
 					@tailrec
 					def loop(currentTime: NanoTime): Unit = {
-						if schedule.heapIndex < 0 then return
-						schedule.startingTime = currentTime
-						schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
-						originalRunnable.run()
-						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
-						val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
-						schedule.scheduledTime = nextTime
-						val newCurrentTime = System.nanoTime()
-						if nextTime <= newCurrentTime then loop(newCurrentTime)
-						else scheduler.schedule(schedule)
+						if schedule.isActive then {
+							schedule.startingTime = currentTime
+							schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
+							originalRunnable.run()
+							// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
+							val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
+							val newCurrentTime = System.nanoTime()
+							if nextTime <= newCurrentTime then {
+								schedule.scheduledTime = nextTime
+								loop(newCurrentTime)
+							} else scheduler.schedule(schedule, nextTime)
+						}
 					}
 
 					loop(System.nanoTime())
 				}
 			}
 
-			val scheduledRunnable: Runnable =
+			schedule.runnable =
 				if schedule.interval > 0 then {
 					if schedule.isFixedRate then fixedRateWrapper
 					else fixedDelayWrapper
 				} else originalRunnable
-			schedule.scheduledTime = currentTime + schedule.initialDelay
-			schedule.runnable = scheduledRunnable
-			if schedule.initialDelay <= 0 then executeSequentially(scheduledRunnable)
-			else scheduler.schedule(schedule)
+			scheduler.schedule(schedule, currentTime + schedule.initialDelay)
 		}
 
 		override def cancel(schedule: Schedule): Unit = scheduler.cancel(schedule)
 
 		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisDoerAssistant)
 
-		override def isActive(schedule: Schedule): Boolean = schedule.heapIndex >= 0
+		/** An instance becomes active when is passed to the [[scheduleSequentially]] method.
+		 * An instances becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
+		override def isActive(schedule: Schedule): Boolean = schedule.isActive
+
+
+		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
+		class ScheduleImpl(val initialDelay: NanoTime, val interval: Duration, val isFixedRate: Boolean) {
+			/** The [[Runnable]] that this [[TimersExtension.Assistant.Schedule]] schedules. */
+			private[SchedulingAssistantProvider] var runnable: Runnable | Null = null
+			/** Exposes the time the [[Runnable]] is expected to be run.
+			 * Updated after the [[Runnable]] execution is completed. */
+			var scheduledTime: NanoTime = 0L
+			/** The index of this instance in the array-based min-heap. */
+			private[SchedulingAssistantProvider] var heapIndex: Int = -1
+			/** Exposes the number of executions of the [[Runnable]] that were skipped before the current one due to processing power saturation or negative `initialDelay`.
+			 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
+			 * {{{ (actualTime - scheduledTime) / interval }}}
+			 * Updated before the [[Runnable]] is run.
+			 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.
+			 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
+			var numOfSkippedExecutions: Long = 0
+			/** Exposes the [[System.nanoTime]] when the current execution started.
+			 * The [[numOfSkippedExecutions]] is calculated based on this time.
+			 * Updated before the [[Runnable]] is run.
+			 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
+			var startingTime: NanoTime = 0L
+			/** An instance becomes enabled when the [[scheduledTime]] is reached, and it's [[runnable]] is enqueued in [[thisDoerAssistant.taskQueue]].
+			 * An instance becomes disabled after the [[runnable]] execution finishes and the */
+			private[SchedulingAssistantProvider] var isEnabled = false
+			/** An instance becomes active when is passed to the [[thisDoerAssistant.scheduleSequentially]] method.
+			 * An instances becomes inactive when it is passed to the [[thisDoerAssistant.cancel]] method or when [[thisDoerAssistant.cancelAll]] is called.
+			 *
+			 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[heapIndex]] to be @volatile. */
+			@volatile private[SchedulingAssistantProvider] var isActive = false
+
+			inline def owner: thisDoerAssistant.type = thisDoerAssistant
+		}
 	}
 
 	/** @return `true` if a worker was awakened.
@@ -411,9 +449,10 @@ class SchedulingAssistantProvider(
 	}
 
 	private object scheduler extends Runnable {
-		private var commandsQueue = new ConcurrentLinkedQueue[Runnable]()
-		private var heap: Array[ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
+		private val commandsQueue = new ConcurrentLinkedQueue[Runnable]()
+		private var heap: Array[DoerAssistant#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var size: Int = 0
+		private var enabledSchedulesByAssistant: util.HashMap[DoerAssistant, mutable.HashSet[DoerAssistant#ScheduleImpl]] = new util.HashMap()
 
 		private var isRunning = true
 		private val lock = new ReentrantLock()
@@ -425,36 +464,52 @@ class SchedulingAssistantProvider(
 		private val timeWaitingThread: Thread = threadFactory.newThread(this)
 		timeWaitingThread.start()
 
-		def schedule(schedule: ScheduleImpl): Unit = {
-			commandsQueue.offer(() => enqueue(schedule))
-			lock.lock()
-			try commandPending.signal()
-			finally lock.unlock()
+		def schedule(schedule: DoerAssistant#ScheduleImpl, scheduleTime: NanoTime): Unit = {
+			signal { () =>
+				if schedule.isEnabled then {
+					schedule.isEnabled = false
+					enabledSchedulesByAssistant.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule))
+				}
+				schedule.scheduledTime = scheduleTime
+				enqueue(schedule)
+			}
 		}
 
-		def cancel(schedule: ScheduleImpl): Unit = {
-			commandsQueue.offer(() => remove(schedule))
-			lock.lock()
-			try commandPending.signal()
-			finally lock.unlock()
+		def cancel(schedule: DoerAssistant#ScheduleImpl): Unit = {
+			signal { () =>
+				schedule.isActive = false
+				if schedule.isEnabled then {
+					schedule.isEnabled = false
+					enabledSchedulesByAssistant.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule))
+				} else remove(schedule)
+			}
 		}
 
 		def cancelAllBelongingTo(assistant: DoerAssistant): Unit = {
-			commandsQueue.offer { () =>
+			signal { () =>
 				var index = size
 				while index > 0 do {
 					index -= 1
 					val schedule = heap(index)
-					if schedule.owner eq assistant then remove(schedule)
+					if schedule.owner eq assistant then {
+						schedule.isActive = false
+						remove(schedule)
+					}
+				}
+
+				enabledSchedulesByAssistant.remove(assistant).foreach { schedule =>
+					schedule.isActive = false
+					schedule.isEnabled = false
 				}
 			}
-			lock.lock()
-			try commandPending.signal()
-			finally lock.unlock()
 		}
 
 		def stop(): Unit = {
-			isRunning = false
+			signal(() => isRunning = false)
+		}
+
+		private def signal(command: Runnable): Unit = {
+			commandsQueue.offer(command)
 			lock.lock()
 			try commandPending.signal()
 			finally lock.unlock()
@@ -468,33 +523,43 @@ class SchedulingAssistantProvider(
 					command = commandsQueue.poll()
 				}
 
-				var firstTask = peek
+				var earlierSchedule = peek
 				var currentNanoTime = System.nanoTime()
-				while firstTask != null && firstTask.scheduledTime <= currentNanoTime do {
-					finishPoll(firstTask)
-					firstTask.owner.executeSequentially(firstTask.runnable)
+				while earlierSchedule != null && earlierSchedule.scheduledTime <= currentNanoTime do {
+					finishPoll(earlierSchedule)
+					earlierSchedule.isEnabled = true
+					enabledSchedulesByAssistant.merge(earlierSchedule.owner, mutable.HashSet(earlierSchedule), (_, enabledSchedules) => enabledSchedules.addOne(earlierSchedule))
+					earlierSchedule.owner.executeSequentially(earlierSchedule.runnable)
 					currentNanoTime = System.nanoTime()
-					firstTask = peek
+					earlierSchedule = peek
 				}
 				lock.lock()
 				try {
-					if firstTask == null then commandPending.await()
+					if earlierSchedule == null then commandPending.await()
 					else {
-						val delay = firstTask.scheduledTime - currentNanoTime
-						firstTask = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+						val delay = earlierSchedule.scheduledTime - currentNanoTime
+						earlierSchedule = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 						commandPending.awaitNanos(delay)
 					}
 				}
 				finally lock.unlock()
 			}
+			commandsQueue.clear() // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			for i <- 0 until size do heap(i).isActive = false
 			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
-			commandsQueue = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			enabledSchedulesByAssistant.forEach { (_, enabledSchedules) =>
+				enabledSchedules.foreach { schedule =>
+					schedule.isActive = false
+					schedule.isEnabled = false
+				}
+			}
+			enabledSchedulesByAssistant = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 		}
 
-		private inline def peek: ScheduleImpl | Null = heap(0)
+		private inline def peek: DoerAssistant#ScheduleImpl | Null = heap(0)
 
 		/** Adds the provided element to this min-heap based priority queue. */
-		private def enqueue(element: ScheduleImpl): Unit = {
+		private def enqueue(element: DoerAssistant#ScheduleImpl): Unit = {
 			val holeIndex = size
 			if holeIndex >= heap.length then grow()
 			size = holeIndex + 1
@@ -510,7 +575,7 @@ class SchedulingAssistantProvider(
 		 * Assumes the provided element is the same as the returned by [[peek]].
 		 * @param peekedElement the [[ScheduleImpl]] to remove and return.
 		 */
-		private def finishPoll(peekedElement: ScheduleImpl): ScheduleImpl = {
+		private def finishPoll(peekedElement: DoerAssistant#ScheduleImpl): DoerAssistant#ScheduleImpl = {
 			size -= 1;
 			val s = size
 			val replacement = heap(s)
@@ -522,7 +587,7 @@ class SchedulingAssistantProvider(
 
 		/** Removes the provided element from this queue.
 		 * @return true if the element was removed; false if it is not contained by this queue. */
-		private def remove(element: ScheduleImpl): Boolean = {
+		private def remove(element: DoerAssistant#ScheduleImpl): Boolean = {
 			val elemIndex = indexOf(element)
 			if elemIndex < 0 then return false
 			element.heapIndex = -1
@@ -537,14 +602,14 @@ class SchedulingAssistantProvider(
 			true
 		}
 
-		private inline def indexOf(task: ScheduleImpl): Int = task.heapIndex
+		private inline def indexOf(task: DoerAssistant#ScheduleImpl): Int = task.heapIndex
 
 		/**
 		 * Replaces the element at position `holeIndex` of the heap-based array with the `providedElement` and rearranges it and its parents as necessary to ensure that all parents are less than or equal to their children.
 		 * Note that for the entire heap to satisfy the min-heap property, the `providedElement` must be less than or equal to the children of `holeIndex`.
 		 * Sifts element added at bottom up to its heap-ordered spot.
 		 */
-		private def siftUp(holeIndex: Int, providedElement: ScheduleImpl): Unit = {
+		private def siftUp(holeIndex: Int, providedElement: DoerAssistant#ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var zero = 0
 			while (gapIndex > zero) {
@@ -565,7 +630,7 @@ class SchedulingAssistantProvider(
 		 * Replaces the element that is currently at position `holeIndex` of the heap-based array with the `providedElement` and rearranges the elements in the subtree rooted at `holeIndex` such that the subtree conform to the min-heap property.
 		 * Sifts element added at top down to its heap-ordered spot.
 		 */
-		private def siftDown(holeIndex: Int, providedElement: ScheduleImpl): Unit = {
+		private def siftDown(holeIndex: Int, providedElement: DoerAssistant#ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var half = size >>> 1
 			while gapIndex < half do {
@@ -598,27 +663,6 @@ class SchedulingAssistantProvider(
 
 			heap = util.Arrays.copyOf(heap, newCapacity)
 		}
-	}
-
-	class ScheduleImpl(val owner: DoerAssistant, val initialDelay: NanoTime, val interval: Duration, val isFixedRate: Boolean) {
-		/** The [[Runnable]] that this [[TimersExtension.Assistant.Schedule]] schedules. */
-		private[SchedulingAssistantProvider] var runnable: Runnable | Null = null
-		/** Exposes the time the [[Runnable]] is expected to be run.
-		 * Updated after the [[Runnable]] execution is completed. */
-		var scheduledTime: NanoTime = 0L
-		@volatile var heapIndex: Int = -1
-		/** Exposes the number of executions of the [[Runnable]] that were skipped before the current one due to processing power saturation or negative `initialDelay`.
-		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
-		 * {{{ (actualTime - scheduledTime) / interval }}}
-		 * Updated before the [[Runnable]] is run.
-		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be. 
-		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
-		var numOfSkippedExecutions: Long = 0
-		/** Exposes the [[System.nanoTime]] when the current execution started.
-		 * The [[numOfSkippedExecutions]] is calculated based on this time.
-		 * Updated before the [[Runnable]] is run.
-		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
-		var startingTime: NanoTime = 0L
 	}
 
 	/**

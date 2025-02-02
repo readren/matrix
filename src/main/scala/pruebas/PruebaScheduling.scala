@@ -12,9 +12,9 @@ import scala.concurrent.duration.FiniteDuration
 object PruebaScheduling {
 
 
-	@main def runPruebaTimed(): Unit = {
+	@main def runPruebaScheduling(): Unit = {
 
-		case object Tick
+		case class Tick(incitingId: List[Int])
 
 		val schedulingDpd = new DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer, SchedulingDoerProvider]("schedulingDpd") {
 			override def build(owner: Matrix.DoerProvidersManager): SchedulingDoerProvider = new SchedulingDoerProvider(false)
@@ -24,14 +24,14 @@ object PruebaScheduling {
 		val matrix = new Matrix("scheduled", aide)
 		println(s"Matrix created")
 
-		val timedDoer = matrix.provideDoer(schedulingDpd)
+		val schedulingDoer = matrix.provideDoer(schedulingDpd)
 
 		if false then {
 			@volatile var inside = false
 			
 			var count = 0
-			val schedule = timedDoer.newFixedRateSchedule(1_000_000_000, 1_000)
-			timedDoer.scheduleSequentially(schedule) { () =>
+			val schedule = schedulingDoer.newFixedRateSchedule(1_000_000_000, 1_000)
+			schedulingDoer.scheduleSequentially(schedule) { () =>
 				assert(!inside)
 				inside = true
 				count += 1
@@ -40,22 +40,30 @@ object PruebaScheduling {
 			}
 
 		} else {
-			matrix.spawns[Started.type | Tick.type](RegularRf, timedDoer) { reactant =>
-				val selfEndpoint = reactant.endpointProvider.local[Tick.type]
+			matrix.spawns[Started.type | Tick](RegularRf, schedulingDoer) { reactant =>
+				val selfEndpoint = reactant.endpointProvider.local[Tick]
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)
 				var counter: Int = 0
 				{
-					case m@(Started | Tick) =>
+					case Started =>
+						selfEndpoint.tell(Tick(List.empty))
+						Continue
+
+					case Tick(incitingId) =>
 						counter += 1
 						if counter > 10000 then {
-							timedDoer.cancelAll()
+							schedulingDoer.cancelAll()
+							matrix.doerProvidersManager.shutdown()
+							println("shutdown executed")
 							Stop
 						} else {
-							println(s"The $m number $counter was received, thread=${Thread.currentThread().getId}")
-							val schedule: timedDoer.Schedule = timedDoer.newFixedRateSchedule((counter % 1000) * 1_000_000, 1_000_000_000)
-							timedDoer.scheduleSequentially(schedule) { () =>
-								println(s"counter=$counter, diff=${schedule.startingTime - schedule.scheduledTime}, thread=${Thread.currentThread().getId}")
-								selfEndpoint.tell(Tick)
+//							println(s"The Tick number $counter was received, thread=${Thread.currentThread().getId}")
+							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule((counter % 1000) * 1_000_000, 10_000_000)
+							var repetitions = 0
+							schedulingDoer.scheduleSequentially(schedule) { () =>
+								println(s"incitingId=$incitingId, counter=$counter, repetitions=$repetitions, diff=${schedule.startingTime - schedule.scheduledTime}, thread=${Thread.currentThread().getId}")
+								selfEndpoint.tell(Tick(counter :: incitingId))
+								repetitions += 1
 							}
 							//					timedDoer.Duty.delay(interval) { () =>
 							//							selfEndpoint.tell(Tick)

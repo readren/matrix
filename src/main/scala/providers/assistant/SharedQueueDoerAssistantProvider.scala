@@ -61,7 +61,7 @@ class SharedQueueDoerAssistantProvider(
 	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(Worker.apply)
 
 	private val runningWorkersLatch: CountDownLatch = new CountDownLatch(workers.length)
-	/** Usually equal to the number of workers that whose [[Worker.isSleeping]] flat is set, but may be temporarily greater. Never smaller.
+	/** Usually equal to the number of workers whose [[Worker.isSleeping]] flag is set, but may be temporarily greater. Never smaller.
 	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepingWorkersCount.get <= workers.length }}} */
 	private val sleepingWorkersCount = AtomicInteger(0)
 
