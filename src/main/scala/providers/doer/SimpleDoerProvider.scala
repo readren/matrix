@@ -12,7 +12,7 @@ class SimpleDoerProvider(
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends AssistantBasedDoerProvider[MatrixDoer] {
+) extends AssistantBasedDoerProvider[MatrixDoer, SimpleDoerAssistantProvider.AssistantImpl] {
 	override protected val assistantProvider = new SimpleDoerAssistantProvider(threadPoolSize, failureReporter, threadFactory, queueFactory)
 
 	override def provide(matrix: AbstractMatrix): MatrixDoer = {

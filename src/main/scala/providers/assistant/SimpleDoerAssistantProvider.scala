@@ -3,7 +3,7 @@ package providers.assistant
 
 import core.{Matrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.assistant.SimpleDoerAssistantProvider.currentAssistant
+import providers.assistant.SimpleDoerAssistantProvider.{AssistantImpl, currentAssistant}
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
@@ -13,26 +13,13 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object SimpleDoerAssistantProvider {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal
-}
 
-/** A [[Doer.Assistant]] provider */
-class SimpleDoerAssistantProvider(
-	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	failureReporter: Throwable => Unit = _.printStackTrace(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerAssistantProvider, ShutdownAble { thisProvider =>
-	override type ProvidedAssistant = Doer.Assistant
-
-	private val switcher = new AtomicInteger(0)
-
-	private val assistants: IArray[AssistantImpl] = IArray.tabulate(threadPoolSize) { index => new AssistantImpl(index) }
-
-
-	override def provide(serial: MatrixDoer.Id): AssistantImpl =
-		assistants(switcher.getAndIncrement() % assistants.length)
-
-	class AssistantImpl(val index: Int) extends Doer.Assistant { thisAssistant =>
+	class AssistantImpl(
+		val index: Int,
+		failureReporter: Throwable => Unit = _.printStackTrace(),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+	) extends Doer.Assistant { thisAssistant =>
 
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
@@ -49,6 +36,23 @@ class SimpleDoerAssistantProvider(
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
+}
+
+/** A [[Doer.Assistant]] provider */
+class SimpleDoerAssistantProvider(
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	failureReporter: Throwable => Unit = _.printStackTrace(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+) extends DoerAssistantProvider[SimpleDoerAssistantProvider.AssistantImpl], ShutdownAble { thisProvider =>
+
+	private val switcher = new AtomicInteger(0)
+
+	private val assistants: IArray[AssistantImpl] = IArray.tabulate(threadPoolSize) { index => new AssistantImpl(index, failureReporter, threadFactory, queueFactory) }
+
+
+	override def provide(serial: MatrixDoer.Id): AssistantImpl =
+		assistants(switcher.getAndIncrement() % assistants.length)
 
 	override def shutdown(): Unit = {
 		for assistant <- assistants do {

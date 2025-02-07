@@ -13,7 +13,7 @@ class SharedQueueDoerProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends AssistantBasedDoerProvider[MatrixDoer] {
+) extends AssistantBasedDoerProvider[MatrixDoer, SharedQueueDoerAssistantProvider.DoerAssistant] {
 	override protected val assistantProvider = new SharedQueueDoerAssistantProvider(applyMemoryFence, threadPoolSize, failureReporter, threadFactory)
 
 	override def provide(matrix: AbstractMatrix): MatrixDoer = {

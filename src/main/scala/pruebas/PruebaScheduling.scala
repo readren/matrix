@@ -40,6 +40,8 @@ object PruebaScheduling {
 			}
 
 		} else {
+			val diagnosticScheduler = new Scheduler
+
 			matrix.spawns[Started.type | Tick](RegularRf, schedulingDoer) { reactant =>
 				val selfEndpoint = reactant.endpointProvider.local[Tick]
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)
@@ -51,17 +53,16 @@ object PruebaScheduling {
 
 					case Tick(incitingId) =>
 						counter += 1
-						if counter > 10000 then {
+						if counter > 1000 then {
 							schedulingDoer.cancelAll()
-							matrix.doerProvidersManager.shutdown()
-							println("shutdown executed")
+							println("cancelAll executed")
 							Stop
 						} else {
 //							println(s"The Tick number $counter was received, thread=${Thread.currentThread().getId}")
 							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule((counter % 1000) * 1_000_000, 10_000_000)
 							var repetitions = 0
 							schedulingDoer.scheduleSequentially(schedule) { () =>
-								println(s"incitingId=$incitingId, counter=$counter, repetitions=$repetitions, diff=${schedule.startingTime - schedule.scheduledTime}, thread=${Thread.currentThread().getId}")
+								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%9d, runDelay=${schedule.startingTime - schedule.enabledTime}%9d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.schedulingAssistant.numOfPendingTasks}%3d, incitingId=$incitingId")
 								selfEndpoint.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}
@@ -73,7 +74,35 @@ object PruebaScheduling {
 							Continue
 						}
 				}
-			}.triggerAndForget()
+			}.trigger() { parent =>
+				parent.stopDuty.trigger() { _ =>
+					schedulingDoer.scheduleSequentially(schedulingDoer.newDelaySchedule(100_000_000L)) { () =>
+						matrix.doerProvidersManager.shutdown()
+						println("shutdown executed")
+
+						diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
+
+							try {
+								val sb = new StringBuilder
+								sb.append("\n<<< Inspector <<<\n")
+								sb.append(
+									s"""Parent's diagnostic: ${parent.staleDiagnose}
+									   |SchedulingDoer's diagnostic: ${matrix.doerProvidersManager.diagnose(sb)}
+									   |""".stripMargin
+
+								)
+								sb.append("\n>>> Inspector >>>\n")
+								println(sb)
+							} catch {
+								case e: Throwable =>
+									e.printStackTrace()
+									throw e
+							}
+						}
+
+					}
+				}
+			}
 		}
 	}
 }

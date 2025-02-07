@@ -27,6 +27,12 @@ object SharedQueueDoerAssistantProvider {
 
 	def currentWorkerIndex: Int = workerIndexThreadLocal.get
 	// val UNSAFE: Unsafe = Unsafe.getUnsafe
+
+	trait DoerAssistant extends Doer.Assistant {
+		def id: MatrixDoer.Id
+		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
+		def numOfPendingTasks: Int
+	}
 }
 
 /** A dynamically balanced [[Doer.Assistant]] provider.
@@ -46,17 +52,15 @@ class SharedQueueDoerAssistantProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends DoerAssistantProvider, ShutdownAble { thisSharedQueueDoerProvider =>
-
-	override type ProvidedAssistant = DoerAssistant
+) extends DoerAssistantProvider[DoerAssistant], ShutdownAble { thisSharedQueueDoerAssistantProvider =>
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
 
-	/** Queue of [[DoerAssistant]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
+	/** Queue of [[DoerAssistantImpl]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
 	 *
-	 * Invariant: this queue contains no duplicate elements due to the [[DoerAssistant.queueForSequentialExecution]] logic.
+	 * Invariant: this queue contains no duplicate elements due to the [[DoerAssistantImpl.queueForSequentialExecution]] logic.
 	 * TODO try using my own implementation of concurrent queue that avoids dynamic memory allocation. */
-	private val queuedDoersAssistants = new ConcurrentLinkedQueue[DoerAssistant]()
+	private val queuedDoersAssistants = new ConcurrentLinkedQueue[DoerAssistantImpl]()
 
 	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(Worker.apply)
 
@@ -73,12 +77,12 @@ class SharedQueueDoerAssistantProvider(
 		workers.foreach(_.start())
 	}
 
-	class DoerAssistant(val id: MatrixDoer.Id) extends Doer.Assistant { thisDoerAssistant =>
+	protected class DoerAssistantImpl(override val id: MatrixDoer.Id) extends DoerAssistant { thisDoerAssistant =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
 
-		inline def hasPendingTasks: Boolean = taskQueueSize.get > 0
+		override def numOfPendingTasks: Int = taskQueueSize.get
 
 		override def executeSequentially(task: Runnable): Unit = {
 			if taskQueueSize.getAndIncrement() == 0 then {
@@ -100,12 +104,12 @@ class SharedQueueDoerAssistantProvider(
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 *
 		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
-		 * This ensures that another thread invoking `queuedForSequentialExecution` does not call [[wakeUpASleepingWorkerIfAny]] passing this [[DoerAssistant]] or enqueue this [[DoerAssistant]] into the [[queuedDoersAssistants]] queue,
-		 * which would violate the constraint that prevents two workers from being assigned to the same [[DoerAssistant]] instance simultaneously.
+		 * This ensures that another thread invoking `queuedForSequentialExecution` does not call [[wakeUpASleepingWorkerIfAny]] passing this [[DoerAssistantImpl]] or enqueue this [[DoerAssistantImpl]] into the [[queuedDoersAssistants]] queue,
+		 * which would violate the constraint that prevents two workers from being assigned to the same [[DoerAssistantImpl]] instance simultaneously.
 		 *
-		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistant]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
+		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistantImpl]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
-		private[SharedQueueDoerAssistantProvider] final def executePendingTasks(): Int = {
+		final def executePendingTasks(): Int = {
 			doerAssistantThreadLocal.set(thisDoerAssistant)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
@@ -121,7 +125,7 @@ class SharedQueueDoerAssistantProvider(
 					task.run()
 					processedTasksCounter += 1
 					aDecrementIsPending = false
-					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `queuedForSequentialExecution` to enqueue this DoerAssistant into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same DoerAssistant.
+					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `queuedForSequentialExecution` to enqueue this SchedulingAssistantImpl into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same SchedulingAssistantImpl.
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 					if taskQueueSizeIsPositive then task = taskQueue.poll()
 				}
@@ -140,12 +144,14 @@ class SharedQueueDoerAssistantProvider(
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
+
+		override def toString: String = s"${utils.CompileTime.getTypeName[DoerAssistantImpl]}(id=${id})"
 	}
 
 	/** @return `true` if a worker was awakened.
-	 * The provided [[DoerAssistant]] will be assigned to the awakened worker.
-	 * Asumes the provided [[DoerAssistant]] is and will not be enqueued in [[queuedDoersAssistants]], which ensures it will not be assigned to any other worker simultaneously. */
-	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistant): Boolean = {
+	 * The provided [[DoerAssistantImpl]] will be assigned to the awakened worker.
+	 * Asumes the provided [[DoerAssistantImpl]] is and will not be enqueued in [[queuedDoersAssistants]], which ensures it will not be assigned to any other worker simultaneously. */
+	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistantImpl): Boolean = {
 		if debugEnabled then assert(!queuedDoersAssistants.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
 			var workerIndex = lastAwakenedWorkerIndex - 1
@@ -183,12 +189,12 @@ class SharedQueueDoerAssistantProvider(
 		private var refusedTriesToSleepsCounter: Int = 0
 
 		/**
-		 * A [[DoerAssistant]] instance that jumps the queue established by the [[circularIterator]] that determines the order in which the [[DoerAssistant]] instances are assigned to this worker.
+		 * A [[DoerAssistantImpl]] instance that jumps the queue established by the [[circularIterator]] that determines the order in which the [[DoerAssistantImpl]] instances are assigned to this worker.
 		 * Should not be modified by any thread other than the [[thread]] of this worker unless this worker is sleeping.
-		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerAssistant.executePendingTasks()]] if the task-queue was not completely emptied;
+		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerAssistantImpl.executePendingTasks()]] if the task-queue was not completely emptied;
 		 * is read by this worker after it is awakened;
 		 * and is cleared by this worker after it is awakened. */
-		private var queueJumper: DoerAssistant | Null = null
+		private var queueJumper: DoerAssistantImpl | Null = null
 
 		/**
 		 * Remember the greatest value that [[refusedTriesToSleepsCounter]] reached before it has been reset because a pending task becomes visible.
@@ -215,7 +221,7 @@ class SharedQueueDoerAssistantProvider(
 		override def run(): Unit = {
 			workerIndexThreadLocal.set(index)
 			while keepRunning do {
-				val assignedDoerAssistant: DoerAssistant | Null =
+				val assignedDoerAssistant: DoerAssistantImpl | Null =
 					if queueJumper != null then queueJumper
 					else queuedDoersAssistants.poll()
 				queueJumper = null
@@ -227,13 +233,13 @@ class SharedQueueDoerAssistantProvider(
 						processedTasksCounter += assignedDoerAssistant.executePendingTasks()
 						completedMainLoopsCounter += 1
 					}
-					catch { // TODO analyze if clarity would suffer too much if [[DoerAssistant.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
+					catch { // TODO analyze if clarity would suffer too much if [[SchedulingAssistantImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
 						case e: Throwable =>
 							if thread.getUncaughtExceptionHandler == null && Thread.getDefaultUncaughtExceptionHandler == null then failureReporter(e)
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
 								thread = threadFactory.newThread(this)
-								// Memorize the assigned DoerAssistant such that the new thread be assigned to the same [[DoerAssistant]]. It will continue with the task after the one that threw the exception.
+								// Memorize the assigned SchedulingAssistantImpl such that the new thread be assigned to the same [[SchedulingAssistantImpl]]. It will continue with the task after the one that threw the exception.
 								queueJumper = assignedDoerAssistant
 							}
 							thread.start()
@@ -284,11 +290,11 @@ class SharedQueueDoerAssistantProvider(
 		}
 
 		/** Wakes up this [[Worker]] if it is currently sleeping.
-		 * @param stimulator the [[DoerAssistant]] to be assigned to this worker upon awakening,
+		 * @param stimulator the [[DoerAssistantImpl]] to be assigned to this worker upon awakening,
 		 *                   provided it has not already been assigned to another [[Worker]].
 		 * @return `true` if this worker was sleeping and has been awakened, otherwise `false`.
 		 */
-		def wakeUpIfSleeping(stimulator: DoerAssistant): Boolean = {
+		def wakeUpIfSleeping(stimulator: DoerAssistantImpl): Boolean = {
 			if potentiallySleeping then {
 				thisWorker.synchronized {
 					if isSleeping then {
@@ -336,8 +342,8 @@ class SharedQueueDoerAssistantProvider(
 		}
 	}
 
-	override def provide(serial: MatrixDoer.Id): ProvidedAssistant = {
-		new DoerAssistant(serial)
+	override def provide(serial: MatrixDoer.Id): DoerAssistant = {
+		new DoerAssistantImpl(serial)
 	}
 
 	/**
@@ -358,9 +364,10 @@ class SharedQueueDoerAssistantProvider(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(thisSharedQueueDoerProvider.getClass.getSimpleName)
+		sb.append(utils.CompileTime.getTypeName[SharedQueueDoerAssistantProvider])
 		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
+		sb.append(s"\trunningWorkersLatch=${runningWorkersLatch.getCount}\n")
 		sb.append("\tqueuedDoersAssistants: ")
 		val doersAssistantsIterator = queuedDoersAssistants.iterator()
 		while doersAssistantsIterator.hasNext do {

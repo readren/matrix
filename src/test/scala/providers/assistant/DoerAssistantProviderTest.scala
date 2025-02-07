@@ -17,7 +17,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 	private val NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT = 1000
 	private val NUMBER_OF_ASSISTANTS = 1000
 
-	private def testVisibility(provider: DoerAssistantProvider & ShutdownAble, minimumThreadSwaps: Int): Future[Any] = {
+	private def testVisibility(provider: DoerAssistantProvider[Doer.Assistant] & ShutdownAble, minimumThreadSwaps: Int): Future[Any] = {
 
 		class Counter {
 			var count: Int = 0

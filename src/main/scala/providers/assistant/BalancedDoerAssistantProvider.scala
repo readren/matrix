@@ -3,7 +3,7 @@ package providers.assistant
 
 import core.MatrixDoer
 import providers.ShutdownAble
-import providers.assistant.BalancedDoerAssistantProvider.currentAssistant
+import providers.assistant.BalancedDoerAssistantProvider.{AssistantImpl, currentAssistant}
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
@@ -13,9 +13,30 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object BalancedDoerAssistantProvider {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+
+	class AssistantImpl(
+		val index: Int,
+		failureReporter: Throwable => Unit = _.printStackTrace(),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+	) extends Doer.Assistant { thisAssistant =>
+		val doSiThEx: ThreadPoolExecutor = {
+			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
+				currentAssistant.set(thisAssistant)
+				r.run()
+			}
+			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
+		}
+
+		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
+
+		override def current: Doer.Assistant = currentAssistant.get
+
+		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
+	}
 }
 
-/** A [[Doer.Assistant]] provider with a rudimentary thread-load balancing mechanism.
+/** A [[Doer.Assistant]] provider with a non-dynamic thread-load balancing mechanism.
  * How it works:
  * - Manages a fixed number of assistants equal to the thread pool size, each of which owns a thread-worker.
  * - A call to the [[provide]] method returns the assistant with the shortest task queue at the moment of the call.
@@ -27,30 +48,13 @@ class BalancedDoerAssistantProvider(
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerAssistantProvider, ShutdownAble {
-	override type ProvidedAssistant = AssistantImpl
+) extends DoerAssistantProvider[BalancedDoerAssistantProvider.AssistantImpl], ShutdownAble {
 
-	private val assistants = Array.tabulate[AssistantImpl](threadPoolSize)(index => new ProvidedAssistant(index))
+	private val assistants = Array.tabulate[AssistantImpl](threadPoolSize)(index => new AssistantImpl(index, failureReporter, threadFactory, queueFactory))
 
 	private val switcher = new AtomicInteger(0)
 
-	class AssistantImpl(val index: Int) extends Doer.Assistant { thisAssistant =>
-		val doSiThEx: ThreadPoolExecutor = {
-			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
-				currentAssistant.set(thisAssistant)
-				r.run()
-			}
-			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
-		}
-		
-		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
-
-		override def current: Doer.Assistant = currentAssistant.get
-		
-		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
-	}
-
-	override def provide(serial: MatrixDoer.Id): ProvidedAssistant = {
+	override def provide(serial: MatrixDoer.Id): AssistantImpl = {
 		val assistantsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
 		val pickedAssistant =
 			if assistantsWithShortestWorkQueue.tail == Nil then assistantsWithShortestWorkQueue.head

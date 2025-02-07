@@ -15,11 +15,9 @@ object AssistantBasedDoerProvider {
 	 * Defines how assistant providers must expose their methods to be adapted by [[AssistantBasedDoerProvider]].
 	 *
 	 * Implementations of this trait provide assistants that serve as parameters to construct [[MatrixDoer]] instances.
+	 * @tparam A The type of assistant provided. Must extend [[Doer.Assistant]].
 	 */
-	trait DoerAssistantProvider {
-
-		/** The type of assistant provided. Must extend [[Doer.Assistant]]. */
-		type ProvidedAssistant <: Doer.Assistant
+	trait DoerAssistantProvider[+A <: Doer.Assistant] {
 
 		/**
 		 * Supplies a [[Doer.Assistant]] to be used in constructing a [[MatrixDoer]].
@@ -30,7 +28,7 @@ object AssistantBasedDoerProvider {
 		 *   such as debugging or tracking, but this is optional and not required for the assistant's functionality.
 		 *   The method may return the same [[ProvidedAssistant]] instance for different calls.
 		 */
-		def provide(serial: MatrixDoer.Id): ProvidedAssistant
+		def provide(serial: MatrixDoer.Id): A
 	}
 }
 
@@ -41,10 +39,10 @@ object AssistantBasedDoerProvider {
  * allowing the use of assistants provided by the former to create [[MatrixDoer]] instances. It also delegates
  * lifecycle management operations (e.g., shutdown) to the underlying assistant provider.
  */
-abstract class AssistantBasedDoerProvider[MD <: MatrixDoer] extends DoerProvider[MD], ShutdownAble {
+abstract class AssistantBasedDoerProvider[+MD <: MatrixDoer, +A <: Doer.Assistant] extends DoerProvider[MD], ShutdownAble {
 
 	/** The underlying assistant provider that this adapter wraps. */
-	protected val assistantProvider: DoerAssistantProvider & ShutdownAble
+	protected val assistantProvider: DoerAssistantProvider[A] & ShutdownAble
 
 	/**
 	 * Creates a [[MatrixDoer]] using an assistant provided by the underlying [[DoerAssistantProvider]].
