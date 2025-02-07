@@ -7,6 +7,16 @@ import providers.assistant.SimpleDoerAssistantProvider
 
 import java.util.concurrent.{BlockingQueue, Executors, LinkedBlockingQueue, ThreadFactory}
 
+object SimpleDoerProvider {
+	class ProvidedDoer(
+		override val id: MatrixDoer.Id,
+		override val assistant: SimpleDoerAssistantProvider.AssistantImpl,
+		override val matrix: AbstractMatrix
+	) extends MatrixDoer {
+		override type Assistant = SimpleDoerAssistantProvider.AssistantImpl
+	}
+}
+
 class SimpleDoerProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
@@ -17,6 +27,6 @@ class SimpleDoerProvider(
 
 	override def provide(matrix: AbstractMatrix): MatrixDoer = {
 		val doerId = matrix.genDoerId()
-		new MatrixDoer(doerId, assistantProvider.provide(doerId), matrix)
+		new SimpleDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
 	}	
 }

@@ -8,6 +8,16 @@ import readren.matrix.core.{AbstractMatrix, MatrixDoer}
 
 import java.util.concurrent.{Executors, ThreadFactory}
 
+object SharedQueueDoerProvider {
+	class ProvidedDoer(
+		override val id: MatrixDoer.Id,
+		override val assistant: SharedQueueDoerAssistantProvider.DoerAssistant,
+		override val matrix: AbstractMatrix
+	) extends MatrixDoer {
+		override type Assistant = SharedQueueDoerAssistantProvider.DoerAssistant
+	}
+}
+
 class SharedQueueDoerProvider(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
@@ -18,6 +28,6 @@ class SharedQueueDoerProvider(
 
 	override def provide(matrix: AbstractMatrix): MatrixDoer = {
 		val doerId = matrix.genDoerId()
-		new MatrixDoer(doerId, assistantProvider.provide(doerId), matrix)
+		new SharedQueueDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
 	}
 }

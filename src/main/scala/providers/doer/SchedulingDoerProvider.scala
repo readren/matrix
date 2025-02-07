@@ -10,9 +10,12 @@ import readren.taskflow.SchedulingExtension
 import java.util.concurrent.{Executors, ThreadFactory}
 
 object SchedulingDoerProvider {
-	class ProvidedDoer(id: MatrixDoer.Id, anAssistant: SchedulingAssistantProvider.SchedulingAssistant, matrix: AbstractMatrix) extends MatrixDoer(id, anAssistant, matrix), SchedulingExtension {
-		override type SchedulingAssistant = SchedulingAssistantProvider.SchedulingAssistant
-		override val schedulingAssistant: SchedulingAssistant = anAssistant
+	class ProvidedDoer(
+		override val id: MatrixDoer.Id,
+		override val assistant: SchedulingAssistantProvider.SchedulingAssistant,
+		override val matrix: AbstractMatrix
+	) extends MatrixDoer, SchedulingExtension {
+		override type Assistant = SchedulingAssistantProvider.SchedulingAssistant
 	}
 }
 
