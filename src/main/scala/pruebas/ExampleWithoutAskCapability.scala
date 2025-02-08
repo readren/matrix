@@ -13,7 +13,7 @@ object ExampleWithoutAskCapability {
 
 	private case class SumResult(result: Int)
 
-	object sharedQueueDpd extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
+	object sharedQueueDpd extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
 		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider
 	}
 

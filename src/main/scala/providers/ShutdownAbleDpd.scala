@@ -14,16 +14,16 @@ import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
  * Call to methods inherited from [[ShutdownAble]] are propagated to all the [[DoerProvider]] instances managed by this instance, provided the [[DoerProvider]] are [[ShutdownAble]].  */
 class ShutdownAbleDpd extends DoerProvidersManager, ShutdownAble {
 
-	private val registeredProviders: ConcurrentHashMap[DoerProviderDescriptor[?, ?], DoerProvider[?]] = new ConcurrentHashMap()
+	private val registeredProviders: ConcurrentHashMap[DoerProviderDescriptor[?], DoerProvider[?]] = new ConcurrentHashMap()
 	private val wasShutdown: AtomicBoolean = new AtomicBoolean(false)
 
 	/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created.
 	 * @throws IllegalStateException if both, this method is called after [[shutdown]] has been called, and it is the first time that this method receives this reference or an equivalent one. */
-	override def get[D <: MatrixDoer, DP <: DoerProvider[D]](descriptor: DoerProviderDescriptor[D, DP]): DP = {
+	override def get[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D] = {
 		val provider = registeredProviders.computeIfAbsent(descriptor, descriptor => {
 			if wasShutdown.get() then null
 			else descriptor.build(this)
-		}).asInstanceOf[DP]
+		}).asInstanceOf[DoerProvider[D]]
 		if provider == null then throw new IllegalStateException(s"A ${getTypeName[ShutdownAbleDpd]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
 		else provider
 	}

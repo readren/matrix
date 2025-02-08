@@ -50,15 +50,15 @@ object Prueba {
 
 	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
-	object simpleDapKind extends DoerProviderDescriptor[MatrixDoer, SimpleDoerProvider]("simple") {
+	object simpleDapKind extends DoerProviderDescriptor[SimpleDoerProvider.ProvidedDoer]("simple") {
 		override def build(owner: Matrix.DoerProvidersManager): SimpleDoerProvider = new SimpleDoerProvider()
 	}
 
-	object sharedQueueDapKind extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
+	object sharedQueueDapKind extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
 		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider(true)
 	}
 
-	object testedDapKind extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("tested") {
+	object testedDapKind extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("tested") {
 		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new TestedDoerProvider(false)
 	}
 
@@ -120,7 +120,7 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DefaultDoer <: MatrixDoer, DefaultDP <: Matrix.DoerProvider[DefaultDoer]](testingAide: AideImpl[DefaultDoer, DefaultDP], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
+	private def run[DefaultDoer <: MatrixDoer](testingAide: AideImpl[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: doerAssistantProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getSimpleName}")

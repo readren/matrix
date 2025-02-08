@@ -16,9 +16,10 @@ object PruebaScheduling {
 
 		case class Tick(incitingId: List[Int])
 
-		val schedulingDpd = new DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer, SchedulingDoerProvider]("schedulingDpd") {
-			override def build(owner: Matrix.DoerProvidersManager): SchedulingDoerProvider = new SchedulingDoerProvider(false)
-		}
+		val schedulingDpd: DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer] =
+			new DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer]("schedulingDpd") {
+				override def build(owner: Matrix.DoerProvidersManager): SchedulingDoerProvider = new SchedulingDoerProvider(false)
+			}
 		val aide = new AideImpl(schedulingDpd)
 
 		val matrix = new Matrix("scheduled", aide)

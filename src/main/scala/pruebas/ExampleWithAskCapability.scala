@@ -15,8 +15,8 @@ object ExampleWithAskCapability {
 	case class SumResult(result: Int, toQuestion: QuestionId) extends Answer
 
 
-	object sharedQueueDpd extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
-		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider
+	object sharedQueueDpd extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
+		override def build(owner: Matrix.DoerProvidersManager): Matrix.DoerProvider[SharedQueueDoerProvider.ProvidedDoer] = new SharedQueueDoerProvider
 	}
 	
 	@main def runAskCapabilityExample(): Unit = {

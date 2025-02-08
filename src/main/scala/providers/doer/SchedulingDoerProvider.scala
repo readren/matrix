@@ -3,7 +3,6 @@ package providers.doer
 
 import core.{AbstractMatrix, MatrixDoer}
 import providers.assistant.SchedulingAssistantProvider
-import providers.doer.SchedulingDoerProvider.ProvidedDoer
 
 import readren.taskflow.SchedulingExtension
 
@@ -24,11 +23,11 @@ class SchedulingDoerProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends AssistantBasedDoerProvider[ProvidedDoer, SchedulingAssistantProvider.SchedulingAssistant] {
+) extends AssistantBasedDoerProvider[SchedulingDoerProvider.ProvidedDoer, SchedulingAssistantProvider.SchedulingAssistant] {
 	override protected val assistantProvider: SchedulingAssistantProvider = new SchedulingAssistantProvider(applyMemoryFence, threadPoolSize, failureReporter, threadFactory)
 
-	override def provide(matrix: AbstractMatrix): ProvidedDoer = {
+	override def provide(matrix: AbstractMatrix): SchedulingDoerProvider.ProvidedDoer = {
 		val doerId = matrix.genDoerId()
-		new ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
+		new SchedulingDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
 	}	
 }

@@ -20,7 +20,7 @@ object PruebaChecked {
 	private class MyException extends Exception
 	private class NeverException extends MyException
 
-	private object sharedQueueDpd extends DoerProviderDescriptor[MatrixDoer, SharedQueueDoerProvider]("sharedQueue") {
+	private object sharedQueueDpd extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
 		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider(false)
 	}
 

@@ -33,7 +33,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 	def genDoerId(): MatrixDoer.Id =
 		matrixDoerIdSequencer.getAndIncrement()
 
-	def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D, ?]): D
+	def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): D
 	
 	def provideDefaultDoer: MatrixDoer
 

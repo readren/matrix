@@ -22,10 +22,10 @@ class SimpleDoerProvider(
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends AssistantBasedDoerProvider[MatrixDoer, SimpleDoerAssistantProvider.AssistantImpl] {
+) extends AssistantBasedDoerProvider[SimpleDoerProvider.ProvidedDoer, SimpleDoerAssistantProvider.AssistantImpl] {
 	override protected val assistantProvider = new SimpleDoerAssistantProvider(threadPoolSize, failureReporter, threadFactory, queueFactory)
 
-	override def provide(matrix: AbstractMatrix): MatrixDoer = {
+	override def provide(matrix: AbstractMatrix): SimpleDoerProvider.ProvidedDoer = {
 		val doerId = matrix.genDoerId()
 		new SimpleDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
 	}	

@@ -1,10 +1,9 @@
 package readren.matrix
 package providers.doer
 
+import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
 import providers.assistant.SharedQueueDoerAssistantProvider
-
-import readren.matrix.core.{AbstractMatrix, MatrixDoer}
 
 import java.util.concurrent.{Executors, ThreadFactory}
 
@@ -23,10 +22,10 @@ class SharedQueueDoerProvider(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends AssistantBasedDoerProvider[MatrixDoer, SharedQueueDoerAssistantProvider.DoerAssistant] {
+) extends AssistantBasedDoerProvider[SharedQueueDoerProvider.ProvidedDoer, SharedQueueDoerAssistantProvider.DoerAssistant] {
 	override protected val assistantProvider = new SharedQueueDoerAssistantProvider(applyMemoryFence, threadPoolSize, failureReporter, threadFactory)
 
-	override def provide(matrix: AbstractMatrix): MatrixDoer = {
+	override def provide(matrix: AbstractMatrix): SharedQueueDoerProvider.ProvidedDoer = {
 		val doerId = matrix.genDoerId()
 		new SharedQueueDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
 	}
