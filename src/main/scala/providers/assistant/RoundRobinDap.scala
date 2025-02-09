@@ -3,7 +3,7 @@ package providers.assistant
 
 import core.{Matrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.assistant.SimpleDoerAssistantProvider.{AssistantImpl, currentAssistant}
+import providers.assistant.RoundRobinDap.{AssistantImpl, currentAssistant}
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
@@ -11,7 +11,7 @@ import readren.taskflow.Doer
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object SimpleDoerAssistantProvider {
+object RoundRobinDap {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal
 
 	class AssistantImpl(
@@ -38,13 +38,19 @@ object SimpleDoerAssistantProvider {
 	}
 }
 
-/** A [[Doer.Assistant]] provider */
-class SimpleDoerAssistantProvider(
+/** A [[Doer.Assistant]] provider in which the provided [[Doer.Assistant]]s are created when the instance of this class is created. One assistant per worker in the pool.
+ * The [[provide]] method just gives one of them in a round-robin fashion.
+ * How it works:
+ * 		- every call to [[provide]] returns one of the already created [[Doer.Assistant]] instances in a round-robin fashion..
+ *		- When an assistant (provided by this provider) starts having pending tasks it is enqueued in a queue.
+ * Effective for abundant, short-lived, or evenly-loaded [[Doer]]s.
+ */
+class RoundRobinDap(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerAssistantProvider[SimpleDoerAssistantProvider.AssistantImpl], ShutdownAble { thisProvider =>
+) extends DoerAssistantProvider[RoundRobinDap.AssistantImpl], ShutdownAble { thisProvider =>
 
 	private val switcher = new AtomicInteger(0)
 

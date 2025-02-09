@@ -2,9 +2,9 @@ package readren.matrix
 package providers.assistant
 
 import providers.ShutdownAble
+import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import munit.ScalaCheckEffectSuite
-import readren.matrix.providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 import readren.taskflow.Doer
 
 import java.util.concurrent.TimeUnit
@@ -41,7 +41,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 				val assistantData = assistantsData(assistantDataIndex)
 				assistantData.assistant.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
-					val currentWorkerIndex = SharedQueueDoerAssistantProvider.currentWorkerIndex
+					val currentWorkerIndex = CooperativeWorkersDap.currentWorkerIndex
 					if assistantData.previousTaskWorkerIndex != currentWorkerIndex then {
 						assistantData.workerIndexChangesCounter += 1
 						assistantData.previousTaskWorkerIndex = currentWorkerIndex
@@ -67,7 +67,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 		given ExecutionContext = ExecutionContext.global
 
 		Future.sequence(assistantsData.map(_.promise.future))
-			.map { threadSwapsByAssistant => assert(threadSwapsByAssistant.sum() >= minimumThreadSwaps * NUMBER_OF_ASSISTANTS) }
+			.map { threadSwapsByAssistant => assert(threadSwapsByAssistant.sum() >= minimumThreadSwaps * NUMBER_OF_ASSISTANTS, s"${threadSwapsByAssistant.sum()} >= ${minimumThreadSwaps * NUMBER_OF_ASSISTANTS}") }
 			.andThen { _ =>
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
@@ -76,16 +76,20 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 
 	}
 
-	test("SharedQueueDoerAssistantProvider: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+	test("CooperativeWorkersDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SharedQueueDoerAssistantProvider(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
+		testVisibility(new CooperativeWorkersDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
 	}
-	test("BalancedDoerAssistantProvider: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+	test("SchedulingDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new BalancedDoerAssistantProvider, 0)
+		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
 	}
-	test("SimpleDoerAssistant: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+	test("LeastLoadedFixedWorkerDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SimpleDoerAssistantProvider, 0)
+		testVisibility(new LeastLoadedFixedWorkerDap, 0)
+	}
+	test("RoundRobinDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
+
+		testVisibility(new RoundRobinDap, 0)
 	}
 }

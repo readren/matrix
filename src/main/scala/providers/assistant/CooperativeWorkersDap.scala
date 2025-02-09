@@ -3,7 +3,7 @@ package providers.assistant
 
 import core.{Matrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.assistant.SharedQueueDoerAssistantProvider.*
+import providers.assistant.CooperativeWorkersDap.*
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
@@ -13,7 +13,7 @@ import java.util
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object SharedQueueDoerAssistantProvider {
+object CooperativeWorkersDap {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
@@ -35,19 +35,19 @@ object SharedQueueDoerAssistantProvider {
 	}
 }
 
-/** A dynamically balanced [[Doer.Assistant]] provider.
+/** A [[Doer.Assistant]] provider in which the task queue of the provided [[Doer.Assistant]]s is processed by any worker of the pool, the first that gets free.
  * How it works:
  * 		- every call to [[provide]] returns a new [[Doer.Assistant]] instance.
  *		- When an assistant (provided by this provider) starts having pending tasks it is enqueued in a queue.
- *		- When a thread-worker of the pool gets free it polls an assistant from said queue and processes all the pending messages that the thread-worker can sse before continuing with the next assistant from the queue.
+ *		- When a thread-worker of the pool gets free it polls an assistant from said queue and processes all the pending tasks that the thread-worker can sse before continuing with the next assistant from the queue.
  *		- After processing all the visible task, if there is a non-visible one, the assistant is enqueue back.	
  *		- If the queue is empty the thread-worker goes to sleep.
- *		- When an assistant is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there are ones.
+ *		- When an assistant is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there is some.
  * Effective for all purposes. Shines when the processor demand of long-living doers is very variant.   		
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class SharedQueueDoerAssistantProvider(
+class CooperativeWorkersDap(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
@@ -145,7 +145,7 @@ class SharedQueueDoerAssistantProvider(
 			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 
-		override def toString: String = s"${utils.CompileTime.getTypeName[DoerAssistantImpl]}(id=${id})"
+		override def toString: String = s"${utils.CompileTime.getTypeName[DoerAssistantImpl]}(id=$id)"
 	}
 
 	/** @return `true` if a worker was awakened.
@@ -364,7 +364,7 @@ class SharedQueueDoerAssistantProvider(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(utils.CompileTime.getTypeName[SharedQueueDoerAssistantProvider])
+		sb.append(utils.CompileTime.getTypeName[CooperativeWorkersDap])
 		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
 		sb.append(s"\trunningWorkersLatch=${runningWorkersLatch.getCount}\n")

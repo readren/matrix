@@ -2,10 +2,10 @@ package readren.matrix
 package pruebas
 
 import behaviors.CheckedBehavior
-import core.Matrix.DoerProviderDescriptor
-import core.{Continue, Endpoint, Matrix, MatrixDoer}
-import providers.doer.SharedQueueDoerProvider
+import core.{Continue, Endpoint, Matrix}
+import providers.descriptor.DefaultCooperativeWorkersDpd
 import rf.RegularRf
+import utils.SimpleAide
 
 object PruebaChecked {
 
@@ -20,13 +20,9 @@ object PruebaChecked {
 	private class MyException extends Exception
 	private class NeverException extends MyException
 
-	private object sharedQueueDpd extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
-		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider(false)
-	}
-
 	@main def runPruebaChecked(): Unit = {
 
-		val matrixAide = new AideImpl(sharedQueueDpd)
+		val matrixAide = SimpleAide(DefaultCooperativeWorkersDpd)
 
 		val matrix = new Matrix("testChecked", matrixAide)
 

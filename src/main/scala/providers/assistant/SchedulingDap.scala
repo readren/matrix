@@ -2,8 +2,8 @@ package readren.matrix
 package providers.assistant
 
 import core.MatrixDoer
-import providers.assistant.SchedulingAssistantProvider.*
-import providers.assistant.SharedQueueDoerAssistantProvider.*
+import providers.assistant.SchedulingDap.*
+import providers.assistant.CooperativeWorkersDap.*
 import providers.doer.AssistantBasedDoerProvider
 
 import readren.taskflow.SchedulingExtension.NanoDuration
@@ -15,7 +15,7 @@ import java.util.concurrent.locks.ReentrantLock
 import scala.annotation.tailrec
 import scala.collection.mutable
 
-object SchedulingAssistantProvider {
+object SchedulingDap {
 	/** A nano time based on the [[System.nanoTime]] method. */
 	type NanoTime = Long
 
@@ -66,24 +66,18 @@ object SchedulingAssistantProvider {
 
 }
 
-/** A dynamically balanced [[Doer.Assistant]] provider.
- * How it works:
- * 		- every call to [[provide]] returns a new [[Doer.Assistant]] instance.
- *		- When an assistant (provided by this provider) starts having pending tasks it is enqueued in a queue.
- *		- When a thread-worker of the pool gets free it polls an assistant from said queue and processes all the pending messages that the thread-worker can sse before continuing with the next assistant from the queue.
- *		- After processing all the visible task, if there is a non-visible one, the assistant is enqueue back.	
- *		- If the queue is empty the thread-worker goes to sleep.
- *		- When an assistant is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there are ones.
- * Effective for all purposes. Shines when the processor demand of long-living doers is very variant.   		
+/** A dynamically balanced [[Doer.Assistant]] provider with scheduling support.
+ * This assistant provider is like [[CooperativeWorkersDap]] but with scheduling capabilities added.
+ * Scheduling is managed by a dedicated single thread, which operates independently and does not contribute to the thread-pool size.
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class SchedulingAssistantProvider(
+class SchedulingDap(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends SharedQueueDoerAssistantProvider, AssistantBasedDoerProvider.DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
+) extends CooperativeWorkersDap, AssistantBasedDoerProvider.DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
 
 
 	override def provide(serial: MatrixDoer.Id): SchedulingAssistant = {
@@ -176,7 +170,7 @@ class SchedulingAssistantProvider(
 	}
 
 	private object scheduler extends Runnable {
-		private val commandsQueue = new ConcurrentLinkedQueue[Runnable]()
+		private val commandsQueue = new util.ArrayDeque[Runnable]()
 		private var heap: Array[SchedulingAssistantImpl#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var heapSize: Int = 0
 		/** Know the instances of [[SchedulingAssistantImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[SchedulingAssistant.cancelAll()]] method because enabled instances are not in the [[heap]]. */
@@ -243,22 +237,28 @@ class SchedulingAssistantProvider(
 		}
 
 		def stop(): Unit = {
-			signal(() => isRunning = false)
+			signal(() =>
+				isRunning = false
+			)
 		}
 
 		private def signal(command: Runnable): Unit = {
-			commandsQueue.offer(command)
 			lock.lock()
-			try commandPending.signal()
-			finally lock.unlock()
+			commandsQueue.offer(command)
+			commandPending.signal()
+			lock.unlock()
 		}
 
 		override def run(): Unit = {
 			while isRunning do {
+				lock.lock()
 				var command: Runnable | Null = commandsQueue.poll()
+				lock.unlock()
 				while command != null do {
 					command.run()
+					lock.lock()
 					command = commandsQueue.poll()
+					lock.unlock()
 				}
 
 				var earlierSchedule = peek
@@ -275,21 +275,24 @@ class SchedulingAssistantProvider(
 					currentNanoTime = System.nanoTime()
 					earlierSchedule = peek
 				}
-				if isRunning then {
-					lock.lock()
-					try {
+				lock.lock()
+				try {
+					if isRunning && commandsQueue.isEmpty then {
 						if earlierSchedule == null then commandPending.await()
 						else {
 							val delay = earlierSchedule.scheduledTime - currentNanoTime
 							earlierSchedule = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 							commandPending.awaitNanos(delay)
 						}
-					} catch {
-						case _: InterruptedException => isRunning = false
-					} finally lock.unlock()
+					}
+				} catch {
+					case _: InterruptedException => isRunning = false
 				}
+				finally lock.unlock()
 			}
+			lock.lock()
 			commandsQueue.clear() // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			lock.unlock()
 			for i <- 0 until heapSize do heap(i).isActive = false
 			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 			enabledSchedulesByAssistant.forEach { (_, enabledSchedules) =>
@@ -321,7 +324,7 @@ class SchedulingAssistantProvider(
 		 * @param peekedElement the [[ScheduleImpl]] to remove and return.
 		 */
 		private def finishPoll(peekedElement: SchedulingAssistantImpl#ScheduleImpl): SchedulingAssistantImpl#ScheduleImpl = {
-			heapSize -= 1;
+			heapSize -= 1
 			val s = heapSize
 			val replacement = heap(s)
 			heap(s) = null
@@ -430,7 +433,7 @@ class SchedulingAssistantProvider(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(utils.CompileTime.getTypeName[SchedulingAssistantProvider]).append('\n')
+		sb.append(utils.CompileTime.getTypeName[SchedulingDap]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)

@@ -1,10 +1,10 @@
 package readren.matrix
 package pruebas
 
-import core.Matrix.DoerProviderDescriptor
-import core.{Continue, Matrix, Started, Stop}
-import providers.doer.SchedulingDoerProvider
+import core.{Continue, Matrix, Stop}
+import providers.descriptor.DefaultSchedulingDpd
 import rf.RegularRf
+import utils.DefaultAide
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
@@ -16,16 +16,10 @@ object PruebaScheduling {
 
 		case class Tick(incitingId: List[Int])
 
-		val schedulingDpd: DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer] =
-			new DoerProviderDescriptor[SchedulingDoerProvider.ProvidedDoer]("schedulingDpd") {
-				override def build(owner: Matrix.DoerProvidersManager): SchedulingDoerProvider = new SchedulingDoerProvider(false)
-			}
-		val aide = new AideImpl(schedulingDpd)
-
-		val matrix = new Matrix("scheduled", aide)
+		val matrix = new Matrix("scheduled", DefaultAide)
 		println(s"Matrix created")
 
-		val schedulingDoer = matrix.provideDoer(schedulingDpd)
+		val schedulingDoer = matrix.provideDoer(DefaultSchedulingDpd)
 
 		if false then {
 			@volatile var inside = false

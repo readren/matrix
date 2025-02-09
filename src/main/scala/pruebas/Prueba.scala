@@ -4,8 +4,9 @@ package pruebas
 import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
-import providers.doer.{SharedQueueDoerProvider, SimpleDoerProvider}
+import providers.doer.{CooperativeWorkersDoerProvider, RoundRobinDoerProvider}
 import rf.{RegularRf, SequentialMsgBufferRf}
+import utils.SimpleAide
 
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -15,7 +16,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	type TestedDoerProvider = SharedQueueDoerProvider
+	private type TestedDoerProvider = CooperativeWorkersDoerProvider
 
 	private sealed trait Report
 
@@ -46,28 +47,30 @@ object Prueba {
 
 	private class Pixel(var value: Int, var updateSerial: Int)
 
-	private class Durations(var simpleRegularRf: Long = 0L, var simpleSequentialMsgBufferRf: Long = 0L, var sharedQueueRegularRf: Long = 0L, var sharedQueueSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
+	private class Durations(var roundRobinRegularRf: Long = 0L, var roundRobinSequentialMsgBufferRf: Long = 0L, var cooperativeRegularRf: Long = 0L, var cooperativeSequentialMsBufferRf: Long = 0L, var testedRegularRf: Long = 0L, var testedSequentialMsgBufferRf: Long = 0L)
 
 	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
-	object simpleDapKind extends DoerProviderDescriptor[SimpleDoerProvider.ProvidedDoer]("simple") {
-		override def build(owner: Matrix.DoerProvidersManager): SimpleDoerProvider = new SimpleDoerProvider()
+	private object roundRobinDpd extends DoerProviderDescriptor[RoundRobinDoerProvider.ProvidedDoer]("round-robin") {
+		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDoerProvider = new RoundRobinDoerProvider()
 	}
 
-	object sharedQueueDapKind extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("sharedQueue") {
-		override def build(owner: Matrix.DoerProvidersManager): SharedQueueDoerProvider = new SharedQueueDoerProvider(true)
+	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDoerProvider.ProvidedDoer]("cooperative") {
+		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDoerProvider = new CooperativeWorkersDoerProvider(true)
 	}
 
-	object testedDapKind extends DoerProviderDescriptor[SharedQueueDoerProvider.ProvidedDoer]("tested") {
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersDoerProvider.ProvidedDoer]("tested") {
 		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new TestedDoerProvider(false)
 	}
 
+	private def roundRobinAide = new SimpleAide(roundRobinDpd)
+
+	private def cooperativeQueueAide = new SimpleAide(cooperativeWorkersDpd)
+
+	private def testedAide = new SimpleAide(testedDpd)
+
 	@main def runPrueba(): Unit = {
 		given ExecutionContext = ExecutionContext.global
-
-		val simpleAide = new AideImpl(simpleDapKind)
-		val sharedQueueAide = new AideImpl(sharedQueueDapKind)
-		val testedAide = new AideImpl(testedDapKind)
 
 		val numberOfWarmUpRepetitions = 4
 		val numberOfMeasuredOfRepetitions = 6
@@ -76,28 +79,28 @@ object Prueba {
 			totalFuture = totalFuture.flatMap { iteration =>
 				println(s"\n******* Loop #$i *******")
 				for {
-					sharedQueueRegularRfDuration <- run(sharedQueueAide, RegularRf, i)
-					sharedQueueSequentialMsgBufferDuration <- run(sharedQueueAide, SequentialMsgBufferRf, i)
+					cooperativeRegularRfDuration <- run(cooperativeQueueAide, RegularRf, i)
+					cooperativeSequentialMsgBufferDuration <- run(cooperativeQueueAide, SequentialMsgBufferRf, i)
 					testedRegularRfDuration <- run(testedAide, RegularRf, i)
 					testedSequentialMsgBufferDuration <- run(testedAide, SequentialMsgBufferRf, i)
-					simpleRegularRfDuration <- run(simpleAide, RegularRf, i)
-					simpleSequentialMsgBufferDuration <- run(simpleAide, SequentialMsgBufferRf, i)
+					roundRobinRegularRfDuration <- run(roundRobinAide, RegularRf, i)
+					roundRobinSequentialMsgBufferDuration <- run(roundRobinAide, SequentialMsgBufferRf, i)
 				} yield {
 					if i > numberOfWarmUpRepetitions then {
-						iteration.accumulated.sharedQueueRegularRf += sharedQueueRegularRfDuration
-						iteration.accumulated.sharedQueueSequentialMsBufferRf += sharedQueueSequentialMsgBufferDuration
+						iteration.accumulated.cooperativeRegularRf += cooperativeRegularRfDuration
+						iteration.accumulated.cooperativeSequentialMsBufferRf += cooperativeSequentialMsgBufferDuration
 						iteration.accumulated.testedRegularRf += testedRegularRfDuration
 						iteration.accumulated.testedSequentialMsgBufferRf += testedSequentialMsgBufferDuration
-						iteration.accumulated.simpleRegularRf += simpleRegularRfDuration
-						iteration.accumulated.simpleSequentialMsgBufferRf += simpleSequentialMsgBufferDuration
+						iteration.accumulated.roundRobinRegularRf += roundRobinRegularRfDuration
+						iteration.accumulated.roundRobinSequentialMsgBufferRf += roundRobinSequentialMsgBufferDuration
 					}
 
-					if sharedQueueRegularRfDuration < iteration.minimum.sharedQueueRegularRf then iteration.minimum.sharedQueueRegularRf = sharedQueueRegularRfDuration
-					if sharedQueueSequentialMsgBufferDuration < iteration.minimum.sharedQueueSequentialMsBufferRf then iteration.minimum.sharedQueueSequentialMsBufferRf = sharedQueueSequentialMsgBufferDuration
+					if cooperativeRegularRfDuration < iteration.minimum.cooperativeRegularRf then iteration.minimum.cooperativeRegularRf = cooperativeRegularRfDuration
+					if cooperativeSequentialMsgBufferDuration < iteration.minimum.cooperativeSequentialMsBufferRf then iteration.minimum.cooperativeSequentialMsBufferRf = cooperativeSequentialMsgBufferDuration
 					if testedRegularRfDuration < iteration.minimum.testedRegularRf then iteration.minimum.testedRegularRf = testedRegularRfDuration
 					if testedSequentialMsgBufferDuration < iteration.minimum.testedSequentialMsgBufferRf then iteration.minimum.testedSequentialMsgBufferRf = testedSequentialMsgBufferDuration
-					if simpleRegularRfDuration < iteration.minimum.simpleRegularRf then iteration.minimum.simpleRegularRf = simpleRegularRfDuration
-					if simpleSequentialMsgBufferDuration < iteration.minimum.simpleSequentialMsgBufferRf then iteration.minimum.simpleSequentialMsgBufferRf = simpleSequentialMsgBufferDuration
+					if roundRobinRegularRfDuration < iteration.minimum.roundRobinRegularRf then iteration.minimum.roundRobinRegularRf = roundRobinRegularRfDuration
+					if roundRobinSequentialMsgBufferDuration < iteration.minimum.roundRobinSequentialMsgBufferRf then iteration.minimum.roundRobinSequentialMsgBufferRf = roundRobinSequentialMsgBufferDuration
 
 					iteration
 				}
@@ -107,10 +110,10 @@ object Prueba {
 			case Success(totalDuration) =>
 				println(
 					s"""All matrix were shutdown
-					   |Average duration for regularRf: simple -> ${totalDuration.accumulated.simpleRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue -> ${totalDuration.accumulated.sharedQueueRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
-					   |Average duration for sequentialMsgBuffer: simple -> ${totalDuration.accumulated.simpleSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, sharedQueue-> ${totalDuration.accumulated.sharedQueueSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
-					   |Minimum duration for regularRf: simple -> ${totalDuration.minimum.simpleRegularRf / 1000000}, sharedQueue -> ${totalDuration.minimum.sharedQueueRegularRf / 1000000}, tested -> ${totalDuration.minimum.testedRegularRf / 1000000}
-					   |Minimum duration for sequentialMsgBuffer: simple -> ${totalDuration.minimum.simpleSequentialMsgBufferRf / 1000000}, sharedQueue-> ${totalDuration.minimum.sharedQueueSequentialMsBufferRf / 1000000}, tested -> ${totalDuration.minimum.testedSequentialMsgBufferRf / 1000000}
+					   |Average duration for regularRf: roundRobin -> ${totalDuration.accumulated.roundRobinRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, cooperative -> ${totalDuration.accumulated.cooperativeRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedRegularRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Average duration for sequentialMsgBuffer: roundRobin -> ${totalDuration.accumulated.roundRobinSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, cooperative-> ${totalDuration.accumulated.cooperativeSequentialMsBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}, tested -> ${totalDuration.accumulated.testedSequentialMsgBufferRf / (numberOfMeasuredOfRepetitions * 1000000)}
+					   |Minimum duration for regularRf: roundRobin -> ${totalDuration.minimum.roundRobinRegularRf / 1000000}, cooperative -> ${totalDuration.minimum.cooperativeRegularRf / 1000000}, tested -> ${totalDuration.minimum.testedRegularRf / 1000000}
+					   |Minimum duration for sequentialMsgBuffer: roundRobin -> ${totalDuration.minimum.roundRobinSequentialMsgBufferRf / 1000000}, cooperative-> ${totalDuration.minimum.cooperativeSequentialMsBufferRf / 1000000}, tested -> ${totalDuration.minimum.testedSequentialMsgBufferRf / 1000000}
 					   |Press <enter> to exit""".stripMargin
 				)
 			case Failure(cause) => cause.printStackTrace()
@@ -120,7 +123,7 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DefaultDoer <: MatrixDoer](testingAide: AideImpl[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
+	private def run[DefaultDoer <: MatrixDoer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
 		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: doerAssistantProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getSimpleName}")
@@ -198,7 +201,7 @@ object Prueba {
 
 		val result = Promise[Long]
 
-		// println(matrix.doerAssistantProvider.diagnose(new StringBuilder("Pre parent creation:\n")))
+		// println(matrix.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
 		matrix.spawns[ProducerWasStopped | ConsumerWasStopped](reactantFactory) { parent =>
 			// println("Parent initialization")
@@ -353,13 +356,13 @@ object Prueba {
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
 				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
-				println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
+				// println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
 
 				result.success(nanoAtEnd - nanoAtStart)
 			}
 		}
 		result.future.andThen { tryDuration =>
-			println(s"Before closing: duration=${tryDuration.map(_ / 1000000)}")
+			// println(s"Before closing: duration=${tryDuration.map(_ / 1000000)}")
 			matrix.doerProvidersManager.shutdown()
 			Try(matrix.doerProvidersManager.awaitTermination(1, TimeUnit.SECONDS)) match {
 				case Success(true) => println("Shutdown completed normally")

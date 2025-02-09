@@ -16,9 +16,9 @@ object Matrix {
 
 	/**
 	 * Identifies and builds an instance of [[DoerProvider]].
-	 * Concrete subtypes of this trait usually are singleton objects.
+	 * Subtypes of this trait usually are singleton objects.
 	 * @param id the identifier of this instance used for equality.
-	 * @tparam MD the concrete subtype of the [[MatrixDoer]]s provided by the [[DoerProvider]] this instance identifies (and builds an instances of).
+	 * @tparam MD the subtype of [[MatrixDoer]] provided by the [[DoerProvider]] this instance identifies (and builds an instances of).
 	 */
 	trait DoerProviderDescriptor[+MD <: MatrixDoer](val id: String) extends Equals {
 		/**
@@ -26,7 +26,7 @@ object Matrix {
 		 * This method is called a single time per [[DoerProvidersManager]].
 		 *
 		 * @param owner The [[DoerProvidersManager]] that will manage the newly created [[DoerAssistantProvider]].
-		 * @return The newly created instance of [[DP]].
+		 * @return The newly created [[DoerProvider]].
 		 */
 		def build(owner: DoerProvidersManager): DoerProvider[MD]
 		

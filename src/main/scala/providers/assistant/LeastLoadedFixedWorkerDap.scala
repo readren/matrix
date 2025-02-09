@@ -3,7 +3,7 @@ package providers.assistant
 
 import core.MatrixDoer
 import providers.ShutdownAble
-import providers.assistant.BalancedDoerAssistantProvider.{AssistantImpl, currentAssistant}
+import providers.assistant.LeastLoadedFixedWorkerDap.{AssistantImpl, currentAssistant}
 import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import readren.taskflow.Doer
@@ -11,7 +11,7 @@ import readren.taskflow.Doer
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object BalancedDoerAssistantProvider {
+object LeastLoadedFixedWorkerDap {
 	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
 
 	class AssistantImpl(
@@ -43,12 +43,12 @@ object BalancedDoerAssistantProvider {
  * - All tasks submitted to an assistant are executed by the same thread-worker.
  * Effective for short-living doers that are created when the work is demanded.
  * Not suited for long-living doers. */
-class BalancedDoerAssistantProvider(
+class LeastLoadedFixedWorkerDap(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerAssistantProvider[BalancedDoerAssistantProvider.AssistantImpl], ShutdownAble {
+) extends DoerAssistantProvider[LeastLoadedFixedWorkerDap.AssistantImpl], ShutdownAble {
 
 	private val assistants = Array.tabulate[AssistantImpl](threadPoolSize)(index => new AssistantImpl(index, failureReporter, threadFactory, queueFactory))
 
