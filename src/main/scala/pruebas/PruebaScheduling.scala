@@ -24,13 +24,13 @@ object PruebaScheduling {
 		if false then {
 			@volatile var inside = false
 
-			var count = 0
-			val schedule = schedulingDoer.newFixedRateSchedule(1_000_000_000, 1_000)
+			var counter = 0
+			val schedule = schedulingDoer.newFixedRateSchedule(1_000, 1_000)
 			schedulingDoer.scheduleSequentially(schedule) { () =>
 				assert(!inside)
 				inside = true
-				count += 1
-				println(s"count=$count, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}, diff=${(schedule.startingTime - schedule.scheduledTime) / 100}, thread=${Thread.currentThread().getId}")
+				counter += 1
+				println(f"counter=$counter%4d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%4d, runDelay=${schedule.startingTime - schedule.enabledTime}%4d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.assistant.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}")
 				inside = false
 			}
 
@@ -50,10 +50,10 @@ object PruebaScheduling {
 							println("cancelAll executed")
 							Stop
 						} else {
-							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule((counter % 1000) * 1_000_000, 10_000_000)
+							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule(counter % 10, 10)
 							var repetitions = 0
 							schedulingDoer.scheduleSequentially(schedule) { () =>
-								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%9d, runDelay=${schedule.startingTime - schedule.enabledTime}%9d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.assistant.numOfPendingTasks}%3d, incitingId=$incitingId")
+								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%3d, runDelay=${schedule.startingTime - schedule.enabledTime}%3d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.assistant.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}, incitingId=$incitingId")
 								selfEndpoint.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}

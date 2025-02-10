@@ -2,21 +2,22 @@ package readren.matrix
 package providers.assistant
 
 import core.MatrixDoer
-import providers.assistant.SchedulingDap.*
 import providers.assistant.CooperativeWorkersDap.*
+import providers.assistant.SchedulingDap.*
 import providers.doer.AssistantBasedDoerProvider
 
-import readren.taskflow.SchedulingExtension.NanoDuration
 import readren.taskflow.SchedulingExtension
+import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.util
 import java.util.concurrent.*
-import java.util.concurrent.locks.ReentrantLock
 import scala.annotation.tailrec
 import scala.collection.mutable
 
 object SchedulingDap {
-	/** A nano time based on the [[System.nanoTime]] method. */
+	/** A time based on the [[System.nanoTime]] method converted to milliseconds. */
+	type MilliTime = Long
+	/** A time based on the [[System.nanoTime]]. */
 	type NanoTime = Long
 
 	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
@@ -27,15 +28,15 @@ object SchedulingDap {
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	trait AbstractSchedule {
-		def initialDelay: NanoTime
+		def initialDelay: MilliDuration
 
-		def interval: NanoDuration
+		def interval: MilliDuration
 
 		def isFixedRate: Boolean
 
 		/** Exposes the time the [[Runnable]] is expected to be run.
 		 * Updated after the [[Runnable]] execution is completed. */
-		def scheduledTime: NanoTime
+		def scheduledTime: MilliTime
 
 		/** Exposes the number of executions of the [[Runnable]] that were skipped before the current one due to processing power saturation or negative `initialDelay`.
 		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
@@ -45,17 +46,18 @@ object SchedulingDap {
 		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
 		def numOfSkippedExecutions: Long
 
-		/** Exposes the [[System.nanoTime]] when the current execution started.
+		/** Exposes the time when the current execution started.
 		 * The [[numOfSkippedExecutions]] is calculated based on this time.
 		 * Updated before the [[Runnable]] is run.
-		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
-		def startingTime: NanoTime
+		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] task that is scheduled by this instance. */
+		def startingTime: MilliTime
 
-		/** An instance becomes enabled when the [[scheduledTime]] is reached, and it's [[runnable]] is enqueued in [[thisSchedulingAssistant.taskQueue]].
+		/** An instance becomes enabled after the [[scheduledTime]] is reached, when the [[Runnable]] task that is scheduled by this instance is enqueued for execution (calling [[DoerAssistant.executeSequentially]]).
 		 * An instance becomes disabled after the [[runnable]] execution finishes and the */
 		def isEnabled: Boolean
 
-		def enabledTime: NanoTime
+		/** Exposes the time when the [[Runnable]] task, scheduled by this [[AbstractSchedule]], was last enqueued into the task queue for execution (calling [[SchedulingAssistant.executeSequentially]]). */
+		def enabledTime: MilliTime
 
 		/** An instance becomes active when is passed to the [[thisSchedulingAssistant.scheduleSequentially]] method.
 		 * An instances becomes inactive when it is passed to the [[thisSchedulingAssistant.cancel]] method or when [[thisSchedulingAssistant.cancelAll]] is called.
@@ -64,6 +66,7 @@ object SchedulingDap {
 		def isActive: Boolean
 	}
 
+	inline def readCurrentMilliTime: MilliTime = System.nanoTime() / 1_000_000
 }
 
 /** A dynamically balanced [[Doer.Assistant]] provider with scheduling support.
@@ -79,7 +82,6 @@ class SchedulingDap(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends CooperativeWorkersDap, AssistantBasedDoerProvider.DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
 
-
 	override def provide(serial: MatrixDoer.Id): SchedulingAssistant = {
 		new SchedulingAssistantImpl(serial)
 	}
@@ -88,17 +90,17 @@ class SchedulingDap(
 
 		override type Schedule = ScheduleImpl
 
-		override def newDelaySchedule(delay: NanoDuration): Schedule =
+		override def newDelaySchedule(delay: MilliDuration): Schedule =
 			new ScheduleImpl(delay, 0L, false)
 
-		override def newFixedRateSchedule(initialDelay: NanoDuration, interval: NanoDuration): Schedule =
+		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =
 			new ScheduleImpl(initialDelay, interval, true)
 
-		override def newFixedDelaySchedule(initialDelay: NanoDuration, delay: NanoDuration): Schedule =
+		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
 			new ScheduleImpl(initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
-			val currentTime = System.nanoTime()
+			val currentTime = readCurrentMilliTime
 			assert(!schedule.isActive)
 			schedule.isActive = true
 
@@ -107,7 +109,7 @@ class SchedulingDap(
 					if schedule.isActive then {
 						originalRunnable.run()
 						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
-						scheduler.schedule(schedule, System.nanoTime() + schedule.interval)
+						scheduler.schedule(schedule, readCurrentMilliTime + schedule.interval)
 					}
 				}
 			}
@@ -115,22 +117,23 @@ class SchedulingDap(
 			object fixedRateWrapper extends Runnable {
 				override def run(): Unit = {
 					@tailrec
-					def loop(currentTime: NanoTime): Unit = {
+					def loop(currentTime: MilliTime): Unit = {
 						if schedule.isActive then {
 							schedule.startingTime = currentTime
 							schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
 							originalRunnable.run()
 							// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
 							val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
-							val updatedCurrentTime = System.nanoTime()
+							val updatedCurrentTime = readCurrentMilliTime
 							if nextTime <= updatedCurrentTime then {
 								schedule.scheduledTime = nextTime
+								schedule.enabledTime = updatedCurrentTime
 								loop(updatedCurrentTime)
 							} else scheduler.schedule(schedule, nextTime)
 						}
 					}
 
-					loop(System.nanoTime())
+					loop(readCurrentMilliTime)
 				}
 			}
 			schedule.runnable =
@@ -138,7 +141,7 @@ class SchedulingDap(
 					if schedule.isFixedRate then fixedRateWrapper
 					else fixedDelayWrapper
 				} else originalRunnable
-			scheduler.schedule(schedule, currentTime + schedule.initialDelay, true)
+			scheduler.schedule(schedule, currentTime + schedule.initialDelay)
 		}
 
 		override def cancel(schedule: Schedule): Unit = scheduler.cancel(schedule)
@@ -151,16 +154,16 @@ class SchedulingDap(
 
 
 		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-		class ScheduleImpl(override val initialDelay: NanoTime, override val interval: NanoDuration, override val isFixedRate: Boolean) extends AbstractSchedule {
+		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends AbstractSchedule {
 			/** The [[Runnable]] that this [[TimersExtension.Assistant.Schedule]] schedules. */
 			var runnable: Runnable | Null = null
-			var scheduledTime: NanoTime = 0L
+			var scheduledTime: MilliTime = 0L
 			/** The index of this instance in the array-based min-heap. */
 			var heapIndex: Int = -1
 			var numOfSkippedExecutions: Long = 0
-			var startingTime: NanoTime = 0L
+			var startingTime: MilliTime = 0L
 			var isEnabled = false
-			var enabledTime: NanoTime = 0L
+			var enabledTime: MilliTime = 0L
 			@volatile var isActive = false
 
 			inline def owner: thisSchedulingAssistant.type = thisSchedulingAssistant
@@ -177,11 +180,6 @@ class SchedulingDap(
 		private var enabledSchedulesByAssistant: util.HashMap[SchedulingAssistantImpl, mutable.HashSet[SchedulingAssistantImpl#ScheduleImpl]] = new util.HashMap()
 
 		private var isRunning = true
-		private val lock = new ReentrantLock()
-		/**
-		 * Condition signalled when a command is enqueued into [[commandsQueue]].
-		 */
-		private val commandPending = lock.newCondition()
 
 		private val timeWaitingThread: Thread = threadFactory.newThread(this)
 		timeWaitingThread.start()
@@ -192,7 +190,7 @@ class SchedulingDap(
 			accum
 		}
 
-		def schedule(schedule: SchedulingAssistantImpl#ScheduleImpl, scheduleTime: NanoTime, fresh: Boolean = false): Unit = {
+		def schedule(schedule: SchedulingAssistantImpl#ScheduleImpl, scheduleTime: MilliTime): Unit = {
 			signal { () =>
 				if schedule.isEnabled then {
 					schedule.isEnabled = false
@@ -243,56 +241,45 @@ class SchedulingDap(
 		}
 
 		private def signal(command: Runnable): Unit = {
-			lock.lock()
-			commandsQueue.offer(command)
-			commandPending.signal()
-			lock.unlock()
+			this.synchronized {
+				commandsQueue.offer(command)
+				this.notify()
+			}
 		}
 
 		override def run(): Unit = {
 			while isRunning do {
-				lock.lock()
-				var command: Runnable | Null = commandsQueue.poll()
-				lock.unlock()
+				var command: Runnable | Null = this.synchronized(commandsQueue.poll())
 				while command != null do {
 					command.run()
-					lock.lock()
-					command = commandsQueue.poll()
-					lock.unlock()
+					command = this.synchronized(commandsQueue.poll())
 				}
 
 				var earlierSchedule = peek
-				var currentNanoTime = System.nanoTime()
-				while earlierSchedule != null && earlierSchedule.scheduledTime <= currentNanoTime do {
+				val currentTime = readCurrentMilliTime
+				while earlierSchedule != null && earlierSchedule.scheduledTime <= currentTime do {
 					finishPoll(earlierSchedule)
 					earlierSchedule.isEnabled = true
-					earlierSchedule.enabledTime = currentNanoTime
+					earlierSchedule.enabledTime = currentTime
 					enabledSchedulesByAssistant.compute(
 						earlierSchedule.owner,
 						(_, enabledSchedules) => if enabledSchedules == null then mutable.HashSet(earlierSchedule) else enabledSchedules.addOne(earlierSchedule)
 					)
 					earlierSchedule.owner.executeSequentially(earlierSchedule.runnable)
-					currentNanoTime = System.nanoTime()
 					earlierSchedule = peek
 				}
-				lock.lock()
-				try {
+				this.synchronized {
 					if isRunning && commandsQueue.isEmpty then {
-						if earlierSchedule == null then commandPending.await()
+						if earlierSchedule == null then this.wait()
 						else {
-							val delay = earlierSchedule.scheduledTime - currentNanoTime
+							val delay = earlierSchedule.scheduledTime - currentTime
 							earlierSchedule = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
-							commandPending.awaitNanos(delay)
+							this.wait(delay)
 						}
 					}
-				} catch {
-					case _: InterruptedException => isRunning = false
 				}
-				finally lock.unlock()
 			}
-			lock.lock()
-			commandsQueue.clear() // do not keep unnecessary references while waiting to avoid unnecessary memory retention
-			lock.unlock()
+			this.synchronized(commandsQueue.clear()) // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 			for i <- 0 until heapSize do heap(i).isActive = false
 			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 			enabledSchedulesByAssistant.forEach { (_, enabledSchedules) =>
