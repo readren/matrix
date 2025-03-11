@@ -184,7 +184,7 @@ object Prueba {
 
 		val diagnosticScheduler = new Scheduler
 
-		diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
+		diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
 
 			try {
 				val sb = new StringBuilder
@@ -335,7 +335,7 @@ object Prueba {
 			matrix.doer.checkWithin()
 			// println("Parent created")
 
-			diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
+			diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
 
 				try {
 					val sb = new StringBuilder

@@ -1,0 +1,27 @@
+package readren.matrix
+package cluster.service
+
+import cluster.channel.{Deserializer, Serializer}
+
+opaque type RingSerial = Short
+
+object RingSerial {
+
+	def create(value: Short = 0): RingSerial = value
+
+	extension (a: RingSerial) {
+		inline def incremented: RingSerial = (a + 1).toShort
+		inline def isAheadOf(b: RingSerial): Boolean = (a << 16) - (b << 16) > 0
+	}
+
+
+	given Serializer[RingSerial] =
+		(message: RingSerial, writer: Serializer.Writer) => {
+			writer.putShort(message)
+			Serializer.Success
+		}
+
+	given Deserializer[RingSerial] =
+		(reader: Deserializer.Reader) => reader.readShort()
+}
+

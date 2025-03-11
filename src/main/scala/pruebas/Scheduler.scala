@@ -9,8 +9,12 @@ class Scheduler {
 		thread.setDaemon(true)
 		thread
 	}
+
+	def schedule(delay: Long, unit: TimeUnit)(runnable: Runnable): Unit = {
+		executor.schedule(runnable, delay, unit)
+	}	
 	
-	def schedule(period: Long, unit: TimeUnit)(runnable: Runnable): Unit = {
+	def fixedRate(initialDelay: Long, period: Long, unit: TimeUnit)(runnable: Runnable): Unit = {
 		executor.scheduleAtFixedRate(runnable, period, period, unit)
 	}
 	

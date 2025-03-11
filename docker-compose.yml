@@ -1,0 +1,43 @@
+services:
+  machine-a:
+    image: comuna/comuna:latest
+    container_name: machine-a
+    ports:
+      - "5000:5000"
+    command: ["192.168.1.10", "5000", "192.168.1.11:5001", "192.168.1.12:5002"]
+    networks:
+      distributed-network:
+        ipv4_address: 192.168.1.10
+    stdin_open: true
+    tty: true
+
+  machine-b:
+    image: comuna/comuna:latest
+    container_name: machine-b
+    ports:
+      - "5001:5001"
+    command: ["192.168.1.11", "5001", "192.168.1.10:5000", "192.168.1.12:5002"]
+    networks:
+      distributed-network:
+        ipv4_address: 192.168.1.11
+    stdin_open: true
+    tty: true
+
+  machine-c:
+    image: comuna/comuna:latest
+    container_name: machine-c
+    ports:
+      - "5002:5002"
+    command: ["192.168.1.12", "5002", "192.168.1.10:5000", "192.168.1.11:5001"]
+    networks:
+      distributed-network:
+        ipv4_address: 192.168.1.12
+    stdin_open: true
+    tty: true
+
+networks:
+  distributed-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.1.0/24

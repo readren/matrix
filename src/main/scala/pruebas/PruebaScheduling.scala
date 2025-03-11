@@ -65,7 +65,7 @@ object PruebaScheduling {
 					matrix.doerProvidersManager.shutdown()
 					println("shutdown executed")
 
-					diagnosticScheduler.schedule(4000, TimeUnit.MILLISECONDS) { () =>
+					diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
 
 						try {
 							val sb = new StringBuilder

@@ -1,15 +1,14 @@
+
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.6.3"
 
-lazy val root = (project in file("."))
-	.settings(
-		name := "matrix",
-		idePackagePrefix := Some("readren.matrix")
-	)
-
 ThisBuild / libraryDependencies ++= Seq(
 	"readren" %% "taskflow-core" % "0.2.7-SNAPSHOT",
+
+	"com.outr" %% "scribe" % "3.16.0",
+	"com.outr" %% "scribe-file" % "3.16.0",
+
 	"org.typelevel" %% "scalacheck-effect" % "1.0.4" % Test,
 	"org.typelevel" %% "scalacheck-effect-munit" % "1.0.4" % Test
 )
@@ -21,8 +20,42 @@ ThisBuild / scalacOptions ++= Seq(
 	"-explain",
 )
 
+lazy val root = (project in file("."))
+	.settings(
+		name := "matrix",
+		idePackagePrefix := Some("readren.matrix")
+	)
+
 lazy val checked = (project in file("checked")).dependsOn(root)
 	.settings(
 		name := "checked",
 		idePackagePrefix := Some("readren.matrix")
 	)
+
+lazy val cluster = (project in file("cluster")).dependsOn(root)
+	.settings(
+		name := "cluster",
+		idePackagePrefix := Some("readren.matrix")
+	)
+
+enablePlugins(DockerPlugin)
+
+docker / dockerfile := {
+	val jarFile: File = (Compile / packageBin / sbt.Keys.`package`).value
+	val classpath = (Compile / managedClasspath).value
+	val mainclass = (Compile / packageBin / mainClass).value.getOrElse(sys.error("Expected exactly one main class"))
+	val jarTarget = s"/app/${jarFile.getName}"
+	// Make a colon separated classpath with the JAR file
+	val classpathString = classpath.files.map("/app/" + _.getName).mkString(":") + ":" + jarTarget
+	new Dockerfile {
+		// Base image
+		from("amazoncorretto:17-alpine")
+		// Add all files on the classpath
+		copy(classpath.files, "/app/")
+		// Add the JAR file
+		copy(jarFile, jarTarget)
+		// On launch run Java with the classpath and the main class
+		entryPoint("java", "-cp", classpathString, mainclass)
+		expose(5000, 5001, 5002) // Expose ports
+	}
+}

@@ -1,0 +1,290 @@
+package readren.matrix
+package cluster.service
+
+import Protocol.*
+import cluster.channel.{Deserializer, Serializer}
+import cluster.service.ProtocolVersion
+import cluster.*
+
+import java.net.SocketAddress
+
+sealed trait Protocol
+
+/** Command message an aspirant must send to all the participants it is aware of (initially the seeds) in order to:
+ * 	- propagate the knowledge of its existence;
+ * 	- be replied with [[JoinApprovalMembers]] if a cluster was already created;
+ * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator. */
+case class Hello(myCard: ContactCard) extends Protocol
+
+
+/**
+ * Response to the [[Hello]] message when received by an aspirant that it not aware of the existence of a cluster.
+ *
+ * @param knowAspirants the participants that intent to join the cluster, including itself if it is the case, and may include the requesting aspirant. */
+case class NoClusterIAmAwareOf(knowAspirants: Set[ContactCard]) extends Protocol
+
+
+/** Message sent by an aspirant to the aspirant with the lowest [[ContactAddress]] that supports the highest protocol version after the known aspirants set stabilizes.
+ * */
+case class YouShouldCreateTheCluster(knownAspirants: Set[ContactCard]) extends Protocol
+
+
+/** Informs that the sender has created a cluster.
+ * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[YouShouldCreateTheCluster]] message to the sender.
+ *
+ * @param stateId the ID of the cluster state when this message was generated.
+ * @param recommendedWaitTime the recommended time that the receiver should wait before starting the join process with [[Hello]]. */
+case class ICreatedACluster(stateId: RingSerial, recommendedWaitTime: DurationMillis) extends Protocol
+
+
+/** Response to the [[Hello]] message when received by a participant, that is aware of the existence of a cluster.
+ *
+ * @param stateId Identifies the state of the cluster when the [[JoinApprovalMembers]] message was generated.
+ * @param members The set of members that must be consulted for approval to join the cluster.
+ * @param recommendedWaitTime The recommended time to wait before requesting approval to join with [[RequestApprovalToJoin]].
+ * This value is greater than zero when another aspirant (which may include the responding participant) is currently in the process of joining.
+ */
+case class JoinApprovalMembers(stateId: RingSerial, members: Set[ContactCard], recommendedWaitTime: DurationMillis) extends Protocol
+
+
+/** Command message that the aspirant has to send to each member of the cluster to get its permission to join.
+ *
+ * @param stateId the cluster state identifier received in the [[JoinApprovalMembers]] response. */
+case class RequestApprovalToJoin(stateId: RingSerial) extends Protocol
+
+
+/** Response to the [[RequestApprovalToJoin]]
+ *
+ * @param stateId identifies the cluster state when the [[JoinApprovalGranted]] message was generated. If two join-approval-members responds with a different value of this field, then the aspirant should restart the join process starting with [[Hello]].
+ * @param joinToken a value that constates the responding member approves the join request. */
+case class JoinApprovalGranted(stateId: RingSerial, joinToken: JoinToken) extends Protocol
+
+
+/** Command message that an aspirant has to send to any member in order to join the cluster.
+ *
+ * @param stateId the cluster-state identifier returned in all the [[JoinApprovalGranted]] responses.
+ * @param joinTokenByMember the join-token provided by each approving member. */
+case class RequestToJoin(stateId: RingSerial, joinTokenByMember: Map[ContactCard, JoinToken]) extends Protocol
+
+
+/** Response to the [[RequestToJoin]] message when the join is successful. */
+case class JoinGranted(stateId: RingSerial) extends Protocol
+
+/** Response to the [[RequestToJoin]] message when the join is not successful.
+ *
+ * @param reason motive of the rejection. */
+case class JoinRejected(youHaveToRetry: Boolean, reason: String) extends Protocol
+
+/** Message that a participant should send to as many other participants as possible before closing its communication channels. */
+case object IAmLeaving extends Protocol
+
+/** Message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
+case class ILostCommunicationWith(stateId: RingSerial, participants: Set[ContactCard]) extends Protocol
+
+/** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
+case class Heartbeat(delayUntilNextHeartbeat: DurationMillis) extends Protocol
+
+/** Message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
+ *
+ * @param participants the state of all the participant according to the sender, including hiw own view of himself (which is the single source of that information) */
+case class StateChanged(participants: Map[ContactCard, ParticipantView]) extends Protocol
+
+
+object Protocol {
+
+	type ContactAddress = SocketAddress
+	type JoinToken = Long
+	/** Wait time in milliseconds */
+	type DurationMillis = Int
+	/** Milliseconds since 1970-01-01T00:00:00Z */
+	type Instant = Long
+
+	sealed trait MembershipState
+	
+	case object Aspirant extends MembershipState
+
+	case object Member extends MembershipState
+
+	case class ParticipantView(stateSerial: RingSerial, lastChangeInstant: Instant, membership: MembershipState, isReachable: Boolean)
+
+	/**
+	 * A cross-version contact information card that a participant use to share and propagate its existence among other participants.
+	 *
+	 * A `ContactCard` maps supported protocol versions to the corresponding `ContactAddress` that participants of that version can use to communicate with the referent (the participant that the contact card describes).
+	 * This enables backward-compatible communication between participants running different versions of the cluster service.
+	 *
+	 * Participants share their `ContactCard` with others to allow discovery and propagation of their presence.
+	 * Old-version participants can use the address corresponding to their version to communicate with the referent.
+	 */
+	type ContactCard = Map[ProtocolVersion, ContactAddress]
+	object ContactCard {
+		def apply(address: SocketAddress): ContactCard = Map(ProtocolVersion.OF_THIS_PROJECT -> address)
+	}
+
+	given Serializer[Protocol] = new Serializer[Protocol] {
+		override def serialize(message: Protocol, writer: Serializer.Writer): Serializer.Outcome = {
+			message match {
+				case Hello =>
+					writer.putByte(DISCRIMINATOR_Hello)
+					Serializer.Success
+
+				case noAware: NoClusterIAmAwareOf =>
+					writer.writeFull(noAware)
+
+				case ysc: YouShouldCreateTheCluster =>
+					writer.putByte(DISCRIMINATOR_YouShouldCreateTheCluster)
+					writer.writeFull(ysc)
+
+				case icc: ICreatedACluster =>
+					writer.putByte(DISCRIMINATOR_ICreatedACluster)
+					writer.writeFull(icc)
+
+				case jam: JoinApprovalMembers =>
+					writer.putByte(DISCRIMINATOR_JoinApprovalMembers)
+					writer.writeFull(jam)
+
+				case oi: RequestApprovalToJoin =>
+					writer.putByte(DISCRIMINATOR_RequestApprovalToJoin)
+					writer.writeFull(oi)
+
+				case jag: JoinApprovalGranted =>
+					writer.putByte(DISCRIMINATOR_JoinApprovalGranted)
+					writer.writeFull(jag)
+
+				case rtj: RequestToJoin =>
+					writer.putByte(DISCRIMINATOR_RequestToJoin)
+					writer.writeFull(rtj)
+
+				case jg: JoinGranted =>
+					writer.putByte(DISCRIMINATOR_JoinGranted)
+					writer.writeFull(jg)
+
+				case jr: JoinRejected =>
+					writer.putByte(DISCRIMINATOR_JoinRejected)
+					writer.writeFull(jr)
+
+				case lcw: ILostCommunicationWith =>
+					writer.putByte(DISCRIMINATOR_ILostCommunicationWith)
+					writer.writeFull(lcw)
+
+				case IAmLeaving =>
+					writer.putByte(DISCRIMINATOR_I_AM_LEAVING)
+					Serializer.Success
+
+				case hb: Heartbeat =>
+					writer.putByte(DISCRIMINATOR_Heartbeat)
+					writer.writeFull(hb)
+
+				case sc: StateChanged =>
+					writer.putByte(DISCRIMINATOR_StateChanged)
+					writer.writeFull(sc)
+			}
+		}
+	}
+
+	given Deserializer[Protocol] = new Deserializer[Protocol] {
+		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | Protocol = {
+			reader.readByte() match {
+				case DISCRIMINATOR_Hello =>
+					reader.read[Hello]
+				case DISCRIMINATOR_NoClusterIAmAwareOf =>
+					reader.read[NoClusterIAmAwareOf]
+				case DISCRIMINATOR_YouShouldCreateTheCluster =>
+					reader.read[YouShouldCreateTheCluster]
+				case DISCRIMINATOR_ICreatedACluster =>
+					reader.read[ICreatedACluster]
+				case DISCRIMINATOR_JoinApprovalMembers =>
+					reader.read[JoinApprovalMembers]
+				case DISCRIMINATOR_RequestApprovalToJoin =>
+					reader.read[RequestApprovalToJoin]
+				case DISCRIMINATOR_JoinApprovalGranted =>
+					reader.read[JoinApprovalGranted]
+				case DISCRIMINATOR_RequestToJoin =>
+					reader.read[RequestToJoin]
+				case DISCRIMINATOR_JoinGranted =>
+					reader.read[JoinGranted]
+				case DISCRIMINATOR_JoinRejected =>
+					reader.read[JoinRejected]
+				case DISCRIMINATOR_ILostCommunicationWith =>
+					reader.read[ILostCommunicationWith]
+				case DISCRIMINATOR_Heartbeat =>
+					reader.read[Heartbeat]
+				case DISCRIMINATOR_StateChanged =>
+					reader.read[StateChanged]
+
+				case x =>
+					Deserializer.Mismatch(reader.position, s"Unexpected type discriminator: $x")
+			}
+		}
+	}
+
+	inline val DISCRIMINATOR_Hello = 0
+	inline val DISCRIMINATOR_NoClusterIAmAwareOf = -1
+	inline val DISCRIMINATOR_YouShouldCreateTheCluster = -2
+	inline val DISCRIMINATOR_ICreatedACluster = -3
+	inline val DISCRIMINATOR_JoinApprovalMembers = 1
+	inline val DISCRIMINATOR_RequestApprovalToJoin = 2
+	inline val DISCRIMINATOR_JoinApprovalGranted = 3
+	inline val DISCRIMINATOR_RequestToJoin = 4
+	inline val DISCRIMINATOR_JoinGranted = 5
+	inline val DISCRIMINATOR_JoinRejected = 7
+	inline val DISCRIMINATOR_I_AM_LEAVING = 8
+	inline val DISCRIMINATOR_ILostCommunicationWith = 9
+	inline val DISCRIMINATOR_Heartbeat = 10
+	inline val DISCRIMINATOR_StateChanged = 11
+
+
+	given Serializer[Hello] = (message: Hello, writer: Serializer.Writer) => ???
+
+	given Serializer[JoinApprovalMembers] = (message: JoinApprovalMembers, writer: Serializer.Writer) => ???
+
+	given Serializer[NoClusterIAmAwareOf] = (message: NoClusterIAmAwareOf, writer: Serializer.Writer) => ???
+
+	given Serializer[YouShouldCreateTheCluster] = (message: YouShouldCreateTheCluster, writer: Serializer.Writer) => ???
+
+	given Serializer[ICreatedACluster] = (message: ICreatedACluster, writer: Serializer.Writer) => ???
+
+	given Serializer[RequestApprovalToJoin] = (message: RequestApprovalToJoin, writer: Serializer.Writer) => ???
+
+	given Serializer[JoinApprovalGranted] = (message: JoinApprovalGranted, writer: Serializer.Writer) => ???
+
+	given Serializer[RequestToJoin] = (message: RequestToJoin, writer: Serializer.Writer) => ???
+
+	given Serializer[JoinGranted] = (message: JoinGranted, writer: Serializer.Writer) => ???
+
+	given Serializer[JoinRejected] = (message: JoinRejected, writer: Serializer.Writer) => ???
+
+	given Serializer[ILostCommunicationWith] = (message: ILostCommunicationWith, writer: Serializer.Writer) => ???
+
+	given Serializer[Heartbeat] = (message: Heartbeat, writer: Serializer.Writer) => ???
+
+	given Serializer[StateChanged] = (message: StateChanged, writer: Serializer.Writer) => ???
+
+
+	
+	given Deserializer[Hello] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[JoinApprovalMembers] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[NoClusterIAmAwareOf] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[YouShouldCreateTheCluster] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[ICreatedACluster] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[RequestApprovalToJoin] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[JoinApprovalGranted] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[RequestToJoin] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[JoinGranted] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[JoinRejected] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[ILostCommunicationWith] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[Heartbeat] = (reader: Deserializer.Reader) => ???
+
+	given Deserializer[StateChanged] = (reader: Deserializer.Reader) => ???
+}
