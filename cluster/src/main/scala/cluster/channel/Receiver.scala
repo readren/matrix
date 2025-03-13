@@ -34,9 +34,8 @@ object Receiver {
  * Note: The underlying [[AsynchronousSocketChannel]] is not thread-safe and supports only one reception at a time. Concurrent attempts to receive messages will result in undefined behavior.
  *
  * @param channel the channel that connects the peer with us.
- * @param msgVersionId the version-id of the received messages. This value depends on the project version of the other end.
  * @param buffersCapacity the capacity of each storage unit of the [[DualEndedCircularBuffer]]. */
-class Receiver(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVersion, buffersCapacity: Int = 8192) {
+class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) {
 	private val buffersInitialLimit = buffersCapacity - FRAME_HEADER_MAX_SIZE
 
 	assert(buffersCapacity >= FRAME_HEADER_MAX_SIZE + Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
@@ -79,13 +78,14 @@ class Receiver(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVersion
 	 * Starts consuming bytes received or being received through the [[channel]] and uses them as the source for the provided [[Deserializer]].
 	 * The `onComplete` callback is invoked when the `deserializer` completes its operation. The deserializer begins processing once sufficient bytes have been received through the channel.
 	 *
+	 * @param msgVersion the version of the received message. This value depends on the project version of the peer.
 	 * @param attachment An attachment of type `A` that is passed through to the `onComplete` callback.
 	 * @param timeout The maximum time to wait for the first chunk of bytes and between chunks of bytes.
 	 * @param timeUnit The unit of time for the `timeout` parameter.
 	 * @param onComplete A `BiConsumer` callback that is invoked with either the deserialized message of type `M` or a `Fault` object, along with the provided `attachment`.
 	 * @param deserializer An implicit `Deserializer[M]` used to deserialize the incoming bytes into a message of type `M`.
 	 */
-	def receiveWithAttachment[M, A](attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: BiConsumer[M | Fault, A])(using deserializer: Deserializer[M]): Unit = {
+	def receiveWithAttachment[M, A](msgVersion: ProtocolVersion, attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: BiConsumer[M | Fault, A])(using deserializer: Deserializer[M]): Unit = {
 		continuousBuffer.position(continuousBuffer.limit)
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[receiveWithAttachment]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
@@ -95,7 +95,7 @@ class Receiver(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVersion
 			var readEndBuffer: ByteBuffer = buffers.readEnd
 			var nextFrameHeaderPosRelativeToReadEndBufferBase = 0
 
-			override def versionToDeserializeFrom: ProtocolVersion = msgVersionId
+			override def versionToDeserializeFrom: ProtocolVersion = msgVersion
 
 			override def position: Int = readEndBuffer.position
 
@@ -210,24 +210,24 @@ class Receiver(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVersion
 	}
 
 	/** Same as [[receiveWithAttachment]] but without attachment. */
-	inline def receive[M](timeout: Long, timeUnit: TimeUnit)(inline onComplete: M | Fault => Unit)(using deserializer: Deserializer[M]): Unit = {
-		receiveWithAttachment[M, Null](null, timeout, timeUnit) { (outcome, dummy) => onComplete(outcome) }
+	inline def receive[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(inline onComplete: M | Fault => Unit)(using deserializer: Deserializer[M]): Unit = {
+		receiveWithAttachment[M, Null](msgVersion, null, timeout, timeUnit) { (outcome, dummy) => onComplete(outcome) }
 	}
 
 	/** Like [[receive]] but changing the continuation style from passing to returned.
 	 * Also, the computation is deferred until explicitly triggered (with [[util.Lazy.trigger]]. */
-	def receivesLazily[M](timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Lazy[M] = new Lazy[M] {
+	def receivesLazily[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Lazy[M] = new Lazy[M] {
 		override def trigger(onComplete: Consumer[M | Fault]): Unit = {
-			receiveWithAttachment[M, Unit]((), timeout, timeUnit) { (outcome, dummy) => onComplete.accept(outcome) }
+			receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => onComplete.accept(outcome) }
 		}
 	}
 
 	/** Like [[receive]] but changing the continuation style from passing to returned.
 	 * Differs from [[receivesLazily]] in that the computation is eagerly started.
 	 */
-	def receive[M](timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Future[M | Fault] = {
+	def receive[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Future[M | Fault] = {
 		val promise = Promise[M | Fault]()
-		receiveWithAttachment[M, Unit]((), timeout, timeUnit) { (outcome, dummy) => promise.success(outcome) }
+		receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => promise.success(outcome) }
 		promise.future
 	}
 }

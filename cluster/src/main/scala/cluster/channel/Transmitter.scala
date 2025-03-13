@@ -4,8 +4,7 @@ package cluster.channel
 import cluster.channel.Serializer.Writer
 import cluster.channel.Transmitter.*
 import cluster.misc.{DualEndedCircularBuffer, VLQ}
-
-import readren.matrix.cluster.service.ProtocolVersion
+import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
@@ -17,11 +16,22 @@ import scala.annotation.tailrec
 object Transmitter {
 	sealed trait Report
 
+	/** Report received by the `onComplete` callback passed to the [[transmit]] method when the serialization and transmission was successful. */
 	case object Delivered extends Report
 
-	case class SerializationUnsupported(position: Int, reason: String) extends Report
+	/**
+	 * A report received by the `onComplete` callback passed to the [[transmit]] method when the transmission fails due to the unsupported serialization of the provided message.
+	 *
+	 * @param rootMessage The complete message that was intended for serialization and transmission.
+	 * @param position The position in the [[ByteBuffer]] where the serialization issue was detected.
+	 * @param reason The explanation provided by the [[Serializer]] for the component of the `rootMessage` that could not be serialized.
+	 * @param aFragmentWasTransmitted Indicates whether a portion of the message was transmitted before the failure occurred. 
+	 *                                - `true` if the issue was detected after a fragment of the message was already transmitted.
+	 *                                - `false` if no bytes were transmitted because the issue was detected before transmission began.
+	 */
+	case class SerializationUnsupported(rootMessage: Any, position: Int, reason: String, aFragmentWasTransmitted: Boolean) extends Report
 
-	case class TransmissionFailure(cause: Throwable) extends Report
+	case class TransmissionFailure(rootMessage: Any, cause: Throwable) extends Report
 
 	class TransmissionInProgressException extends Exception
 }
@@ -32,10 +42,9 @@ object Transmitter {
  * Note: The underlying [[AsynchronousSocketChannel]] is not thread-safe and supports only one transmission at a time. Concurrent attempts to transmit messages will result in undefined behavior
  * 
  * @param channel the channel over which the messages will be transmitted.
- * @param msgVersionId the version id of messages to produce.
  * @param buffersCapacity the capacity of each storage unit of the [[DualEndedCircularBuffer]]
  */
-class Transmitter(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVersion, buffersCapacity: Int = 8192) {
+class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) {
 	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 	private val frameHeaderBuffer: ByteBuffer = ByteBuffer.allocate(VLQ.INT_MAX_LENGTH)
 	private val frameHeaderWriter: VLQ.ByteWriter = (byte: Byte) => frameHeaderBuffer.put(byte) 
@@ -46,13 +55,24 @@ class Transmitter(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVers
 	frameBuffer(0) = frameHeaderBuffer
 
 
-	inline def transmit[M](message: M, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Consumer[Report])(using serializer: Serializer[M]): Unit = {
-		transmitWithAttachment[M, Null](message, null, timeout, timeUnit) { (report, dummy) => onComplete.accept(report) }
+	/**
+	 * 
+	 * @param message the message to transmit
+	 * @param msgVersion the version id of messages to produce.
+	 * @param timeout The maximum time to wait for the first chunk of bytes and between chunks of bytes are transmitted.
+	 * @param timeUnit The unit of time for the `timeout` parameter.
+	 * @param onComplete A [[Consumer]] callback that is invoked when the transmission completes either successfully or not, with a [[Transmitter.Report]].
+	 * @param serializer The serializer to be used for serializing the message into outgoing bytes.
+	 * @tparam M The type of the `message` to be sent.
+	 */
+	inline def transmit[M](message: M, msgVersion: ProtocolVersion, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Consumer[Report])(using serializer: Serializer[M]): Unit = {
+		transmitWithAttachment[M, Null](message, msgVersion, null, timeout, timeUnit) { (report, dummy) => onComplete.accept(report) }
 	}
 
 	// assume that the thread that calls this method is named "main".
 	def transmitWithAttachment[M, A](
 		message: M,
+		msgVersion: ProtocolVersion,
 		attachment: A,
 		timeout: Long = 1,
 		timeUnit: TimeUnit = TimeUnit.SECONDS
@@ -97,7 +117,7 @@ class Transmitter(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVers
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[transmit]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
 		object handler extends Writer, CompletionHandler[java.lang.Long, Boolean] { thisHandler =>
-			override def versionToSerializeAs: ProtocolVersion = msgVersionId
+			override def versionToSerializeAs: ProtocolVersion = msgVersion
 
 			override def position: Int = writeEndBuffer.position
 
@@ -149,7 +169,7 @@ class Transmitter(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVers
 			}
 
 			override def failed(exc: Throwable, dummy: Boolean): Unit = {
-				onCompleteWrapper(TransmissionFailure(exc))
+				onCompleteWrapper(TransmissionFailure(message, exc))
 			}
 		}
 
@@ -161,8 +181,8 @@ class Transmitter(channel: AsynchronousSocketChannel, msgVersionId: ProtocolVers
 				if !behindTransmissionStarted || behindTransmissionStopped then sendFrame(contentBuffers.readEnd)
 
 			case unsupported: Serializer.Unsupported =>
-				if behindTransmissionStarted then cancellationReason = SerializationUnsupported(unsupported.position, unsupported.explanation)
-				else onCompleteWrapper(SerializationUnsupported(unsupported.position, unsupported.explanation))
+				if behindTransmissionStarted then cancellationReason = SerializationUnsupported(message, unsupported.position, unsupported.explanation, true)
+				else onCompleteWrapper(SerializationUnsupported(message, unsupported.position, unsupported.explanation, false))
 		}
 	}
 }

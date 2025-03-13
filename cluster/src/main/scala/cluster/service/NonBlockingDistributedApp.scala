@@ -1,7 +1,6 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ClusterService.JoinConfig
 import cluster.service.ParticipantDelegate
 import cluster.service.ProtocolVersion
 
@@ -32,17 +31,15 @@ object NonBlockingDistributedApp {
 
 		// Start the server to listen for incoming messages
 		val myAddress = new InetSocketAddress(myIp, myPort)
-		val sayHelloToEveryone = ClusterService.start(new ClusterService.Config(
-			Map(ProtocolVersion(0) -> myAddress),
-			new JoinConfig(
-				seedsAddresses,
-				1,
-				99,
-				TimeUnit.SECONDS,
-				9,
+		val sayHelloToEveryone = ClusterService.start(
+			new ClusterService.Config(
+				myAddress,
+				Set(ProtocolVersion.OF_THIS_PROJECT),
+				new ParticipantDelegate.Config(1, 1, TimeUnit.SECONDS)
 			),
-			new ParticipantDelegate.Config(1, 1, TimeUnit.SECONDS)
-		))
+			seedsAddresses,
+			1, 10, TimeUnit.SECONDS, 3
+		)
 
 		// Connect to peers and send messages with retries
 		seedsAddresses.foreach { contact =>
