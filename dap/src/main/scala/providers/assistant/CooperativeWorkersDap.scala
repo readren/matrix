@@ -1,10 +1,10 @@
 package readren.matrix
 package providers.assistant
 
-import core.{Matrix, MatrixDoer}
+import common.CompileTime
 import providers.ShutdownAble
 import providers.assistant.CooperativeWorkersDap.*
-import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
+import providers.assistant.DoerAssistantProvider.Tag
 
 import readren.taskflow.Doer
 
@@ -29,7 +29,7 @@ object CooperativeWorkersDap {
 	// val UNSAFE: Unsafe = Unsafe.getUnsafe
 
 	trait DoerAssistant extends Doer.Assistant {
-		def id: MatrixDoer.Id
+		def id: Tag
 		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
 	}
@@ -77,7 +77,7 @@ class CooperativeWorkersDap(
 		workers.foreach(_.start())
 	}
 
-	protected class DoerAssistantImpl(override val id: MatrixDoer.Id) extends DoerAssistant { thisDoerAssistant =>
+	protected class DoerAssistantImpl(override val id: Tag) extends DoerAssistant { thisDoerAssistant =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
@@ -145,7 +145,7 @@ class CooperativeWorkersDap(
 			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 
-		override def toString: String = s"${utils.CompileTime.getTypeName[DoerAssistantImpl]}(id=$id)"
+		override def toString: String = s"${CompileTime.getTypeName[DoerAssistantImpl]}(id=$id)"
 	}
 
 	/** @return `true` if a worker was awakened.
@@ -342,7 +342,7 @@ class CooperativeWorkersDap(
 		}
 	}
 
-	override def provide(serial: MatrixDoer.Id): DoerAssistant = {
+	override def provide(serial: Tag): DoerAssistant = {
 		new DoerAssistantImpl(serial)
 	}
 
@@ -364,7 +364,7 @@ class CooperativeWorkersDap(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(utils.CompileTime.getTypeName[CooperativeWorkersDap])
+		sb.append(common.CompileTime.getTypeName[CooperativeWorkersDap])
 		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
 		sb.append(s"\trunningWorkersLatch=${runningWorkersLatch.getCount}\n")

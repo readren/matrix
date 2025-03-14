@@ -1,10 +1,9 @@
 package readren.matrix
 package providers.assistant
 
-import core.{Matrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.assistant.RoundRobinDap.{AssistantImpl, currentAssistant}
-import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
+import providers.assistant.DoerAssistantProvider.Tag
+import providers.assistant.RoundRobinDap.AssistantImpl
 
 import readren.taskflow.Doer
 
@@ -57,7 +56,7 @@ class RoundRobinDap(
 	private val assistants: IArray[AssistantImpl] = IArray.tabulate(threadPoolSize) { index => new AssistantImpl(index, failureReporter, threadFactory, queueFactory) }
 
 
-	override def provide(serial: MatrixDoer.Id): AssistantImpl =
+	override def provide(tag: Tag): AssistantImpl =
 		assistants(switcher.getAndIncrement() % assistants.length)
 
 	override def shutdown(): Unit = {

@@ -3,13 +3,14 @@ package providers.doer
 
 import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
+import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.LeastLoadedFixedWorkerDap
 
 import java.util.concurrent.*
 
 object LeastLoadedFixedWorkerDoerProvider {
 	class ProvidedDoer(
-		override val id: MatrixDoer.Id,
+		override val tag: Tag,
 		override val assistant: LeastLoadedFixedWorkerDap.AssistantImpl,
 		override val matrix: AbstractMatrix
 	) extends MatrixDoer {
@@ -28,7 +29,7 @@ class LeastLoadedFixedWorkerDoerProvider(
 	override protected val assistantProvider = new LeastLoadedFixedWorkerDap(threadPoolSize, failureReporter, threadFactory, queueFactory)
 
 	override def provide(matrix: AbstractMatrix): LeastLoadedFixedWorkerDoerProvider.ProvidedDoer = {
-		val doerId = matrix.genDoerId()
-		new LeastLoadedFixedWorkerDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
+		val tag = matrix.genTag()
+		new LeastLoadedFixedWorkerDoerProvider.ProvidedDoer(tag, assistantProvider.provide(tag), matrix)
 	}
 }

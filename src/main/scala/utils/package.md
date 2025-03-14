@@ -1,0 +1,1 @@
+Contains classes and methods that are not necessary but convenient for the user of the library.

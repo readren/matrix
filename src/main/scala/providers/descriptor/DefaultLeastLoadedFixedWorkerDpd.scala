@@ -4,7 +4,7 @@ package providers.descriptor
 import core.Matrix
 import core.Matrix.{DoerProvider, DoerProviderDescriptor, DoerProvidersManager}
 import providers.doer.LeastLoadedFixedWorkerDoerProvider
-import utils.CompileTime
+import common.CompileTime
 
 
 object DefaultLeastLoadedFixedWorkerDpd extends DoerProviderDescriptor[LeastLoadedFixedWorkerDoerProvider.ProvidedDoer](CompileTime.getTypeName[DefaultLeastLoadedFixedWorkerDpd.type]) {

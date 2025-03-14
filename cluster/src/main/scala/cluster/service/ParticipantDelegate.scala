@@ -6,7 +6,7 @@ import Protocol.*
 import cluster.channel.{Receiver, Serializer, Transmitter}
 import cluster.service.ProtocolVersion
 import cluster.service.Protocol.*
-import utils.CompileTime.getTypeName
+import common.CompileTime.getTypeName
 
 import readren.taskflow.Maybe
 

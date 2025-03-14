@@ -1,8 +1,8 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ParticipantDelegate
-import cluster.service.ProtocolVersion
+import cluster.service.{ParticipantDelegate, ProtocolVersion}
+import providers.assistant.SchedulingDap
 
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
@@ -31,14 +31,23 @@ object NonBlockingDistributedApp {
 
 		// Start the server to listen for incoming messages
 		val myAddress = new InetSocketAddress(myIp, myPort)
+
+
+		val schedulingDap = new SchedulingDap()
+		val sequencer = new ClusterService.TaskSequencer {
+			override type Assistant = SchedulingDap.SchedulingAssistant
+			override val assistant: Assistant = schedulingDap.provide(0)
+		}
+
 		val sayHelloToEveryone = ClusterService.start(
+			sequencer,
 			new ClusterService.Config(
 				myAddress,
 				Set(ProtocolVersion.OF_THIS_PROJECT),
 				new ParticipantDelegate.Config(1, 1, TimeUnit.SECONDS)
 			),
 			seedsAddresses,
-			1, 10, TimeUnit.SECONDS, 3
+			1, 10, 3
 		)
 
 		// Connect to peers and send messages with retries

@@ -1,10 +1,9 @@
 package readren.matrix
 package providers.assistant
 
-import core.MatrixDoer
 import providers.ShutdownAble
-import providers.assistant.LeastLoadedFixedWorkerDap.{AssistantImpl, currentAssistant}
-import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
+import providers.assistant.DoerAssistantProvider.Tag
+import providers.assistant.LeastLoadedFixedWorkerDap.AssistantImpl
 
 import readren.taskflow.Doer
 
@@ -54,7 +53,7 @@ class LeastLoadedFixedWorkerDap(
 
 	private val switcher = new AtomicInteger(0)
 
-	override def provide(serial: MatrixDoer.Id): AssistantImpl = {
+	override def provide(tag: Tag): AssistantImpl = {
 		val assistantsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
 		val pickedAssistant =
 			if assistantsWithShortestWorkQueue.tail == Nil then assistantsWithShortestWorkQueue.head

@@ -2,6 +2,7 @@ package readren.matrix
 package providers.doer
 
 import core.{AbstractMatrix, MatrixDoer}
+import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.SchedulingDap
 
 import readren.taskflow.SchedulingExtension
@@ -10,7 +11,7 @@ import java.util.concurrent.{Executors, ThreadFactory}
 
 object SchedulingDoerProvider {
 	class ProvidedDoer(
-		override val id: MatrixDoer.Id,
+		override val tag: Tag,
 		override val assistant: SchedulingDap.SchedulingAssistant,
 		override val matrix: AbstractMatrix
 	) extends MatrixDoer, SchedulingExtension {
@@ -29,7 +30,7 @@ class SchedulingDoerProvider(
 	override protected val assistantProvider: SchedulingDap = new SchedulingDap(applyMemoryFence, threadPoolSize, failureReporter, threadFactory)
 
 	override def provide(matrix: AbstractMatrix): SchedulingDoerProvider.ProvidedDoer = {
-		val doerId = matrix.genDoerId()
-		new SchedulingDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
+		val tag = matrix.genTag()
+		new SchedulingDoerProvider.ProvidedDoer(tag, assistantProvider.provide(tag), matrix)
 	}	
 }

@@ -1,7 +1,8 @@
 package readren.matrix
 package core
 
-import core.Matrix.{DoerProvider, DoerProviderDescriptor, DoerProvidersManager}
+import core.Matrix.DoerProviderDescriptor
+import providers.assistant.DoerAssistantProvider.Tag
 
 import java.net.{InetAddress, URI}
 import java.util.concurrent.atomic.AtomicLong
@@ -30,7 +31,7 @@ abstract class AbstractMatrix(val name: String) { thisMatrix =>
 
 	private val matrixDoerIdSequencer = new AtomicLong(0)
 	
-	def genDoerId(): MatrixDoer.Id =
+	def genTag(): Tag =
 		matrixDoerIdSequencer.getAndIncrement()
 
 	def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): D

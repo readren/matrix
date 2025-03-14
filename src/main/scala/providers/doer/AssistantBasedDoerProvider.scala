@@ -4,33 +4,11 @@ package providers.doer
 import core.Matrix.DoerProvider
 import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
-import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
+import providers.assistant.DoerAssistantProvider
 
 import readren.taskflow.Doer
 
 import java.util.concurrent.TimeUnit
-
-object AssistantBasedDoerProvider {
-	/**
-	 * Defines how assistant providers must expose their methods to be adapted by [[AssistantBasedDoerProvider]].
-	 *
-	 * Implementations of this trait provide assistants that serve as parameters to construct [[MatrixDoer]] instances.
-	 * @tparam A The type of assistant provided. Must extend [[Doer.Assistant]].
-	 */
-	trait DoerAssistantProvider[+A <: Doer.Assistant] {
-
-		/**
-		 * Supplies a [[Doer.Assistant]] to be used in constructing a [[MatrixDoer]].
-		 *
-		 * @param serial
-		 *   A unique identifier for the [[MatrixDoer]] that the provided [[Doer.Assistant]] will be associated with.
-		 *   This identifier is unique for each call to this method. Implementations may use the `serial` for purposes
-		 *   such as debugging or tracking, but this is optional and not required for the assistant's functionality.
-		 *   The method may return the same [[ProvidedAssistant]] instance for different calls.
-		 */
-		def provide(serial: MatrixDoer.Id): A
-	}
-}
 
 /**
  * Adapts an assistant provider to a [[DoerProvider]].

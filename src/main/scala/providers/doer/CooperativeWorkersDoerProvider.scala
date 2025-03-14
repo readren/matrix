@@ -4,12 +4,13 @@ package providers.doer
 import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
 import providers.assistant.CooperativeWorkersDap
+import providers.assistant.DoerAssistantProvider.Tag
 
 import java.util.concurrent.{Executors, ThreadFactory}
 
 object CooperativeWorkersDoerProvider {
 	class ProvidedDoer(
-		override val id: MatrixDoer.Id,
+		override val tag: Tag,
 		override val assistant: CooperativeWorkersDap.DoerAssistant,
 		override val matrix: AbstractMatrix
 	) extends MatrixDoer {
@@ -28,7 +29,7 @@ class CooperativeWorkersDoerProvider(
 	override protected val assistantProvider = new CooperativeWorkersDap(applyMemoryFence, threadPoolSize, failureReporter, threadFactory)
 
 	override def provide(matrix: AbstractMatrix): CooperativeWorkersDoerProvider.ProvidedDoer = {
-		val doerId = matrix.genDoerId()
-		new CooperativeWorkersDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
+		val tag = matrix.genTag()
+		new CooperativeWorkersDoerProvider.ProvidedDoer(tag, assistantProvider.provide(tag), matrix)
 	}
 }

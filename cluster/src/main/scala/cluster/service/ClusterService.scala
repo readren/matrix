@@ -4,7 +4,9 @@ package cluster.service
 import cluster.service.ClusterService.*
 import cluster.service.Protocol.{ContactAddress, ContactCard, Member}
 import cluster.service.ProtocolVersion
-import pruebas.Scheduler
+
+import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.taskflow.{Doer, SchedulingExtension}
 
 import java.net.SocketAddress
 import java.nio.channels.{AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler}
@@ -13,6 +15,8 @@ import scala.collection.MapView
 import scala.jdk.CollectionConverters.*
 
 object ClusterService {
+	
+	abstract class TaskSequencer extends Doer, SchedulingExtension
 
 	sealed trait ClusterState
 
@@ -37,28 +41,26 @@ object ClusterService {
 
 	class Config(val myAddress: ContactAddress, val supportedVersions: Set[ProtocolVersion], val peerDelegateConfig: ParticipantDelegate.Config)
 
-	def start(serviceConfig: Config, seeds: Iterable[ContactAddress], retryMinDelay: Long, retryMaxDelay: Long, timeUnit: TimeUnit, maxAttempts: Int): ClusterService = {
+	def start(taskSequencer: TaskSequencer, serviceConfig: Config, seeds: Iterable[ContactAddress], retryMinDelay: MilliDuration, retryMaxDelay: MilliDuration, maxAttempts: Int): ClusterService = {
 
 		val serverChannel = AsynchronousServerSocketChannel.open()
 			.bind(serviceConfig.myAddress)
 
-		val service = new ClusterService(serviceConfig, serverChannel)
+		val service = new ClusterService(taskSequencer, serviceConfig, serverChannel)
 		// start the listening servers
 		service.acceptClientsSequentially(serverChannel)
-		service.connectToSeeds(seeds, retryMinDelay, retryMaxDelay, timeUnit, maxAttempts)
+		service.connectToSeeds(seeds, retryMinDelay, retryMaxDelay, maxAttempts)
 		service
 	}
 }
 
-class ClusterService private(config: ClusterService.Config, val serverChannel: AsynchronousServerSocketChannel) { thisClusterService =>
+class ClusterService private(sequencer: TaskSequencer, config: ClusterService.Config, val serverChannel: AsynchronousServerSocketChannel) { thisClusterService =>
 
 	private var participantDelegateByContactAddress: Map[ContactAddress, ParticipantDelegate] = Map.empty
 
 	@volatile private var clusterState: ClusterState = Joining
 
 	private val clusterEventsListeners: java.util.WeakHashMap[ClusterEventListener, Unit] = new java.util.WeakHashMap()
-
-	val scheduler: Scheduler = new Scheduler
 
 	def doesAClusterExist: Boolean = participantDelegateByContactAddress.exists(_._2.peerMembershipStateAccordingToMe == Member)
 	
@@ -99,7 +101,7 @@ class ClusterService private(config: ClusterService.Config, val serverChannel: A
 	}
 
 	/** Tries to join to the cluster. */
-	private def connectToSeeds(seeds: Iterable[ContactAddress], retryMinDelay: Long, retryMaxDelay: Long, timeUnit: TimeUnit, maxAttempts: Int): Unit = {
+	private def connectToSeeds(seeds: Iterable[ContactAddress], retryMinDelay: MilliDuration, retryMaxDelay: MilliDuration, maxAttempts: Int): Unit = {
 		// Send join requests to seeds with retries
 
 		for seed <- seeds do {
@@ -123,7 +125,8 @@ class ClusterService private(config: ClusterService.Config, val serverChannel: A
 					override def failed(exc: Throwable, attemptNumber: Integer): Unit = {
 						if attemptNumber <= maxAttempts then {
 							val retryDelay = retryMinDelay * attemptNumber * attemptNumber
-							scheduler.schedule(math.max(retryMaxDelay, retryDelay), timeUnit) { () =>
+							val schedule: sequencer.Schedule = sequencer.newDelaySchedule(math.max(retryMaxDelay, retryDelay))
+							sequencer.scheduleSequentially(schedule) { () =>
 								connect(attemptNumber + 1)
 							}
 						}

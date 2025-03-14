@@ -19,8 +19,25 @@ ThisBuild / scalacOptions ++= Seq(
 	"-feature",
 	"-explain",
 )
+lazy val common = (project in file("common"))
+	.settings(
+		name := "common",
+		idePackagePrefix := Some("readren.matrix")
+	)
 
-lazy val root = (project in file("."))
+lazy val doerAssistantProviders = (project in file("dap")).dependsOn(common)
+	.settings(
+		name := "dap",
+		idePackagePrefix := Some("readren.matrix")
+	)
+
+lazy val cluster = (project in file("cluster")).dependsOn(common, doerAssistantProviders)
+	.settings(
+		name := "cluster",
+		idePackagePrefix := Some("readren.matrix")
+	)
+
+lazy val root = (project in file(".")).dependsOn(common, doerAssistantProviders)
 	.settings(
 		name := "matrix",
 		idePackagePrefix := Some("readren.matrix")
@@ -32,11 +49,6 @@ lazy val checked = (project in file("checked")).dependsOn(root)
 		idePackagePrefix := Some("readren.matrix")
 	)
 
-lazy val cluster = (project in file("cluster")).dependsOn(root)
-	.settings(
-		name := "cluster",
-		idePackagePrefix := Some("readren.matrix")
-	)
 
 enablePlugins(DockerPlugin)
 

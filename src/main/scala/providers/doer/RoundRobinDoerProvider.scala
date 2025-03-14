@@ -3,13 +3,14 @@ package providers.doer
 
 import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
+import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.RoundRobinDap
 
 import java.util.concurrent.{BlockingQueue, Executors, LinkedBlockingQueue, ThreadFactory}
 
 object RoundRobinDoerProvider {
 	class ProvidedDoer(
-		override val id: MatrixDoer.Id,
+		override val tag: Tag,
 		override val assistant: RoundRobinDap.AssistantImpl,
 		override val matrix: AbstractMatrix
 	) extends MatrixDoer {
@@ -28,7 +29,7 @@ class RoundRobinDoerProvider(
 	override protected val assistantProvider = new RoundRobinDap(threadPoolSize, failureReporter, threadFactory, queueFactory)
 
 	override def provide(matrix: AbstractMatrix): RoundRobinDoerProvider.ProvidedDoer = {
-		val doerId = matrix.genDoerId()
-		new RoundRobinDoerProvider.ProvidedDoer(doerId, assistantProvider.provide(doerId), matrix)
+		val tag = matrix.genTag()
+		new RoundRobinDoerProvider.ProvidedDoer(tag, assistantProvider.provide(tag), matrix)
 	}	
 }

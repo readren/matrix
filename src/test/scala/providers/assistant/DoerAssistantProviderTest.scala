@@ -2,7 +2,6 @@ package readren.matrix
 package providers.assistant
 
 import providers.ShutdownAble
-import providers.doer.AssistantBasedDoerProvider.DoerAssistantProvider
 
 import munit.ScalaCheckEffectSuite
 import readren.taskflow.Doer

@@ -1,10 +1,10 @@
 package readren.matrix
 package providers.assistant
 
-import core.MatrixDoer
+import common.CompileTime
 import providers.assistant.CooperativeWorkersDap.*
+import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.SchedulingDap.*
-import providers.doer.AssistantBasedDoerProvider
 
 import readren.taskflow.SchedulingExtension
 import readren.taskflow.SchedulingExtension.MilliDuration
@@ -80,13 +80,13 @@ class SchedulingDap(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDap, AssistantBasedDoerProvider.DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
+) extends CooperativeWorkersDap, DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
 
-	override def provide(serial: MatrixDoer.Id): SchedulingAssistant = {
-		new SchedulingAssistantImpl(serial)
+	override def provide(tag: Tag): SchedulingAssistant = {
+		new SchedulingAssistantImpl(tag)
 	}
 
-	private class SchedulingAssistantImpl(anId: MatrixDoer.Id) extends DoerAssistantImpl(anId), SchedulingAssistant { thisSchedulingAssistant =>
+	private class SchedulingAssistantImpl(aTag: Tag) extends DoerAssistantImpl(aTag), SchedulingAssistant { thisSchedulingAssistant =>
 
 		override type Schedule = ScheduleImpl
 
@@ -420,7 +420,7 @@ class SchedulingDap(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(utils.CompileTime.getTypeName[SchedulingDap]).append('\n')
+		sb.append(CompileTime.getTypeName[SchedulingDap]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)

@@ -1,11 +1,9 @@
 package readren.matrix
 package providers
 
+import common.CompileTime.getTypeName
 import core.Matrix.*
 import core.MatrixDoer
-import utils.CompileTime.getTypeName
-
-import readren.taskflow.Doer
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
