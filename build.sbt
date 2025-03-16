@@ -4,7 +4,7 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.6.3"
 
 ThisBuild / libraryDependencies ++= Seq(
-	"readren" %% "taskflow-core" % "0.2.7-SNAPSHOT",
+	"readren" %% "taskflow-core" % "0.2.8-SNAPSHOT",
 
 	"com.outr" %% "scribe" % "3.16.0",
 	"com.outr" %% "scribe-file" % "3.16.0",

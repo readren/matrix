@@ -127,6 +127,11 @@ object Protocol {
 	 */
 	type ContactCard = (ContactAddress, Set[ProtocolVersion])
 
+	extension (contactCard: ContactCard) {
+		inline def address: ContactAddress = contactCard._1
+		inline def supportedVersions: Set[ProtocolVersion] = contactCard._2
+	}
+
 	given Serializer[Protocol] = new Serializer[Protocol] {
 		override def serialize(message: Protocol, writer: Serializer.Writer): Serializer.Outcome = {
 			message match {
