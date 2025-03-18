@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.{ParticipantDelegate, ProtocolVersion}
+import cluster.service.{MemberDelegate, ProtocolVersion}
 import providers.assistant.SchedulingDap
 
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}

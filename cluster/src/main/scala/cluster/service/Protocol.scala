@@ -1,11 +1,13 @@
 package readren.matrix
 package cluster.service
 
-import Protocol.*
-import cluster.channel.{Deserializer, Serializer}
-import cluster.service.ProtocolVersion
 import cluster.*
-
+import cluster.channel.Nio2Serializers.given
+import cluster.channel.{Deserializer, Serializer}
+import cluster.service.Protocol.*
+import cluster.service.ProtocolVersion
+import cluster.service.ProtocolVersion.given
+import channel.CommonSerializers.given
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
@@ -16,11 +18,11 @@ sealed trait Protocol
  * 	- propagate the knowledge of its existence;
  * 	- be replied with [[JoinApprovalMembers]] if a cluster was already created;
  * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator. */
-case class Hello(myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion]) extends Protocol
+case class Hello(myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion], cardsOfOtherParticipantsIKnow: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 /**
  * Response to the [[Hello]] message that is sent by a participant to indicate that it does not support any of the [[ProtocolVersion]]s specified in the received [[Hello]] message.
- **/
+ * */
 case object SupportedVersionsMismatch extends Protocol
 
 /**
@@ -30,13 +32,15 @@ case object SupportedVersionsMismatch extends Protocol
 case class NoClusterIAmAwareOf(knowAspirantsCards: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 
-/** Message sent by an aspirant to the aspirant with the lowest [[ContactAddress]] that supports the highest protocol version after the known aspirants set stabilizes.
+/** Message sent by an aspirant A to an aspirant B when A starts or stops proposing B should be the creator of the cluster.
+ * An aspirant starts proposing a candidate when, from his viewpoint, he knows all other aspirants.
+ * The chosen aspirant is the one with the highest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
  * */
-case class YouShouldCreateTheCluster(knownAspirantsCards: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
+case class ClusterCreatorProposal(proposedCandidate: ContactAddress) extends Protocol
 
 
 /** Informs that the sender has created a cluster.
- * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[YouShouldCreateTheCluster]] message to the sender.
+ * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender.
  *
  * @param recommendedWaitTime the recommended time that the receiver should wait before starting the join process with [[Hello]]. */
 case class ICreatedACluster(recommendedWaitTime: DurationMillis) extends Protocol
@@ -82,7 +86,7 @@ case object IAmLeaving extends Protocol
 /** Message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(stateId: RingSerial, participantsAddresses: Set[ContactAddress]) extends Protocol
 
-/** Message that a participant A should send to all other participants when a participant B sends him the [[Hello]] message a second time, which is a symptom that B has restarted.  */
+/** Message that a participant A should send to all other participants when a participant B sends him the [[Hello]] message a second time, which is a symptom that B has restarted. */
 case class ParticipantHasBeenRestarted(restartedParticipantAddress: ContactAddress) extends Protocol
 
 /** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
@@ -104,19 +108,25 @@ object Protocol {
 	type Instant = Long
 
 	sealed trait MembershipState
+
 	case object Aspirant extends MembershipState
+
 	case object Member extends MembershipState
 
 	sealed trait MyInfoAboutOtherParticipant
+
 	case object Incompatible extends MyInfoAboutOtherParticipant
+
 	case object Unreachable extends MyInfoAboutOtherParticipant
+
 	case class Connected(hisMembershipAccordingToMe: MembershipState, hisViewpoint: ParticipantViewpoint) extends MyInfoAboutOtherParticipant
+
 	case class ParticipantViewpoint(stateSerial: RingSerial, lastChangeInstant: Instant, membership: MembershipState, communicationStatusByParticipants: Map[ContactAddress, CommunicationStatus])
 
 	enum CommunicationStatus {
 		case connected, incompatible, unreachable
 	}
-	
+
 	/**
 	 * A cross-version contact information card that a participant use to share and propagate its existence among other participants.
 	 *
@@ -142,12 +152,12 @@ object Protocol {
 				case SupportedVersionsMismatch =>
 					writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
 					Serializer.Success
-					
+
 				case noAware: NoClusterIAmAwareOf =>
 					writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
 					writer.writeFull(noAware)
 
-				case ysc: YouShouldCreateTheCluster =>
+				case ysc: ClusterCreatorProposal =>
 					writer.putByte(DISCRIMINATOR_YouShouldCreateTheCluster)
 					writer.writeFull(ysc)
 
@@ -194,11 +204,11 @@ object Protocol {
 				case sc: StateChanged =>
 					writer.putByte(DISCRIMINATOR_StateChanged)
 					writer.writeFull(sc)
-					
-				case phr: ParticipantHasBeenRestarted => 
+
+				case phr: ParticipantHasBeenRestarted =>
 					writer.putByte(DISCRIMINATOR_ParticipantHasBeenRestarted)
 					writer.writeFull(phr)
-					
+
 			}
 		}
 	}
@@ -217,7 +227,7 @@ object Protocol {
 				case DISCRIMINATOR_NoClusterIAmAwareOf =>
 					reader.read[NoClusterIAmAwareOf]
 				case DISCRIMINATOR_YouShouldCreateTheCluster =>
-					reader.read[YouShouldCreateTheCluster]
+					reader.read[ClusterCreatorProposal]
 				case DISCRIMINATOR_ICreatedACluster =>
 					reader.read[ICreatedACluster]
 				case DISCRIMINATOR_JoinApprovalMembers =>
@@ -265,9 +275,12 @@ object Protocol {
 
 	given Serializer[JoinApprovalMembers] = (message: JoinApprovalMembers, writer: Serializer.Writer) => ???
 
-	given Serializer[NoClusterIAmAwareOf] = (message: NoClusterIAmAwareOf, writer: Serializer.Writer) => ???
+	given Serializer[NoClusterIAmAwareOf] = (message: NoClusterIAmAwareOf, writer: Serializer.Writer) => {
+		writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
+		writer.write(message.knowAspirantsCards)
+	}
 
-	given Serializer[YouShouldCreateTheCluster] = (message: YouShouldCreateTheCluster, writer: Serializer.Writer) => ???
+	given Serializer[ClusterCreatorProposal] = (message: ClusterCreatorProposal, writer: Serializer.Writer) => ???
 
 	given Serializer[ICreatedACluster] = (message: ICreatedACluster, writer: Serializer.Writer) => ???
 
@@ -290,14 +303,13 @@ object Protocol {
 	given Serializer[ParticipantHasBeenRestarted] = (message: ParticipantHasBeenRestarted, writer: Serializer.Writer) => ???
 
 
-
 	given Deserializer[Hello] = (reader: Deserializer.Reader) => ???
 
 	given Deserializer[JoinApprovalMembers] = (reader: Deserializer.Reader) => ???
 
 	given Deserializer[NoClusterIAmAwareOf] = (reader: Deserializer.Reader) => ???
 
-	given Deserializer[YouShouldCreateTheCluster] = (reader: Deserializer.Reader) => ???
+	given Deserializer[ClusterCreatorProposal] = (reader: Deserializer.Reader) => ???
 
 	given Deserializer[ICreatedACluster] = (reader: Deserializer.Reader) => ???
 
@@ -316,5 +328,6 @@ object Protocol {
 	given Deserializer[Heartbeat] = (reader: Deserializer.Reader) => ???
 
 	given Deserializer[StateChanged] = (reader: Deserializer.Reader) => ???
+
 	given Deserializer[ParticipantHasBeenRestarted] = (reader: Deserializer.Reader) => ???
 }

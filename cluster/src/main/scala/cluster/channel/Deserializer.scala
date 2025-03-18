@@ -3,10 +3,11 @@ package cluster.channel
 
 import cluster.channel.Deserializer.{Problem, Reader}
 import cluster.misc.VLQ
-
-import readren.matrix.cluster.service.ProtocolVersion
+import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
+import scala.language.experimental.erasedDefinitions
+import scala.util.NotGiven
 
 object Deserializer {
 	/** The number of consecutive content bytes required by the operation that calls [[Reader.getContentBytes]] with the greatest argument. There are two: [[Reader.readLong]] and [[Reader.readDouble]]. */
@@ -35,10 +36,23 @@ object Deserializer {
 		}
 	}
 
+	trait ValueOrReferenceTest[T] {
+		def isValueType: Boolean
+	}
+
+	given whenReference[T](using ev: T <:< AnyRef): ValueOrReferenceTest[T] with {
+		def isValueType = false
+	}
+
+	given whenValue[T](using ev: T <:< AnyVal): ValueOrReferenceTest[T] with {
+		def isValueType = true
+	}
+
+
 	abstract class Reader extends VLQ.ByteReader {
 
 		/** Memorizes the components that were already deserialized in the order they were serialized. */
-		private val refs: scala.collection.mutable.ArrayBuffer[AnyRef] = scala.collection.mutable.ArrayBuffer.empty
+		private val refs: scala.collection.mutable.ArrayBuffer[Any] = scala.collection.mutable.ArrayBuffer.empty
 
 
 		/** The version ID of the message type that the deserializer should expect.
@@ -65,7 +79,7 @@ object Deserializer {
 				true
 			} else false
 		}
-		
+
 		/** Reads the next content [[Byte]] from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
@@ -95,7 +109,7 @@ object Deserializer {
 		inline def readIntVlq(): Int = {
 			VLQ.decodeInt(this)
 		}
-		
+
 		inline def readUnsignedIntVlq(): Int = {
 			VLQ.decodeUnsignedInt(this)
 		}
@@ -108,11 +122,11 @@ object Deserializer {
 		inline def readLong(): Long = {
 			getContentBytes(8).getLong
 		}
-		
+
 		inline def readLongVlq(): Long = {
 			VLQ.decodeLong(this)
 		}
-		
+
 		inline def readUnsignedLongVlq(): Long = {
 			VLQ.decodeUnsignedLong(this)
 		}
@@ -162,10 +176,10 @@ object Deserializer {
 		 * **Important:** This method must be paired with [[Serializer.Writer.write]] on the serializer side.
 		 * Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 */
-		def read[R <: AnyRef](using deserializer: Deserializer[R]): R | Problem = {
+		def read[R](using deserializer: Deserializer[R], ivR: ValueOrReferenceTest[R]): R | Problem = {
 			// if next byte isn't a back reference header or is an escape then we have no back reference here.
-			if !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER then {
-				val ref = read[R]
+			if !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER || ivR.isValueType then {
+				val ref = readFull[R]
 				refs.addOne(ref)
 				ref
 			} else {

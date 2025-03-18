@@ -1,6 +1,8 @@
 package readren.matrix
 package cluster.service
 
+import cluster.channel.{Deserializer, Serializer}
+
 /** Represents a version of the [[ClusterService]]'s [[Protocol]] in a compact form (one byte), without losing the ability to determine which of a group of versions is the newest, as long as such versions are sufficiently close. */
 opaque type ProtocolVersion = Byte
 
@@ -12,7 +14,7 @@ object ProtocolVersion {
 	val OF_THIS_PROJECT: ProtocolVersion = 0
 
 	inline def apply(identifier: Byte): ProtocolVersion = identifier
-	
+
 	extension (thisVersion: ProtocolVersion) {
 		def identifier: Byte = thisVersion
 		def isNewerThan(otherVersion: ProtocolVersion): Boolean = {
@@ -20,5 +22,15 @@ object ProtocolVersion {
 		}
 	}
 
-	given ProtocolVersion = ProtocolVersion(0)
+	given Serializer[ProtocolVersion] = new Serializer[ProtocolVersion] {
+		override def serialize(message: ProtocolVersion, writer: Serializer.Writer): Serializer.Outcome = {
+			writer.putByte(message)
+			Serializer.Success
+		}
+	}
+	
+	given Deserializer[ProtocolVersion] = new Deserializer[ProtocolVersion] {
+		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | ProtocolVersion =
+			reader.readByte()
+	}
 }
