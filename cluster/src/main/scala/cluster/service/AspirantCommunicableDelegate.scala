@@ -1,23 +1,14 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.{Receiver, Serializer, Transmitter}
-import cluster.service.ClusterService.TaskSequencer
+import cluster.channel.Receiver
 import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
-import common.CompileTime.getTypeName
-
-import readren.taskflow.Maybe
 
 import java.net.SocketAddress
-import java.nio.channels.AsynchronousSocketChannel
-import java.util.concurrent.TimeUnit
 
-object AspirantDelegate {
-}
-
-/** A participant delegate when the [[ClusterService]] has the [[AspirantBehavior]]. */
-class AspirantDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends ParticipantDelegate(clusterService, config, peerRemoteAddress) {
+/** A communicable participant's delegate suited for a [[ClusterService]] with an [[AspirantBehavior]]. */
+class AspirantCommunicableDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends CommunicableDelegate(peerRemoteAddress, config), AspirantDelegate(clusterService) {
 
 	var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
 
@@ -55,8 +46,10 @@ class AspirantDelegate(clusterService: ClusterService, clusterServiceBehavior: c
 				case ClusterCreatorProposal(candidateProposedByPeer) =>
 					clusterCreatorCandidateProposedByPeer = candidateProposedByPeer
 					if candidateProposedByPeer == clusterService.myAddress then {
-						if clusterServiceBehavior.participantByAddress.forall(entry => entry._2.clusterCreatorCandidateProposedByPeer == clusterService.myAddress) then {
-							
+						if clusterServiceBehavior.participantByAddress.view.collect {
+							case (_, delegate: AspirantCommunicableDelegate) => delegate.clusterCreatorCandidateProposedByPeer == clusterService.myAddress
+						}.forall(identity) then {
+							clusterService.proposeClusterCreator()
 						}
 					} else if !clusterServiceBehavior.participantByAddress.contains(candidateProposedByPeer) then {
 						clusterService.startConnectionTo(candidateProposedByPeer)

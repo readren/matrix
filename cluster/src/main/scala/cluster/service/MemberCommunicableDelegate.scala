@@ -6,14 +6,8 @@ import cluster.service.Protocol.*
 
 import java.net.SocketAddress
 
-object MemberDelegate {
-
-
-}
-
-/** A participant delegate when the [[ClusterService]] has the[[MemberBehavior]]. */
-class MemberDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends ParticipantDelegate(clusterService, config, peerRemoteAddress) {
-
+/** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
+class MemberCommunicableDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends CommunicableDelegate(peerRemoteAddress, config), MemberDelegate(clusterService) {
 
 	protected def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {

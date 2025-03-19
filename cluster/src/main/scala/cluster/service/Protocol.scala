@@ -107,11 +107,11 @@ object Protocol {
 	/** Milliseconds since 1970-01-01T00:00:00Z */
 	type Instant = Long
 
-	sealed trait MembershipState
+	sealed trait MembershipStatus
 
-	case object Aspirant extends MembershipState
+	case object Aspirant extends MembershipStatus
 
-	case object Member extends MembershipState
+	case object Member extends MembershipStatus
 
 	sealed trait MyInfoAboutOtherParticipant
 
@@ -119,9 +119,9 @@ object Protocol {
 
 	case object Unreachable extends MyInfoAboutOtherParticipant
 
-	case class Connected(hisMembershipAccordingToMe: MembershipState, hisViewpoint: ParticipantViewpoint) extends MyInfoAboutOtherParticipant
+	case class Connected(hisMembershipAccordingToMe: MembershipStatus, hisViewpoint: ParticipantViewpoint) extends MyInfoAboutOtherParticipant
 
-	case class ParticipantViewpoint(stateSerial: RingSerial, lastChangeInstant: Instant, membership: MembershipState, communicationStatusByParticipants: Map[ContactAddress, CommunicationStatus])
+	case class ParticipantViewpoint(stateSerial: RingSerial, lastChangeInstant: Instant, membership: MembershipStatus, communicationStatusByParticipants: Map[ContactAddress, CommunicationStatus])
 
 	enum CommunicationStatus {
 		case connected, incompatible, unreachable

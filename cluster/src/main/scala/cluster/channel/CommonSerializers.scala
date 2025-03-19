@@ -59,6 +59,7 @@ object CommonSerializers {
 		new String(bytes, StandardCharsets.UTF_8)
 	}
 
+	//// Set
 	given setSerializer[E](using sE: Serializer[E]): Serializer[Set[E]] = (message: Set[E], writer: Serializer.Writer) => {
 		writer.putIntVlq(message.size)
 
@@ -70,7 +71,6 @@ object CommonSerializers {
 		}
 		outcome
 	}
-	
 	
 	given setDeserializer[E](using dE: Deserializer[E], vorE: ValueOrReferenceTest[E]): Deserializer[Set[E]] = new Deserializer[Set[E]] {
 		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | Set[E] = {
@@ -89,6 +89,7 @@ object CommonSerializers {
 		}
 	}
 
+	//// Map
 	given mapSerializer[K, V](using sK: Serializer[K], sV: Serializer[V]): Serializer[Map[K, V]] = (message: Map[K, V], writer: Serializer.Writer) => {
 		writer.putIntVlq(message.size)
 
