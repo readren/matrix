@@ -4,25 +4,25 @@ package cluster.service
 import cluster.channel.{Receiver, Transmitter}
 import cluster.service.Protocol.*
 
-import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
+
 
 sealed trait Communicability {
 	def isCommunicable: Boolean
 }
 
-abstract class Incommunicable extends Communicability { thisIncomunicable: ParticipantDelegate =>
+trait Incommunicable extends Communicability { 
 	override def isCommunicable: Boolean = false
 }
 
-abstract class Communicable(val peerRemoteAddress: SocketAddress, config: ParticipantDelegate.Config) extends Communicability { thisCommunicable: ParticipantDelegate =>
+trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDelegate.Config) extends Communicability { thisCommunicable: ParticipantDelegate =>
 	protected var peerChannel: AsynchronousSocketChannel = null
 	protected var receiverFromPeer: Receiver = null
 	protected var transmitterToPeer: Transmitter = null
 	protected var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT
 
 	override def isCommunicable: Boolean = true
-	
+
 	protected def startReceiving(): Unit
 
 	def startAsServer(peerChannel: AsynchronousSocketChannel): Unit = {
@@ -65,7 +65,7 @@ abstract class Communicable(val peerRemoteAddress: SocketAddress, config: Partic
 	}
 
 	protected def handle(hello: Hello): Unit = {
-		// update my viewpoint of the peer's membership. 
+		// update my viewpoint of the peer's membership.
 		peerMembershipStatusAccordingToMe match {
 			case null =>
 				peerMembershipStatusAccordingToMe = Aspirant
@@ -116,10 +116,11 @@ abstract class Communicable(val peerRemoteAddress: SocketAddress, config: Partic
 
 	protected[service] def handleReconnection(newChannel: AsynchronousSocketChannel): MemberCommunicableDelegate = ???
 
-	protected[service] def notifyOtherParticipantChannelHasBeenClosed(otherParticipantAddress: ContactAddress): Unit = ???
+	protected[service] def notifyPeerThatOtherParticipantChannelHasBeenClosed(otherParticipantAddress: ContactAddress): Unit = ???
 
 	protected def tryToReconnect(): Unit = ???
 
 	protected[service] def closeChannel(): Unit = ???
-	
+
 }
+

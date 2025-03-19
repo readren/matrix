@@ -80,7 +80,7 @@ object CommonSerializers {
 				reader.read[E] match {
 					case problem: Problem =>
 						return problem
-					case k: E =>
+					case k: E @unchecked =>
 						builder.addOne(k)
 				}
 				count -= 1
@@ -110,10 +110,10 @@ object CommonSerializers {
 				reader.read[K] match {
 					case problem: Problem =>
 						return problem
-					case k: K =>
+					case k: K @unchecked =>
 						reader.read[V] match {
 							case problem: Problem => problem
-							case v: V => builder.addOne(k, v)
+							case v: V @unchecked => builder.addOne(k, v)
 						}
 				}
 				count -= 1

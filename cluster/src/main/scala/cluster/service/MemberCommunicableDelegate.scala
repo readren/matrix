@@ -7,9 +7,9 @@ import cluster.service.Protocol.*
 import java.net.SocketAddress
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberCommunicableDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends CommunicableDelegate(peerRemoteAddress, config), MemberDelegate(clusterService) {
+class MemberCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends MemberDelegate, Communicable(peerRemoteAddress, config)  {
 
-	protected def startReceiving(): Unit = {
+	override protected def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 			case fault: Receiver.Fault =>
 				scribe.error(s"Failure while receiving a message from the peer $peerChannel: $fault")

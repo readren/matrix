@@ -53,22 +53,23 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 	export config.myAddress
 
 	abstract class Behavior {
-		def addCommunicableParticipant(participantAddress: ContactAddress): CommunicableDelegate
-		def addIncommunicableParticipant(participantAddress: ContactAddress): IncommunicableDelegate
+		def createAndAddCommunicableParticipant(participantAddress: ContactAddress): ParticipantDelegate & Communicable
+
+		def createAndAddIncommunicableParticipant(participantAddress: ContactAddress): ParticipantDelegate & Incommunicable
 
 		def removeParticipant(participantAddress: ContactAddress): Unit
 
-		def participantByAddress: Map[ContactAddress, ParticipantDelegate]
+		def participantByAddress: Map[ContactAddress, ParticipantDelegate & Communicability]
 	}
 
-	class AspirantBehavior(var aspirantDelegateByContactAddress: Map[ContactAddress, AspirantDelegate]) extends Behavior {
-		override def addCommunicableParticipant(participantAddress: ContactAddress): AspirantCommunicableDelegate = {
+	class AspirantBehavior(var aspirantDelegateByContactAddress: Map[ContactAddress, AspirantDelegate & Communicability]) extends Behavior {
+		override def createAndAddCommunicableParticipant(participantAddress: ContactAddress): AspirantCommunicableDelegate = {
 			val newParticipant = new AspirantCommunicableDelegate(thisClusterService, this, config.participantDelegatesConfig, participantAddress)
 			aspirantDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
 		}
 
-		override def addIncommunicableParticipant(participantAddress: ContactAddress): AspirantIncommunicableDelegate = {
+		override def createAndAddIncommunicableParticipant(participantAddress: ContactAddress): AspirantIncommunicableDelegate = {
 			val newParticipant = new AspirantIncommunicableDelegate(thisClusterService)
 			aspirantDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
@@ -77,17 +78,18 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 		override def removeParticipant(participantAddress: ContactAddress): Unit =
 			aspirantDelegateByContactAddress -= participantAddress
 
-		override def participantByAddress: Map[ContactAddress, AspirantDelegate] =
+		override def participantByAddress: Map[ContactAddress, AspirantDelegate & Communicability] =
 			aspirantDelegateByContactAddress
 	}
 
-	class MemberBehavior(var memberDelegateByContactAddress: Map[ContactAddress, MemberDelegate]) extends Behavior {
-		override def addCommunicableParticipant(participantAddress: ContactAddress): MemberCommunicableDelegate = {
+	class MemberBehavior(var memberDelegateByContactAddress: Map[ContactAddress, MemberDelegate & Communicability]) extends Behavior {
+		override def createAndAddCommunicableParticipant(participantAddress: ContactAddress): MemberCommunicableDelegate = {
 			val newParticipant = MemberCommunicableDelegate(thisClusterService, this, config.participantDelegatesConfig, participantAddress)
 			memberDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
 		}
-		override def addIncommunicableParticipant(participantAddress: ContactAddress): MemberIncommunicableDelegate = {
+
+		override def createAndAddIncommunicableParticipant(participantAddress: ContactAddress): MemberIncommunicableDelegate = {
 			val newParticipant = new MemberIncommunicableDelegate(thisClusterService)
 			memberDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
@@ -96,7 +98,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 		override def removeParticipant(participantAddress: ContactAddress): Unit =
 			memberDelegateByContactAddress -= participantAddress
 
-		override def participantByAddress: Map[ContactAddress, MemberDelegate] =
+		override def participantByAddress: Map[ContactAddress, MemberDelegate & Communicability] =
 			memberDelegateByContactAddress
 	}
 
@@ -104,7 +106,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 
 	private val clusterEventsListeners: java.util.WeakHashMap[ClusterEventListener, Unit] = new java.util.WeakHashMap()
 
-	inline def participantByAddress: Map[ContactAddress, ParticipantDelegate] = behavior.participantByAddress
+	inline def participantByAddress: Map[ContactAddress, ParticipantDelegate & Communicability] = behavior.participantByAddress
 
 	inline def getDelegateOrElse[D >: ParticipantDelegate](address: ContactAddress)(default: => D): D = behavior.participantByAddress.getOrElse(address, default)
 
@@ -120,7 +122,9 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 	 * Must be called within the [[sequencer]]. */
 	def getKnownParticipantsCards: MapView[ContactAddress, Set[ProtocolVersion]] = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		behavior.participantByAddress.view.mapValues { delegate => delegate.versionsSupportedByPeer }.filter { _._2.nonEmpty }
+		behavior.participantByAddress.view.mapValues { delegate => delegate.versionsSupportedByPeer }.filter {
+			_._2.nonEmpty
+		}
 	}
 
 	/**
@@ -146,17 +150,17 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 						val clientRemoteAddress = clientChannel.getRemoteAddress
 						behavior.participantByAddress.getOrElse(clientRemoteAddress, null) match {
 							case null =>
-								val newParticipant = behavior.addCommunicableParticipant(clientRemoteAddress)
+								val newParticipant = behavior.createAndAddCommunicableParticipant(clientRemoteAddress)
 								newParticipant.startAsServer(clientChannel)
-								
-							case communicableParticipant: CommunicableDelegate =>
+
+							case communicableParticipant: Communicable =>
 								communicableParticipant.handleReconnection(clientChannel)
-								
-							case incommunicableParticipant: IncommunicableDelegate =>
+
+							case _: Incommunicable =>
 								// TODO analyze if a notification of the communicability change should be issued here.
 								behavior.removeParticipant(clientRemoteAddress)
-								scribe.info(s"A connection from the participant at $clientRemoteAddress, which was marked as incommunicable, has been accepted. Let's see if we can communicate with it this time." )
-								val renewedParticipant = behavior.addCommunicableParticipant(clientRemoteAddress)
+								scribe.info(s"A connection from the participant at $clientRemoteAddress, which was marked as incommunicable, has been accepted. Let's see if we can communicate with it this time.")
+								val renewedParticipant = behavior.createAndAddCommunicableParticipant(clientRemoteAddress)
 								renewedParticipant.startAsServer(clientChannel)
 						}
 					} catch ignorableErrorCatcher
@@ -203,7 +207,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 				sequencer.executeSequentially {
 					try {
 						val peerRemoteAddress = channel.getRemoteAddress
-						val newParticipantDelegate = behavior.addCommunicableParticipant(peerRemoteAddress)
+						val newParticipantDelegate = behavior.createAndAddCommunicableParticipant(peerRemoteAddress)
 						newParticipantDelegate.startAsClient(config.myAddress, channel)
 						clusterEventsListeners.forEach { (listener, _) => listener.onPeerConnected(newParticipantDelegate) }
 					} catch ignorableErrorCatcher
@@ -240,7 +244,8 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 		if behavior.participantByAddress.contains(participantAddress) then {
 			behavior.removeParticipant(participantAddress)
 			clusterEventsListeners.forEach { (listener, _) => listener.onPeerChannelClosed(participantAddress, cause) }
-			behavior.participantByAddress.foreach { case (_, communicableDelegate: CommunicableDelegate) => communicableDelegate.notifyOtherParticipantChannelHasBeenClosed(participantAddress) }
+			for case (_, communicableDelegate: Communicable) <- behavior.participantByAddress do
+				communicableDelegate.notifyPeerThatOtherParticipantChannelHasBeenClosed(participantAddress)
 		}
 	}
 
@@ -256,7 +261,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 	def close(): Unit = {
 		clusterEventsListeners.forEach { (listener, _) => listener.beforeClosingAllChannels() }
 		serverChannel.close()
-		for case (_, communicableDelegate: CommunicableDelegate) <- behavior.participantByAddress do {
+		for case (_, communicableDelegate: Communicable) <- behavior.participantByAddress do {
 			communicableDelegate.closeChannel()
 		}
 	}

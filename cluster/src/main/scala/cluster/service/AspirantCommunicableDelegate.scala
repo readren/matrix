@@ -8,7 +8,7 @@ import cluster.service.ProtocolVersion
 import java.net.SocketAddress
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with an [[AspirantBehavior]]. */
-class AspirantCommunicableDelegate(clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends CommunicableDelegate(peerRemoteAddress, config), AspirantDelegate(clusterService) {
+class AspirantCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends AspirantDelegate, Communicable(peerRemoteAddress, config) {
 
 	var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
 
@@ -31,7 +31,7 @@ class AspirantCommunicableDelegate(clusterService: ClusterService, clusterServic
 					val iAmConnectedToAllAspirants =
 						aspirantsKnownByPeer.foldLeft(true) { (accumulator, aspirantCard) =>
 							if aspirantCard.address == clusterService.myAddress then true
-							else if clusterServiceBehavior.participantByAddress.contains(aspirantCard.address) then true
+							else if clusterService.participantByAddress.contains(aspirantCard.address) then true
 							else {
 								if determineAgreedVersion(config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
 									clusterService.startConnectionTo(aspirantCard.address)
@@ -46,12 +46,12 @@ class AspirantCommunicableDelegate(clusterService: ClusterService, clusterServic
 				case ClusterCreatorProposal(candidateProposedByPeer) =>
 					clusterCreatorCandidateProposedByPeer = candidateProposedByPeer
 					if candidateProposedByPeer == clusterService.myAddress then {
-						if clusterServiceBehavior.participantByAddress.view.collect {
+						if clusterService.participantByAddress.view.collect {
 							case (_, delegate: AspirantCommunicableDelegate) => delegate.clusterCreatorCandidateProposedByPeer == clusterService.myAddress
 						}.forall(identity) then {
 							clusterService.proposeClusterCreator()
 						}
-					} else if !clusterServiceBehavior.participantByAddress.contains(candidateProposedByPeer) then {
+					} else if !clusterService.participantByAddress.contains(candidateProposedByPeer) then {
 						clusterService.startConnectionTo(candidateProposedByPeer)
 					}
 					
