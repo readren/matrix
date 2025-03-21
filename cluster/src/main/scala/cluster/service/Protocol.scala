@@ -17,7 +17,10 @@ sealed trait Protocol
 /** Command message an aspirant must send to all the participants it is aware of (initially the seeds) in order to:
  * 	- propagate the knowledge of its existence;
  * 	- be replied with [[JoinApprovalMembers]] if a cluster was already created;
- * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator. */
+ * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator.
+ * 	@param myContactAddress the [[ContactAddress]] of the sender.
+ * 	@param versionsISupport the set of versions supported by the sender.
+ * 	@param cardsOfOtherParticipantsIKnow the [[ContactCard]]s of the participants known by the sender, not including itself. */
 case class Hello(myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion], cardsOfOtherParticipantsIKnow: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 /**
@@ -28,15 +31,17 @@ case object SupportedVersionsMismatch extends Protocol
 /**
  * Response to the [[Hello]] message when received by an aspirant that it not aware of the existence of a cluster.
  *
- * @param knowAspirantsCards the contact cards of the participants that have the intent to join the cluster, including itself if it is the case, and may include the requesting aspirant. */
+ * @param knowAspirantsCards the [[ContactCard]]s of the aspirants known by the sender, not including itself, and may include the receiver. */
 case class NoClusterIAmAwareOf(knowAspirantsCards: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 
 /** Message sent by an aspirant A to an aspirant B when A starts or stops proposing B should be the creator of the cluster.
  * An aspirant starts proposing a candidate when, from his viewpoint, he knows all other aspirants.
  * The chosen aspirant is the one with the highest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
+ * @param proposedCandidate the [[ContactAddress]] of the cluster's creator candidate proposed by the sender.
+ * @param supportedVersions the [[ProtocolVersion]]s supported by the proposed candidate. Uses only if the receiver didn't know about the proposed candidate.
  * */
-case class ClusterCreatorProposal(proposedCandidate: ContactAddress) extends Protocol
+case class ClusterCreatorProposal(proposedCandidate: ContactAddress, supportedVersions: Set[ProtocolVersion]) extends Protocol
 
 
 /** Informs that the sender has created a cluster.

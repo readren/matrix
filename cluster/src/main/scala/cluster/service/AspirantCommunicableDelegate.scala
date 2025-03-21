@@ -6,9 +6,10 @@ import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
 
 import java.net.SocketAddress
+import java.nio.channels.AsynchronousSocketChannel
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with an [[AspirantBehavior]]. */
-class AspirantCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerRemoteAddress: SocketAddress) extends AspirantDelegate, Communicable(peerRemoteAddress, config) {
+class AspirantCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerAddress: SocketAddress, peerChannel: AsynchronousSocketChannel) extends AspirantDelegate, Communicable(peerAddress, peerChannel, config) {
 
 	var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
 
@@ -16,16 +17,16 @@ class AspirantCommunicableDelegate(override val clusterService: ClusterService, 
 	override final def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 			case fault: Receiver.Fault =>
-				scribe.error(s"Failure while receiving a message from the peer $peerChannel: $fault")
-				peerChannel.close()
-				sequencer.executeSequentially(clusterService.onParticipantChannelClosed(peerRemoteAddress, fault))
+				val errorMessage = s"Failure while receiving a message from the peer $peerChannel: $fault"
+				scribe.error(errorMessage)
+				sequencer.executeSequentially(restartChannel(errorMessage))
 
 			case messageFromPeer: Protocol => sequencer.executeSequentially(messageFromPeer match {
 				case hello: Hello => handle(hello)
 
 				case SupportedVersionsMismatch =>
-					clusterService.notifyVersionIncompatibilityWith(peerRemoteAddress)
-					closeChannel()
+					replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me that we are not compatible.")
+					clusterService.notifyVersionIncompatibilityWith(peerAddress)
 
 				case NoClusterIAmAwareOf(aspirantsKnownByPeer) =>
 					val iAmConnectedToAllAspirants =
@@ -34,7 +35,7 @@ class AspirantCommunicableDelegate(override val clusterService: ClusterService, 
 							else if clusterService.participantByAddress.contains(aspirantCard.address) then true
 							else {
 								if determineAgreedVersion(config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
-									clusterService.startConnectionTo(aspirantCard.address)
+									clusterService.createNewDelegateForAndStartConnectingTo(aspirantCard.address, aspirantCard.supportedVersions)
 								} else {
 									clusterService.notifyVersionIncompatibilityWith(aspirantCard.address)
 								}
@@ -43,7 +44,7 @@ class AspirantCommunicableDelegate(override val clusterService: ClusterService, 
 						}
 					if iAmConnectedToAllAspirants then clusterService.proposeClusterCreator()
 
-				case ClusterCreatorProposal(candidateProposedByPeer) =>
+				case ClusterCreatorProposal(candidateProposedByPeer, versionsSupportedByCandidate) =>
 					clusterCreatorCandidateProposedByPeer = candidateProposedByPeer
 					if candidateProposedByPeer == clusterService.myAddress then {
 						if clusterService.participantByAddress.view.collect {
@@ -52,7 +53,7 @@ class AspirantCommunicableDelegate(override val clusterService: ClusterService, 
 							clusterService.proposeClusterCreator()
 						}
 					} else if !clusterService.participantByAddress.contains(candidateProposedByPeer) then {
-						clusterService.startConnectionTo(candidateProposedByPeer)
+						clusterService.createNewDelegateForAndStartConnectingTo(candidateProposedByPeer, versionsSupportedByCandidate)
 					}
 					
 				case icc: ICreatedACluster =>

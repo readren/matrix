@@ -5,45 +5,58 @@ import cluster.channel.{Receiver, Transmitter}
 import cluster.service.Protocol.*
 
 import java.nio.channels.AsynchronousSocketChannel
+import java.util.function.Consumer
+import scala.util.{Failure, Success, Try}
 
-
+/** Categorizes subtypes of [[ParticipantDelegate]] into two groups, the ones that represent delegates that communicate to the peer from the ones that don't. */
 sealed trait Communicability {
+	val peerAddress: ContactAddress
 	def isCommunicable: Boolean
 }
 
-trait Incommunicable extends Communicability { 
+trait Incommunicable(override val peerAddress: ContactAddress) extends Communicability { thisCommunicable: ParticipantDelegate =>
 	override def isCommunicable: Boolean = false
+	
+	def isConnecting: Boolean
+	def connectionAborted(): Unit
+	
+	def replaceMyselfWithACommunicableDelegate(communicationChannel: AsynchronousSocketChannel): ParticipantDelegate & Communicable = {
+		// replace me with a communicable delegate.
+		clusterService.getBehavior.removeDelegate(peerAddress)
+		val myReplacement = clusterService.getBehavior.createAndAddACommunicableDelegate(peerAddress, communicationChannel)
+		myReplacement.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
+		myReplacement.versionsSupportedByPeer = versionsSupportedByPeer
+		// notify
+		clusterService.onDelegateBecomeCommunicable(peerAddress)
+		myReplacement
+	}
 }
 
-trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDelegate.Config) extends Communicability { thisCommunicable: ParticipantDelegate =>
-	protected var peerChannel: AsynchronousSocketChannel = null
-	protected var receiverFromPeer: Receiver = null
-	protected var transmitterToPeer: Transmitter = null
+trait Communicable(override val peerAddress: ContactAddress, peerChannel: AsynchronousSocketChannel, config: ParticipantDelegate.Config) extends Communicability { thisCommunicable: ParticipantDelegate =>
+	protected val receiverFromPeer: Receiver = new Receiver(peerChannel)
+	protected val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
 	protected var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT
 
 	override def isCommunicable: Boolean = true
 
 	protected def startReceiving(): Unit
 
+
 	def startAsServer(peerChannel: AsynchronousSocketChannel): Unit = {
-		assert(this.peerChannel == null)
-		this.peerChannel = peerChannel
-		receiverFromPeer = new Receiver(peerChannel)
-		transmitterToPeer = new Transmitter(peerChannel)
 		startReceiving()
 	}
 
-	def startAsClient(myAddress: ContactAddress, peerChannel: AsynchronousSocketChannel): Unit = {
-		assert(this.peerChannel == null)
-		this.peerChannel = peerChannel
-		this.receiverFromPeer = new Receiver(peerChannel)
-		this.transmitterToPeer = new Transmitter(peerChannel)
-		this.transmitterToPeer.transmit[Protocol](Hello(myAddress, config.versionsSupportedByMe, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
+	def startAsClient(peerChannel: AsynchronousSocketChannel): Unit = {
+		this.transmitterToPeer.transmit[Protocol](Hello(clusterService.myAddress, config.versionsSupportedByMe, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
 			case Transmitter.Delivered =>
 				startReceiving()
-			case failure =>
-				reportTransmissionFailure(failure)
+			case failure: Transmitter.NotDelivered =>
+				reportFailure(failure)
 		}
+	}
+
+	def resumeAsClient(peerChannel: AsynchronousSocketChannel): Unit = {
+		startReceiving()
 	}
 
 	protected def determineAgreedVersion(versionsSupportedByMe: Set[ProtocolVersion], versionsSupportedByPeer: Set[ProtocolVersion]): Option[ProtocolVersion] = {
@@ -51,16 +64,22 @@ trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDel
 		versionsSupportedByBoth.find(candidate => versionsSupportedByBoth.forall(rival => candidate == rival || candidate.isNewerThan(rival)))
 	}
 
-	protected def reportTransmissionFailure(report: Transmitter.Report): Unit = {
+	protected def reportFailure(failure: Transmitter.NotDelivered): Unit = {
+		failure match {
+			case transmissionFailure: Transmitter.TransmissionFailure =>
+				scribe.error(s"A transmission failure occurred while transmitting `${transmissionFailure.rootMessage}` to the channel `$peerChannel`", transmissionFailure.cause)
+			case serializationFailure: Transmitter.SerializationUnsupported =>
+				scribe.error(s"A serialization failure occurred at position ${serializationFailure.position} while transmitting `${serializationFailure.rootMessage}` to the channel `$peerChannel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted" else "before any byte was transmitted"}: ${serializationFailure.reason} ")
+		}
+	}
+
+	protected def ifFailureReportItAndThen(consumer: Consumer[Transmitter.NotDelivered])(report: Transmitter.Report): Unit = {
 		report match {
 			case Transmitter.Delivered => // do nothing
 
-			case transmissionFailure: Transmitter.TransmissionFailure =>
-				scribe.error(s"A transmission failure occurred while transmitting `${transmissionFailure.rootMessage}` to the channel `$peerChannel`", transmissionFailure.cause)
-				tryToReconnect()
-			case serializationFailure: Transmitter.SerializationUnsupported =>
-				scribe.error(s"A serialization failure occurred at position ${serializationFailure.position} while transmitting `${serializationFailure.rootMessage}` to the channel `$peerChannel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted" else "before any byte was transmitted"}: ${serializationFailure.reason} ")
-				tryToReconnect()
+			case failure: Transmitter.NotDelivered =>
+				reportFailure(failure)
+				sequencer.executeSequentially(consumer.accept(failure))
 		}
 	}
 
@@ -71,10 +90,10 @@ trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDel
 				peerMembershipStatusAccordingToMe = Aspirant
 			case Aspirant =>
 				peerMembershipStatusAccordingToMe = Aspirant
-				clusterService.notifyParticipantHasBeenRestarted(peerRemoteAddress)
+				clusterService.notifyParticipantHasBeenRestarted(peerAddress)
 			case Member =>
 				peerMembershipStatusAccordingToMe = Aspirant
-				clusterService.notifyParticipantHasBeenRestarted(peerRemoteAddress)
+				clusterService.notifyParticipantHasBeenRestarted(peerAddress)
 		}
 		versionsSupportedByPeer = hello.versionsISupport
 
@@ -82,32 +101,33 @@ trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDel
 		for participantCard <- hello.cardsOfOtherParticipantsIKnow do {
 			if participantCard.address != clusterService.myAddress && !clusterService.participantByAddress.contains(participantCard.address) then {
 				determineAgreedVersion(config.versionsSupportedByMe, participantCard.supportedVersions) match {
-					case Some(version) => clusterService.startConnectionTo(participantCard.address)
+					case Some(version) => clusterService.createNewDelegateForAndStartConnectingTo(participantCard.address, participantCard.supportedVersions)
 					case None => clusterService.notifyVersionIncompatibilityWith(participantCard.address)
 				}
 			}
 		}
 
-		// update the protocol-version to use when communicating with the peer and respond the hello message.
+		// update the protocol-version to use when communicating with the peer, and transmit the response.
 		determineAgreedVersion(config.versionsSupportedByMe, hello.versionsISupport) match {
 			case Some(version) =>
 				agreedVersion = version
 
 				if clusterService.doesAClusterExist then {
-					transmitterToPeer.transmit[Protocol](NoClusterIAmAwareOf(clusterService.getKnownParticipantsCards.toMap), agreedVersion, config.transmitterTimeout, config.timeUnit)(reportTransmissionFailure)
+					transmitterToPeer.transmit[Protocol](JoinApprovalMembers(clusterService.getKnownMembersCards.toMap), agreedVersion, config.transmitterTimeout, config.timeUnit)(ifFailureReportItAndThen(restartChannel))
 				} else {
-					transmitterToPeer.transmit[Protocol](JoinApprovalMembers(clusterService.getKnownMembersCards.toMap), agreedVersion, config.transmitterTimeout, config.timeUnit)(reportTransmissionFailure)
+					transmitterToPeer.transmit[Protocol](NoClusterIAmAwareOf(clusterService.getKnownParticipantsCards.toMap), agreedVersion, config.transmitterTimeout, config.timeUnit)(ifFailureReportItAndThen(restartChannel))
 				}
 
 			case None =>
+				val cause = s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: ${hello.versionsISupport}"
 				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
 					case Transmitter.Delivered =>
-						clusterService.notifyVersionIncompatibilityWith(peerRemoteAddress)
-						closeChannel()
-					case issue =>
-						reportTransmissionFailure(issue)
-						clusterService.notifyVersionIncompatibilityWith(peerRemoteAddress)
-						closeChannel()
+						clusterService.notifyVersionIncompatibilityWith(peerAddress)
+						replaceMyselfWithAnIncommunicableDelegate(false, cause)
+					case issue: Transmitter.NotDelivered =>
+						reportFailure(issue)
+						clusterService.notifyVersionIncompatibilityWith(peerAddress)
+						replaceMyselfWithAnIncommunicableDelegate(false, cause)
 				}
 
 		}
@@ -116,11 +136,42 @@ trait Communicable(val peerRemoteAddress: ContactAddress, config: ParticipantDel
 
 	protected[service] def handleReconnection(newChannel: AsynchronousSocketChannel): MemberCommunicableDelegate = ???
 
-	protected[service] def notifyPeerThatOtherParticipantChannelHasBeenClosed(otherParticipantAddress: ContactAddress): Unit = ???
+	protected[service] def notifyPeerThatILostCommunicationWithOtherPeer(otherParticipantAddress: ContactAddress): Unit = ???
 
-	protected def tryToReconnect(): Unit = ???
+	protected[service] def notifyPeerThatIRecoveredCommunicationWithOtherPeer(otherParticipantAddress: ContactAddress): Unit = ???
 
-	protected[service] def closeChannel(): Unit = ???
+	protected[service] def replaceMyselfWithAnIncommunicableDelegate(isConnecting: Boolean, motive: Any): ParticipantDelegate & Incommunicable = {
+		// close the channel
+		release()
+		// replace me with an incommunicable delegate.
+		clusterService.getBehavior.removeDelegate(peerAddress)
+		val myReplacement = clusterService.getBehavior.createAndAddAnIncommunicableDelegate(peerAddress, isConnecting)
+		myReplacement.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
+		myReplacement.versionsSupportedByPeer = versionsSupportedByPeer
+		// notify
+		clusterService.onDelegateBecomeIncommunicable(peerAddress, motive)
+		myReplacement
+	}
+
+	private[service] def restartChannel(motive: Any): Unit = {
+		val myReplacement = replaceMyselfWithAnIncommunicableDelegate(true, s"To restart the channel because of: $motive")
+
+		clusterService.connectTo(peerAddress) {
+			case Success(newChannel) =>
+				sequencer.executeSequentially {
+					if myReplacement eq clusterService.getDelegateOrElse(peerAddress, null) then {
+						myReplacement.replaceMyselfWithACommunicableDelegate(newChannel)
+					}
+				}
+			case Failure(exc) =>
+				myReplacement.connectionAborted()
+				scribe.error(s"The communication to $peerAddress has been aborted after many reconnection tries", exc)
+		}
+	}
+
+	private[service] def release(): Unit = {
+		if peerChannel.isOpen then peerChannel.close()
+	}
 
 }
 

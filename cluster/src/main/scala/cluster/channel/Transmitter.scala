@@ -18,7 +18,7 @@ object Transmitter {
 
 	/** Report received by the `onComplete` callback passed to the [[transmit]] method when the serialization and transmission was successful. */
 	case object Delivered extends Report
-
+	sealed trait NotDelivered extends Report
 	/**
 	 * A report received by the `onComplete` callback passed to the [[transmit]] method when the transmission fails due to the unsupported serialization of the provided message.
 	 *
@@ -29,9 +29,9 @@ object Transmitter {
 	 *                                - `true` if the issue was detected after a fragment of the message was already transmitted.
 	 *                                - `false` if no bytes were transmitted because the issue was detected before transmission began.
 	 */
-	case class SerializationUnsupported(rootMessage: Any, position: Int, reason: String, aFragmentWasTransmitted: Boolean) extends Report
+	case class SerializationUnsupported(rootMessage: Any, position: Int, reason: String, aFragmentWasTransmitted: Boolean) extends NotDelivered
 
-	case class TransmissionFailure(rootMessage: Any, cause: Throwable) extends Report
+	case class TransmissionFailure(rootMessage: Any, cause: Throwable) extends NotDelivered
 
 	class TransmissionInProgressException extends Exception
 }
@@ -53,7 +53,6 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 	/** Consist of two buffers: the first for the frame header (which tells the size of the frame content in bytes), and the second for the frame content. */
 	frameBuffer(0) = frameHeaderBuffer
-
 
 	/**
 	 * 
