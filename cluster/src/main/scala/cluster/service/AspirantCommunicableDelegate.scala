@@ -9,10 +9,15 @@ import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with an [[AspirantBehavior]]. */
-class AspirantCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.AspirantBehavior, config: ParticipantDelegate.Config, peerAddress: SocketAddress, peerChannel: AsynchronousSocketChannel) extends AspirantDelegate, Communicable(peerAddress, peerChannel, config) {
+class AspirantCommunicableDelegate(
+	override val clusterService: ClusterService,
+	clusterServiceBehavior: clusterService.AspirantBehavior,
+	override val peerAddress: SocketAddress,
+	override val peerChannel: AsynchronousSocketChannel,
+) extends AspirantDelegate, Communicable {
+	override val config: ParticipantDelegate.Config = clusterService.config.participantDelegatesConfig
 
-	var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
-
+	protected var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
 
 	override final def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {

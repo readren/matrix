@@ -4,11 +4,16 @@ package cluster.service
 import cluster.channel.Receiver
 import cluster.service.Protocol.*
 
-import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberCommunicableDelegate(override val clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, config: ParticipantDelegate.Config, peerAddress: SocketAddress, peerChannel: AsynchronousSocketChannel) extends MemberDelegate, Communicable(peerAddress, peerChannel, config)  {
+class MemberCommunicableDelegate(
+	override val clusterService: ClusterService,
+	clusterServiceBehavior: clusterService.MemberBehavior,
+	override val peerAddress: ContactAddress,
+	override val peerChannel: AsynchronousSocketChannel,
+) extends MemberDelegate, Communicable {
+	override val config: ParticipantDelegate.Config = clusterService.config.participantDelegatesConfig
 
 	override protected def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {

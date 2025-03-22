@@ -81,7 +81,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 
 	private[service] class AspirantBehavior(var aspirantDelegateByContactAddress: Map[ContactAddress, AspirantDelegate & Communicability]) extends Behavior {
 		override def createAndAddACommunicableDelegate(participantAddress: ContactAddress, communicationChannel: AsynchronousSocketChannel): AspirantCommunicableDelegate = {
-			val newParticipant = new AspirantCommunicableDelegate(thisClusterService, this, config.participantDelegatesConfig, participantAddress, communicationChannel)
+			val newParticipant = new AspirantCommunicableDelegate(thisClusterService, this, participantAddress, communicationChannel)
 			aspirantDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
 		}
@@ -101,7 +101,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 
 	private[service] class MemberBehavior(var memberDelegateByContactAddress: Map[ContactAddress, MemberDelegate & Communicability]) extends Behavior {
 		override def createAndAddACommunicableDelegate(participantAddress: ContactAddress, communicationChannel: AsynchronousSocketChannel): MemberCommunicableDelegate = {
-			val newParticipant = MemberCommunicableDelegate(thisClusterService, this, config.participantDelegatesConfig, participantAddress, communicationChannel)
+			val newParticipant = MemberCommunicableDelegate(thisClusterService, this, participantAddress, communicationChannel)
 			memberDelegateByContactAddress += participantAddress -> newParticipant
 			newParticipant
 		}

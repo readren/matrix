@@ -14,9 +14,10 @@ object ParticipantDelegate {
  * We name "participant" to each instance of [[ClusterService]] */
 sealed abstract class ParticipantDelegate {
 	val clusterService: ClusterService
-	export clusterService.sequencer
-	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus | Null = null
+	val peerAddress: ContactAddress
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
+	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus | Null = null
+	export clusterService.sequencer
 }
 
 trait AspirantDelegate extends ParticipantDelegate

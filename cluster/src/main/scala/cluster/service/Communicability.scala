@@ -10,11 +10,10 @@ import scala.util.{Failure, Success, Try}
 
 /** Categorizes subtypes of [[ParticipantDelegate]] into two groups, the ones that represent delegates that communicate to the peer from the ones that don't. */
 sealed trait Communicability {
-	val peerAddress: ContactAddress
 	def isCommunicable: Boolean
 }
 
-trait Incommunicable(override val peerAddress: ContactAddress) extends Communicability { thisCommunicable: ParticipantDelegate =>
+trait Incommunicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	override def isCommunicable: Boolean = false
 	
 	def isConnecting: Boolean
@@ -32,7 +31,9 @@ trait Incommunicable(override val peerAddress: ContactAddress) extends Communica
 	}
 }
 
-trait Communicable(override val peerAddress: ContactAddress, peerChannel: AsynchronousSocketChannel, config: ParticipantDelegate.Config) extends Communicability { thisCommunicable: ParticipantDelegate =>
+trait Communicable extends Communicability { thisCommunicable: ParticipantDelegate =>
+	protected val peerChannel: AsynchronousSocketChannel
+	val config: ParticipantDelegate.Config
 	protected val receiverFromPeer: Receiver = new Receiver(peerChannel)
 	protected val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
 	protected var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT

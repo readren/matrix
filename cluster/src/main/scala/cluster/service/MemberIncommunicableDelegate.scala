@@ -4,7 +4,7 @@ package cluster.service
 import cluster.service.Protocol.ContactAddress
 
 /** A incommunicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberIncommunicableDelegate(override val clusterService: ClusterService, peerAddress: ContactAddress, isConnectingInPrinciple: Boolean) extends MemberDelegate, Incommunicable(peerAddress) {
+class MemberIncommunicableDelegate(override val clusterService: ClusterService, override val peerAddress: ContactAddress, isConnectingInPrinciple: Boolean) extends MemberDelegate, Incommunicable {
 	private var isTryingToConnect = isConnectingInPrinciple
 
 	override def isConnecting: Boolean = isTryingToConnect
