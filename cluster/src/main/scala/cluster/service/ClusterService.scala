@@ -9,6 +9,7 @@ import readren.taskflow.SchedulingExtension.MilliDuration
 import readren.taskflow.{Doer, SchedulingExtension}
 
 import java.nio.channels.{AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler}
+import java.util.concurrent.TimeUnit
 import scala.collection.MapView
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
@@ -34,7 +35,9 @@ object ClusterService {
 		def beforeClosingAllChannels(): Unit
 	}
 
-	class Config(val myAddress: ContactAddress, val participantDelegatesConfig: ParticipantDelegate.Config, val retryMinDelay: MilliDuration, val retryMaxDelay: MilliDuration, val maxAttempts: Int)
+	class Config(val myAddress: ContactAddress, val participantDelegatesConfig: DelegateConfig, val retryMinDelay: MilliDuration, val retryMaxDelay: MilliDuration, val maxAttempts: Int)
+
+	class DelegateConfig(val versionsSupportedByMe: Set[ProtocolVersion], val receiverTimeout: Long = 1, val transmitterTimeout: Long = 1, val timeUnit: TimeUnit = TimeUnit.SECONDS)
 
 	def start(sequencer: TaskSequencer, serviceConfig: Config, seeds: Iterable[ContactAddress]): ClusterService = {
 

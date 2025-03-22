@@ -1,6 +1,7 @@
 package readren.matrix
 package cluster.service
 
+import cluster.service.ClusterService.DelegateConfig
 import cluster.service.ProtocolVersion
 import providers.assistant.SchedulingDap
 
@@ -42,7 +43,7 @@ object NonBlockingDistributedApp {
 			sequencer,
 			new ClusterService.Config(
 				myAddress,
-				new ParticipantDelegate.Config(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS),
+				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS),
 				500, 60_000, 5
 			),
 			seedsAddresses

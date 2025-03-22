@@ -2,11 +2,12 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.{Receiver, Transmitter}
+import cluster.service.ClusterService.DelegateConfig
 import cluster.service.Protocol.*
 
 import java.nio.channels.AsynchronousSocketChannel
 import java.util.function.Consumer
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
 
 /** Categorizes subtypes of [[ParticipantDelegate]] into two groups, the ones that represent delegates that communicate to the peer from the ones that don't. */
 sealed trait Communicability {
@@ -33,7 +34,7 @@ trait Incommunicable extends Communicability { thisCommunicable: ParticipantDele
 
 trait Communicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	protected val peerChannel: AsynchronousSocketChannel
-	val config: ParticipantDelegate.Config
+	val config: DelegateConfig
 	protected val receiverFromPeer: Receiver = new Receiver(peerChannel)
 	protected val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
 	protected var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT

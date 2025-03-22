@@ -11,53 +11,63 @@ import scala.util.NotGiven
 object CommonSerializers {
 
 	//// Byte
-	given Serializer[Byte] = (message: Byte, writer: Serializer.Writer) => {
+	private val byteSerializer: Serializer[Byte] = (message: Byte, writer: Serializer.Writer) => {
 		writer.putByte(message)
 		Serializer.Success // CAUTION: some serializers assume this serializer always returns `Success`. If that changes don't forget to update them.
 	}
+	given Serializer[Byte] = byteSerializer
 
-	given Deserializer[Byte] = (reader: Deserializer.Reader) =>
+	private val byteDeserializer: Deserializer[Byte] = (reader: Deserializer.Reader) =>
 		reader.readByte()
+	given Deserializer[Byte] = byteDeserializer
 
 	//// Short
-	given Serializer[Short] = (message: Short, writer: Serializer.Writer) => {
+	private val shortSerializer: Serializer[Short] = (message: Short, writer: Serializer.Writer) => {
 		writer.putShort(message)
 		Serializer.Success // CAUTION: some serializers assume this serializer always returns `Success`. If that changes don't forget to update them.
 	}
+	given Serializer[Short] = shortSerializer
 
-	given Deserializer[Short] = (reader: Deserializer.Reader) =>
+	private val shortDeserializer: Deserializer[Short] = (reader: Deserializer.Reader) =>
 		reader.readShort()
+	given Deserializer[Short] = shortDeserializer
 
 	//// Int
-	given Serializer[Int] = (message: Int, writer: Serializer.Writer) => {
+	private val intSerializer: Serializer[Int] = (message: Int, writer: Serializer.Writer) => {
 		writer.putInt(message)
 		Serializer.Success // CAUTION: some serializers assume this serializer always returns `Success`. If that changes don't forget to update them.
 	}
+	given Serializer[Int] = intSerializer
 
-	given Deserializer[Int] = (reader: Deserializer.Reader) =>
+	private val intDeserializer: Deserializer[Int] = (reader: Deserializer.Reader) =>
 		reader.readInt()
+	given Deserializer[Int] = intDeserializer
 
 	//// Long
-	given Serializer[Long] = (message: Long, writer: Serializer.Writer) => {
+	private val longSerializer: Serializer[Long] = (message: Long, writer: Serializer.Writer) => {
 		writer.putLong(message)
 		Serializer.Success // CAUTION: some serializers assume this serializer always returns `Success`. If that changes don't forget to update them.
 	}
+	given Serializer[Long] = longSerializer
 
-	given Deserializer[Long] = (reader: Deserializer.Reader) => reader.readLong()
+	private val longDeserializer: Deserializer[Long] = (reader: Deserializer.Reader) => reader.readLong()
+	given Deserializer[Long] = longDeserializer
 
 	//// String
-	given Serializer[String] = (message: String, writer: Serializer.Writer) => {
+	private val stringSerializer: Serializer[String] = (message: String, writer: Serializer.Writer) => {
 		val bytes = message.getBytes(StandardCharsets.UTF_8)
 		writer.putInt(bytes.length) // TODO use VLQ
 		writer.putBytes(bytes)
 		Serializer.Success // CAUTION: some serializers assume this serializer always returns `Success`. If that changes don't forget to update them.
 	}
+	given Serializer[String] = stringSerializer
 
-	given Deserializer[String] = (reader: Deserializer.Reader) => {
+	private val stringDeserializer: Deserializer[String] = (reader: Deserializer.Reader) => {
 		val length = reader.readInt() // TODO use VLQ
 		val bytes = reader.readBytes(length)
 		new String(bytes, StandardCharsets.UTF_8)
 	}
+	given Deserializer[String] = stringDeserializer
 
 	//// Set
 	given setSerializer[E](using sE: Serializer[E]): Serializer[Set[E]] = (message: Set[E], writer: Serializer.Writer) => {
@@ -71,7 +81,7 @@ object CommonSerializers {
 		}
 		outcome
 	}
-	
+
 	given setDeserializer[E](using dE: Deserializer[E], vorE: ValueOrReferenceTest[E]): Deserializer[Set[E]] = new Deserializer[Set[E]] {
 		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | Set[E] = {
 			var count = reader.readIntVlq()

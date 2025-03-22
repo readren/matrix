@@ -2,6 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Receiver
+import cluster.service.ClusterService.DelegateConfig
 import cluster.service.Protocol.*
 
 import java.nio.channels.AsynchronousSocketChannel
@@ -13,7 +14,7 @@ class MemberCommunicableDelegate(
 	override val peerAddress: ContactAddress,
 	override val peerChannel: AsynchronousSocketChannel,
 ) extends MemberDelegate, Communicable {
-	override val config: ParticipantDelegate.Config = clusterService.config.participantDelegatesConfig
+	override val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 
 	override protected def startReceiving(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {

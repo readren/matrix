@@ -2,6 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Receiver
+import cluster.service.ClusterService.DelegateConfig
 import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
 
@@ -15,7 +16,7 @@ class AspirantCommunicableDelegate(
 	override val peerAddress: SocketAddress,
 	override val peerChannel: AsynchronousSocketChannel,
 ) extends AspirantDelegate, Communicable {
-	override val config: ParticipantDelegate.Config = clusterService.config.participantDelegatesConfig
+	override val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 
 	protected var clusterCreatorCandidateProposedByPeer: ContactAddress | Null = null
 

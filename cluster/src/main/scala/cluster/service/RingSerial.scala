@@ -14,14 +14,16 @@ object RingSerial {
 		inline def isAheadOf(b: RingSerial): Boolean = (a << 16) - (b << 16) > 0
 	}
 
-
-	given Serializer[RingSerial] =
+	private val serializer: Serializer[RingSerial] =
 		(message: RingSerial, writer: Serializer.Writer) => {
 			writer.putShort(message)
 			Serializer.Success
-		}
+		}  
+	given Serializer[RingSerial] = serializer
 
-	given Deserializer[RingSerial] =
-		(reader: Deserializer.Reader) => reader.readShort()
+	private val deserializer: Deserializer[RingSerial] =
+		(reader: Deserializer.Reader) => reader.readShort() 
+	given Deserializer[RingSerial] = deserializer
+		
 }
 
