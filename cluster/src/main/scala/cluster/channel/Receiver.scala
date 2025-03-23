@@ -2,10 +2,9 @@ package readren.matrix
 package cluster
 package channel
 
-import cluster.channel.Receiver.{DeserializationProblem, DeserializerAndFrameMismatch, FRAME_HEADER_MAX_SIZE, Fault, FrameAndEndOfStreamMismatch, Lazy, ReceptionFailure}
+import cluster.channel.Receiver.*
 import cluster.misc.{DualEndedCircularBuffer, VLQ}
-
-import readren.matrix.cluster.service.ProtocolVersion
+import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
@@ -22,11 +21,16 @@ object Receiver {
 
 	case class FrameAndEndOfStreamMismatch(missingBytesAccordingToLastFrame: Int) extends Fault
 
-	case class DeserializerAndFrameMismatch(origin: Deserializer.LengthMismatchException | Deserializer.AlignmentMismatchException) extends Fault
+	case class DeserializerAndFrameMismatch(origin: LengthMismatchException) extends Fault
 
-	case class DeserializationProblem(problem: Deserializer.Problem) extends Fault
+	case class DeserializationProblem(problem: Throwable) extends Fault
 
 	case class ReceptionFailure(cause: Throwable) extends Fault
+
+	/** The [[Deserializer]] expected more bytes than the contained in the received package (a sequence of frames finalized with an empty frame). */
+	class LengthMismatchException extends RuntimeException("Unexpected end of package")
+	/** The received bytes are less than the package size. A package is a sequence of frames finalized with an empty one. */
+	class UnexpectedBufferEnd extends RuntimeException("The buffer was consumed before the package end.")
 }
 
 /** A capability for receiving messages over an [[AsynchronousSocketChannel]].
@@ -99,6 +103,8 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 
 			override def position: Int = readEndBuffer.position
 
+			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
 			override def peekByte: Byte = {
 				if continuousBuffer.hasRemaining then continuousBuffer.get(continuousBuffer.position)
 				else {
@@ -107,27 +113,32 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 				}
 			}
 
+			/** @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
 			private def advanceReadEnd(): Unit = {
 				if buffers.advanceReadEnd() then {
 					nextFrameHeaderPosRelativeToReadEndBufferBase -= readEndBuffer.limit
 					readEndBuffer = buffers.readEnd
 				}
-				else throw new Deserializer.LengthMismatchException
+				else throw new UnexpectedBufferEnd()
 			}
 
+			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.*/
 			private def skipFrameHeader(): Unit = {
 				if readEndBuffer.remaining == 0 then advanceReadEnd()
 
 				if readEndBuffer.position == nextFrameHeaderPosRelativeToReadEndBufferBase then {
-					if readEndBuffer.remaining < FRAME_HEADER_MAX_SIZE then throw new Deserializer.AlignmentMismatchException
+					assert(readEndBuffer.remaining >= FRAME_HEADER_MAX_SIZE) // this is ensured by the `completed` method by extending the buffer limit (using the reserved capacity).
 					frameHeaderReader.reset(readEndBuffer)
 					val currentFrameContentLength = VLQ.decodeUnsignedInt(frameHeaderReader)
-					if currentFrameContentLength == 0 then throw new Deserializer.LengthMismatchException
+					if currentFrameContentLength == 0 then throw new LengthMismatchException()
 					nextFrameHeaderPosRelativeToReadEndBufferBase = readEndBuffer.position() + currentFrameContentLength
 					if readEndBuffer.remaining == 0 then advanceReadEnd()
 				}
 			}
 
+			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
 			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = {
 				val continuousBufferRemaining = continuousBuffer.remaining
 				if continuousBufferRemaining == 0 && readEndBuffer.position + maxBytesToConsume < nextFrameHeaderPosRelativeToReadEndBufferBase && maxBytesToConsume <= readEndBuffer.remaining then readEndBuffer
@@ -158,13 +169,10 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 							val outcome: M | Fault =
 								try {
 									skipFrameHeader() // this line is not necessary but its presence avoids the use of the continuous buffer when the deserializer reads the first byte.
-									deserializer.deserialize(thisHandler) match {
-										case problem: Deserializer.Problem => DeserializationProblem(problem)
-										case message: M @unchecked => message
-									}
+									deserializer.deserialize(thisHandler)
 								} catch {
-									case lme: Deserializer.LengthMismatchException => DeserializerAndFrameMismatch(lme)
-									case ame: Deserializer.AlignmentMismatchException => DeserializerAndFrameMismatch(ame)
+									case lme: LengthMismatchException => DeserializerAndFrameMismatch(lme)
+									case scala.util.control.NonFatal(e) => DeserializationProblem(e)
 								}
 							writeEndBuffer.compact()
 							onComplete.accept(outcome, attachment)

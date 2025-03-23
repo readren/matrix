@@ -4,8 +4,7 @@ package channel
 
 import cluster.channel.Serializer.Writer
 import cluster.misc.VLQ
-
-import readren.matrix.cluster.service.ProtocolVersion
+import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
 
@@ -21,11 +20,9 @@ object Serializer {
 	 * The semantic of this header is nullified escaping it with another byte with the same value. */
 	val BACK_REFERENCE_HEADER: Byte = 0x40.toByte
 
-	sealed trait Outcome
-
-	case object Success extends Outcome
-
-	case class Unsupported(position: Int, explanation: String) extends Outcome
+	class SerializationException(val position: Int, explanation: String = null, cause: Throwable = null) extends RuntimeException(explanation, cause) {
+		def this(position: Int, cause: Throwable) = this(position, null, cause)
+	}
 
 	abstract class Writer extends VLQ.ByteWriter {
 
@@ -146,7 +143,7 @@ object Serializer {
 
 		/** Unconditionally serializes the provided `value` to the backing buffer using the provided [[Serializer]].
 		 * No deduplication is applied to provided object, but its fields are deduplicated if their corresponding serializers determine so. */
-		inline def writeFull[M](value: M)(using sM: Serializer[M]): Outcome =
+		inline def writeFull[M](value: M)(using sM: Serializer[M]): Unit =
 			sM.serialize(value, this)
 
 		/**
@@ -156,7 +153,7 @@ object Serializer {
 		 *
 		 * **Important:** This method must be paired with [[Deserializer.Reader.read]] on the deserializer side. Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 */
-		def write[R <: AnyRef](ref: R)(using sR: Serializer[R]): Serializer.Outcome = {
+		def write[R <: AnyRef](ref: R)(using sR: Serializer[R]): Unit = {
 			val nextRefKey = refs.size + 1
 			val refKey = refs.computeIfAbsent(ref, r => nextRefKey)
 			if refKey == nextRefKey then {
@@ -165,21 +162,11 @@ object Serializer {
 			} else {
 				putByte(BACK_REFERENCE_HEADER)
 				putUnsignedIntVlq(refKey)
-				Serializer.Success
-			}
-		}
-	}
-
-	extension (previous: Outcome) {
-		inline def andThen[A](a: A, writer: Writer)(using serializer: Serializer[A]): Outcome = {
-			previous match {
-				case Success => serializer.serialize(a, writer)
-				case unsupported => unsupported
 			}
 		}
 	}
 }
 
 trait Serializer[A] { self =>
-	def serialize(message: A, writer: Writer): Serializer.Outcome
+	def serialize(message: A, writer: Writer): Unit
 }

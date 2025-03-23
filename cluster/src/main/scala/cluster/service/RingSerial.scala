@@ -17,7 +17,6 @@ object RingSerial {
 	private val serializer: Serializer[RingSerial] =
 		(message: RingSerial, writer: Serializer.Writer) => {
 			writer.putShort(message)
-			Serializer.Success
 		}  
 	given Serializer[RingSerial] = serializer
 

@@ -22,15 +22,7 @@ object ProtocolVersion {
 		}
 	}
 
-	given Serializer[ProtocolVersion] = new Serializer[ProtocolVersion] {
-		override def serialize(message: ProtocolVersion, writer: Serializer.Writer): Serializer.Outcome = {
-			writer.putByte(message)
-			Serializer.Success
-		}
-	}
+	given Serializer[ProtocolVersion] = (message: ProtocolVersion, writer: Serializer.Writer) => writer.putByte(message)
 	
-	given Deserializer[ProtocolVersion] = new Deserializer[ProtocolVersion] {
-		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | ProtocolVersion =
-			reader.readByte()
-	}
+	given Deserializer[ProtocolVersion] = (reader: Deserializer.Reader) => reader.readByte()
 }

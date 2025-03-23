@@ -1,39 +1,20 @@
 package readren.matrix
 package cluster.channel
 
-import cluster.channel.Deserializer.{Problem, Reader}
+import cluster.channel.Deserializer.Reader
+import cluster.channel.Receiver.UnexpectedBufferEnd
 import cluster.misc.VLQ
 import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
 import scala.language.experimental.erasedDefinitions
-import scala.util.NotGiven
 
 object Deserializer {
 	/** The number of consecutive content bytes required by the operation that calls [[Reader.getContentBytes]] with the greatest argument. There are two: [[Reader.readLong]] and [[Reader.readDouble]]. */
 	inline val CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION = 8
 
-
-	sealed trait Problem
-
-	case class Failure(position: Int, cause: Throwable) extends Problem
-
-	case class Mismatch(position: Int, explanation: String) extends Problem
-
-	/** The [[Deserializer]] expected more bytes than the contained in the received frames. */
-	class LengthMismatchException extends Exception
-
-	/** The frame-header is not aligned with the boundaries of the serialized parts. */
-	class AlignmentMismatchException extends Exception
-
-	extension [A](previous: Problem | A) {
-
-		inline def map[B](inline f: A => B): Problem | B = {
-			previous match {
-				case problemA: Problem => problemA
-				case a: A => f(a)
-			}
-		}
+	class DeserializationException(val position: Int, explanation: String = null, cause: Throwable = null) extends RuntimeException(explanation, cause) {
+		def this(position: Int, cause: Throwable) = this(position, null, cause)
 	}
 
 	trait ValueOrReferenceTest[T] {
@@ -67,12 +48,18 @@ object Deserializer {
 		/** The implementation must return a [[ByteBuffer]] with at least `maxBytesToConsume` of content bytes starting from its current position. */
 		def getContentBytes(maxBytesToConsume: Int): ByteBuffer
 
-		/** The implementation must return the same byte as `getContentBytes(1).get()` would, but without consuming it. */
+		/** The implementation must return the same byte as `getContentBytes(1).get()` would, but without consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * */
 		def peekByte: Byte
 
 		/** Consumes the next byte if it is equal to the provided one.
 		 *
-		 * @return `true` if the next byte matches and is consumed; false otherwise. */
+		 * @return `true` if the next byte matches and is consumed; false otherwise.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * */
 		inline def consumeByteIfEqualTo(byte: Byte): Boolean = {
 			if peekByte == byte then {
 				getContentBytes(1).get()
@@ -82,7 +69,8 @@ object Deserializer {
 
 		/** Reads the next content [[Byte]] from the backing buffer consuming it.
 		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
 		 * */
 		inline def readByte(): Byte = {
 			getContentBytes(1).get()
@@ -90,8 +78,9 @@ object Deserializer {
 
 		/** Reads the next content [[Short]] from the backing buffer consuming it.
 		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		inline def readShort(): Short = {
 			getContentBytes(2).getShort
@@ -99,17 +88,26 @@ object Deserializer {
 
 		/** Reads the next content [[Int]] from the backing buffer consuming it.
 		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		inline def readInt(): Int = {
 			getContentBytes(4).getInt
 		}
 
+		/** Reads the next content [[Int]] in VLQ format, from the backing buffer consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 */
 		inline def readIntVlq(): Int = {
 			VLQ.decodeInt(this)
 		}
 
+		/** Reads the next content unsigned [[Int]] in VLQ format, from the backing buffer consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 */
 		inline def readUnsignedIntVlq(): Int = {
 			VLQ.decodeUnsignedInt(this)
 		}
@@ -117,16 +115,24 @@ object Deserializer {
 		/** Reads the next content [[Long]] from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		inline def readLong(): Long = {
 			getContentBytes(8).getLong
 		}
 
+		/** Reads the next content [[Long]] in VLQ format, from the backing buffer consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 */
 		inline def readLongVlq(): Long = {
 			VLQ.decodeLong(this)
 		}
 
+		/** Reads the next content unsigned [[Long]] in VLQ format, from the backing buffer consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 */
 		inline def readUnsignedLongVlq(): Long = {
 			VLQ.decodeUnsignedLong(this)
 		}
@@ -134,7 +140,8 @@ object Deserializer {
 		/** Reads the next content [[Float]] from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		inline def readFloat(): Float = {
 			getContentBytes(4).getFloat
@@ -143,7 +150,8 @@ object Deserializer {
 		/** Reads the next content [[Double]] from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		inline def readDouble(): Double = {
 			getContentBytes(8).getDouble
@@ -152,7 +160,8 @@ object Deserializer {
 		/** Reads the next `howMany` content bytes from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws AlignmentMismatchException if a frame boundary is touched.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		def readBytes(howMany: Int): Array[Byte] = {
 			val array = new Array[Byte](howMany)
@@ -163,8 +172,12 @@ object Deserializer {
 
 		/** Unconditionally deserializes an instance of the specified type from the backing buffer using the provided [[Deserializer]].
 		 *
-		 * @return an instance of `A`; or a [[Problem]] if the deserialization failed. */
-		inline def readFull[A](using deserializer: Deserializer[A]): A | Problem = {
+		 * @return an instance of `A`; or a [[Problem]] if the deserialization failed.
+		 * @throws LengthMismatchException if the end-of-stream is reached.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
+		 * */
+		inline def readFull[A](using deserializer: Deserializer[A]): A = {
 			deserializer.deserialize(this)
 		}
 
@@ -175,8 +188,11 @@ object Deserializer {
 		 *
 		 * **Important:** This method must be paired with [[Serializer.Writer.write]] on the serializer side.
 		 * Failing to do so will result in the deserialization of this component and all subsequent composites failing.
+		 * @throws LengthMismatchException if the end-of-stream is reached.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 */
-		def read[R](using deserializer: Deserializer[R], ivR: ValueOrReferenceTest[R]): R | Problem = {
+		def read[R](using deserializer: Deserializer[R], ivR: ValueOrReferenceTest[R]): R = {
 			// if next byte isn't a back reference header or is an escape then we have no back reference here.
 			if !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER || ivR.isValueType then {
 				val ref = readFull[R]
@@ -187,77 +203,18 @@ object Deserializer {
 				refs(refKey).asInstanceOf[R]
 			}
 		}
-
-		/** Helps to implement a [[Deserializer]] for a concrete class provided the [[Deserializer]]s for its fields. */
-		inline def compose1[A <: AnyRef, Z](inline f: A => Z)(using dA: Deserializer[A]): Z | Problem = {
-			read[A] match {
-				case problemA: Problem => problemA
-				case a: A => f(a)
-			}
-		}
-
-		/** Helps to implement a [[Deserializer]] for a concrete class provided the [[Deserializer]]s for its fields. */
-		inline def compose2[A <: AnyRef, B <: AnyRef, Z](inline f: (A, B) => Z)(using dA: Deserializer[A], dB: Deserializer[B]): Problem | Z = {
-			read[A] match {
-				case problemA: Problem => problemA
-				case a: A => read[B] match {
-					case problemB: Problem => problemB
-					case b: B => f(a, b)
-				}
-			}
-		}
-
-		/** Helps to implement a [[Deserializer]] for a concrete class provided the [[Deserializer]]s for its fields. */
-		inline def compose3[A <: AnyRef, B <: AnyRef, C <: AnyRef, Z](inline f: (A, B, C) => Z)(using dA: Deserializer[A], dB: Deserializer[B], dC: Deserializer[C]): Problem | Z = {
-			read[A] match {
-				case problemA: Problem => problemA
-				case a: A => read[B] match {
-					case problemB: Problem => problemB
-					case b: B => read[C] match {
-						case problemC: Problem => problemC
-						case c: C => f(a, b, c)
-					}
-				}
-			}
-		}
-
-		/** Helps to implement a [[Deserializer]] for a concrete class provided the [[Deserializer]]s for its fields. */
-		inline def compose4[A <: AnyRef, B <: AnyRef, C <: AnyRef, D <: AnyRef, Z](inline f: (A, B, C, D) => Z)(using dA: Deserializer[A], dB: Deserializer[B], dC: Deserializer[C], dD: Deserializer[D]): Problem | Z = {
-			read[A] match {
-				case problemA: Problem => problemA
-				case a: A => read[B] match {
-					case problemB: Problem => problemB
-					case b: B => read[C] match {
-						case problemC: Problem => problemC
-						case c: C => read[D] match {
-							case problemD: Problem => problemD
-							case d: D => f(a, b, c, d)
-						}
-					}
-				}
-			}
-		}
 	}
 }
 
 trait Deserializer[A] { self =>
-	def deserialize(reader: Reader): Problem | A
 
-	def map[B](f: A => B): Deserializer[B] = new Deserializer[B] {
-		override def deserialize(reader: Reader): Problem | B = {
-			self.deserialize(reader) match {
-				case problem: Deserializer.Problem => problem
-				case a: A @unchecked => f(a)
-			}
-		}
+	def deserialize(reader: Reader): A
+
+	def map[B](f: A => B): Deserializer[B] = (reader: Reader) => {
+		f(self.deserialize(reader))
 	}
 
-	def flatMap[B](f: A => Deserializer[B]): Deserializer[B] = new Deserializer[B] {
-		override def deserialize(reader: Reader): Problem | B = {
-			self.deserialize(reader) match {
-				case problem: Deserializer.Problem => problem
-				case a: A @unchecked => f(a).deserialize(reader)
-			}
-		}
+	def flatMap[B](f: A => Deserializer[B]): Deserializer[B] = (reader: Reader) => {
+		f(self.deserialize(reader)).deserialize(reader)
 	}
 }

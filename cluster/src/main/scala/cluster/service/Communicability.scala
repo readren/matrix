@@ -70,8 +70,8 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 		failure match {
 			case transmissionFailure: Transmitter.TransmissionFailure =>
 				scribe.error(s"A transmission failure occurred while transmitting `${transmissionFailure.rootMessage}` to the channel `$peerChannel`", transmissionFailure.cause)
-			case serializationFailure: Transmitter.SerializationUnsupported =>
-				scribe.error(s"A serialization failure occurred at position ${serializationFailure.position} while transmitting `${serializationFailure.rootMessage}` to the channel `$peerChannel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted" else "before any byte was transmitted"}: ${serializationFailure.reason} ")
+			case serializationFailure: Transmitter.SerializationProblem =>
+				scribe.error(s"A serialization failure occurred at position ${serializationFailure.problem.position} while transmitting `${serializationFailure.rootMessage}` to the channel `$peerChannel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted" else "before any byte was transmitted"}", serializationFailure.problem)
 		}
 	}
 

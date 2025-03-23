@@ -2,13 +2,13 @@ package readren.matrix
 package cluster.service
 
 import cluster.*
+import cluster.channel.CommonSerializers.given
+import cluster.channel.Deserializer.DeserializationException
 import cluster.channel.Nio2Serializers.given
 import cluster.channel.{Deserializer, Serializer}
 import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
 import cluster.service.ProtocolVersion.given
-import channel.CommonSerializers.given
-import readren.taskflow.Maybe
 
 import java.net.SocketAddress
 
@@ -147,114 +147,108 @@ object Protocol {
 		inline def supportedVersions: Set[ProtocolVersion] = contactCard._2
 	}
 
-	given Serializer[Protocol] = new Serializer[Protocol] {
-		override def serialize(message: Protocol, writer: Serializer.Writer): Serializer.Outcome = {
-			message match {
-				case hello: Hello =>
-					writer.putByte(DISCRIMINATOR_Hello)
-					writer.writeFull(hello)
+	given Serializer[Protocol] = (message: Protocol, writer: Serializer.Writer) => {
+		message match {
+			case hello: Hello =>
+				writer.putByte(DISCRIMINATOR_Hello)
+				writer.writeFull(hello)
 
-				case SupportedVersionsMismatch =>
-					writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
-					Serializer.Success
+			case SupportedVersionsMismatch =>
+				writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
 
-				case noAware: NoClusterIAmAwareOf =>
-					writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
-					writer.writeFull(noAware)
+			case noAware: NoClusterIAmAwareOf =>
+				writer.putByte(DISCRIMINATOR_NoClusterIAmAwareOf)
+				writer.writeFull(noAware)
 
-				case ysc: ClusterCreatorProposal =>
-					writer.putByte(DISCRIMINATOR_YouShouldCreateTheCluster)
-					writer.writeFull(ysc)
+			case ysc: ClusterCreatorProposal =>
+				writer.putByte(DISCRIMINATOR_YouShouldCreateTheCluster)
+				writer.writeFull(ysc)
 
-				case icc: ICreatedACluster =>
-					writer.putByte(DISCRIMINATOR_ICreatedACluster)
-					writer.writeFull(icc)
+			case icc: ICreatedACluster =>
+				writer.putByte(DISCRIMINATOR_ICreatedACluster)
+				writer.writeFull(icc)
 
-				case jam: JoinApprovalMembers =>
-					writer.putByte(DISCRIMINATOR_JoinApprovalMembers)
-					writer.writeFull(jam)
+			case jam: JoinApprovalMembers =>
+				writer.putByte(DISCRIMINATOR_JoinApprovalMembers)
+				writer.writeFull(jam)
 
-				case oi: RequestApprovalToJoin =>
-					writer.putByte(DISCRIMINATOR_RequestApprovalToJoin)
-					writer.writeFull(oi)
+			case oi: RequestApprovalToJoin =>
+				writer.putByte(DISCRIMINATOR_RequestApprovalToJoin)
+				writer.writeFull(oi)
 
-				case jag: JoinApprovalGranted =>
-					writer.putByte(DISCRIMINATOR_JoinApprovalGranted)
-					writer.writeFull(jag)
+			case jag: JoinApprovalGranted =>
+				writer.putByte(DISCRIMINATOR_JoinApprovalGranted)
+				writer.writeFull(jag)
 
-				case rtj: RequestToJoin =>
-					writer.putByte(DISCRIMINATOR_RequestToJoin)
-					writer.writeFull(rtj)
+			case rtj: RequestToJoin =>
+				writer.putByte(DISCRIMINATOR_RequestToJoin)
+				writer.writeFull(rtj)
 
-				case jg: JoinGranted =>
-					writer.putByte(DISCRIMINATOR_JoinGranted)
-					writer.writeFull(jg)
+			case jg: JoinGranted =>
+				writer.putByte(DISCRIMINATOR_JoinGranted)
+				writer.writeFull(jg)
 
-				case jr: JoinRejected =>
-					writer.putByte(DISCRIMINATOR_JoinRejected)
-					writer.writeFull(jr)
+			case jr: JoinRejected =>
+				writer.putByte(DISCRIMINATOR_JoinRejected)
+				writer.writeFull(jr)
 
-				case lcw: ILostCommunicationWith =>
-					writer.putByte(DISCRIMINATOR_ILostCommunicationWith)
-					writer.writeFull(lcw)
+			case lcw: ILostCommunicationWith =>
+				writer.putByte(DISCRIMINATOR_ILostCommunicationWith)
+				writer.writeFull(lcw)
 
-				case IAmLeaving =>
-					writer.putByte(DISCRIMINATOR_I_AM_LEAVING)
-					Serializer.Success
+			case IAmLeaving =>
+				writer.putByte(DISCRIMINATOR_I_AM_LEAVING)
 
-				case hb: Heartbeat =>
-					writer.putByte(DISCRIMINATOR_Heartbeat)
-					writer.writeFull(hb)
+			case hb: Heartbeat =>
+				writer.putByte(DISCRIMINATOR_Heartbeat)
+				writer.writeFull(hb)
 
-				case sc: StateChanged =>
-					writer.putByte(DISCRIMINATOR_StateChanged)
-					writer.writeFull(sc)
+			case sc: StateChanged =>
+				writer.putByte(DISCRIMINATOR_StateChanged)
+				writer.writeFull(sc)
 
-				case phr: ParticipantHasBeenRestarted =>
-					writer.putByte(DISCRIMINATOR_ParticipantHasBeenRestarted)
-					writer.writeFull(phr)
+			case phr: ParticipantHasBeenRestarted =>
+				writer.putByte(DISCRIMINATOR_ParticipantHasBeenRestarted)
+				writer.writeFull(phr)
 
-			}
 		}
 	}
 
-	given Deserializer[Protocol] = new Deserializer[Protocol] {
-		override def deserialize(reader: Deserializer.Reader): Deserializer.Problem | Protocol = {
-			reader.readByte() match {
-				case DISCRIMINATOR_Heartbeat =>
-					reader.read[Heartbeat]
-				case DISCRIMINATOR_StateChanged =>
-					reader.read[StateChanged]
-				case DISCRIMINATOR_Hello =>
-					reader.read[Hello]
-				case DISCRIMINATOR_SupportedVersionsMismatch =>
-					SupportedVersionsMismatch
-				case DISCRIMINATOR_NoClusterIAmAwareOf =>
-					reader.read[NoClusterIAmAwareOf]
-				case DISCRIMINATOR_YouShouldCreateTheCluster =>
-					reader.read[ClusterCreatorProposal]
-				case DISCRIMINATOR_ICreatedACluster =>
-					reader.read[ICreatedACluster]
-				case DISCRIMINATOR_JoinApprovalMembers =>
-					reader.read[JoinApprovalMembers]
-				case DISCRIMINATOR_RequestApprovalToJoin =>
-					reader.read[RequestApprovalToJoin]
-				case DISCRIMINATOR_JoinApprovalGranted =>
-					reader.read[JoinApprovalGranted]
-				case DISCRIMINATOR_RequestToJoin =>
-					reader.read[RequestToJoin]
-				case DISCRIMINATOR_JoinGranted =>
-					reader.read[JoinGranted]
-				case DISCRIMINATOR_JoinRejected =>
-					reader.read[JoinRejected]
-				case DISCRIMINATOR_ILostCommunicationWith =>
-					reader.read[ILostCommunicationWith]
-				case DISCRIMINATOR_ParticipantHasBeenRestarted =>
-					reader.read[ParticipantHasBeenRestarted]
+	given Deserializer[Protocol] = (reader: Deserializer.Reader) => {
+		reader.readByte() match {
+			case DISCRIMINATOR_Heartbeat =>
+				reader.read[Heartbeat]
+			case DISCRIMINATOR_StateChanged =>
+				reader.read[StateChanged]
+			case DISCRIMINATOR_Hello =>
+				reader.read[Hello]
+			case DISCRIMINATOR_SupportedVersionsMismatch =>
+				SupportedVersionsMismatch
+			case DISCRIMINATOR_NoClusterIAmAwareOf =>
+				reader.read[NoClusterIAmAwareOf]
+			case DISCRIMINATOR_YouShouldCreateTheCluster =>
+				reader.read[ClusterCreatorProposal]
+			case DISCRIMINATOR_ICreatedACluster =>
+				reader.read[ICreatedACluster]
+			case DISCRIMINATOR_JoinApprovalMembers =>
+				reader.read[JoinApprovalMembers]
+			case DISCRIMINATOR_RequestApprovalToJoin =>
+				reader.read[RequestApprovalToJoin]
+			case DISCRIMINATOR_JoinApprovalGranted =>
+				reader.read[JoinApprovalGranted]
+			case DISCRIMINATOR_RequestToJoin =>
+				reader.read[RequestToJoin]
+			case DISCRIMINATOR_JoinGranted =>
+				reader.read[JoinGranted]
+			case DISCRIMINATOR_JoinRejected =>
+				reader.read[JoinRejected]
+			case DISCRIMINATOR_ILostCommunicationWith =>
+				reader.read[ILostCommunicationWith]
+			case DISCRIMINATOR_ParticipantHasBeenRestarted =>
+				reader.read[ParticipantHasBeenRestarted]
 
-				case x =>
-					Deserializer.Mismatch(reader.position, s"Unexpected type discriminator: $x")
-			}
+			case x =>
+				throw new DeserializationException(reader.position, s"Invalid discriminator value ($x) for the Protocol type: no matching product type found")
 		}
 	}
 

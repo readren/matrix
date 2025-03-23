@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.channel
 
-import cluster.channel.Serializer.Writer
+import cluster.channel.Serializer.{SerializationException, Writer}
 import cluster.channel.Transmitter.*
 import cluster.misc.{DualEndedCircularBuffer, VLQ}
 import cluster.service.ProtocolVersion
@@ -20,16 +20,15 @@ object Transmitter {
 	case object Delivered extends Report
 	sealed trait NotDelivered extends Report
 	/**
-	 * A report received by the `onComplete` callback passed to the [[transmit]] method when the transmission fails due to the unsupported serialization of the provided message.
+	 * A report received by the `onComplete` callback passed to the [[transmit]] method when the transmission fails due to a serialization exception.
 	 *
 	 * @param rootMessage The complete message that was intended for serialization and transmission.
-	 * @param position The position in the [[ByteBuffer]] where the serialization issue was detected.
-	 * @param reason The explanation provided by the [[Serializer]] for the component of the `rootMessage` that could not be serialized.
+	 * @param problem The exception thrown by the serializer.
 	 * @param aFragmentWasTransmitted Indicates whether a portion of the message was transmitted before the failure occurred. 
 	 *                                - `true` if the issue was detected after a fragment of the message was already transmitted.
 	 *                                - `false` if no bytes were transmitted because the issue was detected before transmission began.
 	 */
-	case class SerializationUnsupported(rootMessage: Any, position: Int, reason: String, aFragmentWasTransmitted: Boolean) extends NotDelivered
+	case class SerializationProblem(rootMessage: Any, problem: SerializationException, aFragmentWasTransmitted: Boolean) extends NotDelivered
 
 	case class TransmissionFailure(rootMessage: Any, cause: Throwable) extends NotDelivered
 
@@ -87,7 +86,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		/** This variable is modified one time only, from false to true. */
 		@volatile var isSerializationCompleted = false
 		/** This variable is modified one time only, from null to non-null. */
-		@volatile var cancellationReason: SerializationUnsupported | Null = null
+		@volatile var cancellationReason: SerializationProblem | Null = null
 
 		/** Fills the frame-buffer with the content of the current read-end buffer */
 		def fillFrame(): Unit = {
@@ -173,15 +172,17 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		}
 
 		writeEndBuffer.clear()
-		serializer.serialize(message, handler) match {
-			case Serializer.Success =>
-				writeEndBuffer.flip()
-				isSerializationCompleted = true
-				if !behindTransmissionStarted || behindTransmissionStopped then sendFrame(contentBuffers.readEnd)
-
-			case unsupported: Serializer.Unsupported =>
-				if behindTransmissionStarted then cancellationReason = SerializationUnsupported(message, unsupported.position, unsupported.explanation, true)
-				else onCompleteWrapper(SerializationUnsupported(message, unsupported.position, unsupported.explanation, false))
+		try {
+			serializer.serialize(message, handler)
+			writeEndBuffer.flip()
+			isSerializationCompleted = true
+			if !behindTransmissionStarted || behindTransmissionStopped then sendFrame(contentBuffers.readEnd)
+		} catch {
+			case se: SerializationException =>
+				if behindTransmissionStarted then cancellationReason = SerializationProblem(message, se, true)
+				else onCompleteWrapper(SerializationProblem(message, se, false))
+			case scala.util.control.NonFatal(e) =>
+				onCompleteWrapper(TransmissionFailure(message, e))
 		}
 	}
 }
