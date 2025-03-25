@@ -24,12 +24,12 @@ trait Incommunicable extends Communicability { thisCommunicable: ParticipantDele
 		// replace me with a communicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
 		val myReplacement = clusterService.getBehavior.createAndAddACommunicableDelegate(peerAddress, communicationChannel)
-		myReplacement.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
-		myReplacement.versionsSupportedByPeer = versionsSupportedByPeer
+		myReplacement.initializeStateBasedOn(thisCommunicable)
 		// notify
 		clusterService.onDelegateBecomeCommunicable(peerAddress)
 		myReplacement
 	}
+
 }
 
 trait Communicable extends Communicability { thisCommunicable: ParticipantDelegate =>
@@ -44,21 +44,17 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 	protected def startReceiving(): Unit
 
 
-	def startAsServer(peerChannel: AsynchronousSocketChannel): Unit = {
+	def startConversationAsServer(): Unit = {
 		startReceiving()
 	}
 
-	def startAsClient(peerChannel: AsynchronousSocketChannel): Unit = {
+	def startConversationAsClient(): Unit = {
 		this.transmitterToPeer.transmit[Protocol](Hello(clusterService.myAddress, config.versionsSupportedByMe, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
 			case Transmitter.Delivered =>
 				startReceiving()
 			case failure: Transmitter.NotDelivered =>
 				reportFailure(failure)
 		}
-	}
-
-	def resumeAsClient(peerChannel: AsynchronousSocketChannel): Unit = {
-		startReceiving()
 	}
 
 	protected def determineAgreedVersion(versionsSupportedByMe: Set[ProtocolVersion], versionsSupportedByPeer: Set[ProtocolVersion]): Option[ProtocolVersion] = {
@@ -103,7 +99,7 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 		for participantCard <- hello.cardsOfOtherParticipantsIKnow do {
 			if participantCard.address != clusterService.myAddress && !clusterService.participantByAddress.contains(participantCard.address) then {
 				determineAgreedVersion(config.versionsSupportedByMe, participantCard.supportedVersions) match {
-					case Some(version) => clusterService.createNewDelegateForAndStartConnectingTo(participantCard.address, participantCard.supportedVersions)
+					case Some(version) => clusterService.createAndAddADelegateForAndThenConnectToParticipant(participantCard.address, participantCard.supportedVersions, Aspirant)
 					case None => clusterService.notifyVersionIncompatibilityWith(participantCard.address)
 				}
 			}
@@ -148,8 +144,7 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 		// replace me with an incommunicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
 		val myReplacement = clusterService.getBehavior.createAndAddAnIncommunicableDelegate(peerAddress, isConnecting)
-		myReplacement.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
-		myReplacement.versionsSupportedByPeer = versionsSupportedByPeer
+		myReplacement.initializeStateBasedOn(thisCommunicable)
 		// notify
 		clusterService.onDelegateBecomeIncommunicable(peerAddress, motive)
 		myReplacement

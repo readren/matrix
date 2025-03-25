@@ -35,20 +35,21 @@ class AspirantCommunicableDelegate(
 					clusterService.notifyVersionIncompatibilityWith(peerAddress)
 
 				case NoClusterIAmAwareOf(aspirantsKnownByPeer) =>
-					val iAmConnectedToAllAspirants =
-						aspirantsKnownByPeer.foldLeft(true) { (accumulator, aspirantCard) =>
-							if aspirantCard.address == clusterService.myAddress then true
-							else if clusterService.participantByAddress.contains(aspirantCard.address) then true
-							else {
-								if determineAgreedVersion(config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
-									clusterService.createNewDelegateForAndStartConnectingTo(aspirantCard.address, aspirantCard.supportedVersions)
-								} else {
-									clusterService.notifyVersionIncompatibilityWith(aspirantCard.address)
-								}
-								false
+					// Create a delegate for each aspirant I didn't know.
+					for aspirantCard <- aspirantsKnownByPeer do {
+						if aspirantCard.address != clusterService.myAddress && !clusterServiceBehavior.delegateByAddress.contains(aspirantCard.address) then {
+							if determineAgreedVersion(config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
+								clusterService.createAndAddADelegateForAndThenConnectToParticipant(aspirantCard.address, aspirantCard.supportedVersions, Aspirant)
+							} else {
+								val newDelegate = clusterServiceBehavior.createAndAddAnIncommunicableDelegate(aspirantCard.address, false)
+								newDelegate.versionsSupportedByPeer = aspirantCard.supportedVersions
+								newDelegate.peerMembershipStatusAccordingToMe = Aspirant
+								clusterService.notifyVersionIncompatibilityWith(aspirantCard.address)
 							}
 						}
-					if iAmConnectedToAllAspirants then clusterService.proposeClusterCreator()
+					}
+					// Propose a cluster creator if apropiate.
+					clusterService.proposeClusterCreator()
 
 				case ClusterCreatorProposal(candidateProposedByPeer, versionsSupportedByCandidate) =>
 					clusterCreatorCandidateProposedByPeer = candidateProposedByPeer
@@ -59,9 +60,9 @@ class AspirantCommunicableDelegate(
 							clusterService.proposeClusterCreator()
 						}
 					} else if !clusterService.participantByAddress.contains(candidateProposedByPeer) then {
-						clusterService.createNewDelegateForAndStartConnectingTo(candidateProposedByPeer, versionsSupportedByCandidate)
+						clusterService.createAndAddADelegateForAndThenConnectToParticipant(candidateProposedByPeer, versionsSupportedByCandidate, Aspirant)
 					}
-					
+
 				case icc: ICreatedACluster =>
 
 				case jam: JoinApprovalMembers =>

@@ -156,7 +156,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			}
 
 			override def completed(bytesReceived: Integer, writeEndBuffer: ByteBuffer): Unit = {
-				if bytesReceived == 0 then onComplete.accept(FrameAndEndOfStreamMismatch(remainingContentBytesUntilNextFrameHeader), attachment)
+				if bytesReceived == -1 then onComplete.accept(FrameAndEndOfStreamMismatch(remainingContentBytesUntilNextFrameHeader), attachment)
 				else {
 					val writeEndPosition = writeEndBuffer.position
 

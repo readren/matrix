@@ -1,0 +1,415 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<pnml>
+  <net type="http://www.yasper.org/specs/epnml-1.1" id="do30">
+    <name>
+      <text>this arc should reset too</text>
+    </name>
+    <toolspecific tool="Yasper" version="1.2.4020.34351">
+      <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
+    </toolspecific>
+    <transition id="tr1">
+      <name>
+        <text>start connection to peer as client and create uncommunicated delegate  in connecting state</text>
+      </name>
+      <graphics>
+        <position x="330" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr3">
+      <name>
+        <text>complete connection to peer as client</text>
+      </name>
+      <graphics>
+        <position x="528" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr4">
+      <name>
+        <text>update to communicable delegate and start receiving from peer as server</text>
+      </name>
+      <graphics>
+        <position x="627" y="693" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr8">
+      <name>
+        <text>say hello to the server</text>
+      </name>
+      <graphics>
+        <position x="1155" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr9">
+      <name>
+        <text>close connection to peer as client</text>
+      </name>
+      <graphics>
+        <position x="660" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr11">
+      <name>
+        <text>start receiving from peer as client</text>
+      </name>
+      <graphics>
+        <position x="1287" y="528" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr12">
+      <name>
+        <text>The peer initiates a connection to me</text>
+      </name>
+      <graphics>
+        <position x="132" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <emitor xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </emitor>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>1</text>
+          </mean>
+          <deviation>
+            <text>0</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr6">
+      <graphics>
+        <position x="495" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr2">
+      <name>
+        <text>convert delegate to communicable</text>
+      </name>
+      <graphics>
+        <position x="891" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr10">
+      <name>
+        <text>close connection to peer as server</text>
+      </name>
+      <graphics>
+        <position x="330" y="693" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr15">
+      <graphics>
+        <position x="132" y="627" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr17">
+      <graphics>
+        <position x="561" y="528" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <type>
+        <text>XOR</text>
+      </type>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <connectionWeights xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
+      </toolspecific>
+    </transition>
+    <transition id="tr16">
+      <name>
+        <text>create a communicable delegate, and start receiving from peer as server</text>
+      </name>
+      <graphics>
+        <position x="660" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr5">
+      <name>
+        <text>accept connection</text>
+      </name>
+      <graphics>
+        <position x="330" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <place id="pl3">
+      <name>
+        <text>cluster service just started</text>
+      </name>
+      <graphics>
+        <position x="198" y="264" />
+        <dimension x="20" y="20" />
+      </graphics>
+      <initialMarking>
+        <text>1</text>
+      </initialMarking>
+    </place>
+    <place id="pl4">
+      <name>
+        <text>connecting to peer as client</text>
+      </name>
+      <graphics>
+        <position x="429" y="264" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl5">
+      <name>
+        <text>receiving a connection request from the peer</text>
+      </name>
+      <graphics>
+        <position x="231" y="858" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl6">
+      <name>
+        <text>just connected to peer as client</text>
+      </name>
+      <graphics>
+        <position x="1155" y="264" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl12">
+      <name>
+        <text>receiving from peer</text>
+      </name>
+      <graphics>
+        <position x="1287" y="693" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl13">
+      <name>
+        <text>waiting the hello message is sent</text>
+      </name>
+      <graphics>
+        <position x="1287" y="396" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl16">
+      <name>
+        <text>connection to peer as client is closed</text>
+      </name>
+      <graphics>
+        <position x="561" y="396" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl8">
+      <name>
+        <text>a communicable delegate exists, created as server</text>
+      </name>
+      <graphics>
+        <position x="891" y="363" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl9">
+      <name>
+        <text>connected to peer as client</text>
+      </name>
+      <graphics>
+        <position x="759" y="264" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl11">
+      <name>
+        <text>a connecting delegate exists</text>
+      </name>
+      <graphics>
+        <position x="330" y="462" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl17">
+      <name>
+        <text>peer card is heavier</text>
+      </name>
+      <graphics>
+        <position x="495" y="528" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl18">
+      <name>
+        <text>my card is heavier</text>
+      </name>
+      <graphics>
+        <position x="627" y="528" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl19">
+      <name>
+        <text>cluster service just started</text>
+      </name>
+      <graphics>
+        <position x="561" y="594" />
+        <dimension x="20" y="20" />
+      </graphics>
+      <initialMarking>
+        <text>1</text>
+      </initialMarking>
+    </place>
+    <place id="pl20">
+      <name>
+        <text>A communicable delegate existes created as client</text>
+      </name>
+      <graphics>
+        <position x="1155" y="528" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl1">
+      <name>
+        <text>just connected to peer as server</text>
+      </name>
+      <graphics>
+        <position x="462" y="858" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <place id="pl10">
+      <graphics>
+        <position x="231" y="627" />
+        <dimension x="20" y="20" />
+      </graphics>
+    </place>
+    <arc id="a4" source="pl3" target="tr1" />
+    <arc id="a5" source="tr1" target="pl4" />
+    <arc id="a7" source="pl4" target="tr3" />
+    <arc id="a11" source="pl6" target="tr8" />
+    <arc id="a12" source="tr8" target="pl13" />
+    <arc id="a13" source="tr9" target="pl16" />
+    <arc id="a14" source="pl13" target="tr11" />
+    <arc id="a17" source="tr12" target="pl5" />
+    <arc id="a24" source="pl16" target="tr6" />
+    <arc id="a25" source="tr2" target="pl6" />
+    <arc id="a26" source="tr3" target="pl9" />
+    <arc id="a27" source="pl9" target="tr2" />
+    <arc id="a28" source="tr2" target="pl8">
+      <type>
+        <text>inhibitor</text>
+      </type>
+    </arc>
+    <arc id="a29" source="pl9" target="tr9" />
+    <arc id="a30" source="tr1" target="pl11" />
+    <arc id="a34" source="pl19" target="tr17" />
+    <arc id="a35" source="tr17" target="pl17" />
+    <arc id="a36" source="tr17" target="pl18" />
+    <arc id="a37" source="pl11" target="tr2">
+      <graphics>
+        <position x="759" y="198" />
+      </graphics>
+    </arc>
+    <arc id="a40" source="tr2" target="pl20" />
+    <arc id="a41" source="tr16" target="pl11">
+      <type>
+        <text>inhibitor</text>
+      </type>
+    </arc>
+    <arc id="a42" source="pl11" target="tr9">
+      <graphics>
+        <position x="660" y="462" />
+      </graphics>
+    </arc>
+    <arc id="a43" source="pl11" target="tr10" />
+    <arc id="a44" source="tr10" target="pl11" />
+    <arc id="a45" source="pl17" target="tr10" />
+    <arc id="a46" source="tr10" target="pl17" />
+    <arc id="a47" source="pl18" target="tr4" />
+    <arc id="a48" source="tr4" target="pl18" />
+    <arc id="a50" source="pl20" target="tr8" />
+    <arc id="a51" source="tr8" target="pl20" />
+    <arc id="a52" source="pl20" target="tr11" />
+    <arc id="a54" source="tr11" target="pl20" />
+    <arc id="a55" source="tr11" target="pl12" />
+    <arc id="a56" source="pl5" target="tr5" />
+    <arc id="a57" source="tr5" target="pl1" />
+    <arc id="a58" source="pl1" target="tr16" />
+    <arc id="a59" source="pl1" target="tr10" />
+    <arc id="a60" source="pl1" target="tr4" />
+    <arc id="a61" source="tr10" target="pl10" />
+    <arc id="a62" source="pl10" target="tr15" />
+    <arc id="a63" source="tr4" target="pl8">
+      <name>
+        <text>this arch should inhibit too</text>
+      </name>
+    </arc>
+    <arc id="a64" source="tr4" target="pl12">
+      <name>
+        <text>this arc should reset too</text>
+      </name>
+    </arc>
+    <arc id="a65" source="tr16" target="pl12">
+      <name>
+        <text>this arc should reset too</text>
+      </name>
+    </arc>
+    <arc id="a66" source="tr16" target="pl8">
+      <name>
+        <text>this arc should reset too</text>
+      </name>
+    </arc>
+    <arc id="a67" source="tr1" target="pl8">
+      <type>
+        <text>inhibitor</text>
+      </type>
+      <graphics>
+        <position x="792" y="165" />
+      </graphics>
+    </arc>
+    <arc id="a68" source="tr16" target="pl6">
+      <type>
+        <text>reset</text>
+      </type>
+    </arc>
+    <arc id="a69" source="tr4" target="pl6">
+      <type>
+        <text>reset</text>
+      </type>
+    </arc>
+    <arc id="a70" source="tr4" target="pl20">
+      <type>
+        <text>reset</text>
+      </type>
+    </arc>
+    <arc id="a71" source="tr4" target="pl11">
+      <type>
+        <text>reset</text>
+      </type>
+    </arc>
+    <arc id="a72" source="pl8" target="tr9" />
+    <arc id="a73" source="tr9" target="pl8" />
+    <arc id="a74" source="tr16" target="pl20">
+      <type>
+        <text>inhibitor</text>
+      </type>
+    </arc>
+  </net>
+</pnml>

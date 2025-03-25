@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.service.ClusterService.*
-import cluster.service.Protocol.{ContactAddress, Member}
+import cluster.service.Protocol.{ContactAddress, Member, MembershipStatus}
 import cluster.service.ProtocolVersion
 
 import readren.taskflow.SchedulingExtension.MilliDuration
@@ -172,8 +172,8 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 						val clientRemoteAddress = clientChannel.getRemoteAddress
 						behavior.delegateByAddress.getOrElse(clientRemoteAddress, null) match {
 							case null =>
-								val newParticipant = behavior.createAndAddACommunicableDelegate(clientRemoteAddress, clientChannel)
-								newParticipant.startAsServer(clientChannel)
+								val newParticipantDelegate = behavior.createAndAddACommunicableDelegate(clientRemoteAddress, clientChannel)
+								newParticipantDelegate.startConversationAsServer()
 
 							case communicableParticipant: Communicable =>
 								communicableParticipant.handleReconnection(clientChannel)
@@ -182,7 +182,7 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 								val communicableParticipant = incommunicableParticipant.replaceMyselfWithACommunicableDelegate(clientChannel)
 								// TODO analyze if a notification of the communicability change should be issued here.
 								scribe.info(s"A connection from the participant at $clientRemoteAddress, which was marked as incommunicable, has been accepted. Let's see if we can communicate with it this time.")
-								communicableParticipant.startAsServer(clientChannel)
+								communicableParticipant.startConversationAsServer()
 						}
 					} catch ignorableErrorCatcher
 					// Accept the next client connection. Note that the call is done within the `sequencer` to avoid flooding its task-queue when many clients try to connect simultaneously.
@@ -207,27 +207,38 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 		// Send join requests to seeds with retries
 		for seed <- seeds do if config.myAddress != seed then {
 			sequencer.executeSequentially {
-				if !participantByAddress.contains(seed) then startConnectionToSeed(seed)
+				if !participantByAddress.contains(seed) then connectToAndThenCreateADelegateForParticipant(seed)
 			}
 		}
 	}
 
-	private def startConnectionToSeed(contactAddress: ContactAddress): Unit = {
+	private def connectToAndThenCreateADelegateForParticipant(contactAddress: ContactAddress): Unit = {
 		connectTo(contactAddress) {
 			case Success(communicationChannel) =>
 				sequencer.executeSequentially {
-					val newParticipantDelegate = behavior.createAndAddACommunicableDelegate(contactAddress, communicationChannel)
-					newParticipantDelegate.startAsClient(communicationChannel)
-					clusterEventsListeners.forEach { (listener, _) => listener.onPeerConnected(newParticipantDelegate) }
+					behavior.delegateByAddress.getOrElse(contactAddress, null) match {
+						case null =>
+							val newParticipantDelegate = behavior.createAndAddACommunicableDelegate(contactAddress, communicationChannel)
+							newParticipantDelegate.startConversationAsClient()
+							clusterEventsListeners.forEach { (listener, _) => listener.onPeerConnected(newParticipantDelegate) }
+
+						case incommunicable: Incommunicable =>
+							val replacement = incommunicable.replaceMyselfWithACommunicableDelegate(communicationChannel)
+							replacement.startConversationAsClient()
+							
+
+						case communicable: Communicable =>
+							communicationChannel.close()
+					}
 				}
 			case Failure(exc) =>
 				scribe.error(s"The connection to the seed at $contactAddress has been aborted after many failed tries.")
 		}
 	}
 
-	private[service] def createNewDelegateForAndStartConnectingTo(participantContactAddress: ContactAddress, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
+	private[service] def createAndAddADelegateForAndThenConnectToParticipant(participantContactAddress: ContactAddress, versionsSupportedByPeer: Set[ProtocolVersion], membershipStatus: MembershipStatus): ParticipantDelegate & Incommunicable = {
 		val connectingDelegate = behavior.createAndAddAnIncommunicableDelegate(participantContactAddress, true)
-		connectingDelegate.versionsSupportedByPeer = versionsSupportedByPeer
+		connectingDelegate.initializeState(versionsSupportedByPeer, membershipStatus)
 		clusterEventsListeners.forEach { (listener, _) => listener.onStartingConnectionToNewParticipant(connectingDelegate) }
 
 		connectTo(participantContactAddress) {
@@ -235,13 +246,14 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 				sequencer.executeSequentially {
 					if connectingDelegate eq behavior.delegateByAddress.getOrElse(participantContactAddress, null) then {
 						val communicableDelegate = connectingDelegate.replaceMyselfWithACommunicableDelegate(communicationChannel)
-						communicableDelegate.startAsClient(communicationChannel)
+						communicableDelegate.startConversationAsClient()
 					}
 				}
 			case Failure(exc) =>
 				connectingDelegate.connectionAborted()
 				scribe.error(s"The connection to the participant at $participantContactAddress has been aborted after many failed tries.")
 		}
+		connectingDelegate
 	}
 
 	private[service] def connectTo(contactAddress: ContactAddress)(onComplete: Try[AsynchronousSocketChannel] => Unit): Unit = {
@@ -306,7 +318,9 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 
 	private[service] def notifyParticipantHasBeenRestarted(rebornParticipantAddress: ContactAddress): Unit = ???
 
-	private[service] def proposeClusterCreator(): Unit = ???
+	private[service] def proposeClusterCreator(): Unit = {
+		???
+	}
 
 	private[service] def solveClusterExistenceConflictWith(participantDelegate: MemberCommunicableDelegate): Unit = ???
 

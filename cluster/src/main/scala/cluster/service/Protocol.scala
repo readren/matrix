@@ -18,6 +18,7 @@ sealed trait Protocol
  * 	- propagate the knowledge of its existence;
  * 	- be replied with [[JoinApprovalMembers]] if a cluster was already created;
  * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator.
+ * 	The receiver may assume that the sender is an aspirant.
  * 	@param myContactAddress the [[ContactAddress]] of the sender.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param cardsOfOtherParticipantsIKnow the [[ContactCard]]s of the participants known by the sender, not including itself. */

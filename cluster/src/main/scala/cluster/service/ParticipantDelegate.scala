@@ -14,6 +14,16 @@ sealed abstract class ParticipantDelegate {
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus | Null = null
 	export clusterService.sequencer
+
+	inline def initializeState(versionsSupportedByPeer: Set[ProtocolVersion], peerMembershipStatusAccordingToMe: MembershipStatus): Unit = {
+		this.versionsSupportedByPeer = versionsSupportedByPeer
+		this.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
+	}
+	
+	inline def initializeStateBasedOn(other: ParticipantDelegate): Unit = {
+		this.versionsSupportedByPeer = other.versionsSupportedByPeer
+		this.peerMembershipStatusAccordingToMe = other.peerMembershipStatusAccordingToMe
+	}
 }
 
 trait AspirantDelegate extends ParticipantDelegate
