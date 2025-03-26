@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Receiver
-import cluster.service.ClusterService.DelegateConfig
+import cluster.service.ClusterService.{DelegateConfig, VersionIncompatibilityWith}
 import cluster.service.Protocol.*
 
 import java.nio.channels.AsynchronousSocketChannel
@@ -27,7 +27,7 @@ class MemberCommunicableDelegate(
 				case hello: Hello => handle(hello)
 
 				case SupportedVersionsMismatch =>
-					clusterService.notifyVersionIncompatibilityWith(peerAddress)
+					clusterService.notify(VersionIncompatibilityWith(peerAddress))
 					replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me we are not compatible.")
 
 				case NoClusterIAmAwareOf(knowAspirantsCards) =>

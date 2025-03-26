@@ -7,7 +7,7 @@ import cluster.service.Protocol.ContactAddress
 class AspirantIncommunicableDelegate(override val clusterService: ClusterService, override val peerAddress: ContactAddress, isConnectingInPrinciple: Boolean) extends AspirantDelegate, Incommunicable {
 	private var isTryingToConnect = isConnectingInPrinciple
 
-	override def isConnecting: Boolean = isTryingToConnect
+	override def isConnectingAsClient: Boolean = isTryingToConnect
 
 	override def connectionAborted(): Unit = isTryingToConnect = false
 }

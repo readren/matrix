@@ -225,8 +225,8 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 	/** Like [[receive]] but changing the continuation style from passing to returned.
 	 * Also, the computation is deferred until explicitly triggered (with [[util.Lazy.trigger]]. */
 	def receivesLazily[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Lazy[M] = new Lazy[M] {
-		override def trigger(onComplete: Consumer[M | Fault]): Unit = {
-			receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => onComplete.accept(outcome) }
+		override def trigger(onComplete: M | Fault => Unit): Unit = {
+			receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => onComplete(outcome) }
 		}
 	}
 

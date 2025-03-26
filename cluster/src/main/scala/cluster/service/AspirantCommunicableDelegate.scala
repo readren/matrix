@@ -2,9 +2,11 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Receiver
-import cluster.service.ClusterService.DelegateConfig
+import cluster.service.ClusterService.{DelegateConfig, VersionIncompatibilityWith}
 import cluster.service.Protocol.*
+import cluster.service.Protocol.MembershipStatus.ASPIRANT
 import cluster.service.ProtocolVersion
+import ContactCard.*
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
@@ -32,19 +34,19 @@ class AspirantCommunicableDelegate(
 
 				case SupportedVersionsMismatch =>
 					replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me that we are not compatible.")
-					clusterService.notifyVersionIncompatibilityWith(peerAddress)
+					clusterService.notify(VersionIncompatibilityWith(peerAddress))
 
 				case NoClusterIAmAwareOf(aspirantsKnownByPeer) =>
 					// Create a delegate for each aspirant I didn't know.
 					for aspirantCard <- aspirantsKnownByPeer do {
 						if aspirantCard.address != clusterService.myAddress && !clusterServiceBehavior.delegateByAddress.contains(aspirantCard.address) then {
 							if determineAgreedVersion(config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
-								clusterService.createAndAddADelegateForAndThenConnectToParticipant(aspirantCard.address, aspirantCard.supportedVersions, Aspirant)
+								clusterService.createAndAddADelegateForAndThenConnectToParticipant(aspirantCard.address, aspirantCard.supportedVersions, ASPIRANT)
 							} else {
 								val newDelegate = clusterServiceBehavior.createAndAddAnIncommunicableDelegate(aspirantCard.address, false)
 								newDelegate.versionsSupportedByPeer = aspirantCard.supportedVersions
-								newDelegate.peerMembershipStatusAccordingToMe = Aspirant
-								clusterService.notifyVersionIncompatibilityWith(aspirantCard.address)
+								newDelegate.peerMembershipStatusAccordingToMe = ASPIRANT
+								clusterService.notify(VersionIncompatibilityWith(aspirantCard.address))
 							}
 						}
 					}
@@ -60,7 +62,7 @@ class AspirantCommunicableDelegate(
 							clusterService.proposeClusterCreator()
 						}
 					} else if !clusterService.participantByAddress.contains(candidateProposedByPeer) then {
-						clusterService.createAndAddADelegateForAndThenConnectToParticipant(candidateProposedByPeer, versionsSupportedByCandidate, Aspirant)
+						clusterService.createAndAddADelegateForAndThenConnectToParticipant(candidateProposedByPeer, versionsSupportedByCandidate, ASPIRANT)
 					}
 
 				case icc: ICreatedACluster =>

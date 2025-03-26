@@ -10,7 +10,6 @@ import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
 import java.util
 import java.util.concurrent.TimeUnit
-import java.util.function.{BiConsumer, Consumer}
 import scala.annotation.tailrec
 
 object Transmitter {
@@ -59,12 +58,12 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 	 * @param msgVersion the version id of messages to produce.
 	 * @param timeout The maximum time to wait for the first chunk of bytes and between chunks of bytes are transmitted.
 	 * @param timeUnit The unit of time for the `timeout` parameter.
-	 * @param onComplete A [[Consumer]] callback that is invoked when the transmission completes either successfully or not, with a [[Transmitter.Report]].
+	 * @param onComplete A consumer callback that is invoked when the transmission completes either successfully or not, with a [[Transmitter.Report]].
 	 * @param serializer The serializer to be used for serializing the message into outgoing bytes.
 	 * @tparam M The type of the `message` to be sent.
 	 */
-	inline def transmit[M](message: M, msgVersion: ProtocolVersion, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Consumer[Report])(using serializer: Serializer[M]): Unit = {
-		transmitWithAttachment[M, Null](message, msgVersion, null, timeout, timeUnit) { (report, dummy) => onComplete.accept(report) }
+	inline def transmit[M](message: M, msgVersion: ProtocolVersion, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
+		transmitWithAttachment[M, Null](message, msgVersion, null, timeout, timeUnit) { (report, dummy) => onComplete(report) }
 	}
 
 	// assume that the thread that calls this method is named "main".
@@ -75,7 +74,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		timeout: Long = 1,
 		timeUnit: TimeUnit = TimeUnit.SECONDS
 	)(
-		onComplete: BiConsumer[Report, A],
+		onComplete: (Report, A) => Unit
 	)(using serializer: Serializer[M]): Unit = {
 		/** This variable is modified only within the thread that called this method ([[transmitWithAttachment]]). */
 		var writeEndBuffer = contentBuffers.writeEnd
@@ -108,7 +107,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 		inline def onCompleteWrapper(report: Report): Unit = {
 			frameBuffer(1) = null
-			onComplete.accept(report, attachment)
+			onComplete(report, attachment)
 		}
 
 		if frameBuffer(1) != null then throw new TransmissionInProgressException

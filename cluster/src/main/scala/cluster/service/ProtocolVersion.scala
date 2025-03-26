@@ -22,7 +22,16 @@ object ProtocolVersion {
 		}
 	}
 
-	given Serializer[ProtocolVersion] = (message: ProtocolVersion, writer: Serializer.Writer) => writer.putByte(message)
-	
-	given Deserializer[ProtocolVersion] = (reader: Deserializer.Reader) => reader.readByte()
+	val serializer: Serializer[ProtocolVersion] = (message: ProtocolVersion, writer: Serializer.Writer) => writer.putByte(message)
+
+	given Serializer[ProtocolVersion] = serializer
+
+	val deserializer: Deserializer[ProtocolVersion] = (reader: Deserializer.Reader) => reader.readByte()
+
+	given Deserializer[ProtocolVersion] = deserializer
+
+	val ordering: Ordering[ProtocolVersion] =
+		(x: ProtocolVersion, y: ProtocolVersion) => if x == y then 0 else if x.isNewerThan(y) then 1 else -1
+
+	given Ordering[ProtocolVersion] = ordering
 }

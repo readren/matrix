@@ -1,7 +1,6 @@
 package readren.matrix
 package cluster.misc
 
-import java.util.function.Consumer
 import scala.reflect.Typeable
 
 /**
@@ -19,7 +18,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 *
 	 * @param onComplete A callback function that accepts either the computed value (`A`) or a `Fault`.
 	 */
-	def trigger(onComplete: Consumer[A | Fault]): Unit
+	def trigger(onComplete: A | Fault => Unit): Unit
 
 	/**
 	 * Transforms the result of this computation using the function `f`.
@@ -34,9 +33,9 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
 	def map[B](f: A => B): Lazy[B, Fault] = new Lazy[B, Fault] {
-		override def trigger(onComplete: Consumer[B | Fault]): Unit = thisLazy.trigger {
-			case fault: Fault => onComplete.accept(fault)
-			case a: A @unchecked => onComplete.accept(f(a))
+		override def trigger(onComplete: B | Fault => Unit): Unit = thisLazy.trigger {
+			case fault: Fault => onComplete(fault)
+			case a: A @unchecked => onComplete(f(a))
 		}
 	}
 
@@ -53,9 +52,9 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
 	def flatMap[B](f: A => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
-		override def trigger(onComplete: Consumer[B | Fault]): Unit =
+		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger {
-				case fault: Fault => onComplete.accept(fault)
+				case fault: Fault => onComplete(fault)
 				case a: A @unchecked => f(a).trigger(onComplete)
 			}
 	}
@@ -73,9 +72,9 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
 	def transform[B](f: A | Fault => B | Fault): Lazy[B, Fault] = new Lazy[B, Fault] {
-		override def trigger(onComplete: Consumer[B | Fault]): Unit =
+		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger { aOrFault =>
-				onComplete.accept(f(aOrFault))
+				onComplete(f(aOrFault))
 			}
 	}
 
@@ -91,7 +90,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
 	def transformWith[B](next: A | Fault => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
-		override def trigger(onComplete: Consumer[B | Fault]): Unit =
+		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger {
 				case fault: Fault => next(fault).trigger(onComplete)
 				case a: A @unchecked => next(a).trigger(onComplete)
@@ -109,10 +108,10 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[A]` representing the original computation with the side effect attached.
 	 */
 	def andThen(sideEffect: A | Fault => Unit): Lazy[A, Fault] = new Lazy[A, Fault] {
-		override def trigger(onComplete: Consumer[A | Fault]): Unit =
+		override def trigger(onComplete: A | Fault => Unit): Unit =
 			thisLazy.trigger { result =>
 				sideEffect(result)
-				onComplete.accept(result)
+				onComplete(result)
 			}
 	}
 
@@ -127,9 +126,9 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @return A new `Lazy[A]` representing the original computation with the side effect attached.
 	 */
 	def andFinally(sideEffect: A | Fault => Unit): Lazy[A, Fault] = new Lazy[A, Fault] {
-		override def trigger(onComplete: Consumer[A | Fault]): Unit =
+		override def trigger(onComplete: A | Fault => Unit): Unit =
 			thisLazy.trigger { result =>
-				onComplete.accept(result)
+				onComplete(result)
 				sideEffect(result)
 			}
 	}

@@ -10,7 +10,7 @@ import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
 import cluster.service.ProtocolVersion.given
 
-import java.net.SocketAddress
+import java.net.{InetSocketAddress, SocketAddress}
 
 sealed trait Protocol
 
@@ -113,12 +113,9 @@ object Protocol {
 	/** Milliseconds since 1970-01-01T00:00:00Z */
 	type Instant = Long
 
-	sealed trait MembershipStatus
-
-	case object Aspirant extends MembershipStatus
-
-	case object Member extends MembershipStatus
-
+	enum MembershipStatus {
+		case UNKNOWN, ASPIRANT, MEMBER
+	}
 	sealed trait MyInfoAboutOtherParticipant
 
 	case object Incompatible extends MyInfoAboutOtherParticipant
@@ -131,21 +128,6 @@ object Protocol {
 
 	enum CommunicationStatus {
 		case connected, incompatible, unreachable
-	}
-
-	/**
-	 * A cross-version contact information card that a participant use to share and propagate its existence among other participants.
-	 *
-	 * A `ContactCard` consist of the contact address of a participant and the set protocol-versions it supports.
-	 * This enables backward-compatible communication between participants running different versions of the cluster service.
-	 *
-	 * Participants share their `ContactCard` with others to allow discovery and propagation of their presence.
-	 */
-	type ContactCard = (ContactAddress, Set[ProtocolVersion])
-
-	extension (contactCard: ContactCard) {
-		inline def address: ContactAddress = contactCard._1
-		inline def supportedVersions: Set[ProtocolVersion] = contactCard._2
 	}
 
 	given Serializer[Protocol] = (message: Protocol, writer: Serializer.Writer) => {

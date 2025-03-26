@@ -2,11 +2,12 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.{Receiver, Transmitter}
-import cluster.service.ClusterService.DelegateConfig
+import cluster.misc.DoNothing
+import cluster.service.ClusterService.{CommunicationChannelReplaced, DelegateConfig, VersionIncompatibilityWith}
 import cluster.service.Protocol.*
-
+import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
+import ContactCard.*
 import java.nio.channels.AsynchronousSocketChannel
-import java.util.function.Consumer
 import scala.util.{Failure, Success}
 
 /** Categorizes subtypes of [[ParticipantDelegate]] into two groups, the ones that represent delegates that communicate to the peer from the ones that don't. */
@@ -14,12 +15,17 @@ sealed trait Communicability {
 	def isCommunicable: Boolean
 }
 
+/** Mixin that defines the peculiarities of a [[ParticipantDelegate]] that is currently not able to communicate with the participant.
+ * Note that participants to which the [[ClusterService]] is connecting to are associated to a [[Incommunicable]] delegate with the [[isConnectingAsClient]] flag set, until the connection is completed; moment at which the delegate is replaced with a [[Communicable]] one. */
 trait Incommunicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	override def isCommunicable: Boolean = false
-	
-	def isConnecting: Boolean
+
+	/** Tells that this delegate is associated to a participant to which the [[ClusterService]] is connecting to. The [[ClusterService]] will*/
+	def isConnectingAsClient: Boolean
+
+	/** The implementation must clear the [[isConnectingAsClient]] flag. */
 	def connectionAborted(): Unit
-	
+
 	def replaceMyselfWithACommunicableDelegate(communicationChannel: AsynchronousSocketChannel): ParticipantDelegate & Communicable = {
 		// replace me with a communicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
@@ -32,6 +38,7 @@ trait Incommunicable extends Communicability { thisCommunicable: ParticipantDele
 
 }
 
+/** Mixin that defines the peculiarities of a [[ParticipantDelegate]] that is able to communicate with the participant. */
 trait Communicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	protected val peerChannel: AsynchronousSocketChannel
 	val config: DelegateConfig
@@ -71,36 +78,36 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 		}
 	}
 
-	protected def ifFailureReportItAndThen(consumer: Consumer[Transmitter.NotDelivered])(report: Transmitter.Report): Unit = {
+	protected def ifFailureReportItAndThen(consumer: Transmitter.NotDelivered => Unit)(report: Transmitter.Report): Unit = {
 		report match {
 			case Transmitter.Delivered => // do nothing
 
 			case failure: Transmitter.NotDelivered =>
 				reportFailure(failure)
-				sequencer.executeSequentially(consumer.accept(failure))
+				sequencer.executeSequentially(consumer(failure))
 		}
 	}
 
 	protected def handle(hello: Hello): Unit = {
-		// update my viewpoint of the peer's membership.
-		peerMembershipStatusAccordingToMe match {
-			case null =>
-				peerMembershipStatusAccordingToMe = Aspirant
-			case Aspirant =>
-				peerMembershipStatusAccordingToMe = Aspirant
-				clusterService.notifyParticipantHasBeenRestarted(peerAddress)
-			case Member =>
-				peerMembershipStatusAccordingToMe = Aspirant
-				clusterService.notifyParticipantHasBeenRestarted(peerAddress)
-		}
 		versionsSupportedByPeer = hello.versionsISupport
 
+		// update my viewpoint of the peer's membership.
+		if peerMembershipStatusAccordingToMe == MEMBER then {
+			peerMembershipStatusAccordingToMe = ASPIRANT
+			clusterService.notify(ClusterService.ParticipantHasBeenRestarted(peerAddress))
+		} else {
+			peerMembershipStatusAccordingToMe = ASPIRANT
+		}
+
 		// Connect to participants I didn't know.
-		for participantCard <- hello.cardsOfOtherParticipantsIKnow do {
-			if participantCard.address != clusterService.myAddress && !clusterService.participantByAddress.contains(participantCard.address) then {
-				determineAgreedVersion(config.versionsSupportedByMe, participantCard.supportedVersions) match {
-					case Some(version) => clusterService.createAndAddADelegateForAndThenConnectToParticipant(participantCard.address, participantCard.supportedVersions, Aspirant)
-					case None => clusterService.notifyVersionIncompatibilityWith(participantCard.address)
+		for cardKnownByPeer <- hello.cardsOfOtherParticipantsIKnow do {
+			if cardKnownByPeer.address != clusterService.myAddress && !clusterService.participantByAddress.contains(cardKnownByPeer.address) then {
+				determineAgreedVersion(config.versionsSupportedByMe, cardKnownByPeer.supportedVersions) match {
+					case Some(version) =>
+						clusterService.createAndAddADelegateForAndThenConnectToParticipant(cardKnownByPeer.address, cardKnownByPeer.supportedVersions, UNKNOWN)
+
+					case None =>
+						clusterService.notify(VersionIncompatibilityWith(cardKnownByPeer.address))
 				}
 			}
 		}
@@ -118,35 +125,39 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 
 			case None =>
 				val cause = s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: ${hello.versionsISupport}"
-				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
-					case Transmitter.Delivered =>
-						clusterService.notifyVersionIncompatibilityWith(peerAddress)
-						replaceMyselfWithAnIncommunicableDelegate(false, cause)
-					case issue: Transmitter.NotDelivered =>
-						reportFailure(issue)
-						clusterService.notifyVersionIncompatibilityWith(peerAddress)
-						replaceMyselfWithAnIncommunicableDelegate(false, cause)
-				}
+				replaceMyselfWithAnIncommunicableDelegate(false, cause)
+				clusterService.notify(VersionIncompatibilityWith(peerAddress))
+				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(ifFailureReportItAndThen(DoNothing))
 
 		}
 	}
 
 
-	protected[service] def handleReconnection(newChannel: AsynchronousSocketChannel): MemberCommunicableDelegate = ???
-
 	protected[service] def notifyPeerThatILostCommunicationWithOtherPeer(otherParticipantAddress: ContactAddress): Unit = ???
 
 	protected[service] def notifyPeerThatIRecoveredCommunicationWithOtherPeer(otherParticipantAddress: ContactAddress): Unit = ???
 
-	protected[service] def replaceMyselfWithAnIncommunicableDelegate(isConnecting: Boolean, motive: Any): ParticipantDelegate & Incommunicable = {
+	protected[service] def replaceMyselfWithAnIncommunicableDelegate(isConnectingAsClient: Boolean, motive: Any): ParticipantDelegate & Incommunicable = {
 		// close the channel
 		release()
 		// replace me with an incommunicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
-		val myReplacement = clusterService.getBehavior.createAndAddAnIncommunicableDelegate(peerAddress, isConnecting)
+		val myReplacement = clusterService.getBehavior.createAndAddAnIncommunicableDelegate(peerAddress, isConnectingAsClient)
 		myReplacement.initializeStateBasedOn(thisCommunicable)
 		// notify
 		clusterService.onDelegateBecomeIncommunicable(peerAddress, motive)
+		myReplacement
+	}
+
+	protected[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel): ParticipantDelegate & Communicable = {
+		// close the old channel
+		release()
+		// replace me with an incommunicable delegate.
+		clusterService.getBehavior.removeDelegate(peerAddress)
+		val myReplacement = clusterService.getBehavior.createAndAddACommunicableDelegate(peerAddress, newChannel)
+		myReplacement.initializeStateBasedOn(thisCommunicable)
+		// notify
+		clusterService.notify(CommunicationChannelReplaced(peerAddress))
 		myReplacement
 	}
 
@@ -162,7 +173,7 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 				}
 			case Failure(exc) =>
 				myReplacement.connectionAborted()
-				scribe.error(s"The communication to $peerAddress has been aborted after many reconnection tries", exc)
+				scribe.error(s"The communication to the participant at $peerAddress has been aborted after many reconnection tries", exc)
 		}
 	}
 
