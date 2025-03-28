@@ -43,10 +43,11 @@ object NonBlockingDistributedApp {
 			sequencer,
 			new ClusterService.Config(
 				myAddress,
-				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS),
+				Set(ProtocolVersion.OF_THIS_PROJECT),
+				seedsAddresses,
+				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS, 500),
 				500, 60_000, 5
-			),
-			seedsAddresses
+			)
 		)
 
 		// Connect to peers and send messages with retries

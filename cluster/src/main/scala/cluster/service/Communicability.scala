@@ -4,15 +4,20 @@ package cluster.service
 import cluster.channel.{Receiver, Transmitter}
 import cluster.misc.DoNothing
 import cluster.service.ClusterService.{CommunicationChannelReplaced, DelegateConfig, VersionIncompatibilityWith}
+import cluster.service.ContactCard.*
 import cluster.service.Protocol.*
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
-import ContactCard.*
+
 import java.nio.channels.AsynchronousSocketChannel
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success}
 
 /** Categorizes subtypes of [[ParticipantDelegate]] into two groups, the ones that represent delegates that communicate to the peer from the ones that don't. */
 sealed trait Communicability {
 	def isCommunicable: Boolean
+
+	/** The communicability is stable: connection and handshaking have completed (successfully or not). */
+	def isStable: Boolean
 }
 
 /** Mixin that defines the peculiarities of a [[ParticipantDelegate]] that is currently not able to communicate with the participant.
@@ -20,7 +25,9 @@ sealed trait Communicability {
 trait Incommunicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	override def isCommunicable: Boolean = false
 
-	/** Tells that this delegate is associated to a participant to which the [[ClusterService]] is connecting to. The [[ClusterService]] will*/
+	override def isStable: Boolean = !isConnectingAsClient
+
+	/** Tells that this incommunicable delegate is associated to a participant to which the [[ClusterService]] is connecting to. */
 	def isConnectingAsClient: Boolean
 
 	/** The implementation must clear the [[isConnectingAsClient]] flag. */
@@ -42,25 +49,38 @@ trait Incommunicable extends Communicability { thisCommunicable: ParticipantDele
 trait Communicable extends Communicability { thisCommunicable: ParticipantDelegate =>
 	protected val peerChannel: AsynchronousSocketChannel
 	val config: DelegateConfig
-	protected val receiverFromPeer: Receiver = new Receiver(peerChannel)
-	protected val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
-	protected var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT
+	protected val receiverFromPeer: Receiver
+	protected val transmitterToPeer: Transmitter
+	protected var agreedVersion: ProtocolVersion = ProtocolVersion.NOT_SPECIFIED
 
 	override def isCommunicable: Boolean = true
 
-	protected def startReceiving(): Unit
+	override def isStable: Boolean = agreedVersion != ProtocolVersion.NOT_SPECIFIED
 
+	protected def continueReceiving(onComplete: Receiver.Fault | Protocol => Unit): Unit
 
 	def startConversationAsServer(): Unit = {
-		startReceiving()
+		continueReceiving(handleReceiverCompletion)
 	}
 
 	def startConversationAsClient(): Unit = {
-		this.transmitterToPeer.transmit[Protocol](Hello(clusterService.myAddress, config.versionsSupportedByMe, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
+		this.transmitterToPeer.transmit[Protocol](Hello(config.versionsSupportedByMe, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) {
 			case Transmitter.Delivered =>
-				startReceiving()
+				continueReceiving(handleReceiverCompletion)
 			case failure: Transmitter.NotDelivered =>
 				reportFailure(failure)
+				replaceMyselfWithAnIncommunicableDelegate(false, failure)
+		}
+	}
+	
+	private def handleReceiverCompletion(terminatingSignal: Receiver.Fault | Protocol): Unit = {
+		terminatingSignal match {
+			case fault: Receiver.Fault =>
+				val errorMessage = s"Failure while receiving a message from the peer $peerChannel: $fault"
+				scribe.error(errorMessage)
+				sequencer.executeSequentially(restartChannel(errorMessage))
+			case terminalMessage: Protocol =>
+				scribe.debug(s"The channel {$peerChannel} reception completed with the terminal message {$terminalMessage}" )
 		}
 	}
 
@@ -138,7 +158,7 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 	protected[service] def notifyPeerThatIRecoveredCommunicationWithOtherPeer(otherParticipantAddress: ContactAddress): Unit = ???
 
 	protected[service] def replaceMyselfWithAnIncommunicableDelegate(isConnectingAsClient: Boolean, motive: Any): ParticipantDelegate & Incommunicable = {
-		// close the channel
+		// release this delegate
 		release()
 		// replace me with an incommunicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
@@ -150,7 +170,7 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 	}
 
 	protected[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel): ParticipantDelegate & Communicable = {
-		// close the old channel
+		// release this delegate
 		release()
 		// replace me with an incommunicable delegate.
 		clusterService.getBehavior.removeDelegate(peerAddress)
@@ -178,7 +198,32 @@ trait Communicable extends Communicability { thisCommunicable: ParticipantDelega
 	}
 
 	private[service] def release(): Unit = {
-		if peerChannel.isOpen then peerChannel.close()
+		// if the channel is open, close it gracefully.
+		if peerChannel.isOpen then {
+			peerChannel.shutdownOutput()
+
+			def loop(): Unit = {
+				try {
+					receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
+						case fault: Receiver.Fault =>
+							peerChannel.close()
+							scribe.error(s"Failure while purging the channel's input connection of a released delegate of the participant at $peerAddress.", fault.toString)
+						case IAmDeaf =>
+							scribe.info(s"The channel of the released delegate of the participant at $peerAddress was gracefully closed" )
+							peerChannel.close()
+						case message: Protocol =>
+							scribe.warn(s"The following message from the participant at $peerAddress was discarded because it was received after the delegate was released:", message.toString)
+							loop()
+					}
+				} catch {
+					case NonFatal(e) =>
+						peerChannel.close()
+						scribe.error(s"Failure when trying to purge the next ignored message from the channel's input connection of a released delegate of the participant at $peerAddress.", e)
+				}
+			}
+
+			loop()
+		}
 	}
 
 }

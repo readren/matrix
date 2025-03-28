@@ -13,6 +13,8 @@ sealed abstract class ParticipantDelegate {
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus = UNKNOWN
 	export clusterService.sequencer
+	
+	inline def contactCard: ContactCard = (peerAddress, versionsSupportedByPeer)
 
 	inline def initializeState(versionsSupportedByPeer: Set[ProtocolVersion], peerMembershipStatusAccordingToMe: MembershipStatus): Unit = {
 		this.versionsSupportedByPeer = versionsSupportedByPeer

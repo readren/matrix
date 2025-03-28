@@ -11,7 +11,9 @@ object ProtocolVersion {
 	/** The identifier of the version of the [[ClusterService]]'s [[Protocol]] corresponding to this project version.
 	 * Every time a new version of the cluster subproject that changes the [[Protocol]] will be released, this identifier must be circularly incremented by one.
 	 * */
-	val OF_THIS_PROJECT: ProtocolVersion = 0
+	val OF_THIS_PROJECT: ProtocolVersion = 1
+	/** A singular value that indicates no version was specified. */
+	val NOT_SPECIFIED: ProtocolVersion = 0
 
 	inline def apply(identifier: Byte): ProtocolVersion = identifier
 
@@ -30,8 +32,11 @@ object ProtocolVersion {
 
 	given Deserializer[ProtocolVersion] = deserializer
 
-	val ordering: Ordering[ProtocolVersion] =
-		(x: ProtocolVersion, y: ProtocolVersion) => if x == y then 0 else if x.isNewerThan(y) then 1 else -1
+	/**
+	 * Defines an ordering where newer versions come first.
+	 */
+	val newerFirstOrdering: Ordering[ProtocolVersion] =
+		(x: ProtocolVersion, y: ProtocolVersion) => if x == y then 0 else if x.isNewerThan(y) then -1 else 1
 
-	given Ordering[ProtocolVersion] = ordering
+	given Ordering[ProtocolVersion] = newerFirstOrdering
 }

@@ -1,43 +1,56 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.Receiver
+import cluster.channel.{Receiver, Transmitter}
 import cluster.service.ClusterService.{DelegateConfig, VersionIncompatibilityWith}
 import cluster.service.Protocol.*
 
 import java.nio.channels.AsynchronousSocketChannel
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberCommunicableDelegate(
+class MemberCommunicableDelegate private(
 	override val clusterService: ClusterService,
-	clusterServiceBehavior: clusterService.MemberBehavior,
+	serviceBehavior: clusterService.MemberBehavior,
 	override val peerAddress: ContactAddress,
-	override val peerChannel: AsynchronousSocketChannel,
+	override protected val peerChannel: AsynchronousSocketChannel,
+	override protected val transmitterToPeer: Transmitter,
+	override protected val receiverFromPeer: Receiver
 ) extends MemberDelegate, Communicable {
+	
+	def this(clusterService: ClusterService, serviceBehavior: clusterService.MemberBehavior,	peerAddress: ContactAddress, peerChannel: AsynchronousSocketChannel) =
+		this(clusterService, serviceBehavior, peerAddress, peerChannel, new Transmitter(peerChannel), new Receiver(peerChannel))
+	
+	def this(clusterService: ClusterService, clusterServiceBehavior: clusterService.MemberBehavior, aspirant: AspirantCommunicableDelegate) =
+		this(clusterService, clusterServiceBehavior, aspirant.peerAddress, aspirant.peerChannel, aspirant.transmitterToPeer, aspirant.receiverFromPeer)
+
 	override val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 
-	override protected def startReceiving(): Unit = {
+	override final def continueReceiving(onComplete: Receiver.Fault | Protocol => Unit): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 			case fault: Receiver.Fault =>
-				val errorMessage = s"Failure while receiving a message from the peer $peerChannel: $fault" 
-				scribe.error(errorMessage)
-				sequencer.executeSequentially(restartChannel(errorMessage))
+				onComplete(fault)
 
 			case messageFromPeer: Protocol => sequencer.executeSequentially(messageFromPeer match {
-				case hello: Hello => handle(hello)
+				case hello: Hello =>
+					handle(hello)
+					continueReceiving(onComplete)
 
 				case SupportedVersionsMismatch =>
 					clusterService.notify(VersionIncompatibilityWith(peerAddress))
 					replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me we are not compatible.")
+					onComplete(messageFromPeer)
 
 				case NoClusterIAmAwareOf(knowAspirantsCards) =>
 					clusterService.solveClusterExistenceConflictWith(this)
+					continueReceiving(onComplete)
 
 				case ClusterCreatorProposal(proposedCandidate, supportedVersions) =>
 					clusterService.solveClusterExistenceConflictWith(this)
+					continueReceiving(onComplete)
 
 				case icc: ICreatedACluster =>
 					clusterService.solveClusterExistenceConflictWith(this)
+					continueReceiving(onComplete)
 
 				case jam: JoinApprovalMembers =>
 
@@ -58,7 +71,7 @@ class MemberCommunicableDelegate(
 				case hb: Heartbeat =>
 
 				case sc: StateChanged =>
-					
+
 				case phr: ParticipantHasBeenRestarted =>
 
 			})

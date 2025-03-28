@@ -19,7 +19,7 @@ object Receiver {
 
 	sealed trait Fault
 
-	case class FrameAndEndOfStreamMismatch(missingBytesAccordingToLastFrame: Int) extends Fault
+	case class ChannelClosedByPeer(missingBytesAccordingToLastFrame: Int) extends Fault
 
 	case class DeserializerAndFrameMismatch(origin: LengthMismatchException) extends Fault
 
@@ -156,7 +156,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			}
 
 			override def completed(bytesReceived: Integer, writeEndBuffer: ByteBuffer): Unit = {
-				if bytesReceived == -1 then onComplete.accept(FrameAndEndOfStreamMismatch(remainingContentBytesUntilNextFrameHeader), attachment)
+				if bytesReceived == -1 then onComplete.accept(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
 				else {
 					val writeEndPosition = writeEndBuffer.position
 

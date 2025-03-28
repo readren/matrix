@@ -14,16 +14,17 @@ import java.net.{InetSocketAddress, SocketAddress}
 
 sealed trait Protocol
 
-/** Command message an aspirant must send to all the participants it is aware of (initially the seeds) in order to:
- * 	- propagate the knowledge of its existence;
+/** Command message an aspirant must send to the participants it connects to (initially the seeds) in order to:
+ * 	- propagate the knowledge of the existence of other participants it knows;
  * 	- be replied with [[JoinApprovalMembers]] if a cluster was already created;
  * 	- be replied with [[NoClusterIAmAwareOf]] if no cluster exists to participate in the election of the cluster creator.
  * 	The receiver may assume that the sender is an aspirant.
- * 	@param myContactAddress the [[ContactAddress]] of the sender.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param cardsOfOtherParticipantsIKnow the [[ContactCard]]s of the participants known by the sender, not including itself. */
-case class Hello(myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion], cardsOfOtherParticipantsIKnow: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
+case class Hello(versionsISupport: Set[ProtocolVersion], cardsOfOtherParticipantsIKnow: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
+/** First message that a participant must send to the peer after a successful reconnection to allow the peer to update his viewpoint of the sender.   */
+case class IHaveReconnected(versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus) extends Protocol
 /**
  * Response to the [[Hello]] message that is sent by a participant to indicate that it does not support any of the [[ProtocolVersion]]s specified in the received [[Hello]] message.
  * */
@@ -36,9 +37,9 @@ case object SupportedVersionsMismatch extends Protocol
 case class NoClusterIAmAwareOf(knowAspirantsCards: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 
-/** Message sent by an aspirant A to an aspirant B when A starts or stops proposing B should be the creator of the cluster.
- * An aspirant starts proposing a candidate when, from his viewpoint, he knows all other aspirants.
- * The chosen aspirant is the one with the highest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
+/** Message sent by an aspirant A to an aspirant B when A starts or stops proposing B to be the creator of the cluster.
+ * An aspirant starts proposing a candidate when, from his viewpoint, he is communicated to all the seeds he knows and the connection to all the others he knows is completed (successfully or not).
+ * The chosen aspirant is the one with the lowest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
  * @param proposedCandidate the [[ContactAddress]] of the cluster's creator candidate proposed by the sender.
  * @param supportedVersions the [[ProtocolVersion]]s supported by the proposed candidate. Uses only if the receiver didn't know about the proposed candidate.
  * */
@@ -103,6 +104,10 @@ case class Heartbeat(delayUntilNextHeartbeat: DurationMillis) extends Protocol
  * @param participants the state of all the participant according to the sender, including hiw own view of himself (which is the single source of that information) */
 case class StateChanged(participants: Map[ContactAddress, MyInfoAboutOtherParticipant]) extends Protocol
 
+/** Sent to inform the peer that the connection for reading was closed due to end of stream signal. */
+case object IAmDeaf extends Protocol
+
+case class ApplicationMsg(bytes: Array[Byte]) extends Protocol
 
 object Protocol {
 

@@ -2,10 +2,12 @@ package readren.matrix
 package cluster.service
 
 import cluster.service.ClusterService.*
-import cluster.service.Protocol.MembershipStatus.{MEMBER, UNKNOWN}
+import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import cluster.service.Protocol.{ContactAddress, MembershipStatus}
 import cluster.service.ProtocolVersion
+import cluster.misc.CommonExtensions.mapOrElse
 
+import readren.matrix.cluster.channel.Transmitter
 import readren.taskflow.SchedulingExtension.MilliDuration
 import readren.taskflow.{Doer, SchedulingExtension}
 
@@ -24,25 +26,34 @@ object ClusterService {
 
 	/** Tells that the participant at the specified address and me can not communicate becase we don't support a common [[ProtocolVersion]]. */
 	case class VersionIncompatibilityWith(participantAddress: ContactAddress) extends ClusterEvent
+
 	case class ParticipantHasBeenRestarted(rebornParticipantAddress: ContactAddress) extends ClusterEvent
+
 	case class StartingConnectionToNewParticipant(participantDelegate: ParticipantDelegate & Incommunicable) extends ClusterEvent
+
 	case class PeerConnected(participantDelegate: ParticipantDelegate) extends ClusterEvent
+
 	case class Joined(participantDelegateByContactAddress: Map[ContactAddress, MemberCommunicableDelegate]) extends ClusterEvent
+
 	case class OtherMemberJoined(memberAddress: ContactAddress, memberDelegate: MemberCommunicableDelegate) extends ClusterEvent
+
 	case class DelegateBecomeIncommunicable(peerAddress: ContactAddress, cause: Any) extends ClusterEvent
+
 	case class DelegateBecomeCommunicable(peerAddress: ContactAddress) extends ClusterEvent
+
 	case class CommunicationChannelReplaced(peerAddress: ContactAddress) extends ClusterEvent
+
 	case class BeforeClosingAllChannels() extends ClusterEvent
 
 	trait ClusterEventListener {
 		def handle(event: ClusterEvent): Unit
 	}
 
-	class Config(val myAddress: ContactAddress, val participantDelegatesConfig: DelegateConfig, val retryMinDelay: MilliDuration, val retryMaxDelay: MilliDuration, val maxAttempts: Int)
+	class Config(val myAddress: ContactAddress, val versionsISupport: Set[ProtocolVersion], val seeds: Iterable[ContactAddress], val participantDelegatesConfig: DelegateConfig, val retryMinDelay: MilliDuration, val retryMaxDelay: MilliDuration, val maxAttempts: Int)
 
-	class DelegateConfig(val versionsSupportedByMe: Set[ProtocolVersion], val receiverTimeout: Long = 1, val transmitterTimeout: Long = 1, val timeUnit: TimeUnit = TimeUnit.SECONDS)
+	class DelegateConfig(val versionsSupportedByMe: Set[ProtocolVersion], val receiverTimeout: Long = 1, val transmitterTimeout: Long = 1, val timeUnit: TimeUnit = TimeUnit.SECONDS, val closeDelay: MilliDuration = 200)
 
-	def start(sequencer: TaskSequencer, serviceConfig: Config, seeds: Iterable[ContactAddress]): ClusterService = {
+	def start(sequencer: TaskSequencer, serviceConfig: Config): ClusterService = {
 
 		val serverChannel = AsynchronousServerSocketChannel.open()
 			.bind(serviceConfig.myAddress)
@@ -51,7 +62,7 @@ object ClusterService {
 		// start the listening servers
 		service.acceptClientConnections(serverChannel)
 		// start connection to seeds
-		service.startConnectionToSeeds(seeds)
+		service.startConnectionToSeeds(serviceConfig.seeds)
 		service
 	}
 
@@ -74,6 +85,8 @@ object ClusterService {
 class ClusterService private(val sequencer: TaskSequencer, val config: ClusterService.Config, val serverChannel: AsynchronousServerSocketChannel) { thisClusterService =>
 
 	export config.myAddress
+
+	val myContactCard: ContactCard = (config.myAddress, config.versionsISupport)
 
 	private[service] abstract class Behavior {
 		def createAndAddACommunicableDelegate(participantAddress: ContactAddress, communicationChannel: AsynchronousSocketChannel): ParticipantDelegate & Communicable
@@ -103,9 +116,63 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 
 		override def delegateByAddress: Map[ContactAddress, AspirantDelegate & Communicability] =
 			aspirantDelegateByContactAddress
+
+		def proposeClusterCreatorIfAppropriate(): Unit = {
+			val iCanCommunicateToAllSeeds = config.seeds.forall { seed =>
+				seed == config.myAddress || aspirantDelegateByContactAddress.mapOrElse(seed, false)(_.isCommunicable)
+			}
+			// if I can communicate to all the seeds and all delegates are aspirants with stable communicability, then propose the cluster creator candidate.
+			if iCanCommunicateToAllSeeds && aspirantDelegateByContactAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.peerMembershipStatusAccordingToMe == ASPIRANT) then {
+
+				// Determine the candidate from my viewpoint
+				val candidateProposedByMe = aspirantDelegateByContactAddress.valuesIterator
+					.filter(_.isCommunicable)
+					.foldLeft(myContactCard) { (min, delegate) =>
+						ContactCard.ordering.min(delegate.contactCard, min)
+					}
+					
+				// First check if I should be the candidate: if me and all the aspirant I can communicate with propose me to be the cluster creator, then create it.  
+				if candidateProposedByMe == myAddress && aspirantDelegateByContactAddress.valuesIterator.forall {
+					case communicableDelegate: AspirantCommunicableDelegate =>
+						communicableDelegate.clusterCreatorCandidateProposedByPeer == myAddress
+					case _ => true
+				} then {
+					// Creating the cluster consist of: changing my `behavior` to [[MemberBehavior]], changing my membership state to MEMBER, and sending the `ICreatedACluster` message to all the participants I can communicate with.
+					
+					behavior = new MemberBehavior(this)											
+					for delegate <- behavior.delegateByAddress.valuesIterator do {
+						???
+					}
+				} else {
+					???
+				}
+
+			}
+
+			//			if candidateProposedByPeer == clusterService.myAddress then {
+			//				if clusterService.participantByAddress.view.collect {
+			//					case (_, delegate: AspirantCommunicableDelegate) => delegate.clusterCreatorCandidateProposedByPeer == clusterService.myAddress
+			//				}.forall(identity) then {
+			//					clusterService.proposeClusterCreator()
+			//				}
+			//			} else if !clusterService.participantByAddress.contains(candidateProposedByPeer) then {
+			//				clusterService.createAndAddADelegateForAndThenConnectToParticipant(candidateProposedByPeer, versionsSupportedByCandidate, ASPIRANT)
+			//			}
+
+			???
+		}
+
 	}
 
-	private[service] class MemberBehavior(var memberDelegateByContactAddress: Map[ContactAddress, MemberDelegate & Communicability]) extends Behavior {
+	private[service] class MemberBehavior(var memberDelegateByContactAddress: Map[ContactAddress, MemberDelegate & Communicability]) extends Behavior { thisMemberBehavior =>
+		
+		def this(aspirantBehavior: AspirantBehavior) = {
+			this(aspirantBehavior.aspirantDelegateByContactAddress.map { 
+				case communicable: AspirantCommunicableDelegate => new MemberCommunicableDelegate(thisClusterService, thisMemberBehavior, communicable)
+				case incommunicable: AspirantIncommunicableDelegate => new MemberIncommunicableDelegate(thisClusterService, thisMemberBehavior, incommunicable.isConnectingAsClient)	
+			})
+		}
+		
 		override def createAndAddACommunicableDelegate(participantAddress: ContactAddress, communicationChannel: AsynchronousSocketChannel): MemberCommunicableDelegate = {
 			val newParticipant = MemberCommunicableDelegate(thisClusterService, this, participantAddress, communicationChannel)
 			memberDelegateByContactAddress += participantAddress -> newParticipant
@@ -179,14 +246,15 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 								newParticipantDelegate.startConversationAsServer()
 
 							case communicableParticipant: Communicable =>
-								communicableParticipant.replaceMyselfWithACommunicableDelegate(clientChannel).startConversationAsServer()
-								scribe.info(s"A connection from the participant at $clientRemoteAddress, whose delegate is marked as communicable, has been accepted. Probably he had to rest the channel.")
+								communicableParticipant.replaceMyselfWithACommunicableDelegate(clientChannel)
+									.startConversationAsServer()
+								scribe.info(s"A connection from the participant at $clientRemoteAddress, whose delegate is marked as communicable, has been accepted. Probably he had to restart the channel.")
 
 							case incommunicableParticipant: Incommunicable =>
 								// If the current delegate is connecting as a client and the peer's address is greater than ours, discard the new connection (initiated by the peer) and keep the existing client connection (initiated by me).
 								// The address comparison avoids a race condition where both sides' servers reject each other's client connections.
-								if incommunicableParticipant.isConnectingAsClient && compareContactAddresses(clientRemoteAddress, config.myAddress) > 0 then {
-									clientChannel.close()
+								if incommunicableParticipant.isConnectingAsClient && ContactCard.compareContactAddresses(clientRemoteAddress, config.myAddress) > 0 then {
+									closeUnusedChannelGracefully(clientChannel)
 									scribe.info(s"A connection from the participant at $clientRemoteAddress, which was marked as connecting as client, has been rejected in order to continue with the connection as a client.")
 								} else {
 									val communicableParticipant = incommunicableParticipant.replaceMyselfWithACommunicableDelegate(clientChannel)
@@ -276,10 +344,17 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 		handler.connect(1)
 	}
 
-	private[service] def proposeClusterCreator(): Unit = {
-		???
+	private[service] def closeUnusedChannelGracefully(channel: AsynchronousSocketChannel): Unit = {
+		val transmitter = new Transmitter(channel)
+		channel.shutdownInput()
+		transmitter.transmit[Protocol](IAmDeaf, ProtocolVersion.OF_THIS_PROJECT, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
+			case failure: Transmitter.NotDelivered =>
+				channel.close()
+			case Transmitter.Delivered =>
+				channel.shutdownOutput()
+				sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { () => channel.close() }
+		}
 	}
-
 
 	def subscribe(listener: ClusterEventListener): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
@@ -318,34 +393,4 @@ class ClusterService private(val sequencer: TaskSequencer, val config: ClusterSe
 			communicableDelegate.release()
 		}
 	}
-
-	private def compareContactAddresses(ca1: ContactAddress, ca2: ContactAddress): Int = {
-		(ca1, ca2) match {
-			case (isa1: InetSocketAddress, isa2: InetSocketAddress) => compareInetSocketAddresses(isa1, isa2)
-			case (o1, o2) => o1.toString.compareTo(o2.toString)
-		}
-	}
-
-	private def compareInetSocketAddresses(isa1: InetSocketAddress, isa2: InetSocketAddress): Int = {
-		// Get raw byte arrays once
-		val bytes1 = isa1.getAddress.getAddress
-		val bytes2 = isa2.getAddress.getAddress
-
-		// Compare byte by byte without creating intermediate objects
-		var i = 0
-		val len = math.min(bytes1.length, bytes2.length)
-		while (i < len) {
-			val cmp = (bytes1(i) & 0xff) - (bytes2(i) & 0xff) // unsigned byte comparison
-			if (cmp != 0) return cmp
-			i += 1
-		}
-
-		// If all bytes equal up to common length, compare array lengths
-		val lengthCmp = bytes1.length - bytes2.length
-		if (lengthCmp != 0) return lengthCmp
-
-		// Finally compare ports if IPs are equal
-		isa1.getPort - isa2.getPort
-	}
-
 }
