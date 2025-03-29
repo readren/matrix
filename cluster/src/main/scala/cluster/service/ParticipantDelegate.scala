@@ -7,7 +7,7 @@ import cluster.service.Protocol.MembershipStatus.UNKNOWN
 
 /** A [[ClusterService]]'s delegate responsible to manage the interaction with other instance of [[ClusterService]] hosted by other JVMs.
  * We name "participant" to each instance of [[ClusterService]] */
-sealed abstract class ParticipantDelegate {
+abstract class ParticipantDelegate {
 	val clusterService: ClusterService
 	val peerAddress: ContactAddress
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
@@ -16,6 +16,11 @@ sealed abstract class ParticipantDelegate {
 	
 	inline def contactCard: ContactCard = (peerAddress, versionsSupportedByPeer)
 
+	def isCommunicable: Boolean
+
+	/** The communicability is stable: connection and handshaking have completed (successfully or not). */
+	def isStable: Boolean
+	
 	inline def initializeState(versionsSupportedByPeer: Set[ProtocolVersion], peerMembershipStatusAccordingToMe: MembershipStatus): Unit = {
 		this.versionsSupportedByPeer = versionsSupportedByPeer
 		this.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
@@ -26,9 +31,4 @@ sealed abstract class ParticipantDelegate {
 		this.peerMembershipStatusAccordingToMe = other.peerMembershipStatusAccordingToMe
 	}
 }
-
-trait AspirantDelegate extends ParticipantDelegate
-
-trait MemberDelegate extends ParticipantDelegate
-
 

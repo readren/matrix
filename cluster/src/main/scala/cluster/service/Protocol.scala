@@ -10,7 +10,7 @@ import cluster.service.Protocol.*
 import cluster.service.ProtocolVersion
 import cluster.service.ProtocolVersion.given
 
-import java.net.{InetSocketAddress, SocketAddress}
+import java.net.SocketAddress
 
 sealed trait Protocol
 
@@ -43,14 +43,14 @@ case class NoClusterIAmAwareOf(knowAspirantsCards: Map[ContactAddress, Set[Proto
  * @param proposedCandidate the [[ContactAddress]] of the cluster's creator candidate proposed by the sender.
  * @param supportedVersions the [[ProtocolVersion]]s supported by the proposed candidate. Uses only if the receiver didn't know about the proposed candidate.
  * */
-case class ClusterCreatorProposal(proposedCandidate: ContactAddress, supportedVersions: Set[ProtocolVersion]) extends Protocol
+case class ClusterCreatorProposal(proposedCandidate: ContactAddress | Null, supportedVersions: Set[ProtocolVersion]) extends Protocol
 
 
 /** Informs that the sender has created a cluster.
- * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender.
+ * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender proposing him.
  *
- * @param recommendedWaitTime the recommended time that the receiver should wait before starting the join process with [[Hello]]. */
-case class ICreatedACluster(recommendedWaitTime: DurationMillis) extends Protocol
+ * @param inauguratingMembersCards the [[ContactCard]]s of the members that inaugurate the new cluster other than the sender. */
+case class ICreatedACluster(inauguratingMembersCards: Map[ContactAddress, Set[ProtocolVersion]]) extends Protocol
 
 
 /** Response to the [[Hello]] message when received by a participant, that is aware of the existence of a cluster.

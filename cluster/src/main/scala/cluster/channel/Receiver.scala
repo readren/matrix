@@ -9,7 +9,6 @@ import cluster.service.ProtocolVersion
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
 import java.util.concurrent.TimeUnit
-import java.util.function.{BiConsumer, Consumer}
 import scala.concurrent.{Future, Promise}
 
 object Receiver {
@@ -86,10 +85,10 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 	 * @param attachment An attachment of type `A` that is passed through to the `onComplete` callback.
 	 * @param timeout The maximum time to wait for the first chunk of bytes and between chunks of bytes.
 	 * @param timeUnit The unit of time for the `timeout` parameter.
-	 * @param onComplete A `BiConsumer` callback that is invoked with either the deserialized message of type `M` or a `Fault` object, along with the provided `attachment`.
+	 * @param onComplete A callback that is invoked with either the deserialized message of type `M` or a `Fault` object, along with the provided `attachment`.
 	 * @param deserializer An implicit `Deserializer[M]` used to deserialize the incoming bytes into a message of type `M`.
 	 */
-	def receiveWithAttachment[M, A](msgVersion: ProtocolVersion, attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: BiConsumer[M | Fault, A])(using deserializer: Deserializer[M]): Unit = {
+	def receiveWithAttachment[M, A](msgVersion: ProtocolVersion, attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: (M | Fault, A) => Unit)(using deserializer: Deserializer[M]): Unit = {
 		continuousBuffer.position(continuousBuffer.limit)
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[receiveWithAttachment]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
@@ -156,7 +155,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			}
 
 			override def completed(bytesReceived: Integer, writeEndBuffer: ByteBuffer): Unit = {
-				if bytesReceived == -1 then onComplete.accept(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
+				if bytesReceived == -1 then onComplete(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
 				else {
 					val writeEndPosition = writeEndBuffer.position
 
@@ -175,7 +174,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 									case scala.util.control.NonFatal(e) => DeserializationProblem(e)
 								}
 							writeEndBuffer.compact()
-							onComplete.accept(outcome, attachment)
+							onComplete(outcome, attachment)
 							return
 						}
 						nextFrameHeaderPos += nextFrameContentLength + frameHeaderFetcher.numberOfBytesRead
@@ -208,7 +207,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			}
 
 			override def failed(exc: Throwable, writeEndBuffer: ByteBuffer): Unit = {
-				onComplete.accept(ReceptionFailure(exc), attachment)
+				onComplete(ReceptionFailure(exc), attachment)
 			}
 
 		}
@@ -233,7 +232,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 	/** Like [[receive]] but changing the continuation style from passing to returned.
 	 * Differs from [[receivesLazily]] in that the computation is eagerly started.
 	 */
-	def receive[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Future[M | Fault] = {
+	def receiveFuture[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Future[M | Fault] = {
 		val promise = Promise[M | Fault]()
 		receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => promise.success(outcome) }
 		promise.future
