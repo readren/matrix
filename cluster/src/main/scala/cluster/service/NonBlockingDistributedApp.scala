@@ -5,6 +5,8 @@ import cluster.service.ClusterService.DelegateConfig
 import cluster.service.ProtocolVersion
 import providers.assistant.SchedulingDap
 
+import readren.matrix.cluster.service.Protocol.Instant
+
 import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
 import java.nio.channels.*
@@ -41,12 +43,15 @@ object NonBlockingDistributedApp {
 
 		val sayHelloToEveryone = ClusterService.start(
 			sequencer,
+			new ClusterService.Clock {
+				override def getTime: Instant = System.currentTimeMillis()
+			},
 			new ClusterService.Config(
 				myAddress,
 				Set(ProtocolVersion.OF_THIS_PROJECT),
 				seedsAddresses,
-				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS, 500),
-				500, 60_000, 5
+				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS, 500, 500),
+				500, 60_000, 8, 500
 			)
 		)
 

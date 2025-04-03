@@ -1,54 +1,89 @@
 package readren.matrix
 package cluster.service
 
-import ContactCard.*
+import cluster.channel.Transmitter
 import cluster.service.ClusterService.VersionIncompatibilityWith
-import cluster.service.Protocol.MembershipStatus.ASPIRANT
+import cluster.service.IncommunicableDelegate.Reason.IS_INCOMPATIBLE
+import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
+
+import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends CommunicableDelegate.Behavior {
+
+	override def membershipStatus: Protocol.MembershipStatus = ASPIRANT
+
+	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
+		clusterService.updateClusterCreatorProposalIfAppropriate()
+	}
+
+	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = {
+		clusterService.updateClusterCreatorProposalIfAppropriate()
+		clusterService.sendRequestToJoinTheClusterIfAppropriate()
+	}
+
+	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = {
+		clusterService.updateClusterCreatorProposalIfAppropriate()
+	}
+
+	override def onConnectedAsClient(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit = {
+		if isReconnection then delegate.sendIHaveReconnected(onComplete)
+		else delegate.sendHello(onComplete)
+	}
+
 	override def handleMessage(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
 		case hello: Hello =>
-			delegate.handle(hello)
-			clusterService.proposeClusterCreatorIfAppropriate()
+			delegate.handleMessage(hello)
 			true
 
+		case ihr: IHaveReconnected =>
+			delegate.versionsSupportedByPeer = ihr.versionsISupport
+			delegate.peerMembershipStatusAccordingToMe = ihr.myMembershipStatus
+			delegate.agreedVersion = delegate.determineAgreedVersion(clusterService.config.versionsISupport, ihr.versionsISupport).getOrElse(ProtocolVersion.NOT_SPECIFIED)
+			true
+			
 		case SupportedVersionsMismatch =>
-			delegate.replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me that we are not compatible.")
+			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me that we are not compatible.")
 			clusterService.notify(VersionIncompatibilityWith(delegate.peerAddress))
-			clusterService.proposeClusterCreatorIfAppropriate()
 			false
 
-		case NoClusterIAmAwareOf(aspirantsKnownByPeer) =>
-			// Create an aspirant delegate for each aspirant that I did not know.
-			for aspirantCard <- aspirantsKnownByPeer do {
-				if aspirantCard.address != clusterService.myAddress && !clusterService.delegateByAddress.contains(aspirantCard.address) then {
-					if delegate.determineAgreedVersion(delegate.config.versionsSupportedByMe, aspirantCard.supportedVersions).isDefined then {
-						clusterService.andAddANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(aspirantCard.address, aspirantCard.supportedVersions, ASPIRANT)
+		case Welcome(participantsKnownByPeer) =>
+			// override the peer's membership status and supported versions with the values provided by the source of truth. 
+			participantsKnownByPeer.get(clusterService.myAddress).foreach { peerInfo =>
+				delegate.peerMembershipStatusAccordingToMe = peerInfo.membershipStatus
+				delegate.versionsSupportedByPeer = peerInfo.supportedVersions
+			}
+			
+			// Create a delegate for each participant that I did not know.
+			for (participantAddress, participantInfo) <- participantsKnownByPeer do {
+				if participantAddress != clusterService.myAddress && !clusterService.delegateByAddress.contains(participantAddress) then {
+					if participantInfo.supportedVersions.isEmpty || delegate.determineAgreedVersion(delegate.config.versionsSupportedByMe, participantInfo.supportedVersions).isDefined then {
+						clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(participantAddress, participantInfo.supportedVersions, participantInfo.membershipStatus)
 					} else {
-						val newDelegate = clusterService.createAndAddAnIncommunicableDelegate(aspirantCard.address, false)
-						newDelegate.versionsSupportedByPeer = aspirantCard.supportedVersions
+						val newDelegate = clusterService.addANewIncommunicableDelegate(participantAddress, IS_INCOMPATIBLE)
+						newDelegate.versionsSupportedByPeer = participantInfo.supportedVersions
 						newDelegate.peerMembershipStatusAccordingToMe = ASPIRANT
-						clusterService.notify(VersionIncompatibilityWith(aspirantCard.address))
+						clusterService.notify(VersionIncompatibilityWith(participantAddress))
 					}
 				}
 			}
-			// Propose a cluster creator if apropiate.
-			clusterService.proposeClusterCreatorIfAppropriate()
+			
+			if clusterService.doesAClusterExist then clusterService.sendRequestToJoinTheClusterIfAppropriate()
 			true
 
 		case ClusterCreatorProposal(candidateProposedByPeer, versionsSupportedByCandidate) =>
 			delegate.clusterCreatorProposedByPeer = candidateProposedByPeer
+			// If I don't know the candidate, create a delegate for it.
 			if candidateProposedByPeer != null && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
-				clusterService.andAddANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer, versionsSupportedByCandidate, ASPIRANT)
+				clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer, versionsSupportedByCandidate, ASPIRANT)
 			}
-			clusterService.proposeClusterCreatorIfAppropriate()
+			clusterService.updateClusterCreatorProposalIfAppropriate()
 			true
 
 		case icc: ICreatedACluster =>
-			???
-
-		case jam: JoinApprovalMembers =>
-			???
+			delegate.peerMembershipStatusAccordingToMe = MEMBER
+			delegate.peerStatePhoto = Maybe.some(icc.myViewpoint)
+			clusterService.sendRequestToJoinTheClusterIfAppropriate()
+			true
 
 		case oi: RequestApprovalToJoin =>
 			???
@@ -57,13 +92,15 @@ class AspirantBehavior(clusterService: ClusterService) extends CommunicableDeleg
 			???
 
 		case rtj: RequestToJoin =>
-			???
+			clusterService.solveClusterExistenceConflictWith(delegate)
 
 		case jg: JoinGranted =>
-			???
+			clusterService.switchToMember()
+			true
 
 		case jr: JoinRejected =>
-			???
+			scribe.info(s"A request to join the cluster was rejected")
+			true
 
 		case lcw: ILostCommunicationWith =>
 			???

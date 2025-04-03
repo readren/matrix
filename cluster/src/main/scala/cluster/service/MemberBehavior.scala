@@ -1,38 +1,45 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.{Receiver, Transmitter}
-import cluster.service.ClusterService.{DelegateConfig, VersionIncompatibilityWith}
+import cluster.service.ClusterService.VersionIncompatibilityWith
+import cluster.service.IncommunicableDelegate.Reason.IS_INCOMPATIBLE
 import cluster.service.Protocol.*
 
-import java.nio.channels.AsynchronousSocketChannel
+import readren.matrix.cluster.channel.Transmitter
+import readren.matrix.cluster.service.Protocol.MembershipStatus.MEMBER
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
 class MemberBehavior(clusterService: ClusterService) extends CommunicableDelegate.Behavior {
-	
+
+	override def membershipStatus: MembershipStatus = MEMBER
+
+	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = ???
+
+	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = ???
+
+	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = ???
+
+	override def onConnectedAsClient(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit = {
+		???
+	}
+
 	override def handleMessage(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
 		case hello: Hello =>
-			delegate.handle(hello)
+			delegate.handleMessage(hello)
 			true
 
 		case SupportedVersionsMismatch =>
 			clusterService.notify(VersionIncompatibilityWith(delegate.peerAddress))
-			delegate.replaceMyselfWithAnIncommunicableDelegate(false, s"The peer told me we are not compatible.")
+			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
 			false
-
-		case NoClusterIAmAwareOf(knowAspirantsCards) =>
-			clusterService.solveClusterExistenceConflictWith(delegate)
-			true
 
 		case ClusterCreatorProposal(proposedCandidate, supportedVersions) =>
 			clusterService.solveClusterExistenceConflictWith(delegate)
-			true
 
 		case icc: ICreatedACluster =>
 			clusterService.solveClusterExistenceConflictWith(delegate)
-			true
 
-		case jam: JoinApprovalMembers =>
+		case jam: Welcome =>
 			???
 
 		case oi: RequestApprovalToJoin =>

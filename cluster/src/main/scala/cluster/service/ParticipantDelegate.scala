@@ -10,6 +10,9 @@ import cluster.service.Protocol.MembershipStatus.UNKNOWN
 abstract class ParticipantDelegate {
 	val clusterService: ClusterService
 	val peerAddress: ContactAddress
+	def communicationStatus: CommunicationStatus
+	def info: ParticipantInfo
+
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus = UNKNOWN
 	export clusterService.sequencer
