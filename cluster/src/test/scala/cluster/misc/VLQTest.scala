@@ -7,14 +7,16 @@ import org.scalacheck.Prop
 
 import java.nio.ByteBuffer
 
-class VLQTest extends ScalaCheckSuite  {
+class VLQTest extends ScalaCheckSuite {
 
-	class Buffer extends ByteWriter, ByteReader {
+	class Buffer extends ByteWriter, BoundedByteReader {
 		private val backingBuffer = ByteBuffer.allocate(1024)
 
 		override def putByte(byte: Byte): Unit = backingBuffer.put(byte)
 
 		override def readByte(): Byte = backingBuffer.get()
+
+		override def hasMoreBytes: Boolean = backingBuffer.hasRemaining
 
 		def flip(): Unit = backingBuffer.flip()
 
@@ -25,22 +27,27 @@ class VLQTest extends ScalaCheckSuite  {
 		def position: Int = backingBuffer.position()
 
 		def get(position: Int, destination: Array[Byte]): Unit = backingBuffer.get(position, destination)
+
+		def break(): Unit = backingBuffer.limit(backingBuffer.limit() - 1)
+
 	}
 
 
-	property("check `vlqToLong` and `longToVlq` are inverses") {
+	property("check `decodeLong` and `encodeLong` are inverses") {
 		val buffer = new Buffer
+
 		def check(expected: Long): Boolean = {
 			buffer.clear()
 			encodeLong(expected, buffer)
 			buffer.flip()
 			expected == decodeLong(buffer)
 		}
+
 		List[Long](0, 0x39, -0x39, 0x40, -0x40, Long.MinValue, Long.MaxValue).forall(check)
 			&& Prop.forAll(check)
 	}
 
-	property("check `vlqToInt` and `intToVlq` are inverses") {
+	property("check `decodeInt` and `encodeInt` are inverses") {
 		val buffer = new Buffer
 
 		def check(expected: Int): Boolean = {
@@ -54,19 +61,21 @@ class VLQTest extends ScalaCheckSuite  {
 			&& Prop.forAll(check)
 	}
 
-	property("check `vlqToPositiveLong` and `positiveLongToVlq` are inverses") {
+	property("check `decodeUnsignedLong` and `encodeUnsignedLong` are inverses") {
 		val buffer = new Buffer
+
 		def check(expected: Long): Boolean = {
 			buffer.clear()
 			encodeUnsignedLong(expected, buffer)
 			buffer.flip()
 			expected == decodeUnsignedLong(buffer)
 		}
+
 		List[Long](0, 0x7f, 0x80, Long.MaxValue).forall(check)
 			&& Prop.forAll(check)
 	}
 
-	property("check `vlqToPositiveInt` and `positiveIntToVlq` are inverses") {
+	property("check `decodeUnsignedInt` and `encodeUnsignedInt` are inverses") {
 		val buffer = new Buffer
 
 		def check(expected: Int): Boolean = {
@@ -80,6 +89,34 @@ class VLQTest extends ScalaCheckSuite  {
 			&& Prop.forAll(check)
 	}
 
+	property("check `tryToDecodeUnsignedInt` and `encodeUnsignedInt` are inverses") {
+		val buffer = new Buffer
+
+		def check(expected: Int): Boolean = {
+			buffer.clear()
+			encodeUnsignedInt(expected, buffer)
+			buffer.flip()
+			expected == tryToDecodeUnsignedInt(buffer)
+		}
+
+		List[Int](0, 0x7f, 0x80, Integer.MIN_VALUE, Integer.MAX_VALUE).forall(check)
+			&& Prop.forAll(check)
+	}
+
+	property("check `tryToDecodeUnsignedInt` and `encodeUnsignedInt` fail when broken") {
+		val buffer = new Buffer
+
+		def check(expected: Int): Boolean = {
+			buffer.clear()
+			encodeUnsignedInt(expected, buffer)
+			buffer.flip()
+			buffer.break()
+			-1L == tryToDecodeUnsignedInt(buffer)
+		}
+
+		List[Int](0, 0x7f, 0x80, Integer.MIN_VALUE, Integer.MAX_VALUE).forall(check)
+			&& Prop.forAll(check)
+	}
 
 	test("just for watching") {
 		val buffer = new Buffer

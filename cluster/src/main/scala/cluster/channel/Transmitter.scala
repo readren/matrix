@@ -3,7 +3,7 @@ package cluster.channel
 
 import cluster.channel.Serializer.{SerializationException, Writer}
 import cluster.channel.Transmitter.*
-import cluster.misc.{DualEndedCircularBuffer, VLQ}
+import cluster.misc.{DualEndedCircularStorage, VLQ}
 import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
@@ -36,7 +36,7 @@ object Transmitter {
 	/** Special reserved value (max unsigned int value) of a frame length that the [[Transmitter]] uses for the sentinel of a corrupted package.
 	 *  - Written in place of a frame length when the previous frames are the product of an aborted serialization.  
 	 *  - Acts as an invalid/poison value for downstream processing. */
-	val CORRUPTED_PACKAGE_SENTINEL: Int = 0xffff_ffff
+	val CORRUPTED_PACKAGE_SENTINEL: Int = 0xffff_fffe // = -2 in two complement
 	val CORRUPTED_PACKAGE_SENTINEL_ENCODED: Array[Byte] = {
 		val array = Array[Byte](VLQ.INT_MAX_LENGTH)
 		val writer: VLQ.ByteWriter = new VLQ.ByteWriter {
@@ -57,13 +57,13 @@ object Transmitter {
  * Note: The underlying [[AsynchronousSocketChannel]] is not thread-safe and supports only one transmission at a time. Concurrent attempts to transmit messages will result in undefined behavior
  * 
  * @param channel the channel over which the messages will be transmitted.
- * @param buffersCapacity the capacity of each storage of the [[DualEndedCircularBuffer]]
+ * @param buffersCapacity the capacity of each buffer of the [[DualEndedCircularStorage]]
  */
 class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) {
 	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 	private val frameHeaderBuffer: ByteBuffer = ByteBuffer.allocate(VLQ.INT_MAX_LENGTH)
 	private val frameHeaderWriter: VLQ.ByteWriter = (byte: Byte) => frameHeaderBuffer.put(byte) 
-	private val contentBuffers: DualEndedCircularBuffer[ByteBuffer] = new DualEndedCircularBuffer[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity))
+	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity))
 	private val frameBuffer: Array[ByteBuffer] = new Array(2)
 
 	/** Consist of two buffers: the first for the frame header (which tells the size of the frame content in bytes), and the second for the frame content. */
@@ -94,7 +94,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		onComplete: (Report, A) => Unit
 	)(using serializer: Serializer[M]): Unit = {
 		/** This variable is modified only within the thread that called this method ([[transmitWithAttachment]]). */
-		var writeEndBuffer = contentBuffers.writeEnd
+		var writeEndBuffer = circularStorage.writeEnd
 		/** This variable is modified only within the thread that called this method ([[transmitWithAttachment]]). */
 		var behindTransmissionStarted = false
 		/** This variable is modified one time only, from false to true. */
@@ -104,9 +104,9 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		/** This variable is modified one time only, from null to non-null. */
 		@volatile var cancellationReason: SerializationProblem | Null = null
 
-		/** Fills the frame-buffer with the content of the read-end storage. */
+		/** Fills the frame-buffer with the content of the read-end buffer. */
 		def fillFrame(): Unit = {
-			val readEnd = contentBuffers.readEnd
+			val readEnd = circularStorage.readEnd
 			frameBuffer(1) = readEnd
 			frameHeaderBuffer.clear()
 			VLQ.encodeUnsignedInt(readEnd.limit, frameHeaderWriter)
@@ -139,7 +139,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 			override def getBuffer(minimumRemaining: Int): ByteBuffer = {
 				if writeEndBuffer.remaining() < minimumRemaining then {
 					writeEndBuffer.flip()
-					val nextBuffer = contentBuffers.advanceWriteEnd()
+					val nextBuffer = circularStorage.advanceWriteEnd()
 					nextBuffer.clear()
 					if !behindTransmissionStarted then {
 						behindTransmissionStarted = true
@@ -165,7 +165,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 				else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
 				else {
 					if isSerializationCompleted then {
-						if contentBuffers.advanceReadEnd() then {
+						if circularStorage.advanceReadEnd() then {
 							fillFrame()
 							completed(bytesTransmitted, false)
 						} else if sentinelWasSent then onCompleteWrapper(Delivered)
@@ -183,12 +183,12 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 							sendSentinelValue(true)
 						}
 					}
-					// This point is reached only when the time that takes to serialize the whole message (by the thread that called the `transmit` method) is greater than the time to transmit the content of the first storage of the DualEndedCircularBuffer.
+					// This point is reached only when the time that takes to serialize the whole message (by the thread that called the `transmit` method) is greater than the time to transmit the content of the first buffer of the `circularStorage`.
 					else if !behindTransmissionStopped then {
-						// if the read-end catches up to the write-end, stop the behind transmission; else fill the frame buffer with the content of the read-end storage and transmit it through the channel.
-						val aPendingStorageIsBehind = contentBuffers.advanceReadEnd() && contentBuffers.hasPendingStoragesBehind // behind transmission is stopped only when serialization is slower than transmission.
-						behindTransmissionStopped = !aPendingStorageIsBehind
-						if aPendingStorageIsBehind || isSerializationCompleted then {
+						// if the read-end catches up to the write-end, stop the behind transmission; else fill the frame buffer with the content of the read-end buffer and transmit it through the channel.
+						val aPendingBufferIsBehind = circularStorage.advanceReadEnd() && circularStorage.hasPendingBuffersBehind // behind transmission is stopped only when serialization is slower than transmission.
+						behindTransmissionStopped = !aPendingBufferIsBehind
+						if aPendingBufferIsBehind || isSerializationCompleted then {
 							fillFrame()
 							completed(bytesTransmitted, false)
 						}
@@ -206,7 +206,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 			serializer.serialize(message, handler)
 			writeEndBuffer.flip()
 			isSerializationCompleted = true
-			if !behindTransmissionStarted || behindTransmissionStopped then sendFrame(contentBuffers.readEnd)
+			if !behindTransmissionStarted || behindTransmissionStopped then sendFrame(circularStorage.readEnd)
 		} catch {
 			case se: SerializationException =>
 				if behindTransmissionStarted then cancellationReason = SerializationProblem(message, se, true)

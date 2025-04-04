@@ -17,6 +17,12 @@ object VLQ {
 		def putByte(byte: Byte): Unit
 	}
 
+	trait BoundedByteReader extends ByteReader {
+		def hasMoreBytes: Boolean
+	}
+
+	class IntegerOverflowException extends RuntimeException
+
 	/**
 	 * Encodes a unsigned integer into a Variable Length Quantity (VLQ) format and writes the result to a `ByteBuffer`.
 	 *
@@ -56,8 +62,26 @@ object VLQ {
 			value |= (m & 0x7f) << displacement
 			m = reader.readByte()
 			displacement += 7
+			if displacement >= 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
 		}
 		value | (m << displacement)
+	}
+
+	/** Like [[decodeUnsignedInt]] but returns `-1L` if the provided [[BoundedByteReader]] has not enough bytes. */
+	def tryToDecodeUnsignedInt(reader: BoundedByteReader): Long = {
+		if reader.hasMoreBytes then {
+			var value: Int = 0
+			var m = reader.readByte()
+			var displacement = 0
+			while m < 0 && reader.hasMoreBytes do {
+				value |= (m & 0x7f) << displacement
+				m = reader.readByte()
+				displacement += 7
+				if displacement >= 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
+			}
+			if m >= 0 then value.toLong | (m << displacement)
+			else -1L
+		} else -1L
 	}
 
 	/**
@@ -100,6 +124,7 @@ object VLQ {
 			value |= (m & 0x7f).toLong << displacement
 			m = reader.readByte()
 			displacement += 7
+			if displacement >= 7 * LONG_MAX_LENGTH then throw new IntegerOverflowException
 		}
 		value | (m.toLong << displacement)
 	}
@@ -159,6 +184,7 @@ object VLQ {
 			value |= (m & 0x7f) << displacement
 			m = reader.readByte()
 			displacement += 7
+			if displacement >= 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
 		}
 		if m < 0x40 then value | (m << displacement)
 		else -(value | ((m & 0x3f) << displacement))
@@ -218,6 +244,7 @@ object VLQ {
 			value |= (m & 0x7f).toLong << displacement
 			m = reader.readByte()
 			displacement += 7
+			if displacement >= 7 * LONG_MAX_LENGTH then throw new IntegerOverflowException
 		}
 		if m < 0x40 then value | (m.toLong << displacement)
 		else -(value | ((m & 0x3f).toLong << displacement))
