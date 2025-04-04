@@ -32,6 +32,23 @@ object Transmitter {
 	case class TransmissionFailure(rootMessage: Any, cause: Throwable) extends NotDelivered
 
 	class TransmissionInProgressException extends Exception
+	
+	/** Special reserved value (max unsigned int value) of a frame length that the [[Transmitter]] uses for the sentinel of a corrupted package.
+	 *  - Written in place of a frame length when the previous frames are the product of an aborted serialization.  
+	 *  - Acts as an invalid/poison value for downstream processing. */
+	val CORRUPTED_PACKAGE_SENTINEL: Int = 0xffff_ffff
+	val CORRUPTED_PACKAGE_SENTINEL_ENCODED: Array[Byte] = {
+		val array = Array[Byte](VLQ.INT_MAX_LENGTH)
+		val writer: VLQ.ByteWriter = new VLQ.ByteWriter {
+			var pos = 0
+			override def putByte(byte: Byte): Unit = {
+				array(pos) = byte
+				pos += 1
+			}
+		}
+		VLQ.encodeUnsignedInt(CORRUPTED_PACKAGE_SENTINEL, writer)
+		array
+	}
 }
 
 /**
@@ -40,7 +57,7 @@ object Transmitter {
  * Note: The underlying [[AsynchronousSocketChannel]] is not thread-safe and supports only one transmission at a time. Concurrent attempts to transmit messages will result in undefined behavior
  * 
  * @param channel the channel over which the messages will be transmitted.
- * @param buffersCapacity the capacity of each storage unit of the [[DualEndedCircularBuffer]]
+ * @param buffersCapacity the capacity of each storage of the [[DualEndedCircularBuffer]]
  */
 class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) {
 	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
@@ -87,7 +104,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		/** This variable is modified one time only, from null to non-null. */
 		@volatile var cancellationReason: SerializationProblem | Null = null
 
-		/** Fills the frame-buffer with the content of the current read-end buffer */
+		/** Fills the frame-buffer with the content of the read-end storage. */
 		def fillFrame(): Unit = {
 			val readEnd = contentBuffers.readEnd
 			frameBuffer(1) = readEnd
@@ -133,33 +150,47 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 				writeEndBuffer
 			}
 
+			/** Send the sentinel value, which is an empty frame. */
+			def sendSentinelValue(forCorruptedPackage: Boolean): Unit = {
+				frameHeaderBuffer.clear()
+				if forCorruptedPackage then frameHeaderBuffer.put(CORRUPTED_PACKAGE_SENTINEL_ENCODED)
+				else frameHeaderBuffer.put(0: Byte)
+				channel.write(frameBuffer, 0, 1, timeout, timeUnit, true, thisHandler)
+			}
+
 			// executed sequentially by a thread of the NIO2 group.
 			@tailrec
 			override def completed(bytesTransmitted: java.lang.Long, sentinelWasSent: Boolean): Unit = {
-				if cancellationReason != null then onCompleteWrapper(cancellationReason)
+				if frameBuffer(0).hasRemaining then channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, thisHandler)
+				else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
 				else {
-					if frameBuffer(0).hasRemaining then channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, thisHandler)
-					else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
-					else {
-						if isSerializationCompleted then {
-							if contentBuffers.advanceReadEnd() then {
-								fillFrame()
-								completed(bytesTransmitted, false)
-							} else if sentinelWasSent then onCompleteWrapper(Delivered)
-							else {
-								// Send the sentinel value, which is an empty frame.
-								frameHeaderBuffer.clear()
-								frameHeaderBuffer.put(0:Byte)
-								channel.write(frameBuffer, 0, 1, timeout, timeUnit, true, thisHandler)
-							}
-						} else if !behindTransmissionStopped then {
-							// this point is reached only when the time that takes to serialize the whole message is greater than the time to transmit the content of the first buffer.
-							val aPendingStorageIsBehind = contentBuffers.advanceReadEnd() && contentBuffers.hasPendingStoragesBehind // behind transmission is stopped only when serialization is slower than transmission.
-							behindTransmissionStopped = !aPendingStorageIsBehind
-							if aPendingStorageIsBehind || isSerializationCompleted then {
-								fillFrame()
-								completed(bytesTransmitted, false)
-							}
+					if isSerializationCompleted then {
+						if contentBuffers.advanceReadEnd() then {
+							fillFrame()
+							completed(bytesTransmitted, false)
+						} else if sentinelWasSent then onCompleteWrapper(Delivered)
+						else sendSentinelValue(false)
+					}
+					// if the serialization failed, write the corrupted-package-sentinel before completing with the failure
+					else if cancellationReason != null then {
+						if sentinelWasSent then onCompleteWrapper(cancellationReason)
+						else {
+							// Use a distinct sentinel value to indicate serialization failures, enabling the deserializer to:
+							//       1. Detect failed serializations
+							//       2. Discard corrupted packets
+							//       3. Continue processing subsequent messages
+							//       without requiring channel restart.
+							sendSentinelValue(true)
+						}
+					}
+					// This point is reached only when the time that takes to serialize the whole message (by the thread that called the `transmit` method) is greater than the time to transmit the content of the first storage of the DualEndedCircularBuffer.
+					else if !behindTransmissionStopped then {
+						// if the read-end catches up to the write-end, stop the behind transmission; else fill the frame buffer with the content of the read-end storage and transmit it through the channel.
+						val aPendingStorageIsBehind = contentBuffers.advanceReadEnd() && contentBuffers.hasPendingStoragesBehind // behind transmission is stopped only when serialization is slower than transmission.
+						behindTransmissionStopped = !aPendingStorageIsBehind
+						if aPendingStorageIsBehind || isSerializationCompleted then {
+							fillFrame()
+							completed(bytesTransmitted, false)
 						}
 					}
 				}

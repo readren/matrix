@@ -21,6 +21,8 @@ object Receiver {
 	case class ChannelClosedByPeer(missingBytesAccordingToLastFrame: Int) extends Fault
 
 	case class DeserializerAndFrameMismatch(origin: LengthMismatchException) extends Fault
+	
+	case class TheDeserializerHasNotConsumedTheWholePackage(remainingBytes: Int, deserializerResult: Any) extends Fault
 
 	case class DeserializationProblem(problem: Throwable) extends Fault
 
@@ -28,6 +30,7 @@ object Receiver {
 
 	/** The [[Deserializer]] expected more bytes than the contained in the received package (a sequence of frames finalized with an empty frame). */
 	class LengthMismatchException extends RuntimeException("Unexpected end of package")
+
 	/** The received bytes are less than the package size. A package is a sequence of frames finalized with an empty one. */
 	class UnexpectedBufferEnd extends RuntimeException("The buffer was consumed before the package end.")
 }
@@ -45,11 +48,16 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 	private val buffers: DualEndedCircularBuffer[ByteBuffer] = new DualEndedCircularBuffer[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity))
 	private val continuousBuffer: ByteBuffer = ByteBuffer.allocate(Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 
+	/** A [[VLQ.ByteReader]] that reads the bytes from the [[ByteBuffer]] it is attached to. */
 	private object frameHeaderReader extends VLQ.ByteReader {
 		private var bufferPointingToFrameHeader: ByteBuffer | Null = null
 
-		/** @param bufferPointingToFrameHeader a [[ByteBuffer]] that contains and points to the frame header to be read. */
-		def reset(bufferPointingToFrameHeader: ByteBuffer): Unit = {
+		/** Prepares to read a frame header from a buffer.
+		 *  - Buffer must already be positioned at the header start.
+		 *  - Actual mutation (consumption) of the buffer will happen when the `readByte()` method is called by the VLQ decoder method..
+		 * @param bufferPointingToFrameHeader a [[ByteBuffer]] that contains and points to the frame header to be read.
+		 */
+		def attachTo(bufferPointingToFrameHeader: ByteBuffer): Unit = {
 			this.bufferPointingToFrameHeader = bufferPointingToFrameHeader
 		}
 
@@ -57,16 +65,19 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			bufferPointingToFrameHeader.get()
 	}
 
+	/** A [[VLQ.ByteReader]] that reads the bytes from an internal array whose content is copied from a [[ByteBuffer]] without mutating it. */
 	private object frameHeaderFetcher extends VLQ.ByteReader {
 		private val bytes: Array[Byte] = new Array(VLQ.INT_MAX_LENGTH)
 		private var readPosition: Int = 0
 
 		inline def numberOfBytesRead: Int = readPosition
 
-		/** @param headerContainingBuffer a [[ByteBuffer]] that contains the frame header to be read.
+		/** Copies the bytes starting at `headerPosition` from the provided [[ByteBuffer]] to the internal [[bytes]] array, to be decoded into a JVM integer later, by a VLQ decoder method.
+		 * The buffer is not mutated by this method nor the [[readByte]]
+		 * @param bufferWithHeader a [[ByteBuffer]] that contains the frame header to be read.
 		 * @param headerPosition the absolute position of the frame header within the provided buffer. */
-		def reset(headerContainingBuffer: ByteBuffer, headerPosition: Int): Unit = {
-			headerContainingBuffer.get(headerPosition, bytes)
+		def resetAndLoad(bufferWithHeader: ByteBuffer, headerPosition: Int): Unit = {
+			bufferWithHeader.get(headerPosition, bytes)
 			readPosition = 0
 		}
 
@@ -94,7 +105,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[receiveWithAttachment]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
 		object handler extends Deserializer.Reader, CompletionHandler[Integer, ByteBuffer] { thisHandler =>
 
-			@volatile var remainingContentBytesUntilNextFrameHeader = 0
+			var remainingContentBytesUntilNextFrameHeader = 0
 			var readEndBuffer: ByteBuffer = buffers.readEnd
 			var nextFrameHeaderPosRelativeToReadEndBufferBase = 0
 
@@ -122,13 +133,13 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 			}
 
 			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
-			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.*/
+			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
 			private def skipFrameHeader(): Unit = {
 				if readEndBuffer.remaining == 0 then advanceReadEnd()
 
 				if readEndBuffer.position == nextFrameHeaderPosRelativeToReadEndBufferBase then {
 					assert(readEndBuffer.remaining >= FRAME_HEADER_MAX_SIZE) // this is ensured by the `completed` method by extending the buffer limit (using the reserved capacity).
-					frameHeaderReader.reset(readEndBuffer)
+					frameHeaderReader.attachTo(readEndBuffer)
 					val currentFrameContentLength = VLQ.decodeUnsignedInt(frameHeaderReader)
 					if currentFrameContentLength == 0 then throw new LengthMismatchException()
 					nextFrameHeaderPosRelativeToReadEndBufferBase = readEndBuffer.position() + currentFrameContentLength
@@ -159,29 +170,52 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192) 
 				else {
 					val writeEndPosition = writeEndBuffer.position
 
+					// Find the position of the first frame whose header was not already received (or written to the write-end storage).
 					var nextFrameHeaderPos = remainingContentBytesUntilNextFrameHeader
 					while nextFrameHeaderPos <= writeEndPosition - FRAME_HEADER_MAX_SIZE do {
-						frameHeaderFetcher.reset(writeEndBuffer, nextFrameHeaderPos)
+						frameHeaderFetcher.resetAndLoad(writeEndBuffer, nextFrameHeaderPos)
 						val nextFrameContentLength = VLQ.decodeUnsignedInt(frameHeaderFetcher)
+						// If whole not corrupted package was received (or written to the storages), deserialize its content, compact the write-end storage, call the onComplete call-back with the result, and exit the reception cycle.
 						if nextFrameContentLength == 0 then {
 							writeEndBuffer.flip()
 							val outcome: M | Fault =
 								try {
 									skipFrameHeader() // this line is not necessary but its presence avoids the use of the continuous buffer when the deserializer reads the first byte.
-									deserializer.deserialize(thisHandler)
+									val message = deserializer.deserialize(thisHandler)
+									// if the deserializer haven't consumed all the bytes in the package, give a faulty outcome.
+									if writeEndBuffer.position() != nextFrameHeaderPos then {
+										var notConsumedBytesAccumulator = 0
+										while buffers.readEnd ne writeEndBuffer do {
+											notConsumedBytesAccumulator += buffers.readEnd.remaining()
+											buffers.advanceReadEnd()
+										}
+										notConsumedBytesAccumulator += nextFrameHeaderPos - writeEndBuffer.position()
+										TheDeserializerHasNotConsumedTheWholePackage(notConsumedBytesAccumulator, message)
+									}
+									else message
 								} catch {
 									case lme: LengthMismatchException => DeserializerAndFrameMismatch(lme)
 									case scala.util.control.NonFatal(e) => DeserializationProblem(e)
 								}
+							writeEndBuffer.position(nextFrameHeaderPos + 1)
+							writeEndBuffer.limit(writeEndPosition)
 							writeEndBuffer.compact()
 							onComplete(outcome, attachment)
 							return
+						}
+						// If a whole corrupted package was received (or written to the storages), discard it and start receiving the next package.
+						else if nextFrameContentLength == Transmitter.CORRUPTED_PACKAGE_SENTINEL then {
+							while buffers.advanceReadEnd() do ()
+							writeEndBuffer.position(nextFrameHeaderPos + Transmitter.CORRUPTED_PACKAGE_SENTINEL_ENCODED.length)
+							writeEndBuffer.limit(writeEndPosition)
+							writeEndBuffer.compact()
+							channel.read(writeEndBuffer, timeout, timeUnit, writeEndBuffer, thisHandler)
 						}
 						nextFrameHeaderPos += nextFrameContentLength + frameHeaderFetcher.numberOfBytesRead
 					}
 					// Invariants here: `nextFrameHeaderPos > writeEndPosition - FRAME_HEADER_MAX_SIZE`
 
-					// If the current write-end buffer has available capacity, continue writing received data into the current write-end buffer.
+					// If the current write-end storage has available capacity, continue writing received data into the current write-end buffer.
 					if writeEndBuffer.hasRemaining then {
 						// If the frame header will be split, avoid the splitting in advance by increasing the limit of the current write-end buffer (using the reserved capacity).
 						if buffersInitialLimit > nextFrameHeaderPos && nextFrameHeaderPos > buffersInitialLimit - FRAME_HEADER_MAX_SIZE then {
