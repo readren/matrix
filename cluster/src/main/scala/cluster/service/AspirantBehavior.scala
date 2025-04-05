@@ -67,7 +67,7 @@ class AspirantBehavior(clusterService: ClusterService) extends CommunicableDeleg
 				}
 			}
 			
-			if clusterService.doesAClusterExist then clusterService.sendRequestToJoinTheClusterIfAppropriate()
+			clusterService.sendRequestToJoinTheClusterIfAppropriate()
 			true
 
 		case ClusterCreatorProposal(candidateProposedByPeer, versionsSupportedByCandidate) =>
@@ -98,8 +98,9 @@ class AspirantBehavior(clusterService: ClusterService) extends CommunicableDeleg
 			clusterService.switchToMember()
 			true
 
-		case jr: JoinRejected =>
-			scribe.info(s"A request to join the cluster was rejected")
+		case JoinRejected(haveToRetry, reason) =>
+			scribe.info(s"A request to join the cluster was rejected because: $reason")
+			if haveToRetry then clusterService.sendRequestToJoinTheClusterIfAppropriate()
 			true
 
 		case lcw: ILostCommunicationWith =>

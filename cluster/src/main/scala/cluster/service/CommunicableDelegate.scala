@@ -158,7 +158,7 @@ class CommunicableDelegate(
 		// Notify changes
 		if agreedVersion != previousAgreedVersion then clusterService.getCommunicableDelegatesBehavior.onDelegateCommunicabilityChange(this)
 		if previousMembershipState != ASPIRANT then clusterService.getCommunicableDelegatesBehavior.onDelegateMembershipChange(this)
-		if previousMembershipState == MEMBER then clusterService.notify(ClusterService.ParticipantHasBeenRestarted(peerAddress))
+		if previousMembershipState eq MEMBER then clusterService.notify(ClusterService.ParticipantHasBeenRestarted(peerAddress))
 	}
 
 	inline private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
