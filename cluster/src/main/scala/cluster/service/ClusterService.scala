@@ -57,7 +57,7 @@ object ClusterService {
 
 /**
  * A service that manages the propagation of its own existence and the awareness of other [[ClusterService]] instances
- * to support intercommunication between their users across different JVMs, which may be (and usually are) on different host machines.
+ * to support intercommunication between their users across different JVMs, which maybe (and usually are) on different host machines.
  *
  * For brevity, instances of this class are referred to as "participants."
  * Depending on its membership status (from its own viewpoint), a participant behaves either as a "member" or as an "aspirant"
@@ -112,21 +112,9 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	}
 
 	/**
-	 * Gets the contact cards of all the participants known by this [[ClusterService]] such that the participant is incommunicable or the handshake has been already done.
-	 * Participants whose communicability is being investigated (because they are still in the handshake stage) are not included.
-	 * Must be called within the [[sequencer]]. */
-	def getKnownParticipantsCards: MapView[ContactAddress, Set[ProtocolVersion]] = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
-		delegateByAddress.view.mapValues(_.versionsSupportedByPeer).filter(_._2.nonEmpty)
-	}
-
-	/**
-	 * Gets the contact cards of all the participants known by this [[ClusterService]] such that the participant is member of the cluster according to this [[ClusterService]].
-	 * Assumes that all members are either incommunicable or communicable with the handshake already completed.
-	 * Must be called within the [[sequencer]]. */
-	def getKnownMembersCards: MapView[ContactAddress, Set[ProtocolVersion]] = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
-		delegateByAddress.view.filter(_._2.peerMembershipStatusAccordingToMe eq MEMBER).mapValues { delegate => delegate.versionsSupportedByPeer }
+	 * Gets the address of all the participants known by this [[ClusterService]]. */
+	def getKnownParticipantsAddresses: Set[ContactAddress] = {
+		participantDelegateByAddress.keySet
 	}
 
 	def getKnownParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
@@ -134,20 +122,12 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		delegateByAddress.view.mapValues(_.info)
 	}
 	
-	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: MapView[ContactAddress, Set[ProtocolVersion]]):Unit = {
+	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: Set[ContactAddress]):Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		// Create a delegate for each participant that I did not know.
-		for participant <- participantsKnownByPeer do {
-			if participant.address != myAddress && !delegateByAddress.contains(participant.address) then {
-				if participant.supportedVersions.isEmpty || determineAgreedVersion(participant.supportedVersions).isDefined then {
-					addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(participant.address, participant.supportedVersions, UNKNOWN)
-				} else {
-					val newDelegate = addANewIncommunicableDelegate(participant.address, IS_INCOMPATIBLE)
-					newDelegate.versionsSupportedByPeer = participant.supportedVersions
-					newDelegate.peerMembershipStatusAccordingToMe = ASPIRANT
-					getMembershipScopedBehavior.onDelegatedAdded(newDelegate)
-					notifyListenersThat(VersionIncompatibilityWith(participant.address))
-				}
+		for participantAddress <- participantsKnownByPeer do {
+			if participantAddress != myAddress && !delegateByAddress.contains(participantAddress) then {
+				addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(participantAddress)
 			}
 		}		
 	}
@@ -240,14 +220,13 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		// Send join requests to seeds with retries
 		for seed <- seeds do if config.myAddress != seed then {
 			sequencer.executeSequentially {
-				if !delegateByAddress.contains(seed) then addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(seed, Set.empty, UNKNOWN)
+				if !delegateByAddress.contains(seed) then addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(seed)
 			}
 		}
 	}
 
-	private[service] def addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(participantContactAddress: ContactAddress, versionsSupportedByPeer: Set[ProtocolVersion], membershipStatus: MembershipStatus): IncommunicableDelegate = {
+	private[service] def addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(participantContactAddress: ContactAddress): IncommunicableDelegate = {
 		val connectingDelegate = addANewIncommunicableDelegate(participantContactAddress, IS_CONNECTING_AS_CLIENT)
-		connectingDelegate.initializeState(versionsSupportedByPeer, membershipStatus)
 		membershipScopedBehavior.onDelegatedAdded(connectingDelegate)
 		notifyListenersThat(IStartedAConnectionToANewParticipant(connectingDelegate.peerAddress))
 

@@ -3,9 +3,8 @@ package cluster.service
 
 import cluster.channel.Transmitter
 import cluster.service.Protocol.*
+import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.MEMBER
-
-import readren.matrix.cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
 class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
@@ -53,7 +52,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			// TODO
 			true
 			
-		case ClusterCreatorProposal(proposedCandidate, supportedVersions) =>
+		case ClusterCreatorProposal(proposedCandidate) =>
 			clusterService.solveClusterExistenceConflictWith(delegate)
 
 		case icc: ICreatedACluster =>
@@ -86,6 +85,9 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case IAmLeaving =>
 			???
 
+		case IAmDeaf =>
+			???
+			
 		case phr: AnotherParticipantHasBeenRestarted =>
 			???
 

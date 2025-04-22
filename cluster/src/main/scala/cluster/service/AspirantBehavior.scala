@@ -5,10 +5,10 @@ import cluster.channel.Transmitter
 import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.misc.CommonExtensions.*
 import cluster.service.ContactCard.*
-import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
+import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
+import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
 
-import readren.matrix.cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
@@ -62,27 +62,22 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			delegate.handleMessage(hello)
 			true
 
-		case Welcome(participantsKnownByPeer) =>
+		case Welcome(membershipStatus, versionsSupportedByPeer, otherParticipantsKnowByPeer) =>
 			// override the peer's membership status and supported versions with the values provided by the source of truth. 
-			participantsKnownByPeer.get(delegate.peerAddress).fold {
-				scribe.error(s"The welcome message received from ${delegate.peerAddress} is missing the information of the sender itself")
-			} { peerInfoOfHimself =>
-				updateDelegateState(delegate, peerInfoOfHimself.supportedVersions, peerInfoOfHimself.membershipStatus)
-			}
-
+			updateDelegateState(delegate, versionsSupportedByPeer, membershipStatus)
 			// Create a delegate for each participant that I did not know.
-			clusterService.createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer.view.mapValues(_.supportedVersions))
+			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
 			true
 
 		case csw: ConversationStartedWith =>
 			???
 			true
 
-		case ClusterCreatorProposal(candidateProposedByPeer, versionsSupportedByCandidate) =>
+		case ClusterCreatorProposal(candidateProposedByPeer) =>
 			delegate.clusterCreatorProposedByPeer = candidateProposedByPeer
 			// If I don't know the candidate, create a delegate for it.
 			if candidateProposedByPeer != null && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
-				clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer, versionsSupportedByCandidate, ASPIRANT)
+				clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer)
 			}
 			updateClusterCreatorProposalIfAppropriate()
 			true
@@ -122,6 +117,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case IAmLeaving =>
+			???
+			
+		case IAmDeaf =>
 			???
 
 		case phr: AnotherParticipantHasBeenRestarted =>
@@ -178,7 +176,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 					communicableDelegate.clusterCreatorProposedByPeer == myAddress
 				case _ => true
 			} then { // ... then create it.
-				// Creating the cluster consist of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
+				// Creating the cluster consists of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
 				val clusterCreationInstant: Instant = clusterService.clock.getTime
 				val memberBehavior = clusterService.switchToMember(clusterCreationInstant)
 				val myViewpoint = memberBehavior.myCurrentViewpoint
@@ -187,14 +185,14 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 				}
 			} else { // ... else, send my proposal to all the participants I can communicate with.
 				for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-					communicable.notifyPeerTheAspirantIProposeToBeTheClusterCreator(candidateProposedByMe.address, candidateProposedByMe.supportedVersions)
+					communicable.notifyPeerTheAspirantIProposeToBeTheClusterCreator(candidateProposedByMe.address)
 				}
 			}
 		}
 		// if the condition for proposal are not meet, undo the old proposal if any.
 		else {
 			for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-				communicable.notifyPeerTheAspirantIProposeToBeTheClusterCreator(null, Set.empty)
+				communicable.notifyPeerTheAspirantIProposeToBeTheClusterCreator(null)
 			}
 		}
 	}

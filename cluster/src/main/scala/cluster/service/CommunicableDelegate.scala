@@ -5,13 +5,12 @@ import cluster.channel.Transmitter.Report
 import cluster.channel.{Receiver, Transmitter}
 import cluster.misc.DoNothing
 import cluster.service.ClusterService.DelegateConfig
-import cluster.service.ContactCard.*
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
+import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import cluster.service.ProtocolVersion
 
-import readren.matrix.cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
@@ -110,14 +109,14 @@ class CommunicableDelegate(
 		peerMembershipStatusAccordingToMe = ASPIRANT
 
 		// Connect to participants I didn't know.
-		clusterService.createADelegateForEachParticipantIDoNotKnowIn(hello.cardsOfOtherParticipantsIKnow.view)
+		clusterService.createADelegateForEachParticipantIDoNotKnowIn(hello.otherParticipantsIKnow)
 
 		val previousAgreedVersion = agreedVersion
 		// update the protocol-version to use when communicating with the peer, transmit the response: `Welcome` or `SupportedVersionsMismatch`.
 		clusterService.determineAgreedVersion(hello.versionsISupport) match {
 			case Some(version) =>
 				agreedVersion = version
-				transmitToPeer(Welcome(clusterService.getKnownParticipantsInfo.toMap))(ifFailureReportItAndThen(restartChannel))
+				transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
 
 			case None =>
 				agreedVersion = ProtocolVersion.NOT_SPECIFIED
@@ -135,11 +134,11 @@ class CommunicableDelegate(
 	}
 
 	inline private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.getKnownParticipantsCards.toMap), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
+		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
 	}
 
 	inline private[service] def sendIHaveReconnected(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitToPeer(IHaveReconnected(clusterService.config.versionsISupport, clusterService.myMembershipStatus))(onComplete);
+		transmitToPeer(IHaveReconnected(clusterService.config.versionsISupport, clusterService.myMembershipStatus))(onComplete)
 	}
 
 	inline private[service] def sendRequestToJoin(joinTokenByMemberAddress: Map[ContactAddress, JoinToken])(onComplete: Transmitter.Report => Unit): Unit = {
@@ -150,10 +149,10 @@ class CommunicableDelegate(
 		transmitterToPeer.transmit[Protocol](message, agreedVersion, config.transmitterTimeout, config.timeUnit)(onComplete)
 	}
 
-	private[service] def notifyPeerTheAspirantIProposeToBeTheClusterCreator(proposedAspirantAddress: ContactAddress, supportedVersions: Set[ProtocolVersion]): Unit = {
+	private[service] def notifyPeerTheAspirantIProposeToBeTheClusterCreator(proposedAspirantAddress: ContactAddress): Unit = {
 		if proposedAspirantAddress != lastClusterCreatorProposalSentToPeer then {
 			lastClusterCreatorProposalSentToPeer = proposedAspirantAddress
-			transmitToPeer(ClusterCreatorProposal(proposedAspirantAddress, supportedVersions))(ifFailureReportItAndThen(restartChannel))
+			transmitToPeer(ClusterCreatorProposal(proposedAspirantAddress))(ifFailureReportItAndThen(restartChannel))
 		}
 	}
 	private[service] def notifyPeerThatILostCommunicationWith(otherParticipant: ContactAddress): Unit = {
