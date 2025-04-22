@@ -1,46 +1,69 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ClusterService.VersionIncompatibilityWith
-import cluster.service.IncommunicableDelegate.Reason.IS_INCOMPATIBLE
+import cluster.channel.Transmitter
 import cluster.service.Protocol.*
+import cluster.service.Protocol.MembershipStatus.MEMBER
 
-import readren.matrix.cluster.channel.Transmitter
-import readren.matrix.cluster.service.Protocol.MembershipStatus.MEMBER
+import readren.matrix.cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberBehavior(clusterService: ClusterService) extends CommunicableDelegate.Behavior {
+class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
 
-	override def membershipStatus: MembershipStatus = MEMBER
+	private var stateSerial: RingSerial = RingSerial.create()
 
-	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = ???
+	inline def currentStateSerial: RingSerial = stateSerial
+	
+	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, clusterService.clock.getTime, clusterCreationInstant, clusterService.getKnownParticipantsInfo.toMap)
 
-	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = ???
+	override val membershipStatus: MembershipStatus = MEMBER
 
-	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = ???
+	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit =
+		() // TODO
 
-	override def onConnectedAsClient(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit = {
-		???
-	}
+	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit =
+		() // TODO
 
-	override def handleMessage(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
+	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit =
+		() // TODO
+
+	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit =
+		() // TODO
+
+	override def handleMessageFrom(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
+		case am: ApplicationMsg =>
+			// TODO
+			true
+
+		case hb: Heartbeat =>
+			???
+
+		case sc: StateChanged =>
+			???
+
 		case hello: Hello =>
 			delegate.handleMessage(hello)
 			true
 
-		case SupportedVersionsMismatch =>
-			clusterService.notify(VersionIncompatibilityWith(delegate.peerAddress))
-			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
-			false
+		case w: Welcome =>
+			// TODO
+			true
 
+		case ConversationStartedWith(peerAddress) =>
+			// TODO
+			true
+			
 		case ClusterCreatorProposal(proposedCandidate, supportedVersions) =>
 			clusterService.solveClusterExistenceConflictWith(delegate)
 
 		case icc: ICreatedACluster =>
-			clusterService.solveClusterExistenceConflictWith(delegate)
-
-		case jam: Welcome =>
-			???
+			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
+				clusterService.switchToResolvingBrainJoin()
+				for case (_, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
+					delegate.transmitToPeer(WeHaveToResolveBrainJoin(myCurrentViewpoint))(delegate.ifFailureReportItAndThen(delegate.restartChannel))
+				}
+			}
+			true
 
 		case oi: RequestApprovalToJoin =>
 			???
@@ -63,14 +86,23 @@ class MemberBehavior(clusterService: ClusterService) extends CommunicableDelegat
 		case IAmLeaving =>
 			???
 
-		case hb: Heartbeat =>
+		case phr: AnotherParticipantHasBeenRestarted =>
 			???
 
-		case sc: StateChanged =>
+		case ihr: IHaveReconnected =>
 			???
 
-		case phr: ParticipantHasBeenRestarted =>
+		case WeHaveToResolveBrainSplit(peerViewPoint) =>
 			???
-	
+			true
+
+		case WeHaveToResolveBrainJoin(peerViewPoint) =>
+			???
+			true
+
+		case SupportedVersionsMismatch =>
+			clusterService.notifyListenersThat(VersionIncompatibilityWith(delegate.peerAddress))
+			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
+			false
 	}
 }

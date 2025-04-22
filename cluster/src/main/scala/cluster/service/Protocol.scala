@@ -7,10 +7,10 @@ import cluster.channel.Deserializer.DeserializationException
 import cluster.channel.Nio2Serializers.given
 import cluster.channel.{Deserializer, Serializer}
 import cluster.service.Protocol.*
+import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import cluster.service.ProtocolVersion
 import cluster.service.ProtocolVersion.given
 
-import readren.matrix.cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
@@ -51,15 +51,17 @@ case class ClusterCreatorProposal(proposedCandidate: ContactAddress | Null, supp
 /** Informs that the sender has created a cluster.
  * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender proposing him.
  *
- * @param myViewpoint the [[ParticipantViewpoint]]s of the sender, which is the cluster creator. */
-case class ICreatedACluster(myViewpoint: ParticipantViewpoint) extends Protocol
+ * @param myViewpoint the [[MemberViewpoint]]s of the sender, which is the cluster creator. */
+case class ICreatedACluster(myViewpoint: MemberViewpoint) extends Protocol
 
 /** Command message that the aspirant has to send to each member of the cluster to get its permission to join. */
+@deprecated
 case class RequestApprovalToJoin() extends Protocol
 
 /** Response to the [[RequestApprovalToJoin]]
  *
  * @param joinToken a value that constates the responding member approves the join request. */
+@deprecated
 case class JoinApprovalGranted(joinToken: JoinToken) extends Protocol
 
 
@@ -72,7 +74,7 @@ case class RequestToJoin(joinTokenByMemberAddress: Map[ContactAddress, JoinToken
 /** Response to the [[RequestToJoin]] message when the join is successful.
  * @param participantInfoByItsAddress the state of all the participant according to the sender, including hiw own view of himself (which is the single source of that information)
  */
-case class JoinGranted(participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Protocol
+case class JoinGranted(clusterCreationInstant: Instant, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Protocol
 
 /** Response to the [[RequestToJoin]] message when the join is not successful.
  *
@@ -83,10 +85,12 @@ case class JoinRejected(youHaveToRetry: Boolean, reason: String) extends Protoco
 case object IAmLeaving extends Protocol
 
 /** Message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
-case class ILostCommunicationWith(stateId: RingSerial, participantsAddresses: Set[ContactAddress]) extends Protocol
+case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Protocol
+
+case class ConversationStartedWith(participantAddress: ContactAddress) extends Protocol
 
 /** Message that a participant A should send to all other participants when a participant B sends him the [[Hello]] message a second time, which is a symptom that B has restarted. */
-case class ParticipantHasBeenRestarted(restartedParticipantAddress: ContactAddress) extends Protocol
+case class AnotherParticipantHasBeenRestarted(restartedParticipantAddress: ContactAddress) extends Protocol
 
 /** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: DurationMillis) extends Protocol
@@ -98,6 +102,9 @@ case class StateChanged(serial: RingSerial, takenOn: Instant, participantInfoByA
 
 /** Sent to inform the peer that the connection for reading was closed due to end of stream signal. */
 case object IAmDeaf extends Protocol
+
+case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Protocol
+case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Protocol
 
 case class ApplicationMsg(bytes: Array[Byte]) extends Protocol
 
@@ -114,12 +121,18 @@ object Protocol {
 		case UNKNOWN, ASPIRANT, MEMBER
 	}
 
-	/** @param communicationStatus the communication status that the sender of this information has toward the referred participant
+	enum IncommunicabilityReason {
+		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
+	}
+
+	/**
+	 * Information that tells how a participant sees another participant
+	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information                           */
 	case class ParticipantInfo(supportedVersions: Set[ProtocolVersion], communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)	
-	/** Information about a peer according to it.
+	/** Information about a participant according to itself.
 	 * This information has a single source of truth: the peer. */
-	case class ParticipantViewpoint(serial: RingSerial, takenOn: Instant, membershipStatus: MembershipStatus, communicationStatusByParticipantAddress: Map[ContactAddress, CommunicationStatus])
+	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
 
 	enum CommunicationStatus {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
@@ -181,8 +194,8 @@ object Protocol {
 				writer.putByte(DISCRIMINATOR_StateChanged)
 				writer.writeFull(sc)
 
-			case phr: ParticipantHasBeenRestarted =>
-				writer.putByte(DISCRIMINATOR_ParticipantHasBeenRestarted)
+			case phr: AnotherParticipantHasBeenRestarted =>
+				writer.putByte(DISCRIMINATOR_AnotherParticipantHasBeenRestarted)
 				writer.writeFull(phr)
 
 		}
@@ -216,8 +229,8 @@ object Protocol {
 				reader.read[JoinRejected]
 			case DISCRIMINATOR_ILostCommunicationWith =>
 				reader.read[ILostCommunicationWith]
-			case DISCRIMINATOR_ParticipantHasBeenRestarted =>
-				reader.read[ParticipantHasBeenRestarted]
+			case DISCRIMINATOR_AnotherParticipantHasBeenRestarted =>
+				reader.read[AnotherParticipantHasBeenRestarted]
 
 			case x =>
 				throw new DeserializationException(reader.position, s"Invalid discriminator value ($x) for the Protocol type: no matching product type found")
@@ -238,7 +251,7 @@ object Protocol {
 	inline val DISCRIMINATOR_ILostCommunicationWith = 9
 	inline val DISCRIMINATOR_Heartbeat = 10
 	inline val DISCRIMINATOR_StateChanged = 11
-	inline val DISCRIMINATOR_ParticipantHasBeenRestarted = 13
+	inline val DISCRIMINATOR_AnotherParticipantHasBeenRestarted = 13
 
 
 	given Serializer[Hello] = (message: Hello, writer: Serializer.Writer) => ???
@@ -265,7 +278,7 @@ object Protocol {
 
 	given Serializer[StateChanged] = (message: StateChanged, writer: Serializer.Writer) => ???
 
-	given Serializer[ParticipantHasBeenRestarted] = (message: ParticipantHasBeenRestarted, writer: Serializer.Writer) => ???
+	given Serializer[AnotherParticipantHasBeenRestarted] = (message: AnotherParticipantHasBeenRestarted, writer: Serializer.Writer) => ???
 
 
 	given Deserializer[Hello] = (reader: Deserializer.Reader) => ???
@@ -292,5 +305,5 @@ object Protocol {
 
 	given Deserializer[StateChanged] = (reader: Deserializer.Reader) => ???
 
-	given Deserializer[ParticipantHasBeenRestarted] = (reader: Deserializer.Reader) => ???
+	given Deserializer[AnotherParticipantHasBeenRestarted] = (reader: Deserializer.Reader) => ???
 }

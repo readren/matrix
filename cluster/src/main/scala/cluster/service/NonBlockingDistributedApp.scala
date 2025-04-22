@@ -50,7 +50,7 @@ object NonBlockingDistributedApp {
 				myAddress,
 				Set(ProtocolVersion.OF_THIS_PROJECT),
 				seedsAddresses,
-				new DelegateConfig(Set(ProtocolVersion.OF_THIS_PROJECT), 1, 1, TimeUnit.SECONDS, 500, 500),
+				new DelegateConfig(1, 1, TimeUnit.SECONDS, 500, 500),
 				500, 60_000, 8, 500
 			)
 		)

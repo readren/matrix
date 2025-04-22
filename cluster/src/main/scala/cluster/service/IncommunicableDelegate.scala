@@ -1,23 +1,16 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ClusterService.DelegateBecomeUnreachable
-import cluster.service.IncommunicableDelegate.Reason
-import cluster.service.IncommunicableDelegate.Reason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import cluster.service.Protocol.CommunicationStatus.{CONNECTING, INCOMPATIBLE, UNREACHABLE}
-import cluster.service.Protocol.{CommunicationStatus, ContactAddress, ParticipantInfo}
+import cluster.service.Protocol.{CommunicationStatus, ContactAddress, IncommunicabilityReason, ParticipantInfo}
+
+import readren.matrix.cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 
 import java.nio.channels.AsynchronousSocketChannel
 
-object IncommunicableDelegate {
-	enum Reason {
-		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
-	}
-}
-
 /** A [[ParticipantDelegate]] that is currently not able to communicate with the participant.
  * Note that participants to which the [[ClusterService]] is connecting to are associated to a [[Incommunicable]] delegate with the [[isConnectingAsClient]] flag set, until the connection is completed; moment at which the delegate is replaced with a [[CommunicableDelegate]] one. */
-class IncommunicableDelegate(override val clusterService: ClusterService, override val peerAddress: ContactAddress, reason: Reason) extends ParticipantDelegate {
+class IncommunicableDelegate(override val clusterService: ClusterService, override val peerAddress: ContactAddress, reason: IncommunicabilityReason) extends ParticipantDelegate {
 	val isIncompatible: Boolean = reason eq IS_INCOMPATIBLE
 	private var isTryingToConnectAsClient = reason eq IS_CONNECTING_AS_CLIENT
 
@@ -33,8 +26,8 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 	/** Clears the [[isConnectingAsClient]] flag. */
 	inline def onConnectionAborted(cause: Throwable): Unit = {
 		isTryingToConnectAsClient = false
-		clusterService.getCommunicableDelegatesBehavior.onDelegateCommunicabilityChange(this)
-		clusterService.notify(DelegateBecomeUnreachable(peerAddress, cause))
+		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(this)
+		clusterService.notifyListenersThat(DelegateBecomeUnreachable(peerAddress, cause))
 	}
 
 	override def communicationStatus: CommunicationStatus = {
@@ -53,8 +46,7 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, communicationChannel)
 		myReplacement.initializeStateBasedOn(this)
 		// notify
-		clusterService.getCommunicableDelegatesBehavior.onDelegateCommunicabilityChange(myReplacement)
-		clusterService.onDelegateBecomeCommunicable(peerAddress)
+		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)
 		myReplacement
 	}
 }
