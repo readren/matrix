@@ -116,7 +116,7 @@ class CommunicableDelegate(
 		clusterService.determineAgreedVersion(hello.versionsISupport) match {
 			case Some(version) =>
 				agreedVersion = version
-				transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
+				sendWelcome()
 
 			case None =>
 				agreedVersion = ProtocolVersion.NOT_SPECIFIED
@@ -135,6 +135,14 @@ class CommunicableDelegate(
 
 	inline private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
 		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
+	}
+	
+	private[service] def sendWelcome(): Unit = {
+		transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))		
+	}
+	
+	private[service] def sendResolveAspirantMembershipConflict(): Unit = {
+		transmitToPeer(ResolveAspirantMembershipConflict(clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsMembershipStatus))(ifFailureReportItAndThen(restartChannel))
 	}
 
 	inline private[service] def sendIHaveReconnected(onComplete: Transmitter.Report => Unit): Unit = {

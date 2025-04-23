@@ -6,6 +6,8 @@ import cluster.service.Protocol.*
 import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.MEMBER
 
+import readren.matrix.common.CompileTime.getTypeName
+
 /** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
 class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
 
@@ -29,7 +31,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit =
 		() // TODO
 
-	override def handleMessageFrom(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
+	override def handleMessageFrom(senderDelegate: CommunicableDelegate, message: Protocol): Boolean = message match {
 		case am: ApplicationMsg =>
 			// TODO
 			true
@@ -41,11 +43,11 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			???
 
 		case hello: Hello =>
-			delegate.handleMessage(hello)
+			senderDelegate.handleMessage(hello)
 			true
 
 		case w: Welcome =>
-			// TODO
+			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
 			true
 
 		case ConversationStartedWith(peerAddress) =>
@@ -53,7 +55,9 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			true
 			
 		case ClusterCreatorProposal(proposedCandidate) =>
-			clusterService.solveClusterExistenceConflictWith(delegate)
+			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[ClusterCreatorProposal]} despite cluster already exists.")
+			senderDelegate.sendResolveAspirantMembershipConflict()
+			true
 
 		case icc: ICreatedACluster =>
 			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
@@ -77,6 +81,9 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			???
 
 		case jr: JoinRejected =>
+			???
+			
+		case rsm: ResolveAspirantMembershipConflict =>
 			???
 
 		case lcw: ILostCommunicationWith =>
@@ -103,8 +110,8 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			true
 
 		case SupportedVersionsMismatch =>
-			clusterService.notifyListenersThat(VersionIncompatibilityWith(delegate.peerAddress))
-			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
+			clusterService.notifyListenersThat(VersionIncompatibilityWith(senderDelegate.peerAddress))
+			senderDelegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
 			false
 	}
 }

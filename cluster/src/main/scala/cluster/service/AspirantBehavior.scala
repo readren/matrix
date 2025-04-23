@@ -9,6 +9,7 @@ import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
 import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
 
+import readren.matrix.common.CompileTime.getTypeName
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
@@ -45,7 +46,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		if newMembershipStatus ne previousMembershipStatusOfPeerAccordingToMe then onDelegateMembershipChange(delegate)
 	}
 
-	override def handleMessageFrom(delegate: CommunicableDelegate, message: Protocol): Boolean = message match {
+	override def handleMessageFrom(senderDelegate: CommunicableDelegate, message: Protocol): Boolean = message match {
 		case am: ApplicationMsg =>
 			// TODO
 			true
@@ -59,12 +60,12 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case hello: Hello =>
-			delegate.handleMessage(hello)
+			senderDelegate.handleMessage(hello)
 			true
 
 		case Welcome(membershipStatus, versionsSupportedByPeer, otherParticipantsKnowByPeer) =>
 			// override the peer's membership status and supported versions with the values provided by the source of truth. 
-			updateDelegateState(delegate, versionsSupportedByPeer, membershipStatus)
+			updateDelegateState(senderDelegate, versionsSupportedByPeer, membershipStatus)
 			// Create a delegate for each participant that I did not know.
 			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
 			true
@@ -74,17 +75,18 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case ClusterCreatorProposal(candidateProposedByPeer) =>
-			delegate.clusterCreatorProposedByPeer = candidateProposedByPeer
+			senderDelegate.clusterCreatorProposedByPeer = candidateProposedByPeer
 			// If I don't know the candidate, create a delegate for it.
 			if candidateProposedByPeer != null && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
 				clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer)
 			}
-			updateClusterCreatorProposalIfAppropriate()
+			if clusterService.doesAClusterExist then senderDelegate.sendWelcome()
+			else updateClusterCreatorProposalIfAppropriate()
 			true
 
 		case icc: ICreatedACluster =>
-			delegate.peerMembershipStatusAccordingToMe = MEMBER
-			delegate.peerStatePhoto = Maybe.some(icc.myViewpoint)
+			senderDelegate.peerMembershipStatusAccordingToMe = MEMBER
+			senderDelegate.peerStatePhoto = Maybe.some(icc.myViewpoint)
 			sendRequestToJoinTheClusterIfAppropriate()
 			true
 
@@ -95,7 +97,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			???
 
 		case rtj: RequestToJoin =>
-			clusterService.solveClusterExistenceConflictWith(delegate)
+			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[RequestToJoin]} despite I am not a member of any cluster. ")
+			senderDelegate.sendResolveAspirantMembershipConflict()
+			true
 
 		case jg: JoinGranted =>
 			for (participantAddress, participantInfo) <- jg.participantInfoByItsAddress do {
@@ -111,8 +115,20 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			if haveToRetry then sendRequestToJoinTheClusterIfAppropriate()
 			true
 
+		case rsm: ResolveAspirantMembershipConflict =>
+			updateDelegateState(senderDelegate, rsm.versionsISupport, rsm.myMembershipStatus)
+			clusterService.createADelegateForEachParticipantIDoNotKnowIn(rsm.membershipStatusOfOtherParticipantsIKnow.keySet)
+			val delegateByAddress = clusterService.delegateByAddress
+			for (participantAddress, participantMembershipStatusAccordingToPeer) <- rsm.membershipStatusOfOtherParticipantsIKnow do {
+				delegateByAddress(participantAddress) match {
+					case communicableDelegate: CommunicableDelegate if communicableDelegate.peerMembershipStatusAccordingToMe ne participantMembershipStatusAccordingToPeer =>
+						communicableDelegate.sendResolveAspirantMembershipConflict()
+				}
+			}
+			true			
+
 		case lcw: ILostCommunicationWith =>
-			scribe.info(s"The participant at ${delegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
+			scribe.info(s"The participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
 			// TODO
 			true
 
@@ -127,7 +143,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case ihr: IHaveReconnected =>
-			updateDelegateState(delegate, ihr.versionsISupport, ihr.myMembershipStatus)
+			updateDelegateState(senderDelegate, ihr.versionsISupport, ihr.myMembershipStatus)
 			true
 
 		case WeHaveToResolveBrainSplit(peerViewPoint) =>
@@ -139,8 +155,8 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case SupportedVersionsMismatch =>
-			delegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me that we are not compatible.")
-			clusterService.notifyListenersThat(VersionIncompatibilityWith(delegate.peerAddress))
+			senderDelegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me that we are not compatible.")
+			clusterService.notifyListenersThat(VersionIncompatibilityWith(senderDelegate.peerAddress))
 			false
 	}
 

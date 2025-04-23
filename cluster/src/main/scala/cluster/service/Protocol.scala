@@ -82,10 +82,14 @@ case class JoinGranted(clusterCreationInstant: Instant, participantInfoByItsAddr
  * @param reason motive of the rejection. */
 case class JoinRejected(youHaveToRetry: Boolean, reason: String) extends Protocol
 
-/** Message that a participant should send to as many other participants as possible before closing its communication channels. */
+/** Response to [[ClusterCreatorProposal]] when the receiver knows of the existence of a cluster, and to [[RequestToJoin]] when the receiver's is an aspirant.
+*/
+case class ResolveAspirantMembershipConflict(myMembershipStatus: MembershipStatus, versionsISupport: Set[ProtocolVersion], membershipStatusOfOtherParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Protocol
+
+/** The message that a participant should send to as many other participants as possible before closing its communication channels. */
 case object IAmLeaving extends Protocol
 
-/** Message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
+/** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Protocol
 
 case class ConversationStartedWith(participantAddress: ContactAddress) extends Protocol

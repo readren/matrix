@@ -116,6 +116,12 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	def getKnownParticipantsAddresses: Set[ContactAddress] = {
 		participantDelegateByAddress.keySet
 	}
+	
+	def getKnownParticipantsMembershipStatus: Map[ContactAddress, MembershipStatus] = {
+		val mapBuilder = Map.newBuilder[ContactAddress, MembershipStatus]
+		delegateByAddress.foreachEntry { (address, delegate) => mapBuilder.addOne(address, delegate.peerMembershipStatusAccordingToMe)}
+		mapBuilder.result()
+	}
 
 	def getKnownParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
