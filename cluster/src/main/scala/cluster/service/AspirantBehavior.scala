@@ -9,6 +9,7 @@ import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
 import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
 
+import readren.matrix.cluster.service.ClusterService.ChannelOrigin
 import readren.matrix.common.CompileTime.getTypeName
 import readren.taskflow.Maybe
 
@@ -61,7 +62,6 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 
 		case hello: Hello =>
 			senderDelegate.handleMessage(hello)
-			true
 
 		case Welcome(membershipStatus, versionsSupportedByPeer, otherParticipantsKnowByPeer) =>
 			// override the peer's membership status and supported versions with the values provided by the source of truth. 
@@ -71,14 +71,14 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case csw: ConversationStartedWith =>
-			???
+			// TODO
 			true
 
 		case ClusterCreatorProposal(candidateProposedByPeer) =>
 			senderDelegate.clusterCreatorProposedByPeer = candidateProposedByPeer
 			// If I don't know the candidate, create a delegate for it.
 			if candidateProposedByPeer != null && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
-				clusterService.addANewDelegateForAndThenConnectToAndThenStartConversationWithParticipant(candidateProposedByPeer)
+				clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(candidateProposedByPeer)
 			}
 			if clusterService.doesAClusterExist then senderDelegate.sendWelcome()
 			else updateClusterCreatorProposalIfAppropriate()
@@ -135,8 +135,8 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case IAmLeaving =>
 			???
 			
-		case IAmDeaf =>
-			???
+		case cd: ChannelDiscarded =>
+			senderDelegate.handleMessage(cd)
 
 		case phr: AnotherParticipantHasBeenRestarted =>
 			// TODO
@@ -155,9 +155,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case SupportedVersionsMismatch =>
-			senderDelegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me that we are not compatible.")
-			clusterService.notifyListenersThat(VersionIncompatibilityWith(senderDelegate.peerAddress))
-			false
+			senderDelegate.handleMessageSupportedVersionsMismatch()
 	}
 
 

@@ -7,6 +7,152 @@
     <toolspecific tool="Yasper" version="1.2.4020.34351">
       <roles xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
     </toolspecific>
+    <transition id="tr1">
+      <name>
+        <text>create a connecting delegate and start connection to peer as client</text>
+      </name>
+      <graphics>
+        <position x="330" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr3">
+      <name>
+        <text>complete connection to peer as client</text>
+      </name>
+      <graphics>
+        <position x="528" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr4">
+      <name>
+        <text>update to communicable delegate and start receiving from peer as server</text>
+      </name>
+      <graphics>
+        <position x="627" y="693" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr8">
+      <name>
+        <text>say hello to the server</text>
+      </name>
+      <graphics>
+        <position x="1155" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr9">
+      <name>
+        <text>close connection to peer as client</text>
+      </name>
+      <graphics>
+        <position x="660" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr11">
+      <name>
+        <text>start receiving from peer as client</text>
+      </name>
+      <graphics>
+        <position x="1287" y="528" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr12">
+      <name>
+        <text>The peer initiates a connection to me</text>
+      </name>
+      <graphics>
+        <position x="132" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <emitor xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </emitor>
+        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <mean>
+            <text>1</text>
+          </mean>
+          <deviation>
+            <text>0</text>
+          </deviation>
+        </processingTime>
+      </toolspecific>
+    </transition>
+    <transition id="tr6">
+      <graphics>
+        <position x="495" y="396" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr2">
+      <name>
+        <text>convert delegate to communicable</text>
+      </name>
+      <graphics>
+        <position x="891" y="264" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr10">
+      <name>
+        <text>close connection to peer as server</text>
+      </name>
+      <graphics>
+        <position x="330" y="693" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr15">
+      <graphics>
+        <position x="132" y="627" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
+          <text>true</text>
+        </collector>
+      </toolspecific>
+    </transition>
+    <transition id="tr17">
+      <graphics>
+        <position x="561" y="528" />
+        <dimension x="32" y="32" />
+      </graphics>
+      <type>
+        <text>XOR</text>
+      </type>
+      <toolspecific tool="Yasper" version="1.2.4020.34351">
+        <connectionWeights xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
+      </toolspecific>
+    </transition>
+    <transition id="tr16">
+      <name>
+        <text>create a communicable delegate, and start receiving from peer as server</text>
+      </name>
+      <graphics>
+        <position x="660" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
+    <transition id="tr5">
+      <name>
+        <text>accept connection</text>
+      </name>
+      <graphics>
+        <position x="330" y="858" />
+        <dimension x="32" y="32" />
+      </graphics>
+    </transition>
     <place id="pl3">
       <name>
         <text>cluster service just started</text>
@@ -154,152 +300,6 @@
         <dimension x="20" y="20" />
       </graphics>
     </place>
-    <transition id="tr1">
-      <name>
-        <text>create a connecting delegate and start connection to peer as client</text>
-      </name>
-      <graphics>
-        <position x="330" y="264" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr3">
-      <name>
-        <text>complete connection to peer as client</text>
-      </name>
-      <graphics>
-        <position x="528" y="264" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr4">
-      <name>
-        <text>update to communicable delegate and start receiving from peer as server</text>
-      </name>
-      <graphics>
-        <position x="627" y="693" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr8">
-      <name>
-        <text>say hello to the server</text>
-      </name>
-      <graphics>
-        <position x="1155" y="396" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr9">
-      <name>
-        <text>close connection to peer as client</text>
-      </name>
-      <graphics>
-        <position x="660" y="396" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr11">
-      <name>
-        <text>start receiving from peer as client</text>
-      </name>
-      <graphics>
-        <position x="1287" y="528" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr12">
-      <name>
-        <text>The peer initiates a connection to me</text>
-      </name>
-      <graphics>
-        <position x="132" y="858" />
-        <dimension x="32" y="32" />
-      </graphics>
-      <toolspecific tool="Yasper" version="1.2.4020.34351">
-        <emitor xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
-          <text>true</text>
-        </emitor>
-        <processingTime xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
-          <mean>
-            <text>1</text>
-          </mean>
-          <deviation>
-            <text>0</text>
-          </deviation>
-        </processingTime>
-      </toolspecific>
-    </transition>
-    <transition id="tr6">
-      <graphics>
-        <position x="495" y="396" />
-        <dimension x="32" y="32" />
-      </graphics>
-      <toolspecific tool="Yasper" version="1.2.4020.34351">
-        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
-          <text>true</text>
-        </collector>
-      </toolspecific>
-    </transition>
-    <transition id="tr2">
-      <name>
-        <text>convert delegate to communicable</text>
-      </name>
-      <graphics>
-        <position x="891" y="264" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr10">
-      <name>
-        <text>close connection to peer as server</text>
-      </name>
-      <graphics>
-        <position x="330" y="693" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr15">
-      <graphics>
-        <position x="132" y="627" />
-        <dimension x="32" y="32" />
-      </graphics>
-      <toolspecific tool="Yasper" version="1.2.4020.34351">
-        <collector xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec">
-          <text>true</text>
-        </collector>
-      </toolspecific>
-    </transition>
-    <transition id="tr17">
-      <graphics>
-        <position x="561" y="528" />
-        <dimension x="32" y="32" />
-      </graphics>
-      <type>
-        <text>XOR</text>
-      </type>
-      <toolspecific tool="Yasper" version="1.2.4020.34351">
-        <connectionWeights xmlns="http://www.yasper.org/specs/epnml-1.1/toolspec" />
-      </toolspecific>
-    </transition>
-    <transition id="tr16">
-      <name>
-        <text>create a communicable delegate, and start receiving from peer as server</text>
-      </name>
-      <graphics>
-        <position x="660" y="858" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
-    <transition id="tr5">
-      <name>
-        <text>accept connection</text>
-      </name>
-      <graphics>
-        <position x="330" y="858" />
-        <dimension x="32" y="32" />
-      </graphics>
-    </transition>
     <arc id="a1" source="pl3" target="tr1" />
     <arc id="a2" source="tr1" target="pl4" />
     <arc id="a3" source="pl4" target="tr3" />
@@ -333,40 +333,35 @@
         <text>inhibitor</text>
       </type>
     </arc>
-    <arc id="a53" source="pl11" target="tr9">
-      <graphics>
-        <position x="660" y="462" />
-      </graphics>
-    </arc>
-    <arc id="a75" source="tr11" target="pl12" />
-    <arc id="a76" source="pl5" target="tr5" />
-    <arc id="a77" source="tr5" target="pl1" />
-    <arc id="a78" source="pl1" target="tr16" />
-    <arc id="a79" source="pl1" target="tr10" />
-    <arc id="a80" source="pl1" target="tr4" />
-    <arc id="a81" source="tr10" target="pl10" />
-    <arc id="a82" source="pl10" target="tr15" />
-    <arc id="a83" source="tr4" target="pl8">
+    <arc id="a61" source="tr11" target="pl12" />
+    <arc id="a62" source="pl5" target="tr5" />
+    <arc id="a63" source="tr5" target="pl1" />
+    <arc id="a64" source="pl1" target="tr16" />
+    <arc id="a65" source="pl1" target="tr10" />
+    <arc id="a66" source="pl1" target="tr4" />
+    <arc id="a67" source="tr10" target="pl10" />
+    <arc id="a68" source="pl10" target="tr15" />
+    <arc id="a69" source="tr4" target="pl8">
       <name>
         <text>this arch should inhibit too</text>
       </name>
     </arc>
-    <arc id="a84" source="tr4" target="pl12">
+    <arc id="a70" source="tr4" target="pl12">
       <name>
         <text>this arc should reset too</text>
       </name>
     </arc>
-    <arc id="a85" source="tr16" target="pl12">
+    <arc id="a71" source="tr16" target="pl12">
       <name>
         <text>this arc should reset too</text>
       </name>
     </arc>
-    <arc id="a86" source="tr16" target="pl8">
+    <arc id="a72" source="tr16" target="pl8">
       <name>
         <text>this arc should reset too</text>
       </name>
     </arc>
-    <arc id="a87" source="tr1" target="pl8">
+    <arc id="a73" source="tr1" target="pl8">
       <type>
         <text>inhibitor</text>
       </type>
@@ -374,42 +369,50 @@
         <position x="792" y="165" />
       </graphics>
     </arc>
-    <arc id="a88" source="tr16" target="pl6">
+    <arc id="a74" source="tr16" target="pl6">
       <type>
         <text>reset</text>
       </type>
     </arc>
-    <arc id="a89" source="tr4" target="pl6">
+    <arc id="a75" source="tr4" target="pl6">
       <type>
         <text>reset</text>
       </type>
     </arc>
-    <arc id="a90" source="tr4" target="pl20">
+    <arc id="a76" source="tr4" target="pl20">
       <type>
         <text>reset</text>
       </type>
     </arc>
-    <arc id="a91" source="tr4" target="pl11">
+    <arc id="a77" source="tr4" target="pl11">
       <type>
         <text>reset</text>
       </type>
     </arc>
-    <arc id="a92" source="tr16" target="pl20">
+    <arc id="a78" source="tr16" target="pl20">
       <type>
         <text>inhibitor</text>
       </type>
     </arc>
-    <arc id="a93" source="pl11" target="tr10" />
-    <arc id="a94" source="tr10" target="pl11" />
-    <arc id="a95" source="pl17" target="tr10" />
-    <arc id="a96" source="tr10" target="pl17" />
-    <arc id="a97" source="pl18" target="tr4" />
-    <arc id="a98" source="tr4" target="pl18" />
-    <arc id="a99" source="pl20" target="tr8" />
-    <arc id="a100" source="tr8" target="pl20" />
-    <arc id="a101" source="pl20" target="tr11" />
-    <arc id="a102" source="tr11" target="pl20" />
-    <arc id="a103" source="pl8" target="tr9" />
-    <arc id="a104" source="tr9" target="pl8" />
+    <arc id="a79" source="pl11" target="tr10" />
+    <arc id="a80" source="tr10" target="pl11" />
+    <arc id="a81" source="pl17" target="tr10" />
+    <arc id="a82" source="tr10" target="pl17" />
+    <arc id="a83" source="pl18" target="tr4" />
+    <arc id="a84" source="tr4" target="pl18" />
+    <arc id="a85" source="pl20" target="tr8" />
+    <arc id="a86" source="tr8" target="pl20" />
+    <arc id="a87" source="pl20" target="tr11" />
+    <arc id="a88" source="tr11" target="pl20" />
+    <arc id="a89" source="pl8" target="tr9" />
+    <arc id="a90" source="tr9" target="pl8" />
+    <arc id="a91" source="tr9" target="pl11">
+      <type>
+        <text>reset</text>
+      </type>
+      <graphics>
+        <position x="660" y="462" />
+      </graphics>
+    </arc>
   </net>
 </pnml>

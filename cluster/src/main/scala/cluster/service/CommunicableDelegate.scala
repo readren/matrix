@@ -1,22 +1,23 @@
 package readren.matrix
 package cluster.service
 
+import cluster.channel.Receiver.ChannelClosedByPeer
 import cluster.channel.Transmitter.Report
 import cluster.channel.{Receiver, Transmitter}
 import cluster.misc.DoNothing
-import cluster.service.ClusterService.DelegateConfig
+import cluster.service.ClusterService.{ChannelOrigin, DelegateConfig}
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
 import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import cluster.service.ProtocolVersion
+import common.CompileTime.getTypeName
 
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
 import scala.util.control.NonFatal
-import scala.util.{Failure, Success}
 
 object CommunicableDelegate {
 	type TimerInstance = Long
@@ -27,7 +28,8 @@ object CommunicableDelegate {
 class CommunicableDelegate(
 	override val clusterService: ClusterService,
 	override val peerAddress: SocketAddress,
-	val peerChannel: AsynchronousSocketChannel
+	val peerChannel: AsynchronousSocketChannel,
+	val channelOrigin: ChannelOrigin
 ) extends ParticipantDelegate {
 	val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 	
@@ -102,7 +104,7 @@ class CommunicableDelegate(
 		}
 	}
 
-	private[service] def handleMessage(hello: Hello): Unit = {
+	private[service] def handleMessage(hello: Hello): Boolean = {
 		versionsSupportedByPeer = hello.versionsISupport
 		val previousMembershipState = peerMembershipStatusAccordingToMe
 		// update my viewpoint of the peer's membership.
@@ -113,24 +115,40 @@ class CommunicableDelegate(
 
 		val previousAgreedVersion = agreedVersion
 		// update the protocol-version to use when communicating with the peer, transmit the response: `Welcome` or `SupportedVersionsMismatch`.
-		clusterService.determineAgreedVersion(hello.versionsISupport) match {
+		val haveToContinueReceivingMessages = clusterService.determineAgreedVersion(hello.versionsISupport) match {
 			case Some(version) =>
 				agreedVersion = version
 				sendWelcome()
+				true
 
 			case None =>
 				agreedVersion = ProtocolVersion.NOT_SPECIFIED
-				val cause = s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: ${hello.versionsISupport}"
-				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(ifFailureReportItAndThen(DoNothing))
-				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, cause)
+				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) { report =>
+					ifFailureReportItAndThen(DoNothing)(report)
+					replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: ${hello.versionsISupport}")
+				}
 				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
-
+				false
 		}
 
 		// Notify changes
 		if agreedVersion != previousAgreedVersion then clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(this)
 		if previousMembershipState != ASPIRANT then clusterService.getMembershipScopedBehavior.onDelegateMembershipChange(this)
 		if previousMembershipState eq MEMBER then clusterService.notifyListenersThat(ParticipantHasBeenRestarted(peerAddress))
+
+		haveToContinueReceivingMessages
+	}
+
+	private[service] def handleMessageSupportedVersionsMismatch(): false = {
+		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
+		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
+		false
+	}
+
+	private[service] def handleMessage(channelDiscarded: ChannelDiscarded): false = {
+		scribe.error(s"The participant at ${peerAddress} sent me a ${getTypeName[ChannelDiscarded]} message through a channel that I already started to use.")
+		restartChannel("Channel unexpectedly discarded")
+		false
 	}
 
 	inline private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
@@ -187,12 +205,12 @@ class CommunicableDelegate(
 		myReplacement
 	}
 
-	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel): CommunicableDelegate = {
+	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): CommunicableDelegate = {
 		// release this delegate
 		release()
-		// replace me with an communicable delegate.
+		// replace me with a communicable delegate.
 		clusterService.removeDelegate(peerAddress)
-		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, newChannel)
+		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, newChannel, channelOrigin)
 		myReplacement.initializeStateBasedOn(this)
 		// notify
 		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO this isn't exactly a communicability change. Analyze it. 
@@ -202,19 +220,9 @@ class CommunicableDelegate(
 
 	private[service] def restartChannel(motive: Any): Unit = {
 		val myReplacement = replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel because of: $motive")
-
-		clusterService.connectTo(peerAddress) {
-			case Success(newChannel) =>
-				sequencer.executeSequentially {
-					if myReplacement eq clusterService.delegateByAddress.getOrElse(peerAddress, null) then {
-						myReplacement.replaceMyselfWithACommunicableDelegate(newChannel).startConversationAsClient(true)
-					}
-				}
-			case Failure(exc) =>
-				myReplacement.onConnectionAborted(exc)
-				scribe.error(s"The communication to the participant at $peerAddress has been aborted after many reconnection tries", exc)
-		}
+		clusterService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
 	}
+	
 
 	private[service] def release(): Unit = {
 		// if the channel is open, close it gracefully.
@@ -224,14 +232,17 @@ class CommunicableDelegate(
 			def loop(): Unit = {
 				try {
 					receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
+						case cbp: ChannelClosedByPeer if cbp.missingBytesAccordingToLastFrame == 0 =>
+							peerChannel.close()
+							scribe.info(s"Channel closed by peer while purging the channel's input connection of a released delegate of the participant at $peerAddress.")
 						case fault: Receiver.Fault =>
 							peerChannel.close()
 							scribe.error(s"Failure while purging the channel's input connection of a released delegate of the participant at $peerAddress.", fault.toString)
-						case IAmDeaf =>
+						case cd: ChannelDiscarded =>
 							scribe.info(s"The channel of the released delegate of the participant at $peerAddress was gracefully closed")
 							peerChannel.close()
 						case message: Protocol =>
-							scribe.warn(s"The following message from the participant at $peerAddress was discarded because it was received after the delegate was released:", message.toString)
+							scribe.warn(s"The following message from the participant at $peerAddress was ignored because it was received after the delegate was released:", message.toString)
 							loop()
 					}
 				} catch {

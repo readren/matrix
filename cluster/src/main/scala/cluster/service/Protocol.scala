@@ -14,6 +14,7 @@ import cluster.service.ProtocolVersion.given
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
+import java.nio.channels.AsynchronousSocketChannel
 
 sealed trait Protocol
 
@@ -100,13 +101,14 @@ case class AnotherParticipantHasBeenRestarted(restartedParticipantAddress: Conta
 /** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: DurationMillis) extends Protocol
 
-/** Message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
+/** A message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
  *
  * @param participantInfoByAddress the information, according to the sender, about each participant by its address, including the sender. */
 case class StateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Protocol
 
-/** Sent to inform the peer that the connection for reading was closed due to "end of stream" signal. */
-case object IAmDeaf extends Protocol
+/** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections.
+ * @param isClientSide `true` when the sender is at the client side of the discarded channel; `false` otherwise. */
+case class ChannelDiscarded(isClientSide: Boolean) extends Protocol
 
 case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Protocol
 case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Protocol
@@ -125,7 +127,7 @@ object Protocol {
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
 	}
-
+	
 	enum IncommunicabilityReason {
 		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
 	}

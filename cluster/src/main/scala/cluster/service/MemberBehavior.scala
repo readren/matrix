@@ -44,7 +44,6 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case hello: Hello =>
 			senderDelegate.handleMessage(hello)
-			true
 
 		case w: Welcome =>
 			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
@@ -92,8 +91,8 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case IAmLeaving =>
 			???
 
-		case IAmDeaf =>
-			???
+		case cd: ChannelDiscarded =>
+			senderDelegate.handleMessage(cd)
 			
 		case phr: AnotherParticipantHasBeenRestarted =>
 			???
@@ -110,8 +109,6 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			true
 
 		case SupportedVersionsMismatch =>
-			clusterService.notifyListenersThat(VersionIncompatibilityWith(senderDelegate.peerAddress))
-			senderDelegate.replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
-			false
+			senderDelegate.handleMessageSupportedVersionsMismatch()
 	}
 }

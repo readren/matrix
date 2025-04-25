@@ -1,6 +1,7 @@
 package readren.matrix
 package cluster.service
 
+import cluster.service.ClusterService.ChannelOrigin
 import cluster.service.Protocol.CommunicationStatus.{CONNECTING, INCOMPATIBLE, UNREACHABLE}
 import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import cluster.service.Protocol.{CommunicationStatus, ContactAddress, IncommunicabilityReason, ParticipantInfo}
@@ -39,10 +40,10 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 		ParticipantInfo(versionsSupportedByPeer, communicationStatus, peerMembershipStatusAccordingToMe)
 	
 
-	def replaceMyselfWithACommunicableDelegate(communicationChannel: AsynchronousSocketChannel): CommunicableDelegate = {
+	def replaceMyselfWithACommunicableDelegate(communicationChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): CommunicableDelegate = {
 		// replace me with a communicable delegate.
 		clusterService.removeDelegate(peerAddress)
-		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, communicationChannel)
+		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, communicationChannel, channelOrigin)
 		myReplacement.initializeStateBasedOn(this)
 		// notify
 		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)
