@@ -33,7 +33,7 @@ object ClusterService {
 
 	class Config(val myAddress: ContactAddress, val versionsISupport: Set[ProtocolVersion], val seeds: Iterable[ContactAddress], val participantDelegatesConfig: DelegateConfig, val retryMinDelay: MilliDuration = 1000, val retryMaxDelay: MilliDuration = 60_000, val maxAttempts: Int = 8, val joinCheckDelay: MilliDuration = 2_000)
 
-	class DelegateConfig(val receiverTimeout: Long = 500, val transmitterTimeout: Long = 500, val timeUnit: TimeUnit = TimeUnit.MILLISECONDS, val responseTimeout: MilliDuration = 1_000, val closeDelay: MilliDuration = 200)
+	class DelegateConfig(val receiverTimeout: Long = 500, val transmitterTimeout: Long = 500, val timeUnit: TimeUnit = TimeUnit.MILLISECONDS, val responseTimeout: MilliDuration = 1_000, val closeDelay: MilliDuration = 200, val heartbeatPeriod: MilliDuration = 1000, val heartbeatMargin: MilliDuration = 500)
 
 	def start(sequencer: TaskSequencer, clock: Clock, serviceConfig: Config): ClusterService = {
 
@@ -52,8 +52,10 @@ object ClusterService {
 		case NonFatal(t) => scribe.error(t)
 	}
 
-	/** The origins of an [[AsynchronousSocketChannel]] instance.  */
-	enum ChannelOrigin { case CLIENT_INITIATED, SERVER_ACCEPTED }
+	/** The origins of an [[AsynchronousSocketChannel]] instance. */
+	enum ChannelOrigin {
+		case CLIENT_INITIATED, SERVER_ACCEPTED
+	}
 }
 
 /**
@@ -75,9 +77,13 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 
 	private val clusterEventsListeners: java.util.WeakHashMap[ClusterEventListener, None.type] = new java.util.WeakHashMap()
 
+	private val creationInstant: Instant = clock.getTime
+
 	private var participantDelegateByAddress: Map[ContactAddress, ParticipantDelegate] = Map.empty
 
 	private var membershipScopedBehavior: MembershipScopedBehavior = new AspirantBehavior(this)
+
+	inline def myCreationInstant: Instant = creationInstant
 
 	inline def myMembershipStatus: MembershipStatus = membershipScopedBehavior.membershipStatus
 
@@ -101,9 +107,15 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		newParticipant
 	}
 
-	private[service] inline def removeDelegate(participantAddress: ContactAddress): Unit = {
+	private[service] inline def removeDelegate(delegate: ParticipantDelegate, notifyListeners: Boolean): Boolean = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		participantDelegateByAddress -= participantAddress
+		delegateByAddress.getOrElse(delegate.peerAddress, null) match {
+			case referencedDelegate if referencedDelegate eq delegate =>
+				participantDelegateByAddress -= delegate.peerAddress
+				if notifyListeners then notifyListenersThat(ParticipantHasGone(delegate.peerAddress))
+				true
+			case _ => false
+		}
 	}
 
 	/** Must be called within the [[sequencer]]. */
@@ -117,10 +129,10 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	def getKnownParticipantsAddresses: Set[ContactAddress] = {
 		participantDelegateByAddress.keySet
 	}
-	
+
 	def getKnownParticipantsMembershipStatus: Map[ContactAddress, MembershipStatus] = {
 		val mapBuilder = Map.newBuilder[ContactAddress, MembershipStatus]
-		delegateByAddress.foreachEntry { (address, delegate) => mapBuilder.addOne(address, delegate.peerMembershipStatusAccordingToMe)}
+		delegateByAddress.foreachEntry { (address, delegate) => mapBuilder.addOne(address, delegate.peerMembershipStatusAccordingToMe) }
 		mapBuilder.result()
 	}
 
@@ -128,29 +140,29 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		delegateByAddress.view.mapValues(_.info)
 	}
-	
-	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: Set[ContactAddress]):Unit = {
+
+	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: Set[ContactAddress]): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		// Create a delegate for each participant that I did not know.
 		for participantAddress <- participantsKnownByPeer do {
 			if participantAddress != myAddress && !delegateByAddress.contains(participantAddress) then {
 				addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantAddress)
 			}
-		}		
+		}
 	}
 
 	private[service] def determineAgreedVersion(versionsSupportedByPeer: Set[ProtocolVersion]): Option[ProtocolVersion] = {
 		val versionsSupportedByBoth = config.versionsISupport.intersect(versionsSupportedByPeer)
 		versionsSupportedByBoth.minOption(using ProtocolVersion.newerFirstOrdering)
-	}	
-	
+	}
+
 	private[service] def switchToMember(clusterCreationInstant: Instant): MemberBehavior = {
 		val memberBehavior = new MemberBehavior(this, clusterCreationInstant)
 		membershipScopedBehavior = memberBehavior
 		notifyListenersThat(IJoinedTheCluster(delegateByAddress))
 		memberBehavior
 	}
-	
+
 	private[service] def switchToResolvingBrainJoin(): Unit = ???
 
 	private[service] def solveClusterExistenceConflictWith(communicableDelegate: CommunicableDelegate): Boolean = ???
@@ -187,8 +199,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 								newParticipantDelegate.startConversationAsServer()
 
 							case communicable: CommunicableDelegate =>
-								communicable.replaceMyselfWithACommunicableDelegate(channel, SERVER_ACCEPTED)
-									.startConversationAsServer()
+								communicable.replaceMyselfWithACommunicableDelegate(channel, SERVER_ACCEPTED).get.startConversationAsServer()
 								scribe.info(s"A connection from the participant at $clientParticipantAddress, whose delegate is marked as communicable, has been accepted. Probably he had to restart the channel.")
 
 
@@ -205,7 +216,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 									}
 									// else I have to discard the channel with me as a client, and continue with the connection accepted here (with me as a server).
 									else {
-										val communicableParticipant = incommunicable.replaceMyselfWithACommunicableDelegate(channel, SERVER_ACCEPTED)
+										val communicableParticipant = incommunicable.replaceMyselfWithACommunicableDelegate(channel, SERVER_ACCEPTED).get
 										// TODO analyze if a notification of the communicability change should be issued here.
 										scribe.info(s"A connection from the participant at $clientParticipantAddress was accepted despite I am simultaneously trying to connect to him as client. I assume I will close the connection in which I am the client as soon as it completes.") // TODO investigate if it is possible to cancel the connection while it is in progress.
 										communicableParticipant.startConversationAsServer()
@@ -216,7 +227,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 									val communicableParticipant = incommunicable.replaceMyselfWithACommunicableDelegate(channel, SERVER_ACCEPTED)
 									// TODO analyze if a notification of the communicability change should be issued here.
 									scribe.info(s"A connection from the participant at $clientParticipantAddress, which was marked as incommunicable ${incommunicable.communicationStatus}, has been accepted. Let's see if we can communicate with it this time.")
-									communicableParticipant.startConversationAsServer()
+									communicableParticipant.get.startConversationAsServer()
 								}
 						}
 					} catch ignorableErrorCatcher
@@ -247,7 +258,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		}
 	}
 
-	/** @return a brand-new [[IncommunicableDelegate]] in connecting state.*/
+	/** @return a brand-new [[IncommunicableDelegate]] in connecting state. */
 	private[service] def addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantContactAddress: ContactAddress): IncommunicableDelegate = {
 		val connectingDelegate = addANewIncommunicableDelegate(participantContactAddress, IS_CONNECTING_AS_CLIENT)
 		membershipScopedBehavior.onDelegatedAdded(connectingDelegate)
@@ -264,7 +275,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 					val currentDelegate = delegateByAddress.getOrElse(participantConnectingDelegate.peerAddress, null)
 					// if the `connectingDelegate` was not removed in the middle, asociate a communicable delegate to the peer (replacing the connecting one).
 					if participantConnectingDelegate eq currentDelegate then {
-						participantConnectingDelegate.replaceMyselfWithACommunicableDelegate(communicationChannel, CLIENT_INITIATED).startConversationAsClient(isReconnection)
+						participantConnectingDelegate.replaceMyselfWithACommunicableDelegate(communicationChannel, CLIENT_INITIATED).get.startConversationAsClient(isReconnection)
 					}
 					// else (if the `connectingDelegate` was removed in the middle), close the communication channel gracefully.
 					else {

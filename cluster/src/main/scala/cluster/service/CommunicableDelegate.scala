@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Receiver.ChannelClosedByPeer
-import cluster.channel.Transmitter.Report
+import cluster.channel.Transmitter.{Delivered, NotDelivered, Report}
 import cluster.channel.{Receiver, Transmitter}
 import cluster.misc.DoNothing
 import cluster.service.ClusterService.{ChannelOrigin, DelegateConfig}
@@ -45,6 +45,8 @@ class CommunicableDelegate(
 	/** Memorizes which was the cluster-creator proposal sent to the peer. 
 	 * Only Used when the cluster service is in aspirant state. */
 	private var lastClusterCreatorProposalSentToPeer: ContactAddress | Null = null
+
+	private var isPotentiallyGone: Boolean = false
 	
 	override def isCommunicable: Boolean = true
 
@@ -74,6 +76,7 @@ class CommunicableDelegate(
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 			case messageFromPeer: Protocol =>
 				sequencer.executeSequentially {
+					isPotentiallyGone = false
 					if clusterService.getMembershipScopedBehavior.handleMessageFrom(this, messageFromPeer) then receiveNextMessages()
 					else scribe.debug(s"The channel {$peerChannel} reception completed with the terminal message {$messageFromPeer}")
 				}
@@ -151,24 +154,76 @@ class CommunicableDelegate(
 		false
 	}
 
-	inline private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
+	private[service] def handleMessage(farewell: Farewell): Boolean = {
+		if this.peerCreationInstant == UNSPECIFIED_INSTANT || this.peerCreationInstant == farewell.myCreationInstant then {
+			if clusterService.removeDelegate(this, true) then {
+				for case (address, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
+					delegate.sendAnotherParticipantGone(address, farewell.myCreationInstant)
+				}
+			}
+			release()
+			false
+		} else {
+			scribe.warn(s"A ${getTypeName[Farewell]} from $peerCreationInstant was ignored because the creation instant does not match.")
+			true
+		}
+	}
+
+	private[service] def handleMessage(anotherParticipantGone: AnotherParticipantGone): Unit = {
+		clusterService.delegateByAddress.getOrElse(anotherParticipantGone.goneParticipantAddress, null) match {
+			case communicableDelegate: CommunicableDelegate =>
+				if communicableDelegate.peerCreationInstant == anotherParticipantGone.goneParticipantCreationInstant then {
+					if !communicableDelegate.isPotentiallyGone then {
+						communicableDelegate.isPotentiallyGone = true
+						removeMyselfIfNoAnswerFromPeer()
+					}
+				} else {
+					scribe.warn(s"Received the message `$anotherParticipantGone` from $peerAddress with an unmatching creation instant (expected: ${communicableDelegate.peerCreationInstant}).")
+				}
+			case incommunicableDelegate: IncommunicableDelegate =>
+				clusterService.removeDelegate(incommunicableDelegate, true)
+		}
+	}
+	
+	private def removeMyselfIfNoAnswerFromPeer(): Unit = {
+		transmitToPeer(AreYouStillThere) {
+			case _: Transmitter.NotDelivered =>
+				sequencer.executeSequentially {
+					clusterService.removeDelegate(this, true)
+				}
+			case Transmitter.Delivered =>
+				sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.responseTimeout)) { () =>
+					if this.isPotentiallyGone then clusterService.removeDelegate(this, true)
+				}
+		}
+	}
+
+	private[service] def sendHello(onComplete: Transmitter.Report => Unit): Unit = {
+		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
 	}
 	
 	private[service] def sendWelcome(): Unit = {
-		transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))		
+		transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
 	}
 	
 	private[service] def sendResolveAspirantMembershipConflict(): Unit = {
-		transmitToPeer(ResolveAspirantMembershipConflict(clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.getKnownParticipantsMembershipStatus))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeer(ResolveAspirantMembershipConflict(clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsMembershipStatus))(ifFailureReportItAndThen(restartChannel))
 	}
 
-	inline private[service] def sendIHaveReconnected(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitToPeer(IHaveReconnected(clusterService.config.versionsISupport, clusterService.myMembershipStatus))(onComplete)
+	private[service] def sendIHaveReconnected(onComplete: Transmitter.Report => Unit): Unit = {
+		transmitToPeer(IHaveReconnected(clusterService.config.versionsISupport, clusterService.myMembershipStatus, clusterService.myCreationInstant))(onComplete)
 	}
 
-	inline private[service] def sendRequestToJoin(joinTokenByMemberAddress: Map[ContactAddress, JoinToken])(onComplete: Transmitter.Report => Unit): Unit = {
+	private[service] def sendAnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant): Unit = {
+		transmitToPeer(AnotherParticipantGone(goneParticipantAddress, goneParticipantCreationInstant))(ifFailureReportItAndThen(DoNothing))
+	}
+
+	private[service] def sendRequestToJoin(joinTokenByMemberAddress: Map[ContactAddress, JoinToken])(onComplete: Transmitter.Report => Unit): Unit = {
 		transmitToPeer(RequestToJoin(joinTokenByMemberAddress))(onComplete)
+	}
+	
+	private[service] def sendHeartbeat(): Unit = {
+		transmitToPeer(Heartbeat(config.heartbeatPeriod))(ifFailureReportItAndThen(restartChannel))
 	}
 
 	private[service] def transmitToPeer(message: Protocol)(onComplete: Transmitter.Report => Unit): Unit = {
@@ -192,35 +247,38 @@ class CommunicableDelegate(
 	}
 
 
-	private[service] def replaceMyselfWithAnIncommunicableDelegate(reason: IncommunicabilityReason, motive: Any): IncommunicableDelegate = {
+	private[service] def replaceMyselfWithAnIncommunicableDelegate(reason: IncommunicabilityReason, motive: Any): Maybe[IncommunicableDelegate] = {
 		// release this delegate
 		release()
 		// replace me with an incommunicable delegate.
-		clusterService.removeDelegate(peerAddress)
-		val myReplacement = clusterService.addANewIncommunicableDelegate(peerAddress, reason)
-		myReplacement.initializeStateBasedOn(this)
-		// notify
-		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)
-		clusterService.onDelegateBecomeIncommunicable(peerAddress, reason, motive)
-		myReplacement
+		if clusterService.removeDelegate(this, false) then {
+			val myReplacement = clusterService.addANewIncommunicableDelegate(peerAddress, reason)
+			myReplacement.initializeStateBasedOn(this)
+			// notify
+			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)
+			clusterService.onDelegateBecomeIncommunicable(peerAddress, reason, motive)
+			Maybe.some(myReplacement)
+		} else Maybe.empty
 	}
 
-	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): CommunicableDelegate = {
+	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): Maybe[CommunicableDelegate] = {
 		// release this delegate
 		release()
 		// replace me with a communicable delegate.
-		clusterService.removeDelegate(peerAddress)
-		val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, newChannel, channelOrigin)
-		myReplacement.initializeStateBasedOn(this)
-		// notify
-		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO this isn't exactly a communicability change. Analyze it. 
-		clusterService.notifyListenersThat(CommunicationChannelReplaced(peerAddress))
-		myReplacement
+		if clusterService.removeDelegate(this, false) then {
+			val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, newChannel, channelOrigin)
+			myReplacement.initializeStateBasedOn(this)
+			// notify
+			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO this isn't exactly a communicability change. Analyze it. 
+			clusterService.notifyListenersThat(CommunicationChannelReplaced(peerAddress))
+			Maybe.some(myReplacement)
+		} else Maybe.empty
 	}
 
 	private[service] def restartChannel(motive: Any): Unit = {
-		val myReplacement = replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel because of: $motive")
-		clusterService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
+		replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel because of: $motive").foreach { myReplacement =>
+			clusterService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
+		}
 	}
 	
 

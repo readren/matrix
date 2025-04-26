@@ -5,12 +5,10 @@ import cluster.channel.Transmitter
 import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.misc.CommonExtensions.*
 import cluster.service.ContactCard.*
-import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
 import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
+import common.CompileTime.getTypeName
 
-import readren.matrix.cluster.service.ClusterService.ChannelOrigin
-import readren.matrix.common.CompileTime.getTypeName
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
@@ -37,12 +35,13 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 	}
 
 
-	private def updateDelegateState(delegate: CommunicableDelegate, newSupportedVersions: Set[ProtocolVersion], newMembershipStatus: MembershipStatus): Unit = {
+	private def updateDelegateState(delegate: CommunicableDelegate, newSupportedVersions: Set[ProtocolVersion], newMembershipStatus: MembershipStatus, newCreationInstant: Instant): Unit = {
 		val previousAgreeVersion = delegate.agreedVersion
 		val previousMembershipStatusOfPeerAccordingToMe = delegate.peerMembershipStatusAccordingToMe
 		delegate.versionsSupportedByPeer = newSupportedVersions
 		delegate.agreedVersion = clusterService.determineAgreedVersion(newSupportedVersions).getOrElse(ProtocolVersion.NOT_SPECIFIED)
 		delegate.peerMembershipStatusAccordingToMe = newMembershipStatus
+		delegate.peerCreationInstant = newCreationInstant
 		if delegate.agreedVersion != previousAgreeVersion then onDelegateCommunicabilityChange(delegate)
 		if newMembershipStatus ne previousMembershipStatusOfPeerAccordingToMe then onDelegateMembershipChange(delegate)
 	}
@@ -63,9 +62,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case hello: Hello =>
 			senderDelegate.handleMessage(hello)
 
-		case Welcome(membershipStatus, versionsSupportedByPeer, otherParticipantsKnowByPeer) =>
+		case Welcome(membershipStatus, versionsSupportedByPeer, peerCreationInstant, otherParticipantsKnowByPeer) =>
 			// override the peer's membership status and supported versions with the values provided by the source of truth. 
-			updateDelegateState(senderDelegate, versionsSupportedByPeer, membershipStatus)
+			updateDelegateState(senderDelegate, versionsSupportedByPeer, membershipStatus, peerCreationInstant)
 			// Create a delegate for each participant that I did not know.
 			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
 			true
@@ -116,7 +115,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case rsm: ResolveAspirantMembershipConflict =>
-			updateDelegateState(senderDelegate, rsm.versionsISupport, rsm.myMembershipStatus)
+			updateDelegateState(senderDelegate, rsm.versionsISupport, rsm.myMembershipStatus, rsm.myCreationInstant)
 			clusterService.createADelegateForEachParticipantIDoNotKnowIn(rsm.membershipStatusOfOtherParticipantsIKnow.keySet)
 			val delegateByAddress = clusterService.delegateByAddress
 			for (participantAddress, participantMembershipStatusAccordingToPeer) <- rsm.membershipStatusOfOtherParticipantsIKnow do {
@@ -132,8 +131,16 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			// TODO
 			true
 
-		case IAmLeaving =>
-			???
+		case fw: Farewell =>
+			senderDelegate.handleMessage(fw)
+			
+		case apg: AnotherParticipantGone =>
+			senderDelegate.handleMessage(apg)
+			true
+			
+		case AreYouStillThere =>
+			senderDelegate.sendHeartbeat()
+			true
 			
 		case cd: ChannelDiscarded =>
 			senderDelegate.handleMessage(cd)
@@ -143,7 +150,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case ihr: IHaveReconnected =>
-			updateDelegateState(senderDelegate, ihr.versionsISupport, ihr.myMembershipStatus)
+			updateDelegateState(senderDelegate, ihr.versionsISupport, ihr.myMembershipStatus, ihr.myCreationInstant)
 			true
 
 		case WeHaveToResolveBrainSplit(peerViewPoint) =>

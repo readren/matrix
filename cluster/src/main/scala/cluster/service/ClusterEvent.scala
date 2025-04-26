@@ -10,7 +10,7 @@ case class VersionIncompatibilityWith(participantAddress: ContactAddress) extend
 
 case class ParticipantHasBeenRestarted(rebornParticipantAddress: ContactAddress) extends ClusterEvent
 
-case class ParticipantHasLeft(participant: ContactAddress) extends ClusterEvent
+case class ParticipantHasGone(participant: ContactAddress) extends ClusterEvent
 
 case class IStartedAConnectionToANewParticipant(participantAddress: ContactAddress) extends ClusterEvent
 

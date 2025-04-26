@@ -2,19 +2,14 @@ package readren.matrix
 package cluster.service
 
 import cluster.*
-import cluster.channel.CommonSerializers.given
 import cluster.channel.Deserializer.DeserializationException
-import cluster.channel.Nio2Serializers.given
 import cluster.channel.{Deserializer, Serializer}
 import cluster.service.Protocol.*
-import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
 import cluster.service.ProtocolVersion
-import cluster.service.ProtocolVersion.given
 
-import readren.taskflow.Maybe
+import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
-import java.nio.channels.AsynchronousSocketChannel
 
 sealed trait Protocol
 
@@ -25,10 +20,10 @@ sealed trait Protocol
  * 	The receiver may assume that the sender is an aspirant.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param otherParticipantsIKnow the address of the participants known by the sender, not including itself. */
-case class Hello(versionsISupport: Set[ProtocolVersion], otherParticipantsIKnow: Set[ContactAddress]) extends Protocol
+case class Hello(versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, otherParticipantsIKnow: Set[ContactAddress]) extends Protocol
 
 /** First message that a participant must send to the peer after a successful reconnection to allow the peer to update his viewpoint of the sender.   */
-case class IHaveReconnected(versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus) extends Protocol
+case class IHaveReconnected(versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus, myCreationInstant: Instant) extends Protocol
 
 /**
  * Response to the [[Hello]] message that is sent by a participant to indicate that it does not support any of the [[ProtocolVersion]]s specified in the received [[Hello]] message.
@@ -41,7 +36,7 @@ case object SupportedVersionsMismatch extends Protocol
  * @param supportedVersions the versions supported by the sender.
  * @param otherParticipants the participants known by the sender, excluding itself.
  */
-case class Welcome(membershipStatus: MembershipStatus, supportedVersions: Set[ProtocolVersion], otherParticipants: Set[ContactAddress]) extends Protocol
+case class Welcome(membershipStatus: MembershipStatus, supportedVersions: Set[ProtocolVersion], myCreationInstant: Instant, otherParticipants: Set[ContactAddress]) extends Protocol
 
 /** Message sent by an aspirant A to an aspirant B when A starts or stops proposing B to be the creator of the cluster.
  * An aspirant starts proposing a candidate when, from his viewpoint, he is communicated to all the seeds he knows and the connection to all the others he knows is completed (successfully or not).
@@ -85,10 +80,14 @@ case class JoinRejected(youHaveToRetry: Boolean, reason: String) extends Protoco
 
 /** Response to [[ClusterCreatorProposal]] when the receiver knows of the existence of a cluster, and to [[RequestToJoin]] when the receiver's is an aspirant.
 */
-case class ResolveAspirantMembershipConflict(myMembershipStatus: MembershipStatus, versionsISupport: Set[ProtocolVersion], membershipStatusOfOtherParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Protocol
+case class ResolveAspirantMembershipConflict(myMembershipStatus: MembershipStatus, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, membershipStatusOfOtherParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Protocol
 
-/** The message that a participant should send to as many other participants as possible before closing its communication channels. */
-case object IAmLeaving extends Protocol
+/** The message that a participant should send to as many other participants as possible before leaving the network or shooting down. */
+case class Farewell(myCreationInstant: Instant) extends Protocol
+
+case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends Protocol
+
+case object AreYouStillThere extends Protocol
 
 /** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Protocol
@@ -99,7 +98,7 @@ case class ConversationStartedWith(participantAddress: ContactAddress) extends P
 case class AnotherParticipantHasBeenRestarted(restartedParticipantAddress: ContactAddress) extends Protocol
 
 /** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
-case class Heartbeat(delayUntilNextHeartbeat: DurationMillis) extends Protocol
+case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Protocol
 
 /** A message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
  *
@@ -119,10 +118,10 @@ object Protocol {
 
 	type ContactAddress = SocketAddress
 	type JoinToken = Long
-	/** Wait time in milliseconds */
-	type DurationMillis = Int
 	/** Milliseconds since 1970-01-01T00:00:00Z */
 	type Instant = Long
+	
+	val UNSPECIFIED_INSTANT = Long.MaxValue
 
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
@@ -190,7 +189,7 @@ object Protocol {
 				writer.putByte(DISCRIMINATOR_ILostCommunicationWith)
 				writer.writeFull(lcw)
 
-			case IAmLeaving =>
+			case Farewell =>
 				writer.putByte(DISCRIMINATOR_I_AM_LEAVING)
 
 			case hb: Heartbeat =>
