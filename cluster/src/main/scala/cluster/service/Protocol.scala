@@ -79,23 +79,24 @@ case class JoinGranted(clusterCreationInstant: Instant, participantInfoByItsAddr
 case class JoinRejected(youHaveToRetry: Boolean, reason: String) extends Protocol
 
 /** Response to [[ClusterCreatorProposal]] when the receiver knows of the existence of a cluster, and to [[RequestToJoin]] when the receiver's is an aspirant.
+ * @param membershipStatusOfParticipantsIKnow the [[MembershipStatus]] of the participants that the sender knows, including the receiver.
 */
-case class ResolveAspirantMembershipConflict(myMembershipStatus: MembershipStatus, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, membershipStatusOfOtherParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Protocol
+case class ResolveMembershipConflict(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Protocol
 
 /** The message that a participant should send to as many other participants as possible before leaving the network or shooting down. */
 case class Farewell(myCreationInstant: Instant) extends Protocol
 
 case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends Protocol
 
-case object AreYouStillThere extends Protocol
-
+case class AreYouInSyncWithMe(myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Protocol
+case object YesImAInSyncWithYou extends Protocol
 /** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Protocol
 
 case class ConversationStartedWith(participantAddress: ContactAddress) extends Protocol
 
 /** Message that a participant A should send to all other participants when a participant B sends him the [[Hello]] message a second time, which is a symptom that B has restarted. */
-case class AnotherParticipantHasBeenRestarted(restartedParticipantAddress: ContactAddress) extends Protocol
+case class AnotherParticipantHasBeenRebooted(restartedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Protocol
 
 /** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Protocol
@@ -103,7 +104,7 @@ case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Protocol
 /** A message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
  *
  * @param participantInfoByAddress the information, according to the sender, about each participant by its address, including the sender. */
-case class StateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Protocol
+case class ClusterStateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Protocol
 
 /** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections.
  * @param isClientSide `true` when the sender is at the client side of the discarded channel; `false` otherwise. */
@@ -196,11 +197,11 @@ object Protocol {
 				writer.putByte(DISCRIMINATOR_Heartbeat)
 				writer.writeFull(hb)
 
-			case sc: StateChanged =>
+			case sc: ClusterStateChanged =>
 				writer.putByte(DISCRIMINATOR_StateChanged)
 				writer.writeFull(sc)
 
-			case phr: AnotherParticipantHasBeenRestarted =>
+			case phr: AnotherParticipantHasBeenRebooted =>
 				writer.putByte(DISCRIMINATOR_AnotherParticipantHasBeenRestarted)
 				writer.writeFull(phr)
 
@@ -212,7 +213,7 @@ object Protocol {
 			case DISCRIMINATOR_Heartbeat =>
 				reader.read[Heartbeat]
 			case DISCRIMINATOR_StateChanged =>
-				reader.read[StateChanged]
+				reader.read[ClusterStateChanged]
 			case DISCRIMINATOR_Hello =>
 				reader.read[Hello]
 			case DISCRIMINATOR_SupportedVersionsMismatch =>
@@ -236,7 +237,7 @@ object Protocol {
 			case DISCRIMINATOR_ILostCommunicationWith =>
 				reader.read[ILostCommunicationWith]
 			case DISCRIMINATOR_AnotherParticipantHasBeenRestarted =>
-				reader.read[AnotherParticipantHasBeenRestarted]
+				reader.read[AnotherParticipantHasBeenRebooted]
 
 			case x =>
 				throw new DeserializationException(reader.position, s"Invalid discriminator value ($x) for the Protocol type: no matching product type found")
@@ -282,9 +283,9 @@ object Protocol {
 
 	given Serializer[Heartbeat] = (message: Heartbeat, writer: Serializer.Writer) => ???
 
-	given Serializer[StateChanged] = (message: StateChanged, writer: Serializer.Writer) => ???
+	given Serializer[ClusterStateChanged] = (message: ClusterStateChanged, writer: Serializer.Writer) => ???
 
-	given Serializer[AnotherParticipantHasBeenRestarted] = (message: AnotherParticipantHasBeenRestarted, writer: Serializer.Writer) => ???
+	given Serializer[AnotherParticipantHasBeenRebooted] = (message: AnotherParticipantHasBeenRebooted, writer: Serializer.Writer) => ???
 
 
 	given Deserializer[Hello] = (reader: Deserializer.Reader) => ???
@@ -309,7 +310,7 @@ object Protocol {
 
 	given Deserializer[Heartbeat] = (reader: Deserializer.Reader) => ???
 
-	given Deserializer[StateChanged] = (reader: Deserializer.Reader) => ???
+	given Deserializer[ClusterStateChanged] = (reader: Deserializer.Reader) => ???
 
-	given Deserializer[AnotherParticipantHasBeenRestarted] = (reader: Deserializer.Reader) => ???
+	given Deserializer[AnotherParticipantHasBeenRebooted] = (reader: Deserializer.Reader) => ???
 }

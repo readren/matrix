@@ -37,7 +37,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case hb: Heartbeat =>
 			???
 
-		case sc: StateChanged =>
+		case sc: ClusterStateChanged =>
 			???
 
 		case hello: Hello =>
@@ -53,7 +53,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			
 		case ClusterCreatorProposal(proposedCandidate) =>
 			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[ClusterCreatorProposal]} despite cluster already exists.")
-			senderDelegate.sendResolveAspirantMembershipConflict()
+			senderDelegate.requestPeerToResolveMembershipConflict()
 			true
 
 		case icc: ICreatedACluster =>
@@ -79,9 +79,10 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case jr: JoinRejected =>
 			???
-			
-		case rsm: ResolveAspirantMembershipConflict =>
-			???
+
+		case rmc: ResolveMembershipConflict =>
+			senderDelegate.handleMessage(rmc)
+			true
 
 		case lcw: ILostCommunicationWith =>
 			???
@@ -93,14 +94,18 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			senderDelegate.handleMessage(apg)
 			true
 
-		case AreYouStillThere =>
-			senderDelegate.sendHeartbeat()
+		case isw: AreYouInSyncWithMe =>
+			senderDelegate.handleMessage(isw)
+			true
+
+		case YesImAInSyncWithYou =>
+			senderDelegate.isPotentiallyOutOfSync = false
 			true
 
 		case cd: ChannelDiscarded =>
 			senderDelegate.handleMessage(cd)
 			
-		case phr: AnotherParticipantHasBeenRestarted =>
+		case phr: AnotherParticipantHasBeenRebooted =>
 			???
 
 		case ihr: IHaveReconnected =>

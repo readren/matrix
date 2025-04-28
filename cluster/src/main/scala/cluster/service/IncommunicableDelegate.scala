@@ -13,7 +13,7 @@ import java.nio.channels.AsynchronousSocketChannel
 /** A [[ParticipantDelegate]] that is currently not able to communicate with the participant.
  * Note that participants to which the [[ClusterService]] is connecting to are associated to a [[Incommunicable]] delegate with the [[isConnectingAsClient]] flag set, until the connection is completed; moment at which the delegate is replaced with a [[CommunicableDelegate]] one. */
 class IncommunicableDelegate(override val clusterService: ClusterService, override val peerAddress: ContactAddress, reason: IncommunicabilityReason) extends ParticipantDelegate {
-	val isIncompatible: Boolean = reason eq IS_INCOMPATIBLE
+	var isIncompatible: Boolean = reason eq IS_INCOMPATIBLE
 	private var isTryingToConnectAsClient = reason eq IS_CONNECTING_AS_CLIENT
 
 	override def isCommunicable: Boolean = false
@@ -42,6 +42,12 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 		ParticipantInfo(versionsSupportedByPeer, communicationStatus, peerMembershipStatusAccordingToMe)
 	
 
+	def tryToConnect(): Unit = {
+		isIncompatible = false
+		isTryingToConnectAsClient = true
+		clusterService.connectToAndThenStartConversationWithParticipant(this, false)
+	}
+	
 	def replaceMyselfWithACommunicableDelegate(communicationChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): Maybe[CommunicableDelegate] = {
 		// replace me with a communicable delegate.
 		if clusterService.removeDelegate(this, false) then {
