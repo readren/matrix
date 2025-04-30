@@ -149,7 +149,7 @@ class SchedulingDap(
 		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingAssistant)
 
 		/** An instance becomes active when is passed to the [[scheduleSequentially]] method.
-		 * An instances becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
+		 * An instance becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
 		override def isActive(schedule: Schedule): Boolean = schedule.isActive
 
 

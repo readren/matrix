@@ -29,7 +29,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit =
 		() // TODO
 
-	override def handleMessageFrom(senderDelegate: CommunicableDelegate, message: Protocol): Boolean = message match {
+	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
 		case am: ApplicationMsg =>
 			// TODO
 			true
@@ -40,12 +40,8 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case sc: ClusterStateChanged =>
 			???
 
-		case hello: Hello =>
+		case hello: HelloIExist =>
 			senderDelegate.handleMessage(hello)
-
-		case w: Welcome =>
-			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
-			true
 
 		case ConversationStartedWith(peerAddress) =>
 			// TODO
@@ -53,7 +49,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			
 		case ClusterCreatorProposal(proposedCandidate) =>
 			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[ClusterCreatorProposal]} despite cluster already exists.")
-			senderDelegate.requestPeerToResolveMembershipConflict()
+			senderDelegate.incitePeerToResolveMembershipConflict()
 			true
 
 		case icc: ICreatedACluster =>
@@ -68,16 +64,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case oi: RequestApprovalToJoin =>
 			???
 
-		case jag: JoinApprovalGranted =>
-			???
-
 		case rtj: RequestToJoin =>
-			???
-
-		case jg: JoinGranted =>
-			???
-
-		case jr: JoinRejected =>
 			???
 
 		case rmc: ResolveMembershipConflict =>
@@ -98,17 +85,13 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			senderDelegate.handleMessage(isw)
 			true
 
-		case YesImAInSyncWithYou =>
-			senderDelegate.isPotentiallyOutOfSync = false
-			true
-
 		case cd: ChannelDiscarded =>
 			senderDelegate.handleMessage(cd)
 			
 		case phr: AnotherParticipantHasBeenRebooted =>
 			???
 
-		case ihr: IHaveReconnected =>
+		case ihr: HelloIAmBack =>
 			???
 
 		case WeHaveToResolveBrainSplit(peerViewPoint) =>
@@ -118,8 +101,30 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case WeHaveToResolveBrainJoin(peerViewPoint) =>
 			???
 			true
+	}
+
+	override def handleResponseMessageFrom(senderDelegate: CommunicableDelegate, response: Response, toRequestType: String): Boolean = response match {
+		case w: Welcome =>
+			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
+			true
 
 		case SupportedVersionsMismatch =>
 			senderDelegate.handleMessageSupportedVersionsMismatch()
+
+		case jag: JoinApprovalGranted =>
+			???
+
+		case jg: JoinGranted =>
+			???
+
+		case jr: JoinRejected =>
+			???
+
+		case YesImAInSyncWithYou =>
+			senderDelegate.isPotentiallyOutOfSync = false
+			true
+
+
+
 	}
 }

@@ -6,6 +6,8 @@ import cluster.service.Protocol.Instant
 import cluster.service.ProtocolVersion
 import providers.assistant.SchedulingDap
 
+import readren.matrix.cluster.misc.TaskSequencer
+
 import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
 import java.nio.channels.*
@@ -35,7 +37,7 @@ object NonBlockingDistributedApp {
 
 
 		val schedulingDap = new SchedulingDap()
-		val sequencer = new ClusterService.TaskSequencer {
+		val sequencer = new TaskSequencer {
 			override type Assistant = SchedulingDap.SchedulingAssistant
 			override val assistant: Assistant = schedulingDap.provide(0)
 		}

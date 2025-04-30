@@ -131,7 +131,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[transmit]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
 		object handler extends Writer, CompletionHandler[java.lang.Long, Boolean] { thisHandler =>
-			override def versionToSerializeAs: ProtocolVersion = msgVersion
+			override val governingVersion: ProtocolVersion = msgVersion
 
 			override def position: Int = writeEndBuffer.position
 

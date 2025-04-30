@@ -4,7 +4,7 @@ package cluster.service
 import cluster.channel.Receiver.ChannelClosedByPeer
 import cluster.channel.Transmitter.{Delivered, NotDelivered, Report}
 import cluster.channel.{Receiver, Transmitter}
-import cluster.misc.DoNothing
+import cluster.misc.{DoNothing, RetryHelper}
 import cluster.service.ClusterService.{ChannelOrigin, DelegateConfig}
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
@@ -14,10 +14,12 @@ import cluster.service.ProtocolVersion
 import common.CompileTime.getTypeName
 
 import readren.taskflow.Maybe
+import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
 import scala.util.control.NonFatal
+import scala.collection.mutable
 
 object CommunicableDelegate {
 	type TimerInstance = Long
@@ -30,7 +32,7 @@ class CommunicableDelegate(
 	override val peerAddress: SocketAddress,
 	val peerChannel: AsynchronousSocketChannel,
 	val channelOrigin: ChannelOrigin
-) extends ParticipantDelegate {
+) extends ParticipantDelegate { thisCommunicableDelegate =>
 	val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 
 	private val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
@@ -46,6 +48,8 @@ class CommunicableDelegate(
 	 * Only Used when the cluster service is in aspirant state. */
 	private var lastClusterCreatorProposalSentToPeer: ContactAddress | Null = null
 
+	private var lastRequestId: RequestId = 0
+	private val requestExchangeByRequestId: mutable.LongMap[(sequencer.Schedule, OutgoingRequestExchange[?])] = mutable.LongMap.empty
 	// TODO remove the need of these two variables by implementing structured request/response mechanism. 
 	private var isPotentiallyGone: Boolean = false
 	private[service] var isPotentiallyOutOfSync: Boolean = false
@@ -59,15 +63,17 @@ class CommunicableDelegate(
 	override def info: ParticipantInfo =
 		ParticipantInfo(versionsSupportedByPeer, communicationStatus, peerMembershipStatusAccordingToMe)
 
+	inline def contactCard: ContactCard = (peerAddress, versionsSupportedByPeer)
+
 	private[service] def updateState(newMembershipStatus: MembershipStatus, newSupportedVersions: Set[ProtocolVersion] = versionsSupportedByPeer, newCreationInstant: Instant = peerCreationInstant): Unit = {
-		val previousAgreeVersion = agreedVersion
+		val previousPeersSupportedVersions = versionsSupportedByPeer
 		val previousMembershipStatusOfPeerAccordingToMe = peerMembershipStatusAccordingToMe
 		versionsSupportedByPeer = newSupportedVersions
 		agreedVersion = clusterService.determineAgreedVersion(newSupportedVersions).getOrElse(ProtocolVersion.NOT_SPECIFIED)
 		peerMembershipStatusAccordingToMe = newMembershipStatus
 		peerCreationInstant = newCreationInstant
 		val behavior = clusterService.getMembershipScopedBehavior
-		if agreedVersion != previousAgreeVersion then behavior.onDelegateCommunicabilityChange(this)
+		if newSupportedVersions != previousPeersSupportedVersions then behavior.onDelegateCommunicabilityChange(this)
 		if newMembershipStatus ne previousMembershipStatusOfPeerAccordingToMe then behavior.onDelegateMembershipChange(this)
 	}
 
@@ -85,14 +91,25 @@ class CommunicableDelegate(
 		}
 	}
 
-	/** Receives the messages sent by the peer to me. The received messages are consumed sequentially and eagerly, but the handling of them is governed by the [[MembershipScopedBehavior.handleMessageFrom]] which may defer some reactions. */
+	/** Receives the messages sent by the peer to me. The received messages are consumed sequentially and eagerly, but the handling of them is governed by the [[MembershipScopedBehavior.handleInitiatorMessageFrom]] which may defer some reactions. */
 	private def receiveNextMessages(): Unit = {
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
-			case messageFromPeer: Protocol =>
+			case responseFromPeer: Response =>
+				sequencer.executeSequentially {
+					requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
+						scribe.warn(s"I have received a response from the participant at $peerAddress to a request I haven't made: response = $responseFromPeer")
+					} { (timeoutSchedule, requestExchange) =>
+						sequencer.cancel(timeoutSchedule)
+						if requestExchange.onResponse(responseFromPeer) then receiveNextMessages()
+						else onTerminatingMessageReceived(responseFromPeer)
+					}
+				}
+
+			case initiatorMessageFromPeer: InitiationMsg =>
 				sequencer.executeSequentially {
 					isPotentiallyGone = false
-					if clusterService.getMembershipScopedBehavior.handleMessageFrom(this, messageFromPeer) then receiveNextMessages()
-					else scribe.debug(s"The channel {$peerChannel} reception completed with the terminal message {$messageFromPeer}")
+					if clusterService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, initiatorMessageFromPeer) then receiveNextMessages()
+					else onTerminatingMessageReceived(initiatorMessageFromPeer)
 				}
 
 			case fault: Receiver.Fault =>
@@ -100,6 +117,12 @@ class CommunicableDelegate(
 				scribe.error(errorMessage)
 				sequencer.executeSequentially(restartChannel(errorMessage))
 		}
+	}
+
+	private def onTerminatingMessageReceived(message: Protocol): Unit = {
+		scribe.debug(s"The channel {$peerChannel} reception completed with the terminal message {$message}")
+		peerChannel.shutdownInput()
+		// TODO analyze if something else should be done here (or it is responsibility of the message handlers when they return `false`).
 	}
 
 	private[service] def reportFailure(failure: Transmitter.NotDelivered): Unit = {
@@ -121,39 +144,72 @@ class CommunicableDelegate(
 		}
 	}
 
-	private[service] def handleMessage(hello: Hello): Boolean = {
-		versionsSupportedByPeer = hello.versionsISupport
-		val previousMembershipState = peerMembershipStatusAccordingToMe
-		// update my viewpoint of the peer's membership.
-		peerMembershipStatusAccordingToMe = ASPIRANT
+	/** Specifies what the [[askPeer]] requires:
+	 * - to build the requesting message to be sent to the peer
+	 * - and to handle each of the three mutually exclusive outcomes.
+	 * Exactly one of the `on*` methods is called once, and the call occurs within a [[sequencer.executeSequentially]] block. */
+	private[service] abstract class OutgoingRequestExchange[R <: Request] {
+		/** The implementation should build a [[Request]] with the specified [[RequestId]].
+		 * Called within a [[sequencer.executeSequentially]] block. */
+		def buildRequest(requestId: RequestId): R
 
-		// Connect to participants I didn't know.
-		clusterService.createADelegateForEachParticipantIDoNotKnowIn(hello.otherParticipantsIKnow)
+		/** Called (within a [[sequencer.executeSequentially]] block) if a response to the request is received. */
+		def onResponse(response: Response): Boolean
 
-		val previousAgreedVersion = agreedVersion
-		// update the protocol-version to use when communicating with the peer, transmit the response: `Welcome` or `SupportedVersionsMismatch`.
-		val haveToContinueReceivingMessages = clusterService.determineAgreedVersion(hello.versionsISupport) match {
-			case Some(version) =>
-				agreedVersion = version
-				sendPeerAWelcome()
-				true
+		/** Called (within a [[sequencer.executeSequentially]] block) if the transmission of the request fails. */
+		def onTransmissionError(error: NotDelivered): Unit
 
-			case None =>
-				agreedVersion = ProtocolVersion.NOT_SPECIFIED
-				transmitterToPeer.transmit[Protocol](SupportedVersionsMismatch, ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit) { report =>
-					ifFailureReportItAndThen(DoNothing)(report)
-					replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: ${hello.versionsISupport}")
+		/** Called (within a [[sequencer.executeSequentially]] block) if no response to the request is received within the time passed to the `responseTimeout` parameter of the [[askPeer]] method. */
+		def onTimeout(): Unit
+	}
+
+	/** Sends a [[Request]] to the peer and handles and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
+	private[service] def askPeer[R <: Request](requestExchange: OutgoingRequestExchange[R], responseTimeout: MilliDuration = config.responseTimeout): Unit = {
+		val timeoutSchedule = sequencer.newDelaySchedule(responseTimeout)
+		lastRequestId += 1
+		val requestId = lastRequestId
+		val request = requestExchange.buildRequest(requestId)
+		transmitToPeer(request) {
+			case Delivered =>
+				sequencer.executeSequentially {
+					requestExchangeByRequestId.put(requestId, (timeoutSchedule, requestExchange))
+					sequencer.scheduleSequentially(timeoutSchedule) { () =>
+						requestExchangeByRequestId.remove(requestId).foreach(_._2.onTimeout())
+					}
 				}
-				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
-				false
+			case nd: NotDelivered =>
+				sequencer.executeSequentially {
+					requestExchange.onTransmissionError(nd)
+				}
 		}
+	}
 
-		// Notify changes
-		if agreedVersion != previousAgreedVersion then clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(this)
-		if previousMembershipState != ASPIRANT then clusterService.getMembershipScopedBehavior.onDelegateMembershipChange(this)
-		if previousMembershipState eq MEMBER then clusterService.notifyListenersThat(ParticipantHasBeenRestarted(peerAddress))
+	private[service] def handleMessage(message: HelloIExist): Boolean = {
+		// Connect to participants I didn't know.
+		clusterService.createADelegateForEachParticipantIDoNotKnowIn(message.otherParticipantsIKnow)
 
-		haveToContinueReceivingMessages
+		if peerMembershipStatusAccordingToMe eq MEMBER then clusterService.notifyListenersThat(ParticipantHasBeenRestarted(peerAddress))
+
+		// update my viewpoint of the peer's membership.
+		updateState(ASPIRANT, message.versionsISupport, message.myCreationInstant)
+		// transmit the response: `Welcome` or `SupportedVersionsMismatch` accordingly.
+		if agreedVersion == ProtocolVersion.NOT_SPECIFIED then {
+			sendPeerASupportedVersionsMismatch(message.requestId, message.versionsISupport)
+			false
+		} else {
+			sendPeerAWelcome(message.requestId)
+			true
+		}
+	}
+	
+	private[service] def sendPeerASupportedVersionsMismatch(requestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
+		transmitToPeer(SupportedVersionsMismatch(requestId)) { report =>
+			sequencer.executeSequentially {
+				ifFailureReportItAndThen(DoNothing)(report)
+				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
+				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
+			}
+		}
 	}
 
 	private[service] def handleMessageSupportedVersionsMismatch(): false = {
@@ -190,11 +246,11 @@ class CommunicableDelegate(
 		for (participantAddress, participantMembershipStatusAccordingToPeer) <- message.membershipStatusOfParticipantsIKnow do {
 			delegateByAddress.getOrElse(participantAddress, null) match {
 				case communicableDelegate: CommunicableDelegate if participantMembershipStatusAccordingToPeer ne communicableDelegate.peerMembershipStatusAccordingToMe =>
-					communicableDelegate.requestPeerToResolveMembershipConflict()
+					communicableDelegate.incitePeerToResolveMembershipConflict()
 
 				case null =>
 					if participantAddress == clusterService.myAddress then {
-						if participantMembershipStatusAccordingToPeer ne clusterService.myMembershipStatus then requestPeerToResolveMembershipConflict()
+						if participantMembershipStatusAccordingToPeer ne clusterService.myMembershipStatus then incitePeerToResolveMembershipConflict()
 					} else {
 						clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantAddress)
 					}
@@ -207,9 +263,9 @@ class CommunicableDelegate(
 	private[service] def handleMessage(message: AreYouInSyncWithMe): Unit = {
 		updateState(message.myMembershipStatus)
 		if message.yourMembershipStatusAccordingToMe ne clusterService.myMembershipStatus then {
-			requestPeerToResolveMembershipConflict()
+			incitePeerToResolveMembershipConflict()
 		} else {
-			respondPeerYesIAmInSync()
+			respondPeerYesIAmInSync(message.requestId)
 		}
 	}
 
@@ -267,20 +323,51 @@ class CommunicableDelegate(
 		}
 	}
 
+	private def newRequestRetryHelper(startingDelay: MilliDuration = config.requestRetryStartingDelay, maxAttempts: Int = config.requestsAttempts): RetryHelper =
+		new RetryHelper(sequencer, startingDelay, maxAttempts)
+
+	private abstract class DefaultOutgoingRequestExchange[R <: Request] extends OutgoingRequestExchange[R], Runnable {
+		private val retryHelper = newRequestRetryHelper()
+		
+		override def run(): Unit = askPeer(this)
+
+		override def onResponse(response: Response): Boolean = {
+			clusterService.getMembershipScopedBehavior.handleResponseMessageFrom(thisCommunicableDelegate, response, getTypeName[R])
+		}
+
+		override def onTransmissionError(error: NotDelivered): Unit = {
+			reportFailure(error)
+			restartChannel(error)
+		}
+
+		/** Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
+		 * If the peer is alive but not responding (e.g., deadlock, overload), retries would not help.
+		 * In conclusion, no more than a retry is needed. */
+		override def onTimeout(): Unit = {
+			if retryHelper.hasMoreTries then retryHelper.tryAgainDelayed(this)
+			else restartChannel(s"The peer did not respond to the ${getTypeName[HelloIExist]} message withing time.")
+		}
+	}
+	
 	private[service] def sendPeerAHello(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitterToPeer.transmit[Protocol](Hello(clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses), ProtocolVersion.OF_THIS_PROJECT, config.transmitterTimeout, config.timeUnit)(onComplete)
+		askPeer(new DefaultOutgoingRequestExchange[HelloIExist] {
+			override def buildRequest(requestId: RequestId): HelloIExist = HelloIExist(requestId, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses)
+		})
 	}
 
-	private[service] def sendPeerAWelcome(): Unit = {
-		transmitToPeer(Welcome(clusterService.getMembershipScopedBehavior.membershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
+	private[service] def sendPeerAWelcome(requestId: RequestId): Unit = {
+		transmitToPeer(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
 	}
 
-	private[service] def requestPeerToResolveMembershipConflict(): Unit = {
+	private[service] def incitePeerToResolveMembershipConflict(): Unit = {
 		transmitToPeer(ResolveMembershipConflict(clusterService.myMembershipStatus, clusterService.getKnownParticipantsMembershipStatus))(ifFailureReportItAndThen(restartChannel))
 	}
 
-	private[service] def notifyPeerThatIHaveReconnected(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitToPeer(IHaveReconnected(clusterService.config.versionsISupport, clusterService.myMembershipStatus, clusterService.myCreationInstant))(onComplete)
+	private[service] def sendPeerAHelloIAmBack(onComplete: Transmitter.Report => Unit): Unit = {
+		askPeer(new DefaultOutgoingRequestExchange[HelloIAmBack] {
+			override def buildRequest(requestId: RequestId): HelloIAmBack =
+				HelloIAmBack(requestId, clusterService.config.versionsISupport, clusterService.myMembershipStatus, clusterService.myCreationInstant)
+		})
 	}
 
 	private[service] def notifyPeerThatAnotherParticipantIsGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant): Unit = {
@@ -288,7 +375,9 @@ class CommunicableDelegate(
 	}
 
 	private[service] def sendPeerARequestToJoin(joinTokenByMemberAddress: Map[ContactAddress, JoinToken])(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitToPeer(RequestToJoin(joinTokenByMemberAddress))(onComplete)
+		askPeer(new DefaultOutgoingRequestExchange[RequestToJoin] {
+			override def buildRequest(requestId: RequestId): RequestToJoin = RequestToJoin(requestId, joinTokenByMemberAddress)
+		})
 	}
 
 	private[service] def sendPeerAHeartbeat(): Unit = {
@@ -313,11 +402,13 @@ class CommunicableDelegate(
 	}
 
 	private[service] def askPeerIfHeIsInSyncWithMe(onComplete: Transmitter.Report => Unit): Unit = {
-		transmitToPeer(AreYouInSyncWithMe(clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe))(onComplete)
+		askPeer(new DefaultOutgoingRequestExchange[Request] {
+			override def buildRequest(requestId: RequestId): AreYouInSyncWithMe = AreYouInSyncWithMe(requestId, clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe)
+		})
 	}
 
-	private[service] def respondPeerYesIAmInSync(): Unit = {
-		transmitToPeer(YesImAInSyncWithYou)(ifFailureReportItAndThen(restartChannel))
+	private[service] def respondPeerYesIAmInSync(requestId: RequestId): Unit = {
+		transmitToPeer(YesImAInSyncWithYou(requestId))(ifFailureReportItAndThen(restartChannel))
 	}
 
 	private[service] def transmitToPeer(message: Protocol)(onComplete: Transmitter.Report => Unit): Unit = {

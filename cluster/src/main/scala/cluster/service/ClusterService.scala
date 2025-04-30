@@ -10,6 +10,7 @@ import cluster.service.Protocol.MembershipStatus.MEMBER
 import cluster.service.ProtocolVersion
 import cluster.service.RingSerial.*
 
+import readren.matrix.cluster.misc.TaskSequencer
 import readren.taskflow.SchedulingExtension.MilliDuration
 import readren.taskflow.{Doer, SchedulingExtension}
 
@@ -21,8 +22,6 @@ import scala.util.{Failure, Success, Try}
 
 object ClusterService {
 
-	abstract class TaskSequencer extends Doer, SchedulingExtension
-
 	trait Clock {
 		def getTime: Instant
 	}
@@ -33,7 +32,21 @@ object ClusterService {
 
 	class Config(val myAddress: ContactAddress, val versionsISupport: Set[ProtocolVersion], val seeds: Iterable[ContactAddress], val participantDelegatesConfig: DelegateConfig, val retryMinDelay: MilliDuration = 1000, val retryMaxDelay: MilliDuration = 60_000, val maxAttempts: Int = 8, val joinCheckDelay: MilliDuration = 2_000)
 
-	class DelegateConfig(val receiverTimeout: Long = 500, val transmitterTimeout: Long = 500, val timeUnit: TimeUnit = TimeUnit.MILLISECONDS, val responseTimeout: MilliDuration = 1_000, val closeDelay: MilliDuration = 200, val heartbeatPeriod: MilliDuration = 1000, val heartbeatMargin: MilliDuration = 500)
+	/** @param requestsAttempts how many times a [[CommunicableDelegate.askPeer]] should be called in total when the previous try resulted in a response timeout.
+	 * Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
+	 * If the peer is alive but not responding (e.g., deadlock, overload), retries would not help. In conclusion, no more than a single retry is needed. 
+	 */
+	class DelegateConfig(
+		val receiverTimeout: Long = 60_000, 
+		val transmitterTimeout: Long = 500, 
+		val timeUnit: TimeUnit = TimeUnit.MILLISECONDS, 
+		val responseTimeout: MilliDuration = 1_000,
+		val requestRetryStartingDelay: MilliDuration = 2_000,
+		val requestsAttempts: Int = 2,
+		val closeDelay: MilliDuration = 200, 
+		val heartbeatPeriod: MilliDuration = 10_000, 
+		val heartbeatMargin: MilliDuration = 12_000,
+	)
 
 	def start(sequencer: TaskSequencer, clock: Clock, serviceConfig: Config): ClusterService = {
 

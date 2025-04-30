@@ -121,7 +121,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192, 
 			var readEndBuffer: ByteBuffer = circularStorage.readEnd
 			var nextFrameHeaderPosRelativeToReadEndBufferBase = 0
 
-			override def versionToDeserializeFrom: ProtocolVersion = msgVersion
+			override def governingVersion: ProtocolVersion = msgVersion
 
 			override def position: Int = readEndBuffer.position
 

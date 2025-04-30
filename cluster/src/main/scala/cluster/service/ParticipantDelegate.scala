@@ -1,7 +1,6 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ClusterService.TaskSequencer
 import cluster.service.Protocol.*
 import cluster.service.Protocol.MembershipStatus.UNKNOWN
 
@@ -15,24 +14,17 @@ abstract class ParticipantDelegate {
 	def communicationStatus: CommunicationStatus
 	def info: ParticipantInfo
 
+	// TODO push down the following three variables into the CommunicableDelegate subclass to avoid remembering outdated state. 
 	protected[service] var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 	protected[service] var peerMembershipStatusAccordingToMe: MembershipStatus = UNKNOWN
 	protected[service] var peerCreationInstant: Instant = UNSPECIFIED_INSTANT  
 	
 	export clusterService.sequencer
 	
-	inline def contactCard: ContactCard = (peerAddress, versionsSupportedByPeer)
-
 	def isCommunicable: Boolean
 
 	/** The communicability is stable: connection and handshaking have completed (successfully or not). */
 	def isStable: Boolean
-	
-	inline def initializeState(versionsSupportedByPeer: Set[ProtocolVersion], peerMembershipStatusAccordingToMe: MembershipStatus, peerCreationInstant: Instant): Unit = {
-		this.versionsSupportedByPeer = versionsSupportedByPeer
-		this.peerMembershipStatusAccordingToMe = peerMembershipStatusAccordingToMe
-		this.peerCreationInstant = peerCreationInstant
-	}
 	
 	inline def initializeStateBasedOn(other: ParticipantDelegate): Unit = {
 		this.versionsSupportedByPeer = other.versionsSupportedByPeer

@@ -36,10 +36,11 @@ object Deserializer {
 		private val refs: scala.collection.mutable.ArrayBuffer[Any] = scala.collection.mutable.ArrayBuffer.empty
 
 
-		/** The version ID of the message type that the deserializer should expect.
+		/** The version to deserialize with.
+		 * Exposed here because the serialized representation format depends on the rules defined by this specific version.
 		 * This is required to support coexistence and interaction between different versions of the same component in a distributed system.
 		 * It ensures that the deserializer can correctly interpret the serialized representation of the message, accounting for changes in the message structure (e.g., added or removed fields) across versions. */
-		def versionToDeserializeFrom: ProtocolVersion
+		def governingVersion: ProtocolVersion
 
 		/** The implementation should return the position of the backing [[ByteBuffer]] from where the bytes are read.
 		 * This method is used for diagnostic only. */

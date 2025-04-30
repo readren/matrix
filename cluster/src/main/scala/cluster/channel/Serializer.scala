@@ -35,10 +35,11 @@ object Serializer {
 		 * This flag checked and unconditionally cleared by all member methods (of [[Writer]]) that write something to the backing buffer. */
 		private var haveToEscape: Boolean = false
 
-		/** The version ID of the message type that the serializer should produce.
+		/** The version to serialize with. 
+		 * Exposed here because the serialized representation format depends on the rules defined by this specific version.
 		 * This is required to support coexistence and interaction between different versions of the same component in a distributed system.
 		 * It ensures that the serializer generates a serialized representation of the message that is compatible with the specified version, accounting for changes in the message structure (e.g., added or removed fields) across versions. */
-		def versionToSerializeAs: ProtocolVersion
+		val governingVersion: ProtocolVersion
 
 		/** The implementation must return a [[ByteBuffer]] with at least `minimumRemaining` bytes of remaining space to write.
 		 * The caller must not write more than the provided `minimumRemaining` bytes. */

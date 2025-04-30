@@ -18,7 +18,7 @@ abstract class MembershipScopedBehavior {
 
 	/** Called just after a successful connection to the participant corresponding to the specified `delegate` when I am at the client side of the delegate's channel.
 	 * The implementation should transmit the conversation-opening message and call the provided `onComplete` call-back when the transmission completes. */
-	def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit
+	def openConversationWith(participantDelegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit
 
 	/**
 	 * Handles an incoming `message` from the participant associated to the `delegate`, possibly deferring some reactions (e.g., queueing them for later sequential execution).
@@ -28,5 +28,11 @@ abstract class MembershipScopedBehavior {
 	 * - Should terminate (`false`).
 	 *
 	 * Note: While reactions to the message may be deferred (e.g., processed later in a strict order), the decision to continue/end the conversation must be made synchronously.
-	 */	def handleMessageFrom(delegate: CommunicableDelegate, message: Protocol): Boolean
+	 */
+	def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean
+	
+	
+	def handleResponseMessageFrom(senderDelegate: CommunicableDelegate, response: Response, toRequestType: String): Boolean
+	
+	
 }
