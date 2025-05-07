@@ -4,6 +4,7 @@ package cluster.service
 import cluster.service.Protocol.*
 import cluster.service.Protocol.MembershipStatus.UNKNOWN
 
+import readren.matrix.cluster.serialization.ProtocolVersion
 import readren.taskflow.Maybe
 
 /** A [[ClusterService]]'s delegate responsible to manage the interaction with other instance of [[ClusterService]] hosted by other JVMs.

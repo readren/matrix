@@ -2,11 +2,11 @@ package readren.matrix
 package cluster.service
 
 import cluster.*
-import cluster.channel.Deserializer.DeserializationException
-import cluster.channel.{Deserializer, Serializer}
+import cluster.serialization.Deserializer.DeserializationException
+import cluster.serialization.{Deserializer, ProtocolVersion, Serializer, SerializerDerivation}
 import cluster.service.Protocol.*
-import cluster.service.ProtocolVersion
 
+import readren.matrix.cluster.serialization.MacroTools.printMacroExpansion
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
@@ -163,68 +163,10 @@ object Protocol {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
 	}
 
-	given Serializer[Protocol] = (message: Protocol, writer: Serializer.Writer) => {
-		message match {
-			case hello: HelloIExist =>
-				writer.putByte(DISCRIMINATOR_Hello)
-				writer.writeFull(hello)
-
-			case SupportedVersionsMismatch =>
-				writer.putByte(DISCRIMINATOR_Welcome)
-
-			case welcome: Welcome =>
-				writer.putByte(DISCRIMINATOR_Welcome)
-				writer.writeFull(welcome)
-
-			case ysc: ClusterCreatorProposal =>
-				writer.putByte(DISCRIMINATOR_YouShouldCreateTheCluster)
-				writer.writeFull(ysc)
-
-			case icc: ICreatedACluster =>
-				writer.putByte(DISCRIMINATOR_ICreatedACluster)
-				writer.writeFull(icc)
-
-			case oi: RequestApprovalToJoin =>
-				writer.putByte(DISCRIMINATOR_RequestApprovalToJoin)
-				writer.writeFull(oi)
-
-			case jag: JoinApprovalGranted =>
-				writer.putByte(DISCRIMINATOR_JoinApprovalGranted)
-				writer.writeFull(jag)
-
-			case rtj: RequestToJoin =>
-				writer.putByte(DISCRIMINATOR_RequestToJoin)
-				writer.writeFull(rtj)
-
-			case jg: JoinGranted =>
-				writer.putByte(DISCRIMINATOR_JoinGranted)
-				writer.writeFull(jg)
-
-			case jr: JoinRejected =>
-				writer.putByte(DISCRIMINATOR_JoinRejected)
-				writer.writeFull(jr)
-
-			case lcw: ILostCommunicationWith =>
-				writer.putByte(DISCRIMINATOR_ILostCommunicationWith)
-				writer.writeFull(lcw)
-
-			case Farewell =>
-				writer.putByte(DISCRIMINATOR_I_AM_LEAVING)
-
-			case hb: Heartbeat =>
-				writer.putByte(DISCRIMINATOR_Heartbeat)
-				writer.writeFull(hb)
-
-			case sc: ClusterStateChanged =>
-				writer.putByte(DISCRIMINATOR_StateChanged)
-				writer.writeFull(sc)
-
-			case phr: AnotherParticipantHasBeenRebooted =>
-				writer.putByte(DISCRIMINATOR_AnotherParticipantHasBeenRestarted)
-				writer.writeFull(phr)
-
-		}
-	}
+	import serialization.CommonSerializers.given
+	import cluster.channel.Nio2Serializers.given 
+	val serializer: Serializer[Protocol] = printMacroExpansion(SerializerDerivation.deriveSerializer[Protocol])
+	given Serializer[Protocol] = serializer 
 
 	given Deserializer[Protocol] = (reader: Deserializer.Reader) => {
 		reader.readByte() match {

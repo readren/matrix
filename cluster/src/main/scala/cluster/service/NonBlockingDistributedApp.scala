@@ -3,10 +3,10 @@ package cluster.service
 
 import cluster.service.ClusterService.DelegateConfig
 import cluster.service.Protocol.Instant
-import cluster.service.ProtocolVersion
 import providers.assistant.SchedulingDap
 
 import readren.matrix.cluster.misc.TaskSequencer
+import readren.matrix.cluster.serialization.ProtocolVersion
 
 import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer

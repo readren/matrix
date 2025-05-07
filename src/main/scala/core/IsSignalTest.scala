@@ -15,12 +15,12 @@ sealed trait IsSignalTest[T] {
 
 object IsSignalTest {
 
-	given [T](using
+	given [T] => (
 		ttStarted: MyTypeTest[Started.type, T],
 		ttRestarted: MyTypeTest[Restarted.type, T],
 		ttRestartReceived: MyTypeTest[RestartReceived.type, T],
 		ttStopReceived: MyTypeTest[StopReceived.type, T]
-	): IsSignalTest[T] = new IsSignalTest[T] {
+	) => IsSignalTest[T] = new IsSignalTest[T] {
 		def started: Option[T] = ttStarted.unapply(Started)
 
 		def restarted: Option[T] = ttRestarted.unapply(Restarted)
@@ -40,13 +40,13 @@ object IsSignalTest {
 	// Companion object to define instances
 	object MyTypeTest {
 		// Instance when T is a subtype of Signal
-		given [S <: Signal, T](using ev: S <:< T, ttSignal: TypeTest[S, T]): MyTypeTest[S, T] = new MyTypeTest[S, T] {
+		given [S <: Signal, T] => (ev: S <:< T, ttSignal: TypeTest[S, T]) => MyTypeTest[S, T] = new MyTypeTest[S, T] {
 			def unapply(signal: S): Option[T] = ttSignal.unapply(signal)
 			override def toString: String = ttSignal.toString
 		}
 
 		// Instance when T is not a subtype of Signal
-		given [S <: Signal, T](using ev: NotGiven[S <:< T]): MyTypeTest[S, T] = new MyTypeTest[S, T] {
+		given [S <: Signal, T] => (ev: NotGiven[S <:< T]) => MyTypeTest[S, T] = new MyTypeTest[S, T] {
 			def unapply(signal: S): Option[T] = None
 			override def toString: String = "not assignable"
 		}

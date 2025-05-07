@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.6.3"
+ThisBuild / scalaVersion := "3.6.4"
 
 ThisBuild / libraryDependencies ++= Seq(
 	"readren" %% "taskflow-core" % "0.2.8-SNAPSHOT",
@@ -14,10 +14,17 @@ ThisBuild / libraryDependencies ++= Seq(
 )
 
 ThisBuild / scalacOptions ++= Seq(
+	"-source:future",
 	"-experimental",
-	"-deprecation",
+//	"-deprecation",
 	"-feature",
 	"-explain",
+//	"-Xcheck-macros",
+//	"-Xprint:macros",         // Show macro expansions
+//	"-Ydebug",               // Additional debug info
+//	"-Yshow-tree-ids",       // Show tree identifiers
+//	"-Yprint-debug",         // Debug printing
+//	"-Ylog:macro-expansions" // Log macro expansions
 )
 lazy val common = (project in file("common"))
 	.settings(

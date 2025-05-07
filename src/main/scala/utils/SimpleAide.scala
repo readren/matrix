@@ -5,7 +5,7 @@ import core.{Logger, Matrix, MatrixDoer}
 import logger.SimpleLogger
 import providers.ShutdownAbleDpm
 
-class SimpleAide[MD <: MatrixDoer](
+open class SimpleAide[MD <: MatrixDoer](
 	override val defaultDoerProviderDescriptor: Matrix.DoerProviderDescriptor[MD],
 ) extends Matrix.Aide[SimpleAide[MD]] {
 	override type DPsManager = ShutdownAbleDpm

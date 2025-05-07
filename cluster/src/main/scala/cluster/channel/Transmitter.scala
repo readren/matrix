@@ -1,10 +1,11 @@
 package readren.matrix
 package cluster.channel
 
-import cluster.channel.Serializer.{SerializationException, Writer}
+import readren.matrix.cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.channel.Transmitter.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
-import cluster.service.ProtocolVersion
+
+import readren.matrix.cluster.serialization.{ProtocolVersion, Serializer}
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}

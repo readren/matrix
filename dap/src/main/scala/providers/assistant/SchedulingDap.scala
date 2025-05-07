@@ -13,6 +13,7 @@ import java.util
 import java.util.concurrent.*
 import scala.annotation.tailrec
 import scala.collection.mutable
+import scala.language.adhocExtensions
 
 object SchedulingDap {
 	/** A time based on the [[System.nanoTime]] method converted to milliseconds. */

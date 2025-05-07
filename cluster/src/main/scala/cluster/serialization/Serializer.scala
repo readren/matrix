@@ -1,12 +1,11 @@
 package readren.matrix
-package cluster
-package channel
+package cluster.serialization
 
-import cluster.channel.Serializer.Writer
+import Serializer.Writer
 import cluster.misc.VLQ
-import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
+import scala.deriving.Mirror
 
 object Serializer {
 
@@ -143,7 +142,7 @@ object Serializer {
 		}
 
 		/** Unconditionally serializes the provided `value` to the backing buffer using the provided [[Serializer]].
-		 * No deduplication is applied to provided object, but its fields are deduplicated if their corresponding serializers determine so. */
+		 * No deduplication is applied to the provided object, but its fields are deduplicated if their corresponding serializers determine so. */
 		inline def writeFull[M](value: M)(using sM: Serializer[M]): Unit =
 			sM.serialize(value, this)
 
@@ -152,7 +151,7 @@ object Serializer {
 		 *
 		 * This method checks whether the object has already been serialized. If it has, a back-reference to the previously serialized object is written. Otherwise, the object is serialized using the provided [[Serializer]].
 		 *
-		 * **Important:** This method must be paired with [[Deserializer.Reader.read]] on the deserializer side. Failing to do so will result in the deserialization of this component and all subsequent composites failing.
+		 * __Important__: This method must be paired with [[Deserializer.Reader.read]] on the deserializer side. Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 */
 		def write[R <: AnyRef](ref: R)(using sR: Serializer[R]): Unit = {
 			val nextRefKey = refs.size + 1
@@ -166,6 +165,11 @@ object Serializer {
 			}
 		}
 	}
+
+	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
+
+	inline given derived: [A] => (Mirror.Of[A]) => Serializer[A] =
+		SerializerDerivation.deriveSerializer[A]
 }
 
 trait Serializer[A] { self =>

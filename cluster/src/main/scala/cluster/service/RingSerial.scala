@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.{Deserializer, Serializer}
+import readren.matrix.cluster.serialization.{Deserializer, Serializer}
 
 opaque type RingSerial = Short
 

@@ -10,8 +10,8 @@ import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
 import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER, UNKNOWN}
-import cluster.service.ProtocolVersion
 import common.CompileTime.getTypeName
+import readren.matrix.cluster.serialization.ProtocolVersion
 
 import readren.taskflow.Maybe
 import readren.taskflow.SchedulingExtension.MilliDuration

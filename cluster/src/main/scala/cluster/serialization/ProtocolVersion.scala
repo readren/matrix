@@ -1,9 +1,7 @@
 package readren.matrix
-package cluster.service
+package cluster.serialization
 
-import cluster.channel.{Deserializer, Serializer}
-
-/** Represents a version of the [[ClusterService]]'s [[Protocol]] in a compact form (one byte), without losing the ability to determine which of a group of versions is the newest, as long as such versions are sufficiently close. */
+/** Represents a version of message-protocol in a compact form (one byte), without losing the ability to determine which of a group of versions is the newest, as long as such versions are sufficiently close. */
 opaque type ProtocolVersion = Byte
 
 object ProtocolVersion {

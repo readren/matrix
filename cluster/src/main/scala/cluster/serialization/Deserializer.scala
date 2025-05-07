@@ -1,10 +1,8 @@
 package readren.matrix
-package cluster.channel
+package cluster.serialization
 
-import cluster.channel.Deserializer.Reader
-import cluster.channel.Receiver.UnexpectedBufferEnd
+import Deserializer.Reader
 import cluster.misc.VLQ
-import cluster.service.ProtocolVersion
 
 import java.nio.ByteBuffer
 import scala.language.experimental.erasedDefinitions
@@ -21,11 +19,11 @@ object Deserializer {
 		def isValueType: Boolean
 	}
 
-	given whenReference[T](using ev: T <:< AnyRef): ValueOrReferenceTest[T] with {
+	given whenReference: [T] => (ev: T <:< AnyRef) => ValueOrReferenceTest[T] {
 		def isValueType = false
 	}
 
-	given whenValue[T](using ev: T <:< AnyVal): ValueOrReferenceTest[T] with {
+	given whenValue: [T] => (ev: T <:< AnyVal) => ValueOrReferenceTest[T] {
 		def isValueType = true
 	}
 
@@ -66,6 +64,10 @@ object Deserializer {
 				getContentBytes(1).get()
 				true
 			} else false
+		}
+		
+		inline def readBoolean(): Boolean = {
+			getContentBytes(1).get() != 0
 		}
 
 		/** Reads the next content [[Byte]] from the backing buffer consuming it.

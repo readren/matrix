@@ -1,11 +1,11 @@
 package readren.matrix
 package core
 
-import core.Matrix.{DoerProvider, DoerProviderDescriptor}
+import core.Matrix.DoerProviderDescriptor
 
 import readren.taskflow.{Doer, Maybe}
 
-import java.util.concurrent.atomic.AtomicLong
+import scala.compiletime.asMatchable
 
 
 object Matrix {
@@ -32,7 +32,7 @@ object Matrix {
 		
 		override def canEqual(that: Any): Boolean = that.isInstanceOf[DoerProviderDescriptor[?]]
 
-		override def equals(that: Any): Boolean = that match {
+		override def equals(that: Any): Boolean = that.asMatchable match {
 			case that: DoerProviderDescriptor[?] => this.id == that.id
 			case _ => false
 		}

@@ -11,7 +11,7 @@ import scala.reflect.Typeable
  *
  * @tparam A The type of the value produced by the computation.
  */
-trait Lazy[A, Fault: Typeable] { thisLazy =>
+trait Lazy[A <: Matchable, Fault <: Matchable : Typeable] { thisLazy =>
 
 	/**
 	 * Triggers the deferred computation and invokes the `onComplete` callback with the result.
@@ -32,7 +32,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @tparam B The type of the transformed value.
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
-	def map[B](f: A => B): Lazy[B, Fault] = new Lazy[B, Fault] {
+	def map[B <: Matchable](f: A => B): Lazy[B, Fault] = new Lazy[B, Fault] {
 		override def trigger(onComplete: B | Fault => Unit): Unit = thisLazy.trigger {
 			case fault: Fault => onComplete(fault)
 			case a: A @unchecked => onComplete(f(a))
@@ -51,7 +51,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @tparam B The type of the transformed computation.
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
-	def flatMap[B](f: A => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
+	def flatMap[B <: Matchable](f: A => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
 		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger {
 				case fault: Fault => onComplete(fault)
@@ -71,7 +71,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @tparam B The type of the transformed result.
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
-	def transform[B](f: A | Fault => B | Fault): Lazy[B, Fault] = new Lazy[B, Fault] {
+	def transform[B <: Matchable](f: A | Fault => B | Fault): Lazy[B, Fault] = new Lazy[B, Fault] {
 		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger { aOrFault =>
 				onComplete(f(aOrFault))
@@ -89,7 +89,7 @@ trait Lazy[A, Fault: Typeable] { thisLazy =>
 	 * @tparam B The type of the transformed computation.
 	 * @return A new `Lazy[B]` representing the transformed computation.
 	 */
-	def transformWith[B](next: A | Fault => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
+	def transformWith[B <: Matchable](next: A | Fault => Lazy[B, Fault]): Lazy[B, Fault] = new Lazy[B, Fault] {
 		override def trigger(onComplete: B | Fault => Unit): Unit =
 			thisLazy.trigger {
 				case fault: Fault => next(fault).trigger(onComplete)

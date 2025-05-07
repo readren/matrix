@@ -9,6 +9,7 @@ import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
 import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
 import common.CompileTime.getTypeName
 
+import readren.matrix.cluster.serialization.ProtocolVersion
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {

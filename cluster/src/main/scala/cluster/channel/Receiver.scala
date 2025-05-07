@@ -4,7 +4,8 @@ package channel
 
 import cluster.channel.Receiver.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
-import cluster.service.ProtocolVersion
+
+import readren.matrix.cluster.serialization.{Deserializer, ProtocolVersion}
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
@@ -14,7 +15,7 @@ import scala.concurrent.{Future, Promise}
 object Receiver {
 	private inline val FRAME_HEADER_MAX_SIZE = VLQ.INT_MAX_LENGTH
 
-	type Lazy[A] = misc.Lazy[A, Fault]
+	type Lazy[A <: Matchable] = misc.Lazy[A, Fault]
 
 	sealed trait Fault
 
@@ -300,7 +301,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192, 
 
 	/** Like [[receive]] but changing the continuation style from passing to returned.
 	 * Also, the computation is deferred until explicitly triggered (with [[util.Lazy.trigger]]. */
-	def receivesLazily[M](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Lazy[M] = new Lazy[M] {
+	def receivesLazily[M <: Matchable](msgVersion: ProtocolVersion, timeout: Long, timeUnit: TimeUnit)(using deserializer: Deserializer[M]): Lazy[M] = new Lazy[M] {
 		override def trigger(onComplete: M | Fault => Unit): Unit = {
 			receiveWithAttachment[M, Unit](msgVersion, (), timeout, timeUnit) { (outcome, dummy) => onComplete(outcome) }
 		}

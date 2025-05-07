@@ -7,10 +7,10 @@ import cluster.service.ClusterService.ChannelOrigin.{CLIENT_INITIATED, SERVER_AC
 import cluster.service.Protocol.*
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 import cluster.service.Protocol.MembershipStatus.MEMBER
-import cluster.service.ProtocolVersion
 import cluster.service.RingSerial.*
 
 import readren.matrix.cluster.misc.TaskSequencer
+import readren.matrix.cluster.serialization.ProtocolVersion
 import readren.taskflow.SchedulingExtension.MilliDuration
 import readren.taskflow.{Doer, SchedulingExtension}
 

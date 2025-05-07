@@ -1,9 +1,10 @@
 package readren.matrix
 package cluster.channel
 
-import cluster.channel.CommonSerializers.given
-import cluster.channel.Deserializer.DeserializationException
-import cluster.channel.Serializer.SerializationException
+import cluster.serialization.CommonSerializers.given
+import cluster.serialization.Deserializer.DeserializationException
+import cluster.serialization.Serializer.SerializationException
+import cluster.serialization.{Deserializer, Serializer}
 
 import java.net.{InetAddress, InetSocketAddress, SocketAddress}
 

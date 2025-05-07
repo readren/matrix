@@ -3,6 +3,8 @@ package cluster.service
 
 import cluster.service.Protocol.{ContactAddress, IncommunicabilityReason}
 
+import readren.matrix.cluster.serialization.ProtocolVersion
+
 sealed trait ClusterEvent
 
 /** Tells that the participant at the specified address and me can not communicate becase we don't support a common [[ProtocolVersion]]. */

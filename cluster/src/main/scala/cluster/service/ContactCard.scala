@@ -3,6 +3,8 @@ package cluster.service
 
 import cluster.service.Protocol.ContactAddress
 
+import readren.matrix.cluster.serialization.ProtocolVersion
+
 import java.net.InetSocketAddress
 
 /**
