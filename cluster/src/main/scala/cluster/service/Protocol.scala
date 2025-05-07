@@ -3,13 +3,14 @@ package cluster.service
 
 import cluster.*
 import cluster.serialization.Deserializer.DeserializationException
+import cluster.serialization.MacroTools.printMacroExpansion
 import cluster.serialization.{Deserializer, ProtocolVersion, Serializer, SerializerDerivation}
 import cluster.service.Protocol.*
 
-import readren.matrix.cluster.serialization.MacroTools.printMacroExpansion
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
+import scala.deriving.Mirror
 
 sealed trait Protocol
 
@@ -132,6 +133,9 @@ case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Affir
 case class ApplicationMsg(bytes: Array[Byte]) extends Affirmation
 
 object Protocol {
+	import cluster.channel.Nio2Serializers.given
+
+	import serialization.CommonSerializers.given
 
 	type ContactAddress = SocketAddress
 	type JoinToken = Long
@@ -144,29 +148,32 @@ object Protocol {
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
 	}
+	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus]
 
 	enum IncommunicabilityReason {
 		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
 	}
+	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason]
 
 	/**
 	 * Information that tells how a participant sees another participant
 	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information */
 	case class ParticipantInfo(supportedVersions: Set[ProtocolVersion], communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
+	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo]
 
 	/** Information about a participant according to itself.
 	 * This information has a single source of truth: the peer. */
 	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
+	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint]
 
 	enum CommunicationStatus {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
 	}
+	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus]
 
-	import serialization.CommonSerializers.given
-	import cluster.channel.Nio2Serializers.given 
-	val serializer: Serializer[Protocol] = printMacroExpansion(SerializerDerivation.deriveSerializer[Protocol])
-	given Serializer[Protocol] = serializer 
+	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol]
+	given Serializer[Protocol] = protocolSerializer
 
 	given Deserializer[Protocol] = (reader: Deserializer.Reader) => {
 		reader.readByte() match {
@@ -219,35 +226,6 @@ object Protocol {
 	inline val DISCRIMINATOR_Heartbeat = 12
 	inline val DISCRIMINATOR_StateChanged = 13
 	inline val DISCRIMINATOR_AnotherParticipantHasBeenRestarted = 14
-
-
-	given Serializer[HelloIExist] = (message: HelloIExist, writer: Serializer.Writer) => ???
-
-	given Serializer[SupportedVersionsMismatch] = (message: SupportedVersionsMismatch, writer: Serializer.Writer) => ???
-
-	given Serializer[Welcome] = (message: Welcome, writer: Serializer.Writer) => ???
-
-	given Serializer[ClusterCreatorProposal] = (message: ClusterCreatorProposal, writer: Serializer.Writer) => ???
-
-	given Serializer[ICreatedACluster] = (message: ICreatedACluster, writer: Serializer.Writer) => ???
-
-	given Serializer[RequestApprovalToJoin] = (message: RequestApprovalToJoin, writer: Serializer.Writer) => ???
-
-	given Serializer[JoinApprovalGranted] = (message: JoinApprovalGranted, writer: Serializer.Writer) => ???
-
-	given Serializer[RequestToJoin] = (message: RequestToJoin, writer: Serializer.Writer) => ???
-
-	given Serializer[JoinGranted] = (message: JoinGranted, writer: Serializer.Writer) => ???
-
-	given Serializer[JoinRejected] = (message: JoinRejected, writer: Serializer.Writer) => ???
-
-	given Serializer[ILostCommunicationWith] = (message: ILostCommunicationWith, writer: Serializer.Writer) => ???
-
-	given Serializer[Heartbeat] = (message: Heartbeat, writer: Serializer.Writer) => ???
-
-	given Serializer[ClusterStateChanged] = (message: ClusterStateChanged, writer: Serializer.Writer) => ???
-
-	given Serializer[AnotherParticipantHasBeenRebooted] = (message: AnotherParticipantHasBeenRebooted, writer: Serializer.Writer) => ???
 
 
 	given Deserializer[HelloIExist] = (reader: Deserializer.Reader) => ???

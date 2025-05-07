@@ -1,8 +1,8 @@
 package readren.matrix
 package cluster.serialization
 
-import Serializer.Writer
 import cluster.misc.VLQ
+import cluster.serialization.Serializer.Writer
 
 import java.nio.ByteBuffer
 import scala.deriving.Mirror
@@ -168,8 +168,8 @@ object Serializer {
 
 	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
 
-	inline given derived: [A] => (Mirror.Of[A]) => Serializer[A] =
-		SerializerDerivation.deriveSerializer[A]
+	inline def derive[A : Mirror.Of as mirror]: Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mirror) }
+
 }
 
 trait Serializer[A] { self =>
