@@ -209,6 +209,10 @@ object Deserializer {
 	}
 }
 
+/**
+ * Deserializes values of type `A` from a binary format.
+ *
+ * @note DESIGN: This is invariant (not contravariant) to prevent ambiguous implicit resolution and ensure correct discriminator handling for sum vs. product types. */
 trait Deserializer[A] { self =>
 
 	def deserialize(reader: Reader): A

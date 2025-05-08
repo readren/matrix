@@ -1,12 +1,16 @@
 package readren.matrix
 package cluster.serialization
 
-import Serializer.Writer
+import cluster.serialization.Serializer.Writer
+import common.CompileTime
+import common.CompileTime.getTypeName
 
 import scala.deriving.Mirror
 import scala.quoted.{Expr, Quotes, Type}
 
 object SerializerDerivation {
+
+	private class VariantIndexHolder(var nextValue: Int)
 
 	def deriveSerializerImpl[A: Type](mirrorExpr: Expr[Mirror.Of[A]])(using quotes: Quotes): Expr[Serializer[A]] = {
 		import quotes.reflect.*
@@ -34,7 +38,7 @@ object SerializerDerivation {
 		'{
 			new Serializer[A] {
 				def serialize(message: A, writer: Writer): Unit = {
-					${ sumSerializerBodyFor[A, ElemTypes]('message, 'writer) }
+					${ sumSerializerBodyFor[A, ElemTypes]('message, 'writer, new VariantIndexHolder(0)) }
 				}
 			}
 		}
@@ -69,19 +73,19 @@ object SerializerDerivation {
 		loop[ElemTypes, ElemLabels]
 	}
 
-	private def sumSerializerBodyFor[A: Type, ElemTypes: Type](messageExpr: Expr[A], writerExpr: Expr[Writer])(using quotes: Quotes): Expr[Unit] = {
+	private def sumSerializerBodyFor[A: Type, ElemTypes: Type](messageExpr: Expr[A], writerExpr: Expr[Writer], variantIndexHolder: VariantIndexHolder)(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
 		val oDiscriminatorCriteriaExpr: Option[Expr[DiscriminationCriteria[A]]] = Expr.summon[DiscriminationCriteria[A]]
 
-		def loop[RemainingElemTypes: Type](index: Int): List[CaseDef] = {
+		def loop[RemainingElemTypes: Type]: List[CaseDef] = {
 			Type.of[RemainingElemTypes] match {
 				case '[headType *: tailTypes] =>
 
 					// Create a unique symbol for the matched value
 					val bindSymbol = Symbol.newVal(
 						Symbol.spliceOwner,
-						s"variant$index",
+						s"variant${variantIndexHolder.nextValue}",
 						TypeRepr.of[headType],
 						Flags.EmptyFlags,
 						Symbol.noSymbol
@@ -104,20 +108,25 @@ object SerializerDerivation {
 
 						case None =>
 							// Fall back to the alphanumerical index
-							Expr(index)
+							Expr(variantIndexHolder.nextValue)
 					}
 
+					val nextVariantIndex = variantIndexHolder.nextValue + 1
+					variantIndexHolder.nextValue = nextVariantIndex
 					val serialization: Expr[Unit] = Expr.summon[Serializer[headType]]
-						.fold(serializerBodyFor[headType](bindExpr, writerExpr))( serializer => '{$serializer.serialize($bindExpr, $writerExpr)})
+						.fold(serializerBodyFor[headType](bindExpr, writerExpr, variantIndexHolder)) { serializer =>
+							if oDiscriminatorCriteriaExpr.isEmpty && TypeRepr.of[headType].typeSymbol.isAbstractType then report.errorAndAbort(s"The default ${getTypeName[DiscriminationCriteria[Nothing]]} does not work when a nested sum-type (${Type.show[headType]} in this case) is not derived or derived outside the macro that derives the outer sum-type (${Type.show[A]} in this case). To solve this problem either remove the ${getTypeName[Serializer[headType]]} of the nested sum-type, or ensure a ${getTypeName[DiscriminationCriteria[A]]} exists is in the context and be consistent with the discriminators criteria used by the nested sum-type serializer (an easy way is by sharing the same ${getTypeName[DiscriminationCriteria[A]]} instance).")
+							'{ $serializer.serialize($bindExpr, $writerExpr) }
+						}
 					// Create the RHS: `serializer.serialize(bind, writer)`
-					val rhs = '{
-						$writerExpr.putIntVlq($discriminatorExpr)
-						$serialization
-					}.asTerm
+					val rhs =
+						if variantIndexHolder.nextValue == nextVariantIndex then '{
+							$writerExpr.putIntVlq($discriminatorExpr)
+							$serialization
+						} else serialization
 
-					val caseDef = CaseDef(pattern, None, rhs)
-
-					caseDef :: loop[tailTypes](index + 1)
+					val caseDef = CaseDef(pattern, None, rhs.asTerm)
+					caseDef :: loop[tailTypes]
 
 				case '[EmptyTuple] =>
 					Nil
@@ -127,18 +136,18 @@ object SerializerDerivation {
 
 		}
 
-		val cases = loop[ElemTypes](0)
+		val cases = loop[ElemTypes]
 		Match(messageExpr.asTerm, cases).asExprOf[Unit]
 	}
 
-	private def serializerBodyFor[A: Type](messageExpr: Expr[A], writerExpr: Expr[Writer])(using quotes: Quotes): Expr[Unit] = {
+	private def serializerBodyFor[A: Type](messageExpr: Expr[A], writerExpr: Expr[Writer], variantIndexHolder: VariantIndexHolder)(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
 		Expr.summon[Mirror.Of[A]] match {
 			case Some('{ $m: Mirror.ProductOf[A] {type MirroredElemTypes = elemTypes; type MirroredElemLabels = elemLabels} }) =>
 				productSerializerBodyFor[A, elemTypes, elemLabels](messageExpr, writerExpr)
 			case Some('{ $m: Mirror.SumOf[A] {type MirroredElemTypes = elemTypes} }) =>
-				sumSerializerBodyFor[A, elemTypes](messageExpr, writerExpr)
+				sumSerializerBodyFor[A, elemTypes](messageExpr, writerExpr, variantIndexHolder)
 			case _ =>
 				report.errorAndAbort(s"Cannot derive Serializer for non-ADT type ${Type.show[A]}")
 		}

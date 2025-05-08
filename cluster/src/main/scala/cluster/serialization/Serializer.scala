@@ -43,7 +43,7 @@ object Serializer {
 		/** The implementation must return a [[ByteBuffer]] with at least `minimumRemaining` bytes of remaining space to write.
 		 * The caller must not write more than the provided `minimumRemaining` bytes. */
 		def getBuffer(minimumRemaining: Int): ByteBuffer
-		
+
 		/** The implementation must return the position of the backing buffer.
 		 * This method is used for diagnostic purposes only. */
 		def position: Int
@@ -168,10 +168,14 @@ object Serializer {
 
 	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
 
-	inline def derive[A : Mirror.Of as mirror]: Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mirror) }
+	inline def derive[A: Mirror.Of as mirror]: Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mirror) }
 
 }
 
+/**
+ * Serializes values of type `A` to a binary format.
+ *
+ * @note DESIGN: This is invariant (not contravariant) to prevent ambiguous implicit resolution and ensure correct discriminator handling for sum vs. product types. */
 trait Serializer[A] { self =>
 	def serialize(message: A, writer: Writer): Unit
 }

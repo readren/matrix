@@ -172,7 +172,7 @@ object Protocol {
 	}
 	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus]
 
-	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol]
+	private val protocolSerializer: Serializer[Protocol] = printMacroExpansion(Serializer.derive[Protocol])
 	given Serializer[Protocol] = protocolSerializer
 
 	given Deserializer[Protocol] = (reader: Deserializer.Reader) => {
