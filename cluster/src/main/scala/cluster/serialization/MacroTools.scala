@@ -4,13 +4,14 @@ package cluster.serialization
 import scala.quoted.{Expr, Quotes, Type}
 
 object MacroTools {
-	inline def printMacroExpansion[T](inline expr: T): T = ${ printMacroExpansionImpl[T]('expr) }
+	inline def doAndPrintCode[T](inline expr: T): T = ${ doAndPrintCodeImpl[T]('expr) }
 	
-	private def printMacroExpansionImpl[T: Type](expr: Expr[T])(using quotes: Quotes): Expr[T] = {
+	private def doAndPrintCodeImpl[T: Type](expr: Expr[T])(using quotes: Quotes): Expr[T] = {
 		import quotes.reflect.*
 		val pos = Position.ofMacroExpansion
-		println(s"""\nMacro expansion of `${pos.sourceCode.fold(Type.show[T])(identity)}` at ${pos.sourceFile}:${pos.startLine}:${pos.startColumn} <<<<""")
-		println(expr.show)
+		println(s"""\nCode of `${pos.sourceCode.fold(Type.show[T])(identity)}` at ${pos.sourceFile}:${pos.startLine}:${pos.startColumn} <<<<""")
+//		println(expr.show)
+		println(expr.asTerm.show(using Printer.TreeShortCode))
 		println(s"\n>>>>")
 		expr
 	}

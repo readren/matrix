@@ -1,8 +1,6 @@
 package readren.matrix
 package cluster.serialization
 
-import Deserializer.ValueOrReferenceTest
-
 import java.nio.charset.StandardCharsets
 import scala.reflect.ClassTag
 
@@ -53,7 +51,7 @@ object CommonSerializers {
 	private val longDeserializer: Deserializer[Long] = (reader: Deserializer.Reader) => reader.readLong()
 
 	given Deserializer[Long] = longDeserializer
-	
+
 	//// Array
 	given [T: Serializer as sT] => Serializer[Array[T]] = (message: Array[T], writer: Serializer.Writer) => {
 		val length = message.length
@@ -65,12 +63,12 @@ object CommonSerializers {
 		}
 	}
 
-	given [T: {ClassTag, Deserializer as sT}] => Deserializer[Array[T]] = (reader: Deserializer.Reader) => {
+	given [T: {ClassTag, Deserializer as dT}] => Deserializer[Array[T]] = (reader: Deserializer.Reader) => {
 		val length = reader.readUnsignedIntVlq()
 		val array = new Array[T](length)
 		var index = 0
 		while index < length do {
-			array(index) = sT.deserialize(reader)
+			array(index) = dT.deserialize(reader)
 			index += 1
 		}
 		array
@@ -114,7 +112,7 @@ object CommonSerializers {
 		}
 
 	//// Map
-	given mapSerializer: [K, V] => (sK: Serializer[K], sV: Serializer[V]) => Serializer[Map[K, V]] =
+	given mapSerializer: [K, V] =>(sK: Serializer[K], sV: Serializer[V]) => Serializer[Map[K, V]] =
 	(map: Map[K, V], writer: Serializer.Writer) => {
 		writer.putIntVlq(map.size)
 		map.foreach { (k, v) =>
@@ -123,7 +121,7 @@ object CommonSerializers {
 		}
 	}
 
-	given mapDeserializer: [K, V] => (dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V]) => Deserializer[Map[K, V]] =
+	given mapDeserializer: [K, V] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V]) => Deserializer[Map[K, V]] =
 		(reader: Deserializer.Reader) => {
 			var count = reader.readIntVlq()
 			val builder = Map.newBuilder[K, V]

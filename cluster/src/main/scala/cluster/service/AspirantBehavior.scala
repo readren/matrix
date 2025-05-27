@@ -110,7 +110,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case hib: HelloIAmBack =>
 			senderDelegate.updateState(hib.myMembershipStatus, hib.versionsISupport, hib.myCreationInstant)
 			if senderDelegate.agreedVersion == ProtocolVersion.NOT_SPECIFIED then {
-				senderDelegate.sendPeerASupportedVersionsMismatch(hib.requestId, hib.versionsISupport)
+				senderDelegate.handleHelloVersionMismatch(hib.requestId, hib.versionsISupport)
 				false
 			}
 			else {
@@ -136,7 +136,8 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
 			true
 
-		case SupportedVersionsMismatch =>
+		case SupportedVersionsMismatch(requestId) =>
+			// TODO use the requestId
 			senderDelegate.handleMessageSupportedVersionsMismatch()
 
 		case jag: JoinApprovalGranted =>
@@ -156,7 +157,8 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			if jr.youHaveToRetry then sendRequestToJoinTheClusterIfAppropriate()
 			true
 
-		case YesImAInSyncWithYou =>
+		case YesImAInSyncWithYou(requestId) =>
+			// TODO use the requestId, remove the isPotentiallyOutOfSync flag.
 			senderDelegate.isPotentiallyOutOfSync = false
 			true
 

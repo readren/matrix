@@ -2,15 +2,12 @@ package readren.matrix
 package cluster.service
 
 import cluster.*
-import cluster.serialization.Deserializer.DeserializationException
-import cluster.serialization.MacroTools.printMacroExpansion
-import cluster.serialization.{Deserializer, ProtocolVersion, Serializer, SerializerDerivation}
+import cluster.serialization.{Deserializer, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
-import scala.deriving.Mirror
 
 sealed trait Protocol
 
@@ -148,68 +145,40 @@ object Protocol {
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
 	}
-	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus]
+	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](false)
+	given Deserializer[MembershipStatus] = Deserializer.derive[MembershipStatus](false)
 
 	enum IncommunicabilityReason {
 		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
 	}
-	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason]
+	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason](false)
+	given Deserializer[IncommunicabilityReason] = Deserializer.derive[IncommunicabilityReason](false)
 
 	/**
 	 * Information that tells how a participant sees another participant
 	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information */
 	case class ParticipantInfo(supportedVersions: Set[ProtocolVersion], communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
-	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo]
+	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo](false)
+	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](false)
 
 	/** Information about a participant according to itself.
 	 * This information has a single source of truth: the peer. */
 	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
-	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint]
+	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint](false)
+	given Deserializer[MemberViewpoint] = Deserializer.derive[MemberViewpoint](false)
 
 	enum CommunicationStatus {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
 	}
-	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus]
+	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](false)
+	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](false)
 
-	private val protocolSerializer: Serializer[Protocol] = printMacroExpansion(Serializer.derive[Protocol])
+	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol](true)
 	given Serializer[Protocol] = protocolSerializer
 
-	given Deserializer[Protocol] = (reader: Deserializer.Reader) => {
-		reader.readByte() match {
-			case DISCRIMINATOR_Heartbeat =>
-				reader.read[Heartbeat]
-			case DISCRIMINATOR_StateChanged =>
-				reader.read[ClusterStateChanged]
-			case DISCRIMINATOR_Hello =>
-				reader.read[HelloIExist]
-			case DISCRIMINATOR_SupportedVersionsMismatch =>
-				reader.read[SupportedVersionsMismatch]
-			case DISCRIMINATOR_Welcome =>
-				reader.read[Welcome]
-			case DISCRIMINATOR_YouShouldCreateTheCluster =>
-				reader.read[ClusterCreatorProposal]
-			case DISCRIMINATOR_ICreatedACluster =>
-				reader.read[ICreatedACluster]
-			case DISCRIMINATOR_RequestApprovalToJoin =>
-				reader.read[RequestApprovalToJoin]
-			case DISCRIMINATOR_JoinApprovalGranted =>
-				reader.read[JoinApprovalGranted]
-			case DISCRIMINATOR_RequestToJoin =>
-				reader.read[RequestToJoin]
-			case DISCRIMINATOR_JoinGranted =>
-				reader.read[JoinGranted]
-			case DISCRIMINATOR_JoinRejected =>
-				reader.read[JoinRejected]
-			case DISCRIMINATOR_ILostCommunicationWith =>
-				reader.read[ILostCommunicationWith]
-			case DISCRIMINATOR_AnotherParticipantHasBeenRestarted =>
-				reader.read[AnotherParticipantHasBeenRebooted]
-
-			case x =>
-				throw new DeserializationException(reader.position, s"Invalid discriminator value ($x) for the Protocol type: no matching product type found")
-		}
-	}
+	private val protocolDeserializer: Deserializer[Protocol] = Deserializer.derive[Protocol](true)
+	given Deserializer[Protocol] = protocolDeserializer
 
 	inline val DISCRIMINATOR_Hello = 0
 	inline val DISCRIMINATOR_SupportedVersionsMismatch = 1
@@ -226,33 +195,4 @@ object Protocol {
 	inline val DISCRIMINATOR_Heartbeat = 12
 	inline val DISCRIMINATOR_StateChanged = 13
 	inline val DISCRIMINATOR_AnotherParticipantHasBeenRestarted = 14
-
-
-	given Deserializer[HelloIExist] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[SupportedVersionsMismatch] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[Welcome] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[ClusterCreatorProposal] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[ICreatedACluster] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[RequestApprovalToJoin] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[JoinApprovalGranted] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[RequestToJoin] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[JoinGranted] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[JoinRejected] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[ILostCommunicationWith] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[Heartbeat] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[ClusterStateChanged] = (reader: Deserializer.Reader) => ???
-
-	given Deserializer[AnotherParticipantHasBeenRebooted] = (reader: Deserializer.Reader) => ???
 }

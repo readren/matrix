@@ -5,6 +5,7 @@ import cluster.misc.VLQ
 import cluster.serialization.Serializer.Writer
 
 import java.nio.ByteBuffer
+import scala.compiletime.summonFrom
 import scala.deriving.Mirror
 
 object Serializer {
@@ -153,6 +154,7 @@ object Serializer {
 		 *
 		 * __Important__: This method must be paired with [[Deserializer.Reader.read]] on the deserializer side. Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 */
+		// TODO use [[IsValueOrReferenceTest]] like in the deserializer
 		def write[R <: AnyRef](ref: R)(using sR: Serializer[R]): Unit = {
 			val nextRefKey = refs.size + 1
 			val refKey = refs.computeIfAbsent(ref, r => nextRefKey)
@@ -168,7 +170,7 @@ object Serializer {
 
 	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
 
-	inline def derive[A: Mirror.Of as mirror]: Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mirror) }
+	inline def derive[A: Mirror.Of as mirror](inline isFlattenModeOn: Boolean): Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mirror, 'isFlattenModeOn) }
 
 }
 

@@ -5,7 +5,7 @@ import Deserializer.Reader
 import cluster.misc.VLQ
 
 import java.nio.ByteBuffer
-import scala.language.experimental.erasedDefinitions
+import scala.deriving.Mirror
 
 object Deserializer {
 	/** The number of consecutive content bytes required by the operation that calls [[Reader.getContentBytes]] with the greatest argument. There are two: [[Reader.readLong]] and [[Reader.readDouble]]. */
@@ -14,19 +14,6 @@ object Deserializer {
 	class DeserializationException(val position: Int, explanation: String = null, cause: Throwable = null) extends RuntimeException(explanation, cause) {
 		def this(position: Int, cause: Throwable) = this(position, null, cause)
 	}
-
-	trait ValueOrReferenceTest[T] {
-		def isValueType: Boolean
-	}
-
-	given whenReference: [T] => (ev: T <:< AnyRef) => ValueOrReferenceTest[T] {
-		def isValueType = false
-	}
-
-	given whenValue: [T] => (ev: T <:< AnyVal) => ValueOrReferenceTest[T] {
-		def isValueType = true
-	}
-
 
 	abstract class Reader extends VLQ.ByteReader {
 
@@ -169,7 +156,7 @@ object Deserializer {
 		def readBytes(howMany: Int): Array[Byte] = {
 			val array = new Array[Byte](howMany)
 			// TODO optimize
-			for i <- 0 to howMany do array(i) = getContentBytes(1).get()
+			for i <- 0 until howMany do array(i) = getContentBytes(1).get()
 			array
 		}
 
@@ -196,8 +183,8 @@ object Deserializer {
 		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 */
 		def read[R](using deserializer: Deserializer[R], ivR: ValueOrReferenceTest[R]): R = {
-			// if next byte isn't a back reference header or is an escape then we have no back reference here.
-			if !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER || ivR.isValueType then {
+			// if the next byte isn't a back reference header or is an escape then we have no back reference here.
+			if ivR.isValueType || !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER then {
 				val ref = readFull[R]
 				refs.addOne(ref)
 				ref
@@ -207,6 +194,11 @@ object Deserializer {
 			}
 		}
 	}
+
+	def apply[A](using deserializer: Deserializer[A]): Deserializer[A] = deserializer
+
+	inline def derive[A: Mirror.Of as mirror](inline isFlattenModeOn: Boolean): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('mirror, 'isFlattenModeOn) }
+
 }
 
 /**

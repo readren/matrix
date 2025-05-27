@@ -1,13 +1,13 @@
 
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.6.4"
+ThisBuild / scalaVersion := "3.7.0"
 
 ThisBuild / libraryDependencies ++= Seq(
 	"readren" %% "taskflow-core" % "0.2.8-SNAPSHOT",
 
-	"com.outr" %% "scribe" % "3.16.0",
-	"com.outr" %% "scribe-file" % "3.16.0",
+	"com.outr" %% "scribe" % "3.16.1",
+	"com.outr" %% "scribe-file" % "3.16.1",
 
 	"org.typelevel" %% "scalacheck-effect" % "1.0.4" % Test,
 	"org.typelevel" %% "scalacheck-effect-munit" % "1.0.4" % Test

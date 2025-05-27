@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.serialization
 
 /** Represents a version of message-protocol in a compact form (one byte), without losing the ability to determine which of a group of versions is the newest, as long as such versions are sufficiently close. */
-opaque type ProtocolVersion = Byte
+opaque type ProtocolVersion <: AnyVal = Byte
 
 object ProtocolVersion {
 

@@ -108,7 +108,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
 			true
 
-		case SupportedVersionsMismatch =>
+		case SupportedVersionsMismatch(requestId) =>
 			senderDelegate.handleMessageSupportedVersionsMismatch()
 
 		case jag: JoinApprovalGranted =>
@@ -120,7 +120,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case jr: JoinRejected =>
 			???
 
-		case YesImAInSyncWithYou =>
+		case YesImAInSyncWithYou(requestId) =>
 			senderDelegate.isPotentiallyOutOfSync = false
 			true
 

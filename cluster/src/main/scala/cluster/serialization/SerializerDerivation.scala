@@ -2,154 +2,190 @@ package readren.matrix
 package cluster.serialization
 
 import cluster.serialization.Serializer.Writer
-import common.CompileTime
-import common.CompileTime.getTypeName
 
+import scala.annotation.tailrec
+import scala.compiletime.{erasedValue, summonFrom, summonInline}
 import scala.deriving.Mirror
 import scala.quoted.{Expr, Quotes, Type}
 
 object SerializerDerivation {
 
-	private class VariantIndexHolder(var nextValue: Int)
-
-	def deriveSerializerImpl[A: Type](mirrorExpr: Expr[Mirror.Of[A]])(using quotes: Quotes): Expr[Serializer[A]] = {
+	def deriveSerializerImpl[A: Type](mirrorExpr: Expr[Mirror.Of[A]], isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Serializer[A]] = {
 		import quotes.reflect.*
 
 		mirrorExpr match {
-			case '{ $m: Mirror.ProductOf[A] {type MirroredElemTypes = elemTypes; type MirroredElemLabels = elemLabels} } =>
-				deriveProductSerializer[A, elemTypes, elemLabels]
-			case '{ $m: Mirror.SumOf[A] {type MirroredElemTypes = elemTypes} } =>
-				deriveSumSerializer[A, elemTypes](m)
+			case '{ $m: Mirror.ProductOf[`A`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} } =>
+				deriveProductSerializer[A, fieldTypes, fieldLabels]
+			case '{ $m: Mirror.SumOf[`A`] {type MirroredElemTypes = variantTypes} } =>
+				deriveSumSerializer[A, variantTypes](isFlattenModeOnExpr)
 			case _ =>
+				// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
 				report.errorAndAbort(s"Cannot derive Serializer for non-ADT type ${Type.show[A]}")
 		}
 	}
 
-	private def deriveProductSerializer[A: Type, ElemTypes: Type, ElemLabels: Type](using quotes: Quotes): Expr[Serializer[A]] = {
+	private def deriveProductSerializer[P: Type, FieldTypes: Type, FieldLabels: Type](using quotes: Quotes): Expr[Serializer[P]] = {
 		'{
-			new Serializer[A] {
-				def serialize(message: A, writer: Writer): Unit =
-					${ productSerializerBodyFor[A, ElemTypes, ElemLabels]('message, 'writer) }
+			new Serializer[P] {
+				def serialize(message: P, writer: Writer): Unit =
+					${ productSerializerBodyFor[P, FieldTypes, FieldLabels]('message, 'writer) }
 			}
 		}
 	}
 
-	private def deriveSumSerializer[A: Type, ElemTypes: Type](mirrorExpr: Expr[Mirror.SumOf[A]])(using quotes: Quotes): Expr[Serializer[A]] = {
+	private def deriveSumSerializer[S: Type, VariantTypes: Type](isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Serializer[S]] = {
 		'{
-			new Serializer[A] {
-				def serialize(message: A, writer: Writer): Unit = {
-					${ sumSerializerBodyFor[A, ElemTypes]('message, 'writer, new VariantIndexHolder(0)) }
+			new Serializer[S] {
+				def serialize(message: S, writer: Writer): Unit = {
+					${ sumSerializerBodyFor[S, VariantTypes]('message, 'writer, isFlattenModeOnExpr) }
 				}
 			}
 		}
 	}
 
-	private def productSerializerBodyFor[A: Type, ElemTypes: Type, ElemLabels: Type](messageExpr: Expr[A], writerExpr: Expr[Writer])(using quotes: Quotes): Expr[Unit] = {
+	private def productSerializerBodyFor[P: Type, FieldTypes: Type, FieldLabels: Type](messageExpr: Expr[P], writerExpr: Expr[Writer])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
-		def loop[RemainingElemTypes: Type, RemainingElemLabels: Type]: Expr[Unit] = {
-			(Type.of[RemainingElemTypes], Type.of[RemainingElemLabels]) match {
+		@tailrec
+		def loop[RemainingFieldTypes: Type, RemainingFieldLabels: Type](alreadyDone: List[Term]): List[Term] = {
+			(Type.of[RemainingFieldTypes], Type.of[RemainingFieldLabels]) match {
 				case ('[headType *: tailTypes], '[headLabel *: tailLabels]) =>
-					val fieldName: String = Type.valueOfConstant[headLabel].get.asInstanceOf[String]
-					val fieldValueExpr: Expr[headType] = Select.unique(messageExpr.asTerm, fieldName).asExprOf[headType]
+					val fieldLabel: String = Type.valueOfConstant[headLabel].get.asInstanceOf[String]
+					val fieldValueExpr: Expr[headType] = Select.unique(messageExpr.asTerm, fieldLabel).asExprOf[headType]
 
 					Expr.summon[Serializer[headType]] match {
-						case Some(serializer) => '{
-							$serializer.serialize($fieldValueExpr, $writerExpr)
-							${ loop[tailTypes, tailLabels] }
-						}
+						case Some(serializer) =>
+							val body: Expr[Unit] = '{ $serializer.serialize($fieldValueExpr, $writerExpr) }
+							loop[tailTypes, tailLabels](body.asTerm :: alreadyDone)
+
 
 						case None =>
-							report.errorAndAbort(s"Missing Serializer for ${Type.show[headType]} (field '$fieldName' in ${Type.show[A]})")
+							report.errorAndAbort(s"Missing Serializer for `${Type.show[headType]}` (field `$fieldLabel` in `${Type.show[P]}`)")
 					}
 
 				case ('[EmptyTuple], '[EmptyTuple]) =>
-					'{}
+					alreadyDone
 
 				case _ => report.errorAndAbort("Unreachable")
 			}
 		}
 
-		loop[ElemTypes, ElemLabels]
+		val body: Term = loop[FieldTypes, FieldLabels](Nil) match {
+			case Nil => Literal(UnitConstant())
+			case single::Nil => single
+			case last::othersReversed => Block(othersReversed.reverse, last)
+		}
+		body.asExprOf[Unit]
 	}
 
-	private def sumSerializerBodyFor[A: Type, ElemTypes: Type](messageExpr: Expr[A], writerExpr: Expr[Writer], variantIndexHolder: VariantIndexHolder)(using quotes: Quotes): Expr[Unit] = {
+
+	private def sumSerializerBodyFor[OuterSum: Type, OuterVariants: Type](messageExpr: Expr[OuterSum], writerExpr: Expr[Writer], isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
-		val oDiscriminatorCriteriaExpr: Option[Expr[DiscriminationCriteria[A]]] = Expr.summon[DiscriminationCriteria[A]]
+		val isFlattenModeOn = isFlattenModeOnExpr.valueOrAbort
+		var caseIndex: Int = 0
+		
+		def genSumCases[Sum: Type, Scrutinee: Type, Variants: Type](scrutineeExpr: Expr[Scrutinee], alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {
 
-		def loop[RemainingElemTypes: Type]: List[CaseDef] = {
-			Type.of[RemainingElemTypes] match {
-				case '[headType *: tailTypes] =>
+			val oDiscriminatorCriteriaSelect: Option[Select] =
+				Implicits.search(TypeRepr.of[DiscriminationCriteria[Sum]]) match {
+					case nmi: NoMatchingImplicits =>
+						None
+					case isf: ImplicitSearchFailure =>
+						report.errorAndAbort(isf.explanation)
+						None
+					case iss: ImplicitSearchSuccess =>
+						Some(Select.unique(iss.tree, "discriminator"))
+				}
 
-					// Create a unique symbol for the matched value
-					val bindSymbol = Symbol.newVal(
-						Symbol.spliceOwner,
-						s"variant${variantIndexHolder.nextValue}",
-						TypeRepr.of[headType],
-						Flags.EmptyFlags,
-						Symbol.noSymbol
-					)
+			@tailrec
+			def loop[RemainingVariants: Type](alreadyDone: List[CaseDef]): List[CaseDef] = {
+				Type.of[RemainingVariants] match {
+					case '[headType *: tailTypes] =>
 
-					// Create the pattern: `case bind: headType =>`
-					val pattern = Bind(
-						bindSymbol,
-						Typed(
-							Wildcard(),
-							TypeTree.of[headType]
-						)
-					)
+						def buildCaseDef(serializationBuilder: Expr[headType] => Expr[Unit]): CaseDef = {
+							// Create a unique symbol for the matched value
+							val bindSymbol = Symbol.newBind(
+								Symbol.spliceOwner,
+								s"variant${caseIndex}",
+								Flags.EmptyFlags,
+								TypeRepr.of[headType]
+							)
+							caseIndex += 1
 
-					val bindExpr: Expr[headType & A] = Ref(bindSymbol).asExprOf[headType & A]
+							// Create the pattern: `case bind: headType =>`
+							val pattern = Bind(
+								bindSymbol,
+								Typed(
+									Wildcard(),
+									TypeTree.of[headType]
+								)
+							)
+							val bindExpr: Expr[headType] = Ref(bindSymbol).asExprOf[headType]
 
-					val discriminatorExpr: Expr[Int] = oDiscriminatorCriteriaExpr match {
-						case Some(discriminatorCriteriaExpr) =>
-							'{ $discriminatorCriteriaExpr.getFor[headType & A]($bindExpr) }
+							val discriminatorExpr: Expr[Int] = oDiscriminatorCriteriaSelect match {
+								case Some(discriminatorCriteriaSelect) =>
+									discriminatorCriteriaSelect.appliedToType(TypeRepr.of[headType]).asExprOf[Int]
 
-						case None =>
-							// Fall back to the alphanumerical index
-							Expr(variantIndexHolder.nextValue)
-					}
+								case None =>
+									// Fall back to the ordinal value
+									Expr(alreadyDone.size)
+							}
 
-					val nextVariantIndex = variantIndexHolder.nextValue + 1
-					variantIndexHolder.nextValue = nextVariantIndex
-					val serialization: Expr[Unit] = Expr.summon[Serializer[headType]]
-						.fold(serializerBodyFor[headType](bindExpr, writerExpr, variantIndexHolder)) { serializer =>
-							if oDiscriminatorCriteriaExpr.isEmpty && TypeRepr.of[headType].typeSymbol.isAbstractType then report.errorAndAbort(s"The default ${getTypeName[DiscriminationCriteria[Nothing]]} does not work when a nested sum-type (${Type.show[headType]} in this case) is not derived or derived outside the macro that derives the outer sum-type (${Type.show[A]} in this case). To solve this problem either remove the ${getTypeName[Serializer[headType]]} of the nested sum-type, or ensure a ${getTypeName[DiscriminationCriteria[A]]} exists is in the context and be consistent with the discriminators criteria used by the nested sum-type serializer (an easy way is by sharing the same ${getTypeName[DiscriminationCriteria[A]]} instance).")
-							'{ $serializer.serialize($bindExpr, $writerExpr) }
+							val rhs = '{
+								$writerExpr.putUnsignedIntVlq($discriminatorExpr)
+								${ serializationBuilder(bindExpr) }
+							}
+
+							CaseDef(pattern, None, rhs.asTerm)
 						}
-					// Create the RHS: `serializer.serialize(bind, writer)`
-					val rhs =
-						if variantIndexHolder.nextValue == nextVariantIndex then '{
-							$writerExpr.putIntVlq($discriminatorExpr)
-							$serialization
-						} else serialization
 
-					val caseDef = CaseDef(pattern, None, rhs.asTerm)
-					caseDef :: loop[tailTypes]
+						Expr.summon[Serializer[headType]] match { // TODO replace with Implicits.search to be given-resolution-error friendly
+							case Some(serializer) =>
+								if isFlattenModeOn && oDiscriminatorCriteriaSelect.isEmpty && TypeRepr.of[headType].typeSymbol.isAbstractType then reportPotentialDiscriminationCriteriasOverlap[OuterSum, headType]
+								val caseDef = buildCaseDef(bindExpr => '{ $serializer.serialize($bindExpr, $writerExpr) })
+								loop[tailTypes](caseDef :: alreadyDone)
+								
+							case None =>
+								Expr.summon[Mirror.Of[headType]] match {
+									case Some('{ $m: Mirror.ProductOf[`headType`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
+										val caseDef = buildCaseDef { bindExpr =>
+											productSerializerBodyFor[headType, fieldTypes, fieldLabels](bindExpr, writerExpr)
+										}
+										loop[tailTypes](caseDef :: alreadyDone)
+										
+									case Some('{ $m: Mirror.SumOf[`headType`] {type MirroredElemTypes = variantTypes} }) =>
+										if isFlattenModeOn then {
+											loop[tailTypes](genSumCases[headType, Scrutinee, variantTypes](scrutineeExpr, alreadyDone))
+										} else {
+											val caseDef = buildCaseDef { bindExpr =>
+												val cases = genSumCases[headType, headType, variantTypes](bindExpr, Nil).reverse
+												Match(bindExpr.asTerm, cases).asExprOf[Unit]										
+											}
+											loop[tailTypes](caseDef :: alreadyDone)
+										}
 
-				case '[EmptyTuple] =>
-					Nil
+									case _ =>
+										// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
+										report.errorAndAbort(s"Cannot derive Serializer for non-ADT type ${Type.show[headType]}")
+								}
+						}
 
-				case _ => report.errorAndAbort("Unreachable")
+					case '[EmptyTuple] =>
+						alreadyDone
+
+					case _ => report.errorAndAbort("Unreachable")
+				}
 			}
 
+			loop[Variants](alreadyFlattenedCases)
 		}
-
-		val cases = loop[ElemTypes]
+		
+		val cases = genSumCases[OuterSum, OuterSum, OuterVariants](messageExpr, Nil).reverse
 		Match(messageExpr.asTerm, cases).asExprOf[Unit]
 	}
 
-	private def serializerBodyFor[A: Type](messageExpr: Expr[A], writerExpr: Expr[Writer], variantIndexHolder: VariantIndexHolder)(using quotes: Quotes): Expr[Unit] = {
-		import quotes.reflect.*
+	def reportPotentialDiscriminationCriteriasOverlap[ParentSumType: Type, ChildSumType: Type](using quotes: Quotes): Unit =
+		quotes.reflect.report.errorAndAbort(s"The flatten mode requires that a given discrimination criteria for the nesting sum-type exist (${Type.show[DiscriminationCriteria[ParentSumType]]} in this case), when a given serializer/deserializer of a nested sum-type (${Type.show[Serializer[ChildSumType]]} in this case) exists.")
 
-		Expr.summon[Mirror.Of[A]] match {
-			case Some('{ $m: Mirror.ProductOf[A] {type MirroredElemTypes = elemTypes; type MirroredElemLabels = elemLabels} }) =>
-				productSerializerBodyFor[A, elemTypes, elemLabels](messageExpr, writerExpr)
-			case Some('{ $m: Mirror.SumOf[A] {type MirroredElemTypes = elemTypes} }) =>
-				sumSerializerBodyFor[A, elemTypes](messageExpr, writerExpr, variantIndexHolder)
-			case _ =>
-				report.errorAndAbort(s"Cannot derive Serializer for non-ADT type ${Type.show[A]}")
-		}
-	}
 }

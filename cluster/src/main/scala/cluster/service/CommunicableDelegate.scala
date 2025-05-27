@@ -163,7 +163,7 @@ class CommunicableDelegate(
 		def onTimeout(): Unit
 	}
 
-	/** Sends a [[Request]] to the peer and handles and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
+	/** Sends a [[Request]] to the peer and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
 	private[service] def askPeer[R <: Request](requestExchange: OutgoingRequestExchange[R], responseTimeout: MilliDuration = config.responseTimeout): Unit = {
 		val timeoutSchedule = sequencer.newDelaySchedule(responseTimeout)
 		lastRequestId += 1
@@ -194,7 +194,7 @@ class CommunicableDelegate(
 		updateState(ASPIRANT, message.versionsISupport, message.myCreationInstant)
 		// transmit the response: `Welcome` or `SupportedVersionsMismatch` accordingly.
 		if agreedVersion == ProtocolVersion.NOT_SPECIFIED then {
-			sendPeerASupportedVersionsMismatch(message.requestId, message.versionsISupport)
+			handleHelloVersionMismatch(message.requestId, message.versionsISupport)
 			false
 		} else {
 			sendPeerAWelcome(message.requestId)
@@ -202,8 +202,8 @@ class CommunicableDelegate(
 		}
 	}
 	
-	private[service] def sendPeerASupportedVersionsMismatch(requestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
-		transmitToPeer(SupportedVersionsMismatch(requestId)) { report =>
+	private[service] def handleHelloVersionMismatch(helloRequestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
+		transmitToPeer(SupportedVersionsMismatch(helloRequestId)) { report =>
 			sequencer.executeSequentially {
 				ifFailureReportItAndThen(DoNothing)(report)
 				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
@@ -213,6 +213,7 @@ class CommunicableDelegate(
 	}
 
 	private[service] def handleMessageSupportedVersionsMismatch(): false = {
+		// TODO 
 		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
 		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
 		false
