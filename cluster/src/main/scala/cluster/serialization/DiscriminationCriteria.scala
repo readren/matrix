@@ -30,7 +30,7 @@ object DiscriminationCriteria {
 
 		def enumNest[Sum: Type, Variants: Type](alreadyFlattenCases: List[Expr[Int | Tuple]]): List[Expr[Int | Tuple]] = {
 
-			val oDiscriminatorCriteriaSelect = Implicits.search(TypeRepr.of[DiscriminationCriteria[Sum]]) match {
+			val oSumDiscriminationCriteriaSelect = Implicits.search(TypeRepr.of[DiscriminationCriteria[Sum]]) match {
 				case nmi: NoMatchingImplicits =>
 					None
 				case isf: ImplicitSearchFailure =>
@@ -48,7 +48,7 @@ object DiscriminationCriteria {
 					case '[headVariant *: tailVariants] =>
 						
 						def discriminatorExpr: Expr[Int] = {
-							oDiscriminatorCriteriaSelect match {
+							oSumDiscriminationCriteriaSelect match {
 								case None => Expr(alreadyDone.size) // Note that the type is the integer singleton type corresponding to the `index` value.
 								case Some(criteria) => criteria.appliedToType(TypeRepr.of[headVariant]).asExprOf[Int] // Note that the type is Int (not a singleton type). TODO narrow the type to the integer singleton corresponding to the discrimination value.
 							}

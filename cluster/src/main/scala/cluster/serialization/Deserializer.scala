@@ -176,7 +176,7 @@ object Deserializer {
 		 *
 		 * This method checks the next byte in the backing buffer. If it is a back-reference header, the method consumes the back-reference and returns the corresponding already deserialized object. Otherwise, it deserializes a new object from the buffer.
 		 *
-		 * **Important:** This method must be paired with [[Serializer.Writer.write]] on the serializer side.
+		 * Important: This method must be paired with [[Serializer.Writer.write]] on the serializer side.
 		 * Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 * @throws LengthMismatchException if the end-of-stream is reached.
 		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
@@ -197,7 +197,7 @@ object Deserializer {
 
 	def apply[A](using deserializer: Deserializer[A]): Deserializer[A] = deserializer
 
-	inline def derive[A: Mirror.Of as mirror](inline isFlattenModeOn: Boolean): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('mirror, 'isFlattenModeOn) }
+	inline def derive[A](inline isFlattenModeOn: Boolean): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('isFlattenModeOn) }
 
 }
 

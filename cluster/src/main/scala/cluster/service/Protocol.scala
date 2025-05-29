@@ -2,28 +2,33 @@ package readren.matrix
 package cluster.service
 
 import cluster.*
-import cluster.serialization.{Deserializer, ProtocolVersion, Serializer}
+import cluster.serialization.MacroTools.showCode
+import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
+import scala.compiletime.erasedValue
 
 sealed trait Protocol
 
+/** A message sent to a peer that is self-initiated, rather than being a response to a prior message from that peer. */
 sealed trait InitiationMsg extends Protocol
 
+/** A message that spontaneously affirms a fact without expecting a response. */
 sealed trait Affirmation extends InitiationMsg
 
+/** A message that asks for a response from the receiver, but may affirm something too.  */
 sealed trait Request extends InitiationMsg {
 	val requestId: RequestId
 }
-
+/** A message that responds a [[Request]] message to that [[Request]]'s sender. */
 sealed trait Response extends Protocol {
 	val toRequest: RequestId
 }
 
-/** First message that a delegate must send to the peer after the first successful connection to:
+/** First message that a delegate must send to the peer after the first successful connection to it. Its purpose is to:
  * 	- propagate the knowledge of its existence to the participants it knows;
  * 	- be replied with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
  * 	The receiver may assume that the sender is an aspirant.
@@ -174,25 +179,49 @@ object Protocol {
 	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](false)
 	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](false)
 
-	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol](true)
+	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](false))
 	given Serializer[Protocol] = protocolSerializer
 
-	private val protocolDeserializer: Deserializer[Protocol] = Deserializer.derive[Protocol](true)
+	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](false))
 	given Deserializer[Protocol] = protocolDeserializer
 
-	inline val DISCRIMINATOR_Hello = 0
-	inline val DISCRIMINATOR_SupportedVersionsMismatch = 1
-	inline val DISCRIMINATOR_Welcome = 2
-	inline val DISCRIMINATOR_YouShouldCreateTheCluster = 3
-	inline val DISCRIMINATOR_ICreatedACluster = 4
-	inline val DISCRIMINATOR_RequestApprovalToJoin = 5
-	inline val DISCRIMINATOR_JoinApprovalGranted = 6
-	inline val DISCRIMINATOR_RequestToJoin = 7
-	inline val DISCRIMINATOR_JoinGranted = 8
-	inline val DISCRIMINATOR_JoinRejected = 9
-	inline val DISCRIMINATOR_I_AM_LEAVING = 10
-	inline val DISCRIMINATOR_ILostCommunicationWith = 11
-	inline val DISCRIMINATOR_Heartbeat = 12
-	inline val DISCRIMINATOR_StateChanged = 13
-	inline val DISCRIMINATOR_AnotherParticipantHasBeenRestarted = 14
+
+	object protocolDc extends DiscriminationCriteria[Protocol] {
+		override transparent inline def discriminator[P <: Protocol]: RequestId =
+			inline erasedValue[P] match {
+				case _: HelloIExist => 10
+				case _: HelloIAmBack => 11
+				case _: SupportedVersionsMismatch => 13
+				case _: Welcome => 14
+				case _: ClusterCreatorProposal => 15
+				case _: ICreatedACluster => 16
+				case _: RequestApprovalToJoin => 17
+				case _: JoinApprovalGranted => 18
+				case _: RequestToJoin => 19
+				case _: JoinGranted => 20
+				case _: JoinRejected => 21
+				case _: ResolveMembershipConflict => 22
+				case _: Farewell => 23
+				case _: AnotherParticipantGone => 24
+				case _: AreYouInSyncWithMe => 25
+				case _: YesImAInSyncWithYou => 26
+				case _: ILostCommunicationWith => 27
+				case _: ConversationStartedWith => 28
+				case _: AnotherParticipantHasBeenRebooted => 29
+				case _: Heartbeat => 30
+				case _: ClusterStateChanged => 31
+				case _: ChannelDiscarded => 32
+				case _: WeHaveToResolveBrainJoin => 33
+				case _: WeHaveToResolveBrainSplit => 34
+				case _: ApplicationMsg => 35
+
+				case _: Affirmation => 3
+				case _: Request => 2
+				case _: Response => 1
+				case _: InitiationMsg => 0
+			}
+	}
+
+	transparent inline given DiscriminationCriteria[Protocol] = protocolDc
+
 }

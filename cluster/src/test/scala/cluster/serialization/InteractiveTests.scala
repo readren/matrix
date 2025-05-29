@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.serialization
 
 import cluster.serialization.CommonSerializers.given
-import cluster.serialization.MacroTools.doAndPrintCode
+import cluster.serialization.MacroTools.showCode
 import cluster.serialization.ProtocolVersion
 
 import java.nio.ByteBuffer
@@ -89,538 +89,544 @@ object InteractiveTests {
 		}
 
 
+		//////////
+		//// When flatten mode is off
+		//////////
 		{
-			//////////
-			//// When flatten mode is off
-			//////////
 			inline val isFlattenModeOn = false
 			val motorDiscriminatorDepth = if isFlattenModeOn then 0 else 1
 
 			//////////
 			//// Dealing with the serializer/deserializer of the nested Sum type (CarPart) directly
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (0, 1, 2), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (0, 1, 2), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 1)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for a nested Sum exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 1)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 22)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 22)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (111, 112, 113), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (111, 112, 113), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 112)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 112)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 22)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 22)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
 
 			//////////
 			//// Dealing with the serializer/deserializer of the outer Sum type (Thing) when no serializer/deserializer for the nested Sum exists.
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, (1, (0, 1, 2))), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, (1, (0, 1, 2))), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 1)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for a nested Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 1)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, (1, (21, 22, 23))), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, (1, (21, 22, 23))), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, (11, (111, 112, 113))), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, (11, (111, 112, 113))), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 112)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 112)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, (11, (21, 22, 23))), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, (11, (21, 22, 23))), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
 
 			//////////
 			//// Dealing with the serializer/deserializer of the outer Sum type (Thing) when a serializer/deserializer for the nested Sum exists.
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
 
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, 1), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, 1), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 1)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 1)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exists.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+
+					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, 1), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+
+					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 11), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 112)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+
+					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 11), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
-			// When only a criteria for a nested Sum exists.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
-
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
-
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
-
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, 1), s"found: $enumeration")
-
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
-
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
-
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
-
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 11), s"found: $enumeration")
-
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 112)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
-
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
-
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
-
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
-
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 11), s"found: $enumeration")
-
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-
 		}
 
+		//////////
+		//// When flatten mode is on
+		//////////
 		{
-			//////////
-			//// When flatten mode is on
-			//////////
 			inline val isFlattenModeOn: true = true
 			val motorDiscriminatorDepth = if isFlattenModeOn then 0 else 1
 
 			//////////
 			//// Dealing with the serializer/deserializer of the nested Sum type (CarPart) directly
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (0, 1, 2), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (0, 1, 2), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 1)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for a nested Sum exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 1)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 22)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 22)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (111, 112, 113), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (111, 112, 113), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 112)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 112)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
-				assert(enumeration == (21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-				val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-				val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
+					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				carPartSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(0) == 22)
-				val clonedMotor = carPartDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-
+					val originalMotor = Motor("polenta")
+					carPartSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(0) == 22)
+					val clonedMotor = carPartDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
 
 			//////////
 			//// Dealing with the serializer/deserializer of the outer Sum type (Thing) when no serializer/deserializer for the nested Sum exists.
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, 1, 2, 3), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, 1, 2, 3), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 2)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for a nested Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 2)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, 21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, 21, 22, 23), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 111, 112, 113), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 111, 112, 113), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 112)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 112)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
 
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 21, 22, 23), s"found: $enumeration")
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 21, 22, 23), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
 
 			//////////
 			//// Dealing with the serializer/deserializer of the outer Sum type (Thing) when a serializer/deserializer for the nested Sum exists.
 			//////////
-			// When no criteria exist.
 			{
-				buffer.clear()
+				// When no criteria exist.
+				{
+					buffer.clear()
 
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
 
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
 
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (0, 1), s"found: $enumeration")
+					val enumeration = showCode(DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn))
+					assert(enumeration == (0, 1), s"found: $enumeration")
 
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = showCode(Serializer.derive[Thing](isFlattenModeOn))
+					val thingDeserializer = showCode(Deserializer.derive[Thing](isFlattenModeOn))
 
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 1)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 1)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for a nested Sum exists.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+
+					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+
+					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (0, 1), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When only a criteria for the outer Sum exists.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+
+					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+
+					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 11), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 112)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
+				// When a criteria for both, a nesting and a nested sum, exist.
+				{
+					buffer.clear()
+
+					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
+
+					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
+
+					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+
+					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					assert(enumeration == (10, 11), s"found: $enumeration")
+
+					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
+					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+
+					val originalMotor = Motor("polenta")
+					thingSerializer.serialize(originalMotor, writer)
+					buffer.flip()
+					assert(peekUnsignedIntVlqAt(1) == 22)
+					val clonedMotor = thingDeserializer.deserialize(reader)
+					assert(originalMotor == clonedMotor)
+				}
 			}
-			// When only a criteria for a nested Sum exists.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = doAndPrintCode(Serializer.derive[CarPart](isFlattenModeOn))
-
-				given Deserializer[CarPart] = doAndPrintCode(Deserializer.derive[CarPart](isFlattenModeOn))
-
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
-
-				val enumeration = doAndPrintCode(DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn))
-				assert(enumeration == (0, 1), s"found: $enumeration")
-
-				val thingSerializer = doAndPrintCode(Serializer.derive[Thing](isFlattenModeOn))
-				val thingDeserializer = doAndPrintCode(Deserializer.derive[Thing](isFlattenModeOn))
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When only a criteria for the outer Sum exists.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
-
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
-
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
-
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 11), s"found: $enumeration")
-
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 112)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-			// When a criteria for both, a nesting and a nested sum, exist.
-			{
-				buffer.clear()
-
-				given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
-
-				given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
-
-				transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
-
-				transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
-
-				val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
-				assert(enumeration == (10, 11), s"found: $enumeration")
-
-				val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-				val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
-
-				val originalMotor = Motor("polenta")
-				thingSerializer.serialize(originalMotor, writer)
-				buffer.flip()
-				assert(peekUnsignedIntVlqAt(1) == 22)
-				val clonedMotor = thingDeserializer.deserialize(reader)
-				assert(originalMotor == clonedMotor)
-			}
-
 		}
 	}
 }

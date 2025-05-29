@@ -153,7 +153,7 @@ object Prueba {
 			val table = sb.toString()
 			if table != previousTable then {
 				previousTable = table
-				printer = printer.andThen { _ => println(table) }(ExecutionContext.global)
+				printer = printer.andThen { _ => println(table) }(using ExecutionContext.global)
 			}
 		}
 
@@ -371,6 +371,6 @@ object Prueba {
 			}
 
 			diagnosticScheduler.shutdown()
-		}(ExecutionContext.global)
+		}(using ExecutionContext.global)
 	}
 }

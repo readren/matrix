@@ -66,7 +66,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 		given ExecutionContext = ExecutionContext.global
 
 		Future.sequence(assistantsData.map(_.promise.future))
-			.map { threadSwapsByAssistant => assert(threadSwapsByAssistant.sum() >= minimumThreadSwaps * NUMBER_OF_ASSISTANTS, s"${threadSwapsByAssistant.sum()} >= ${minimumThreadSwaps * NUMBER_OF_ASSISTANTS}") }
+			.map { threadSwapsByAssistant => assert(threadSwapsByAssistant.sum >= minimumThreadSwaps * NUMBER_OF_ASSISTANTS, s"${threadSwapsByAssistant.sum} >= ${minimumThreadSwaps * NUMBER_OF_ASSISTANTS}") }
 			.andThen { _ =>
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
