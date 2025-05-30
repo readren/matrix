@@ -6,6 +6,7 @@ import cluster.serialization.MacroTools.showCode
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
+import readren.matrix.cluster.serialization.NestedSumMatchMode.{FLAT, NEST}
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
@@ -150,39 +151,39 @@ object Protocol {
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
 	}
-	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](false)
-	given Deserializer[MembershipStatus] = Deserializer.derive[MembershipStatus](false)
+	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](FLAT)
+	given Deserializer[MembershipStatus] = Deserializer.derive[MembershipStatus](FLAT)
 
 	enum IncommunicabilityReason {
 		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
 	}
-	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason](false)
-	given Deserializer[IncommunicabilityReason] = Deserializer.derive[IncommunicabilityReason](false)
+	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason](FLAT)
+	given Deserializer[IncommunicabilityReason] = Deserializer.derive[IncommunicabilityReason](FLAT)
 
 	/**
 	 * Information that tells how a participant sees another participant
 	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information */
 	case class ParticipantInfo(supportedVersions: Set[ProtocolVersion], communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
-	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo](false)
-	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](false)
+	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo](FLAT)
+	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](FLAT)
 
 	/** Information about a participant according to itself.
 	 * This information has a single source of truth: the peer. */
 	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
-	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint](false)
-	given Deserializer[MemberViewpoint] = Deserializer.derive[MemberViewpoint](false)
+	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint](FLAT)
+	given Deserializer[MemberViewpoint] = Deserializer.derive[MemberViewpoint](FLAT)
 
 	enum CommunicationStatus {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
 	}
-	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](false)
-	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](false)
+	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](FLAT)
+	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](FLAT)
 
-	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](false))
+	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](NEST))
 	given Serializer[Protocol] = protocolSerializer
 
-	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](false))
+	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](NEST))
 	given Deserializer[Protocol] = protocolDeserializer
 
 

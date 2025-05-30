@@ -20,13 +20,13 @@ object DiscriminationCriteria {
 	 *
 	 * @note Requires implicit instances of `DiscriminationCriteria` and `Mirror.SumOf` for type `S`.
 	 */
-	transparent inline def enumDiscriminatorsOf[S: Mirror.SumOf as mirror](inline isFlattenModeOn: Boolean): Tuple =
-		${ enumDiscriminatorsOfImpl[S, mirror.MirroredElemTypes]('isFlattenModeOn) }
+	transparent inline def enumDiscriminatorsOf[S: Mirror.SumOf as mirror](inline mode: NestedSumMatchMode): Tuple =
+		${ enumDiscriminatorsOfImpl[S, mirror.MirroredElemTypes]('mode) }
 
-	private def enumDiscriminatorsOfImpl[OuterSum: Type, OuterVariants: Type](isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Tuple] = {
+	private def enumDiscriminatorsOfImpl[OuterSum: Type, OuterVariants: Type](mode: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Tuple] = {
 		import quotes.reflect.*
 
-		val isFlattenModeOn = isFlattenModeOnExpr.valueOrAbort
+		val isFlattenModeOn = mode.valueOrAbort != NestedSumMatchMode.TREE
 
 		def enumNest[Sum: Type, Variants: Type](alreadyFlattenCases: List[Expr[Int | Tuple]]): List[Expr[Int | Tuple]] = {
 

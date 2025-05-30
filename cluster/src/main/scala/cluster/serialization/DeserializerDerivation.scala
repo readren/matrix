@@ -10,14 +10,14 @@ import scala.quoted.{Expr, Quotes, Type}
 object DeserializerDerivation {
 
 
-	def deriveDeserializerImpl[A: Type](isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Deserializer[A]] = {
+	def deriveDeserializerImpl[A: Type](modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Deserializer[A]] = {
 		import quotes.reflect.*
 
 		Expr.summon[Mirror.Of[A]] match {
 			case Some('{ $m: Mirror.ProductOf[`A`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
 				deriveProductDeserializer[A, fieldTypes, fieldLabels]
 			case Some('{ $m: Mirror.SumOf[`A`] {type MirroredElemTypes = variantTypes} }) =>
-				deriveSumDeserializer[A, variantTypes](isFlattenModeOnExpr)
+				deriveSumDeserializer[A, variantTypes](modeExpr)
 			case _ =>
 				// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
 				report.errorAndAbort(s"Cannot derive Deserializer for non-ADT type ${Type.show[A]}")
@@ -33,11 +33,11 @@ object DeserializerDerivation {
 		}
 	}
 
-	private def deriveSumDeserializer[S: Type, VariantTypes: Type](isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[Deserializer[S]] = {
+	private def deriveSumDeserializer[S: Type, VariantTypes: Type](modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Deserializer[S]] = {
 		'{
 			new Deserializer[S] {
 				def deserialize(reader: Reader): S = {
-					${ sumDeserializerBodyFor[S, VariantTypes]('reader, isFlattenModeOnExpr) }
+					${ sumDeserializerBodyFor[S, VariantTypes]('reader, modeExpr) }
 				}
 			}
 		}
@@ -96,10 +96,10 @@ object DeserializerDerivation {
 		}
 	}
 
-	private def sumDeserializerBodyFor[OuterSum: Type, OuterVariants: Type](readerExpr: Expr[Reader], isFlattenModeOnExpr: Expr[Boolean])(using quotes: Quotes): Expr[OuterSum] = {
+	private def sumDeserializerBodyFor[OuterSum: Type, OuterVariants: Type](readerExpr: Expr[Reader], modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[OuterSum] = {
 		import quotes.reflect.*
 
-		val isFlattenModeOn = isFlattenModeOnExpr.valueOrAbort
+		val isFlattenModeOn = modeExpr.valueOrAbort != NestedSumMatchMode.TREE
 		var caseIndex = 0
 
 		def genSumCases[Sum: Type, Variants: Type](alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {

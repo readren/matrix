@@ -93,8 +93,8 @@ object InteractiveTests {
 		//// When flatten mode is off
 		//////////
 		{
-			inline val isFlattenModeOn = false
-			val motorDiscriminatorDepth = if isFlattenModeOn then 0 else 1
+			inline val mode = NestedSumMatchMode.TREE
+			val motorDiscriminatorDepth = if mode == NestedSumMatchMode.TREE then 1 else 0
 
 			//////////
 			//// Dealing with the serializer/deserializer of the nested Sum type (CarPart) directly
@@ -104,11 +104,11 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (0, 1, 2), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -123,11 +123,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -142,11 +142,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (111, 112, 113), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -163,11 +163,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -186,15 +186,16 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, (1, (0, 1, 2))), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
 					buffer.flip()
+					println(s"buffer: ${buffer.array().mkString(",")}")
 					assert(peekUnsignedIntVlqAt(motorDiscriminatorDepth) == 1)
 					val clonedMotor = thingDeserializer.deserialize(reader)
 					assert(originalMotor == clonedMotor)
@@ -205,11 +206,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, (1, (21, 22, 23))), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -224,11 +225,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, (11, (111, 112, 113))), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -245,11 +246,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, (11, (21, 22, 23))), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -268,15 +269,15 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 1), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -291,15 +292,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 1), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -314,15 +315,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 11), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -339,15 +340,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					given Serializer[CarPart] = Serializer.derive[CarPart](isFlattenModeOn)
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = Deserializer.derive[CarPart](isFlattenModeOn)
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 11), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -363,8 +364,8 @@ object InteractiveTests {
 		//// When flatten mode is on
 		//////////
 		{
-			inline val isFlattenModeOn: true = true
-			val motorDiscriminatorDepth = if isFlattenModeOn then 0 else 1
+			inline val mode = NestedSumMatchMode.NEST
+			val motorDiscriminatorDepth = if mode == NestedSumMatchMode.TREE then 1 else 0
 
 			//////////
 			//// Dealing with the serializer/deserializer of the nested Sum type (CarPart) directly
@@ -374,11 +375,11 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (0, 1, 2), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -393,11 +394,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -412,11 +413,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (111, 112, 113), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -433,11 +434,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[CarPart](mode)
 					assert(enumeration == (21, 22, 23), s"found: $enumeration")
 
-					val carPartSerializer = Serializer.derive[CarPart](isFlattenModeOn)
-					val carPartDeserializer = Deserializer.derive[CarPart](isFlattenModeOn)
+					val carPartSerializer = Serializer.derive[CarPart](mode)
+					val carPartDeserializer = Deserializer.derive[CarPart](mode)
 
 					val originalMotor = Motor("polenta")
 					carPartSerializer.serialize(originalMotor, writer)
@@ -456,11 +457,11 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 1, 2, 3), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = showCode(Serializer.derive[Thing](mode))
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -475,11 +476,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 21, 22, 23), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -494,11 +495,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 111, 112, 113), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -515,11 +516,11 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 21, 22, 23), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -538,15 +539,15 @@ object InteractiveTests {
 				{
 					buffer.clear()
 
-					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = showCode(DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn))
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 1), s"found: $enumeration")
 
-					val thingSerializer = showCode(Serializer.derive[Thing](isFlattenModeOn))
-					val thingDeserializer = showCode(Deserializer.derive[Thing](isFlattenModeOn))
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -561,15 +562,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[CarPart] = carPartDiscriminatorCriteria
 
-					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (0, 1), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -584,15 +585,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+					given Serializer[CarPart] =Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 11), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)
@@ -609,15 +610,15 @@ object InteractiveTests {
 
 					transparent inline given DiscriminationCriteria[Thing] = thingDiscriminatorCriteria
 
-					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](isFlattenModeOn))
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 
-					given Deserializer[CarPart] = showCode(Deserializer.derive[CarPart](isFlattenModeOn))
+					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
-					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](isFlattenModeOn)
+					val enumeration = DiscriminationCriteria.enumDiscriminatorsOf[Thing](mode)
 					assert(enumeration == (10, 11), s"found: $enumeration")
 
-					val thingSerializer = Serializer.derive[Thing](isFlattenModeOn)
-					val thingDeserializer = Deserializer.derive[Thing](isFlattenModeOn)
+					val thingSerializer = Serializer.derive[Thing](mode)
+					val thingDeserializer = Deserializer.derive[Thing](mode)
 
 					val originalMotor = Motor("polenta")
 					thingSerializer.serialize(originalMotor, writer)

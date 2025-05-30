@@ -170,7 +170,7 @@ object Serializer {
 
 	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
 
-	inline def derive[A](inline isFlattenModeOn: Boolean): Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('isFlattenModeOn) }
+	inline def derive[A](inline mode: NestedSumMatchMode): Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mode) }
 
 }
 

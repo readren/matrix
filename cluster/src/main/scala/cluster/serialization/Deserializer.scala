@@ -197,7 +197,7 @@ object Deserializer {
 
 	def apply[A](using deserializer: Deserializer[A]): Deserializer[A] = deserializer
 
-	inline def derive[A](inline isFlattenModeOn: Boolean): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('isFlattenModeOn) }
+	inline def derive[A](inline mode: NestedSumMatchMode): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('mode) }
 
 }
 
