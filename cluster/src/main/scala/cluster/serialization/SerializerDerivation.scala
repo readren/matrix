@@ -86,10 +86,12 @@ object SerializerDerivation {
 		val mode = modeExpr.valueOrAbort
 		var caseIndex: Int = 0
 
-		var previousOrdinal = -1
-		inline def takeOrdinal: Int = {
-			previousOrdinal += 1
-			previousOrdinal
+		var currentNatural = 0
+		/** First call returns 0, next call returns 1, and so on. */
+		inline def takeNatural: Int = {
+			val natural = currentNatural
+			currentNatural += 1
+			natural
 		}
 
 		def genSumCases[Sum: Type, Scrutinee: Type, Variants: Type](scrutineeExpr: Expr[Scrutinee], alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {
@@ -131,13 +133,13 @@ object SerializerDerivation {
 							CaseDef(pattern, None, rhsBuilder(bindExpr))
 						}
 
-						def buildWriteDiscriminatorExpr(defaultValue: Int): Expr[Unit] = {
+						def buildWriteDiscriminatorExpr: Expr[Unit] = {
 							val discriminatorExpr = oSumDiscriminationCriteriaSelect match {
 								case Some(discriminatorCriteriaSelect) =>
 									discriminatorCriteriaSelect.appliedToType(TypeRepr.of[headType]).asExprOf[Int]
 
 								case None =>
-									// Fall back to the default value
+									val defaultValue = if mode == NestedSumMatchMode.NEST then takeNatural else alreadyDone.size
 									Expr(defaultValue)
 							}
 							'{ $writerExpr.putUnsignedIntVlq($discriminatorExpr) }
@@ -145,7 +147,7 @@ object SerializerDerivation {
 
 						Implicits.search(TypeRepr.of[Serializer[headType]]) match {
 							case iss: ImplicitSearchSuccess =>
-								val writeDiscriminatorExpr = buildWriteDiscriminatorExpr(alreadyDone.size)
+								val writeDiscriminatorExpr = buildWriteDiscriminatorExpr
 								val serializerExpr = iss.tree.asExprOf[Serializer[headType]]
 								val caseDef = buildCaseDef(bindExpr => '{
 									$writeDiscriminatorExpr
@@ -156,7 +158,7 @@ object SerializerDerivation {
 							case _: NoMatchingImplicits =>
 								Expr.summon[Mirror.Of[headType]] match {
 									case Some('{ $m: Mirror.ProductOf[`headType`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
-										val writeDiscriminatorExpr: Expr[Unit] = buildWriteDiscriminatorExpr(if mode == NestedSumMatchMode.NEST then takeOrdinal else alreadyDone.size)
+										val writeDiscriminatorExpr: Expr[Unit] = buildWriteDiscriminatorExpr
 										val caseDef = buildCaseDef(bindExpr => '{
 											$writeDiscriminatorExpr
 											${ productSerializerBodyFor[headType, fieldTypes, fieldLabels](bindExpr, writerExpr) }
@@ -170,7 +172,7 @@ object SerializerDerivation {
 
 											case TREE =>
 												val caseDef = buildCaseDef { bindExpr =>
-													val writeDiscriminatorExpr = buildWriteDiscriminatorExpr(alreadyDone.size)
+													val writeDiscriminatorExpr = buildWriteDiscriminatorExpr
 													val cases = genSumCases[headType, headType, variantTypes](bindExpr, Nil).reverse
 													'{
 														$writeDiscriminatorExpr

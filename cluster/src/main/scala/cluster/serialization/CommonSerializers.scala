@@ -2,6 +2,7 @@ package readren.matrix
 package cluster.serialization
 
 import java.nio.charset.StandardCharsets
+import scala.collection.SortedMap
 import scala.reflect.ClassTag
 
 object CommonSerializers {
@@ -93,43 +94,70 @@ object CommonSerializers {
 
 	given Deserializer[String] = stringDeserializer
 
-	//// Set
-	given setSerializer: [E] =>(sE: Serializer[E]) => Serializer[Set[E]] =
-	(set: Set[E], writer: Serializer.Writer) => {
-		writer.putIntVlq(set.size)
-		set.foreach(e => sE.serialize(e, writer))
+
+	/// Iterable
+	given iterableSerializer: [E, Ic[e] <: Iterable[e]] =>(sE: Serializer[E]) =>Serializer[Ic[E]] {
+		override def serialize(iterable: Ic[E], writer: Serializer.Writer): Unit = {
+			writer.putUnsignedIntVlq(iterable.size)
+			iterable.foreach(e => sE.serialize(e, writer))
+		}
 	}
 
-	given setDeserializer: [E] =>(dE: Deserializer[E], vorE: ValueOrReferenceTest[E]) => Deserializer[Set[E]] =
-		(reader: Deserializer.Reader) => {
-			var count = reader.readIntVlq()
-			val builder = Set.newBuilder[E]
+	given iterableDeserializer: [E, Ic[e] <: Iterable[e]] =>(dE: Deserializer[E], vorE: ValueOrReferenceTest[E], iif: InvariantIterableFactory[Ic]) =>Deserializer[Ic[E]] {
+		override def deserialize(reader: Deserializer.Reader): Ic[E] = {
+			var count = reader.readUnsignedIntVlq()
+			val builder = iif.factory.newBuilder[E]
 			while count > 0 do {
 				builder.addOne(reader.read[E])
 				count -= 1
 			}
 			builder.result()
 		}
+	}
 
-	//// Map
-	given mapSerializer: [K, V] =>(sK: Serializer[K], sV: Serializer[V]) => Serializer[Map[K, V]] =
-	(map: Map[K, V], writer: Serializer.Writer) => {
-		writer.putIntVlq(map.size)
-		map.foreach { (k, v) =>
-			sK.serialize(k, writer)
-			sV.serialize(v, writer)
+	//// Unsorted Map
+	given mapSerializer: [K, V, Mc[k, v] <: scala.collection.Map[k, v]] =>(sK: Serializer[K], sV: Serializer[V]) =>Serializer[Mc[K, V]] {
+		override def serialize(map: Mc[K, V], writer: Serializer.Writer): Unit = {
+			writer.putIntVlq(map.size)
+			map.foreach { (k, v) =>
+				sK.serialize(k, writer)
+				sV.serialize(v, writer)
+			}
 		}
 	}
 
-	given mapDeserializer: [K, V] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V]) => Deserializer[Map[K, V]] =
-		(reader: Deserializer.Reader) => {
+	given mapDeserializer: [K, V, Mc[k, v] <: scala.collection.Map[k, v]] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V], imf: InvariantMapFactory[Mc]) =>Deserializer[Mc[K, V]] {
+		override def deserialize(reader: Deserializer.Reader): Mc[K, V] = {
 			var count = reader.readIntVlq()
-			val builder = Map.newBuilder[K, V]
+			val builder = imf.factory.newBuilder[K, V]
 			while count > 0 do {
 				builder.addOne(dK.deserialize(reader), dV.deserialize(reader))
 				count -= 1
 			}
 			builder.result()
 		}
+	}
 
+	//// Sorted Map
+	given sortedMapSerializer: [K, V, Mc[k, v] <: scala.collection.SortedMap[k, v]] =>(sK: Serializer[K], sV: Serializer[V]) =>Serializer[Mc[K, V]] {
+		override def serialize(map: Mc[K, V], writer: Serializer.Writer): Unit = {
+			writer.putIntVlq(map.size)
+			map.foreach { (k, v) =>
+				sK.serialize(k, writer)
+				sV.serialize(v, writer)
+			}
+		}
+	}
+
+	given sortedMapDeserializer: [K, V, Mc[k, v] <: scala.collection.SortedMap[k, v]] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V], imf: InvariantSortedMapFactory[Mc], oK: Ordering[K]) =>Deserializer[Mc[K, V]] {
+		override def deserialize(reader: Deserializer.Reader): Mc[K, V] = {
+			var count = reader.readIntVlq()
+			val builder = imf.factory.newBuilder[K, V]
+			while count > 0 do {
+				builder.addOne(dK.deserialize(reader), dV.deserialize(reader))
+				count -= 1
+			}
+			builder.result()
+		}
+	}
 }
