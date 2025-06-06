@@ -19,7 +19,7 @@ ThisBuild / scalacOptions ++= Seq(
 //	"-deprecation",
 	"-feature",
 	"-explain",
-//	"-Xcheck-macros",
+	"-Xcheck-macros",
 //	"-Xprint:macros",         // Show macro expansions
 //	"-Ydebug",               // Additional debug info
 //	"-Yshow-tree-ids",       // Show tree identifiers

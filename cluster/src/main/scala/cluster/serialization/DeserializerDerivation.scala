@@ -69,7 +69,7 @@ object DeserializerDerivation {
 
 						case isf: ImplicitSearchFailure =>
 							val fieldName: String = Type.valueOfConstant[headLabel].get.asInstanceOf[String]
-							report.errorAndAbort(s"The search of a given `${Type.show[Deserializer[headType]]}` for field `$fieldName` of `${Type.show[P]}`, failed: ${isf.explanation}")
+							report.errorAndAbort(s"The search of a `given ${Type.show[Deserializer[headType]]}` for the field `$fieldName` of `${Type.show[P]}` failed with: ${isf.explanation}")
 
 					}
 
@@ -111,7 +111,7 @@ object DeserializerDerivation {
 					case nmi: NoMatchingImplicits =>
 						None
 					case isf: ImplicitSearchFailure =>
-						report.errorAndAbort(isf.explanation)
+						report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[DiscriminationCriteria[Sum]]}` failed with: ${isf.explanation}")
 				}
 
 			@tailrec
@@ -124,15 +124,13 @@ object DeserializerDerivation {
 								case Some(discriminatorCriteriaSelect) =>
 									val discriminator = discriminatorCriteriaSelect.appliedToType(TypeRepr.of[headType])
 									val bindSymbol = Symbol.newBind(Symbol.spliceOwner, s"d$caseIndex", Flags.EmptyFlags, TypeRepr.of[Int])
-									val pattern = Bind(bindSymbol, Wildcard())
 									val guard = Select.overloaded(Ref(bindSymbol), "==", Nil, List(discriminator))
-
 									// Try to reduce the resulting discriminator term to a constant to be able to create a Literal pattern and avoid the guard.
 									guard.underlying match {
 										case Apply(Select(_, _), List(literal@Literal(IntConstant(_)))) =>
 											CaseDef(literal, None, deserialization.asTerm)
 										case _ =>
-											CaseDef(pattern, Some(guard), deserialization.asTerm)
+											CaseDef(Bind(bindSymbol, Wildcard()), Some(guard), deserialization.asTerm)
 									}
 
 								case None =>
@@ -172,7 +170,7 @@ object DeserializerDerivation {
 										report.errorAndAbort(s"Cannot derive Deserializer for non-ADT type ${Type.show[headType]}")
 								}
 							case isf: ImplicitSearchFailure =>
-								report.errorAndAbort(isf.explanation)
+								report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[Deserializer[headType]]}` failed with: ${isf.explanation}")
 						}
 
 					case '[EmptyTuple] =>

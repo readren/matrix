@@ -61,7 +61,7 @@ object SerializerDerivation {
 						case nmi: NoMatchingImplicits =>
 							report.errorAndAbort(s"Missing a given `${Type.show[Serializer[headType]]}` for field `$fieldName` of `${Type.show[P]}`)")
 						case isf: ImplicitSearchFailure =>
-							report.errorAndAbort(s"The search of a given `${Type.show[Serializer[headType]]}` for field `$fieldName` of `${Type.show[P]}`, failed: ${isf.explanation}")
+							report.errorAndAbort(s"The search of a given `${Type.show[Serializer[headType]]}` for field `$fieldName` of `${Type.show[P]}` failed with: ${isf.explanation}")
 					}
 
 				case ('[EmptyTuple], '[EmptyTuple]) =>
@@ -103,7 +103,7 @@ object SerializerDerivation {
 					case nmi: NoMatchingImplicits =>
 						None
 					case isf: ImplicitSearchFailure =>
-						report.errorAndAbort(isf.explanation)
+						report.errorAndAbort(s"During the derivation of a `${Type.show[Serializer[OuterSum]]}`, the search of a potential `given ${Type.show[DiscriminationCriteria[Sum]]}` failed with: ${isf.explanation}")
 				}
 
 			@tailrec
@@ -195,7 +195,7 @@ object SerializerDerivation {
 								}
 
 							case isf: ImplicitSearchFailure =>
-								report.errorAndAbort(isf.explanation)
+								report.errorAndAbort(s"During the derivation of a `${Type.show[Serializer[OuterSum]]}`, the search of a potential `given ${Type.show[Serializer[headType]]}` failed with: ${isf.explanation}")
 						}
 
 					case '[EmptyTuple] =>
