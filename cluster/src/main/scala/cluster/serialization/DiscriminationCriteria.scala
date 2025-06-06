@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.serialization
 
-import cluster.serialization.NestedSumMatchMode.{FLAT, NEST, TREE}
+import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 
 import scala.annotation.tailrec
 import scala.deriving.Mirror
@@ -24,13 +24,9 @@ object DiscriminationCriteria {
 	case class TreeEntry(discriminatorValue: Int, variantName: String, nestedVariants: Seq[Entry]) extends Entry {
 		override def toString: String = s"$variantName -> $discriminatorValue ${nestedVariants.mkString("{", ", ", "}")}"
 	}
-	/** Represents a case without discriminator that nests child cases. Apply to [[Serializer]]s only. */
-	case class NestEntry(sumTypeName: String, nestedVariants: Seq[Entry]) extends Entry {
-		override def toString: String = s"$sumTypeName -> ${nestedVariants.mkString("{", ", ", "}")}"
-	}
 
 	/**
-	 * Enumerates the associations between discriminator values variant of sum-type `S`, preserving the order and hierarchy in which the match-cases appear in the match-case construct of derived [[Serializer]]s and [[Deserializer]]s.
+	 * Enumerates the associations between discriminator values and variants of the specified sum-type `S`, preserving the order and hierarchy in which the match-cases appear in the match-case construct of [[Serializer]]s and [[Deserializer]]s derived with the specified [[NestedSumMatchMode]].
 	 *
 	 * @tparam S The sum-type (sealed trait or enum) to analyze
 	 * @return A tuple whose elements are the discrimination values.
@@ -44,14 +40,6 @@ object DiscriminationCriteria {
 		import quotes.reflect.*
 
 		val mode = modeExpr.valueOrAbort
-
-		var currentNatural = 0
-		/** First call returns 0, next call returns 1, and so on. */
-		inline def takeNatural: Int = {
-			val natural = currentNatural
-			currentNatural += 1
-			natural
-		}
 
 		def simpleNameOf[T: Type]: String = {
 			TypeRepr.of[T].typeSymbol.name
@@ -79,7 +67,7 @@ object DiscriminationCriteria {
 						def discriminatorExpr: Expr[Int] = {
 							oSumDiscriminationCriteriaSelect match {
 								case None =>
-									Expr(if mode == NEST then takeNatural else alreadyDone.size) // Note that the type is the integer singleton type corresponding to the `index` value.
+									Expr(alreadyDone.size) // Note that the type is the integer singleton type corresponding to the `index` value.
 								case Some(criteria) =>
 									criteria.appliedToType(TypeRepr.of[headVariant]).asExprOf[Int] // Note that the type is Int (not a singleton type). TODO narrow the type to the integer singleton corresponding to the discrimination value.
 							}
@@ -107,10 +95,6 @@ object DiscriminationCriteria {
 												val nestedVariants: List[Expr[Entry]] = enumNest[headVariant, nestedVariants](Nil).reverse
 												val fertileEntryExpr = '{ TreeEntry($discriminatorExpr, ${Expr(simpleNameOf[headVariant])}, ${Expr.ofSeq(nestedVariants)}) }
 												loop[tailVariants](fertileEntryExpr :: alreadyDone)
-											case NEST =>
-												val nestedVariants: List[Expr[Entry]] = enumNest[headVariant, nestedVariants](Nil).reverse
-												val nestingEntryExpr = '{ NestEntry(${Expr(simpleNameOf[headVariant])}, ${Expr.ofSeq(nestedVariants)}) }
-												loop[tailVariants](nestingEntryExpr :: alreadyDone)
 										}
 
 									case _ => report.errorAndAbort("unreachable")
@@ -140,8 +124,6 @@ object DiscriminationCriteria {
 			else remaining.head match {
 				case FlatEntry(discriminatorValue, _) =>
 					discriminatorValue *: loop(remaining.tail)
-				case NestEntry(_, nestedVariants) =>
-					loop(nestedVariants) *: loop(remaining.tail)
 				case TreeEntry(discriminatorValue, _, nestedVariants) =>
 					Tuple2(discriminatorValue, loop(nestedVariants)) *: loop(remaining.tail)
 			}

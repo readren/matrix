@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.serialization
 
-import cluster.serialization.NestedSumMatchMode.{FLAT, NEST, TREE}
+import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 import cluster.serialization.Serializer.Writer
 
 import scala.annotation.tailrec
@@ -86,14 +86,6 @@ object SerializerDerivation {
 		val mode = modeExpr.valueOrAbort
 		var caseIndex: Int = 0
 
-		var currentNatural = 0
-		/** First call returns 0, next call returns 1, and so on. */
-		inline def takeNatural: Int = {
-			val natural = currentNatural
-			currentNatural += 1
-			natural
-		}
-
 		def genSumCases[Sum: Type, Scrutinee: Type, Variants: Type](scrutineeExpr: Expr[Scrutinee], alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {
 
 			val oSumDiscriminationCriteriaSelect: Option[Select] =
@@ -133,21 +125,20 @@ object SerializerDerivation {
 							CaseDef(pattern, None, rhsBuilder(bindExpr))
 						}
 
-						def buildWriteDiscriminatorExpr: Expr[Unit] = {
+						def buildDiscriminatorWriterStatement(): Expr[Unit] = {
 							val discriminatorExpr = oSumDiscriminationCriteriaSelect match {
 								case Some(discriminatorCriteriaSelect) =>
 									discriminatorCriteriaSelect.appliedToType(TypeRepr.of[headType]).asExprOf[Int]
 
 								case None =>
-									val defaultValue = if mode == NestedSumMatchMode.NEST then takeNatural else alreadyDone.size
-									Expr(defaultValue)
+									Expr(alreadyDone.size)
 							}
 							'{ $writerExpr.putUnsignedIntVlq($discriminatorExpr) }
 						}
 
 						Implicits.search(TypeRepr.of[Serializer[headType]]) match {
 							case iss: ImplicitSearchSuccess =>
-								val writeDiscriminatorExpr = buildWriteDiscriminatorExpr
+								val writeDiscriminatorExpr = buildDiscriminatorWriterStatement()
 								val serializerExpr = iss.tree.asExprOf[Serializer[headType]]
 								val caseDef = buildCaseDef(bindExpr => '{
 									$writeDiscriminatorExpr
@@ -158,7 +149,7 @@ object SerializerDerivation {
 							case _: NoMatchingImplicits =>
 								Expr.summon[Mirror.Of[headType]] match {
 									case Some('{ $m: Mirror.ProductOf[`headType`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
-										val writeDiscriminatorExpr: Expr[Unit] = buildWriteDiscriminatorExpr
+										val writeDiscriminatorExpr: Expr[Unit] = buildDiscriminatorWriterStatement()
 										val caseDef = buildCaseDef(bindExpr => '{
 											$writeDiscriminatorExpr
 											${ productSerializerBodyFor[headType, fieldTypes, fieldLabels](bindExpr, writerExpr) }
@@ -172,19 +163,12 @@ object SerializerDerivation {
 
 											case TREE =>
 												val caseDef = buildCaseDef { bindExpr =>
-													val writeDiscriminatorExpr = buildWriteDiscriminatorExpr
+													val writeDiscriminatorExpr = buildDiscriminatorWriterStatement()
 													val cases = genSumCases[headType, headType, variantTypes](bindExpr, Nil).reverse
 													'{
 														$writeDiscriminatorExpr
 														${ Match(bindExpr.asTerm, cases).asExprOf[Unit] }
 													}.asTerm
-												}
-												loop[tailTypes](caseDef :: alreadyDone)
-
-											case NEST =>
-												val caseDef = buildCaseDef { bindExpr =>
-													val cases = genSumCases[headType, headType, variantTypes](bindExpr, Nil).reverse
-													Match(bindExpr.asTerm, cases)
 												}
 												loop[tailTypes](caseDef :: alreadyDone)
 										}

@@ -3,10 +3,10 @@ package cluster.service
 
 import cluster.*
 import cluster.serialization.MacroTools.showCode
+import cluster.serialization.NestedSumMatchMode.FLAT
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
-import readren.matrix.cluster.serialization.NestedSumMatchMode.{FLAT, NEST}
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
@@ -117,13 +117,14 @@ case class ConversationStartedWith(participantAddress: ContactAddress) extends A
 /** Message that a participant A should send to all other participants when a participant B sends him the [[HelloIExist]] message a second time, which is a symptom that B has restarted. */
 case class AnotherParticipantHasBeenRebooted(restartedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation
 
-/** Message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
+/** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
 
 /** A message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
  *
  * @param participantInfoByAddress the information, according to the sender, about each participant by its address, including the sender. */
 case class ClusterStateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Affirmation
+
 
 /** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections.
  * @param isClientSide `true` when the sender is at the client side of the discarded channel; `false` otherwise. */
@@ -134,6 +135,7 @@ case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Affirm
 case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Affirmation
 
 case class ApplicationMsg(bytes: Array[Byte]) extends Affirmation
+
 
 object Protocol {
 	import cluster.channel.Nio2Serializers.given
@@ -180,10 +182,10 @@ object Protocol {
 	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](FLAT)
 	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](FLAT)
 
-	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](NEST))
+	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](FLAT))
 	given Serializer[Protocol] = protocolSerializer
 
-	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](NEST))
+	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](FLAT))
 	given Deserializer[Protocol] = protocolDeserializer
 
 

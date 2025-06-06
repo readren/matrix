@@ -2,29 +2,27 @@ package readren.matrix
 package cluster.serialization
 
 /** The mode in which the match-case construct is implemented for derived serializers/deserializer.
- * The mode only has relevance when a sum-type is nested.
- * The match-cases corresponding to nested sum-types for which a given [[Serializer]]/[[Deserializer]] exists, are flat like the match-cases corresponding to products.
- * The mode affects the binary representation:
- * [[NestedSumMatchMode.TREE]] uses more discriminators (one per depth-level of ADT hierarchy) than the other two.
- * [[NestedSumMatchMode.FLAT]] and [[NestedSumMatchMode.NEST]] produce/interpret the same representation (have the same behavior). Only the implementation differs and only for the serializers. For deserializers, these two modes are indistinct. */
-type NestedSumMatchMode = Int
+ * The mode only has relevance when the sum-type has a nested sum-type.
+ * The mode affects the binary representation and whether the [[DiscriminationCriteria]] should provide discriminator values for nested sum-types:
+ * - In the [[NestedSumMatchMode.FLAT]] mode, nested sum-types don't require a discriminator value, and only one discriminator leads the binary representation.
+ * - In the [[NestedSumMatchMode.TREE]] mode, nested sum-types require a discriminator value, and the binary representation is lead with as many discriminators as the depth of the variant in the ADT hierarchy.
+ * Note that, independently of the mode, nested sum-types for which a given [[Serializer]]/[[Deserializer]] exists require that the [[DiscriminationCriteria]] provide a value for the sum-type which will lead the binary representation of its child variants.
+ * */
+type NestedSumMatchMode = Boolean
 
 object NestedSumMatchMode {
-	/** All the match-cases of the generated code are flat and at depth zero.
+	/** The generated match-case construct has a flat structure. All the cases at zero depth.
 	 * Besides the product-types, only the sum-types for which a Serializer/Deserializer is given require a discriminator.
-	 * Only one discriminator leads the binary representation of products that aren't part of a nested sum-type for which a Serializer/Deserializer is given.  
+	 * Only one discriminator leads the binary representation of products, unless it is a child of a nested sum-type for which a [[Serializer]]/[[Deserializer]] is given.
+	 * This mode is more efficient in both binary representation size and execution speed.
 	 **/
-	inline val FLAT: 0 = 0
+	inline val FLAT: true = true
 
-	/** For serializers, the depth of the generated match-cases equals the depth of the corresponding variant in the ADT hierarchy.
-	 * For deserializer, all the match-cases of the generated code are flat and at depth zero
-	 * Besides the product-types, only the sum-types for which a Serializer/Deserializer is given require a discriminator.
-	 * Only one discriminator leads the binary representation of products that aren't part of a nested sum-type for which a Serializer/Deserializer is given. */  
-	inline val NEST: 1 = 1
-
-	/** The depth of the generated match-cases equals the depth of the corresponding variant in the ADT hierarchy.
+	/**
+	 * The generated match-case construct has a tree structure resembling the type hierarchy.
 	 * Both product-types and nested sum-types require a discriminator.
-	 * The number of leading discriminators in the binary representation equals the depth of the product-type's depth in the ADT hierarchy. */
-	inline val TREE: 2 = 2
+	 * The number of leading discriminators in the binary representation equals the depth of the product-type's depth in the ADT hierarchy.
+	 * The only advantage of this mode is that the binary representation is independent on whether given [[Serializer]]/[[Deserializer]] exists for nested sum-types. */
+	inline val TREE: false = false
 }
 

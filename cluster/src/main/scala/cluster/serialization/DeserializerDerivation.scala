@@ -3,6 +3,8 @@ package cluster.serialization
 
 import cluster.serialization.Deserializer.Reader
 
+import readren.matrix.cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
+
 import scala.annotation.tailrec
 import scala.deriving.Mirror
 import scala.quoted.{Expr, Quotes, Type}
@@ -99,7 +101,7 @@ object DeserializerDerivation {
 	private def sumDeserializerBodyFor[OuterSum: Type, OuterVariants: Type](readerExpr: Expr[Reader], modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[OuterSum] = {
 		import quotes.reflect.*
 
-		val isFlattenModeOn = modeExpr.valueOrAbort != NestedSumMatchMode.TREE
+		val mode = modeExpr.valueOrAbort
 		var caseIndex = 0
 
 		def genSumCases[Sum: Type, Variants: Type](alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {
@@ -154,16 +156,16 @@ object DeserializerDerivation {
 										loop[tailTypes](caseDef :: alreadyDone)
 
 									case Some('{ $m: Mirror.SumOf[`headType`] {type MirroredElemTypes = variantTypes} }) =>
-										if isFlattenModeOn then {
-											loop[tailTypes](genSumCases[headType, variantTypes](alreadyDone))
-										} else {
-											val nestedCases = genSumCases[headType, variantTypes](Nil).reverse
-											val nestedScrutineeExpr: Expr[Int] = '{ $readerExpr.readUnsignedIntVlq() }
-											val deserialization = Match(nestedScrutineeExpr.asTerm, nestedCases).asExprOf[headType]
-											val caseDef = buildCaseDef(deserialization)
-											loop[tailTypes](caseDef :: alreadyDone)
+										mode match {
+											case FLAT =>
+												loop[tailTypes](genSumCases[headType, variantTypes](alreadyDone))
+											case TREE =>
+												val nestedCases = genSumCases[headType, variantTypes](Nil).reverse
+												val nestedScrutineeExpr: Expr[Int] = '{ $readerExpr.readUnsignedIntVlq() }
+												val deserialization = Match(nestedScrutineeExpr.asTerm, nestedCases).asExprOf[headType]
+												val caseDef = buildCaseDef(deserialization)
+												loop[tailTypes](caseDef :: alreadyDone)
 										}
-
 
 									case _ =>
 										// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
