@@ -1,15 +1,14 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.Transmitter
-import cluster.channel.Transmitter.{Delivered, NotDelivered}
+import cluster.channel.Transmitter.NotDelivered
 import cluster.misc.CommonExtensions.*
+import cluster.serialization.ProtocolVersion
 import cluster.service.ContactCard.*
 import cluster.service.Protocol.MembershipStatus.{ASPIRANT, MEMBER}
-import cluster.service.Protocol.{ContactAddress, Instant, MembershipStatus}
+import cluster.service.Protocol.{CommunicationStatus, Instant, RequestId}
 import common.CompileTime.getTypeName
 
-import readren.matrix.cluster.serialization.ProtocolVersion
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
@@ -30,9 +29,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		updateClusterCreatorProposalIfAppropriate()
 	}
 
-	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit = {
-		if isReconnection then delegate.sendPeerAHelloIAmBack(onComplete)
-		else delegate.sendPeerAHello(onComplete)
+	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean): Unit = {
+		if isReconnection then delegate.sendPeerAHelloIAmBack()
+		else delegate.sendPeerAHello()
 	}
 
 
@@ -80,7 +79,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			senderDelegate.incitePeerToResolveMembershipConflict()
 			true
 
-		case rmc: ResolveMembershipConflict =>
+		case rmc: WaitMyMembershipStatusIs =>
 			senderDelegate.handleMessage(rmc)
 			true
 
@@ -126,45 +125,6 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			???
 			true
 	}
-
-	override def handleResponseMessageFrom(senderDelegate: CommunicableDelegate, response: Response, toRequestType: String): Boolean = response match {
-
-		case Welcome(_, membershipStatus, versionsSupportedByPeer, peerCreationInstant, otherParticipantsKnowByPeer) =>
-			// override the peer's membership status and supported versions with the values provided by the source of truth.
-			senderDelegate.updateState(membershipStatus, versionsSupportedByPeer, peerCreationInstant)
-			// Create a delegate for each participant that I did not know.
-			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
-			true
-
-		case SupportedVersionsMismatch(requestId) =>
-			// TODO use the requestId
-			senderDelegate.handleMessageSupportedVersionsMismatch()
-
-		case jag: JoinApprovalGranted =>
-			???
-
-		case jg: JoinGranted =>
-			for (participantAddress, participantInfo) <- jg.participantInfoByItsAddress do {
-				if clusterService.delegateByAddress.contains(participantAddress) then {
-
-				}
-			}
-			clusterService.switchToMember(jg.clusterCreationInstant)
-			true
-
-		case jr: JoinRejected =>
-			scribe.info(s"A request to join the cluster was rejected because: ${jr.reason}")
-			if jr.youHaveToRetry then sendRequestToJoinTheClusterIfAppropriate()
-			true
-
-		case YesImAInSyncWithYou(requestId) =>
-			// TODO use the requestId, remove the isPotentiallyOutOfSync flag.
-			senderDelegate.isPotentiallyOutOfSync = false
-			true
-
-
-	}
-
 
 	/**
 	 * As long as this [[ClusterService]]'s membership status is [[ASPIRANT]], this method must be called whenever:
@@ -222,34 +182,81 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 
 	private var aRequestToJoinIsOnTheWay: Boolean = false
 
-	private def sendRequestToJoinTheClusterIfAppropriate(): Unit = {
-		// if a request isn't on the way, a cluster exists, and the communicability of all the delegates is stable, then take the communicable delegate of the member with the lowest [[ContactCard]] and send a request to join to it
+	private[service] def sendRequestToJoinTheClusterIfAppropriate(): Unit = {
+		// if a request isn't on the way, a cluster exists, and the communicability of all the delegates is stable, then send a request to join to the member with the lowest [[ContactCard]]
 		if !aRequestToJoinIsOnTheWay && clusterService.doesAClusterExist && clusterService.delegateByAddress.iterator.forall(_._2.isStable) then {
 			clusterService.delegateByAddress.iterator
 				.collect { case (_, cd: CommunicableDelegate) if cd.peerMembershipStatusAccordingToMe eq MEMBER => cd }
 				.minByOption(_.contactCard)(using ContactCard.ordering)
-				.foreach { chosenMember =>
+				.foreach { chosenMemberDelegate =>
 					aRequestToJoinIsOnTheWay = true
 					val joinTokenByMember = clusterService.delegateByAddress.iterator
 						.collect { case (_, delegate) if delegate.peerMembershipStatusAccordingToMe eq MEMBER => delegate.peerAddress -> 0L } // TODO add token logic or remove them.
 						.toMap
 
-					chosenMember.sendPeerARequestToJoin(joinTokenByMember) { report =>
-						val tryAgainIfAppropriate: Runnable = { () =>
+					// send to the chosen member a request to join the cluster
+					chosenMemberDelegate.askPeer(new chosenMemberDelegate.OutgoingRequestExchange[RequestToJoin] {
+						override def buildRequest(requestId: RequestId): RequestToJoin = RequestToJoin(requestId, joinTokenByMember)
+
+						override def onResponse(response: Response): Boolean = {
 							aRequestToJoinIsOnTheWay = false
-							if clusterService.getMembershipScopedBehavior eq this then sendRequestToJoinTheClusterIfAppropriate()
+							clusterService.getMembershipScopedBehavior match {
+								case ab: AspirantBehavior =>
+									response match {
+										case jg: JoinGranted =>
+											// verify we are in sync and, if not, start actions to be so. 
+											var weAreInSync = true
+											for (participantAddress, participantInfoAccordingToChosenMember) <- jg.participantInfoByItsAddress do {
+												clusterService.delegateByAddress.getOrElse(participantAddress, null) match {
+													case null =>
+														if participantAddress == clusterService.myAddress then {
+															if participantInfoAccordingToChosenMember.membershipStatus ne clusterService.myMembershipStatus then {
+																weAreInSync = false
+																chosenMemberDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my membership state.")
+															}
+														} else {
+															weAreInSync = false
+															clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantAddress)
+														}
+													case participantDelegate: CommunicableDelegate =>
+														if participantInfoAccordingToChosenMember.membershipStatus ne participantDelegate.peerMembershipStatusAccordingToMe then {
+															weAreInSync = false
+															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my memory about the membership-status of the participant at $participantAddress.")
+														}
+													case participantDelegate: IncommunicableDelegate =>
+														if participantInfoAccordingToChosenMember.communicationStatus eq CommunicationStatus.HANDSHOOK then {
+															weAreInSync = false
+															clusterService.connectToAndThenStartConversationWithParticipant(participantDelegate, false)
+														}
+												}
+											}
+											if weAreInSync then clusterService.switchToMember(jg.clusterCreationInstant)
+											true
+
+										case jr: JoinRejected =>
+											scribe.info(s"A request to join the cluster was rejected because: ${jr.reason}")
+											if jr.youHaveToRetry then ab.sendRequestToJoinTheClusterIfAppropriate()
+											true
+									}
+								case _ =>
+									scribe.info(s"The response $response to a ${getTypeName[RequestToJoin]} was received but disregarded as I am not currently an aspirant.")
+									true
+							}
 						}
-						report match {
-							case Delivered =>
-								sequencer.scheduleSequentially(sequencer.newDelaySchedule(clusterService.config.joinCheckDelay))(tryAgainIfAppropriate)
-							case nd: NotDelivered =>
-								sequencer.executeSequentially {
-									chosenMember.reportFailure(nd)
-									chosenMember.restartChannel(nd)
-									tryAgainIfAppropriate.run()
-								}
+
+						override def onTransmissionError(request: RequestToJoin, nd: NotDelivered): Unit = {
+							aRequestToJoinIsOnTheWay = false
+							chosenMemberDelegate.reportTransmissionFailure(nd)
+							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to participant at ${chosenMemberDelegate.peerAddress}: $nd")
+							sendRequestToJoinTheClusterIfAppropriate()
 						}
-					}
+
+						override def onTimeout(request: RequestToJoin): Unit = {
+							aRequestToJoinIsOnTheWay = false
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerAddress}.")
+							sendRequestToJoinTheClusterIfAppropriate()
+						}
+					})
 				}
 		}
 	}

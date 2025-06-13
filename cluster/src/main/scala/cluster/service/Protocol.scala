@@ -47,7 +47,7 @@ case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set
  * */
 case class SupportedVersionsMismatch(override val toRequest: RequestId) extends Response
 
-/** Response to the [[HelloIExist]] message when there is version compatibility.
+/** Response to the [[HelloIExist]] and [[HelloIAmBack]] messages when there is version compatibility.
  *
  * @param myMembershipStatus the [[MembershipStatus]] of the sender.
  * @param versionsISupport the versions supported by the sender.
@@ -86,7 +86,7 @@ case class RequestToJoin(override val requestId: RequestId, joinTokenByMemberAdd
 
 
 /** Response to the [[RequestToJoin]] message when the join is successful.
- * @param participantInfoByItsAddress the state of all the participant according to the sender, including hiw own view of himself (which is the single source of that information)
+ * @param participantInfoByItsAddress the state of all the participant according to the sender, including his own view of himself (which is the single source of that information)
  */
 case class JoinGranted(override val toRequest: RequestId, clusterCreationInstant: Instant, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response
 
@@ -95,10 +95,12 @@ case class JoinGranted(override val toRequest: RequestId, clusterCreationInstant
  * @param reason motive of the rejection. */
 case class JoinRejected(override val toRequest: RequestId, youHaveToRetry: Boolean, reason: String) extends Response
 
-/** Response to [[ClusterCreatorProposal]] when the receiver knows of the existence of a cluster, and to [[RequestToJoin]] when the receiver's is an aspirant.
- * @param membershipStatusOfParticipantsIKnow the [[MembershipStatus]] of the participants that the sender knows, including the receiver.
+/**
+ * Informs the receiver the membership-status of the sender and reveals his memory of the membership-status of other participants.
+ * Sent by participant A to participant B when A notices that B's memory of the membership-status of A is incorrect. For example, it is sent by the receiver of a [[ClusterCreatorProposal]] when he knows of the existence of a cluster, and by the receiver of a [[RequestToJoin]] when he is an aspirant.
+ * @param membershipStatusOfParticipantsIKnow the [[MembershipStatus]] of the participants that the sender knows according to him, including the receiver.
  */
-case class ResolveMembershipConflict(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Affirmation
+case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Affirmation
 
 /** The message that a participant should send to as many other participants as possible before leaving the network or shooting down. */
 case class Farewell(myCreationInstant: Instant) extends Affirmation
@@ -107,7 +109,7 @@ case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, gonePa
 
 case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Request
 
-case class YesImAInSyncWithYou(override val toRequest: RequestId) extends Response
+case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembershipStatusAccordingToMeMatches: Boolean) extends Response
 
 /** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Affirmation
@@ -120,7 +122,7 @@ case class AnotherParticipantHasBeenRebooted(restartedParticipantAddress: Contac
 /** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
 
-/** A message that every participant must send when his state, or his viewpoint of the state of other participant, changes.
+/** A message that every participant must send when his state, or his viewpoint of another participant's state, changes.
  *
  * @param participantInfoByAddress the information, according to the sender, about each participant by its address, including the sender. */
 case class ClusterStateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Affirmation
@@ -148,7 +150,7 @@ object Protocol {
 	type Instant = Long
 	type RequestId = Int
 
-	val UNSPECIFIED_INSTANT = Long.MaxValue
+	val UNSPECIFIED_INSTANT: Instant = Long.MaxValue
 
 	enum MembershipStatus {
 		case UNKNOWN, ASPIRANT, MEMBER
@@ -166,7 +168,7 @@ object Protocol {
 	 * Information that tells how a participant sees another participant
 	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information */
-	case class ParticipantInfo(supportedVersions: Set[ProtocolVersion], communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
+	case class ParticipantInfo(communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
 	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo](FLAT)
 	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](FLAT)
 
@@ -203,11 +205,11 @@ object Protocol {
 				case _: RequestToJoin => 19
 				case _: JoinGranted => 20
 				case _: JoinRejected => 21
-				case _: ResolveMembershipConflict => 22
+				case _: WaitMyMembershipStatusIs => 22
 				case _: Farewell => 23
 				case _: AnotherParticipantGone => 24
 				case _: AreYouInSyncWithMe => 25
-				case _: YesImAInSyncWithYou => 26
+				case _: AreWeInSyncResponse => 26
 				case _: ILostCommunicationWith => 27
 				case _: ConversationStartedWith => 28
 				case _: AnotherParticipantHasBeenRebooted => 29

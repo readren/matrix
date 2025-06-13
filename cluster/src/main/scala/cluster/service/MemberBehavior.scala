@@ -26,7 +26,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit =
 		() // TODO
 
-	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean)(onComplete: Transmitter.Report => Unit): Unit =
+	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean): Unit =
 		() // TODO
 
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
@@ -67,7 +67,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case rtj: RequestToJoin =>
 			???
 
-		case rmc: ResolveMembershipConflict =>
+		case rmc: WaitMyMembershipStatusIs =>
 			senderDelegate.handleMessage(rmc)
 			true
 
@@ -101,30 +101,5 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case WeHaveToResolveBrainJoin(peerViewPoint) =>
 			???
 			true
-	}
-
-	override def handleResponseMessageFrom(senderDelegate: CommunicableDelegate, response: Response, toRequestType: String): Boolean = response match {
-		case w: Welcome =>
-			scribe.warn(s"The participant at ${senderDelegate.peerAddress} sent me a ${getTypeName[Welcome]} despite I consider myself a member of a cluster.")
-			true
-
-		case SupportedVersionsMismatch(requestId) =>
-			senderDelegate.handleMessageSupportedVersionsMismatch()
-
-		case jag: JoinApprovalGranted =>
-			???
-
-		case jg: JoinGranted =>
-			???
-
-		case jr: JoinRejected =>
-			???
-
-		case YesImAInSyncWithYou(requestId) =>
-			senderDelegate.isPotentiallyOutOfSync = false
-			true
-
-
-
 	}
 }
