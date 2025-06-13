@@ -22,6 +22,7 @@ sealed trait Affirmation extends InitiationMsg
 
 /** A message that asks for a response from the receiver, but may affirm something too.  */
 sealed trait Request extends InitiationMsg {
+	type ResponseType <: Response
 	val requestId: RequestId
 }
 /** A message that responds a [[Request]] message to that [[Request]]'s sender. */
@@ -35,12 +36,16 @@ sealed trait Response extends Protocol {
  * 	The receiver may assume that the sender is an aspirant.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param otherParticipantsIKnow the address of the participants known by the sender, not including itself. */
-case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, otherParticipantsIKnow: Set[ContactAddress]) extends Request
+case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, otherParticipantsIKnow: Set[ContactAddress]) extends Request {
+	override type ResponseType = Welcome | SupportedVersionsMismatch
+}
 
 /** First message that a participant must send to the peer after a successful reconnection to allow the peer to update his viewpoint of the sender.
  * Aspirants reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
  * The reply from members depends on the sender membership. */
-case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus, myCreationInstant: Instant) extends Request
+case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus, myCreationInstant: Instant) extends Request{
+	override type ResponseType = Welcome | SupportedVersionsMismatch
+}
 
 /**
  * Response to the [[HelloIExist]] message that is sent by a participant to indicate that it does not support any of the [[ProtocolVersion]]s specified in the received [[HelloIExist]] message.
@@ -70,7 +75,9 @@ case class ICreatedACluster(myViewpoint: MemberViewpoint) extends Affirmation
 
 /** Command message that the aspirant has to send to each member of the cluster to get its permission to join. */
 @deprecated
-case class RequestApprovalToJoin(override val requestId: RequestId) extends Request
+case class RequestApprovalToJoin(override val requestId: RequestId) extends Request {
+	override type ResponseType = JoinApprovalGranted
+}
 
 /** Response to the [[RequestApprovalToJoin]]
  *
@@ -82,7 +89,9 @@ case class JoinApprovalGranted(override val toRequest: RequestId, joinToken: Joi
 /** Command message that an aspirant has to send to any member in order to join the cluster.
  *
  * @param joinTokenByMemberAddress the join-token provided by each approving member. */
-case class RequestToJoin(override val requestId: RequestId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request
+case class RequestToJoin(override val requestId: RequestId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
+	override type ResponseType = JoinGranted | JoinRejected
+}
 
 
 /** Response to the [[RequestToJoin]] message when the join is successful.
@@ -107,7 +116,9 @@ case class Farewell(myCreationInstant: Instant) extends Affirmation
 
 case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends Affirmation
 
-case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Request
+case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Request {
+	override type ResponseType = AreWeInSyncResponse
+}
 
 case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembershipStatusAccordingToMeMatches: Boolean) extends Response
 

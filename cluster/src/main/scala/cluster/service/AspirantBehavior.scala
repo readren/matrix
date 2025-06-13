@@ -36,18 +36,6 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 
 
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
-		case am: ApplicationMsg =>
-			// TODO
-			true
-
-		case hb: Heartbeat =>
-			// TODO
-			true
-
-		case sc: ClusterStateChanged =>
-			// TODO
-			true
-
 		case hie: HelloIExist =>
 			senderDelegate.handleMessage(hie)
 
@@ -124,6 +112,18 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case WeHaveToResolveBrainJoin(peerViewPoint) =>
 			???
 			true
+
+		case hb: Heartbeat =>
+			// TODO
+			true
+
+		case sc: ClusterStateChanged =>
+			// TODO
+			true
+
+		case am: ApplicationMsg =>
+			// TODO
+			true
 	}
 
 	/**
@@ -196,15 +196,16 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 
 					// send to the chosen member a request to join the cluster
 					chosenMemberDelegate.askPeer(new chosenMemberDelegate.OutgoingRequestExchange[RequestToJoin] {
+						
 						override def buildRequest(requestId: RequestId): RequestToJoin = RequestToJoin(requestId, joinTokenByMember)
 
-						override def onResponse(response: Response): Boolean = {
+						override def onResponse(request: RequestToJoin, response: request.ResponseType): Boolean = {
 							aRequestToJoinIsOnTheWay = false
 							clusterService.getMembershipScopedBehavior match {
 								case ab: AspirantBehavior =>
 									response match {
 										case jg: JoinGranted =>
-											// verify we are in sync and, if not, start actions to be so. 
+											// verify we are in sync and, if not, start actions to be so.
 											var weAreInSync = true
 											for (participantAddress, participantInfoAccordingToChosenMember) <- jg.participantInfoByItsAddress do {
 												clusterService.delegateByAddress.getOrElse(participantAddress, null) match {
@@ -251,9 +252,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 
-						override def onTimeout(request: RequestToJoin): Unit = {
+						override def onTimeout(session: Session): Unit = {
 							aRequestToJoinIsOnTheWay = false
-							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerAddress}.")
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `${session.request}` to participant at ${chosenMemberDelegate.peerAddress}.")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 					})

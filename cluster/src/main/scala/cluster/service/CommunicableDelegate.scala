@@ -46,7 +46,7 @@ class CommunicableDelegate(
 	private var lastClusterCreatorProposalSentToPeer: ContactAddress | Null = null
 
 	private var lastRequestId: RequestId = 0
-	private val requestExchangeByRequestId: mutable.LongMap[(sequencer.Schedule, OutgoingRequestExchange[?])] = mutable.LongMap.empty
+	private val requestExchangeStateByRequestId: mutable.LongMap[OutgoingRequestExchange[?]#Session] = mutable.LongMap.empty
 
 	override def isCommunicable: Boolean = true
 
@@ -85,11 +85,11 @@ class CommunicableDelegate(
 		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 			case responseFromPeer: Response =>
 				sequencer.executeSequentially {
-					requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
+					requestExchangeStateByRequestId.remove(responseFromPeer.toRequest).fold {
 						scribe.warn(s"I have received a response from the participant at $peerAddress to a request I haven't made: response = $responseFromPeer")
-					} { (timeoutSchedule, requestExchange) =>
-						sequencer.cancel(timeoutSchedule)
-						if requestExchange.onResponse(responseFromPeer) then receiveNextMessages()
+					} { state =>
+						sequencer.cancel(state.timeoutSchedule)
+						if state.exchange.asInstanceOf[OutgoingRequestExchange[Request]].onResponse(state.request, responseFromPeer.asInstanceOf[state.request.ResponseType]) then receiveNextMessages()
 						else onTerminatingMessageReceived(responseFromPeer)
 					}
 				}
@@ -136,34 +136,45 @@ class CommunicableDelegate(
 	 * - to build the requesting message to be sent to the peer
 	 * - and to handle each of the three mutually exclusive outcomes.
 	 * Exactly one of the `on*` methods is called once, and the call occurs within a [[sequencer.executeSequentially]] block. */
-	private[service] abstract class OutgoingRequestExchange[R <: Request](val responseTimeout: MilliDuration = config.responseTimeout) {
+	private[service] abstract class OutgoingRequestExchange[Q <: Request](val responseTimeout: MilliDuration = config.responseTimeout) { thisOutgoingRequestExchange =>
+
+		class Session(val request: Q, val timeoutSchedule: sequencer.Schedule) {
+			def exchange: thisOutgoingRequestExchange.type = thisOutgoingRequestExchange
+		}
+
+		def newSession(request: Q, timeoutSchedule: sequencer.Schedule): Session = new Session(request, timeoutSchedule);
+
 		/** The implementation should build a [[Request]] with the specified [[RequestId]].
 		 * Called within a [[sequencer.executeSequentially]] block. */
-		def buildRequest(requestId: RequestId): R
+		def buildRequest(requestId: RequestId): Q
 
 		/** Called (within a [[sequencer.executeSequentially]] block) if a response to the request is received.
 		 * Should return `true` for the conversation with the peer to continue. */
-		def onResponse(response: Response): Boolean
+		def onResponse(request: Q, response: request.ResponseType): Boolean
 
 		/** Called (within a [[sequencer.executeSequentially]] block) if the transmission of the request fails. */
-		def onTransmissionError(request: R, error: NotDelivered): Unit
+		def onTransmissionError(request: Q, error: NotDelivered): Unit
 
 		/** Called (within a [[sequencer.executeSequentially]] block) if no response to the request is received within the time passed to the `responseTimeout` parameter of the [[askPeer]] method. */
-		def onTimeout(request: R): Unit
+		def onTimeout(state: Session): Unit
 	}
 
 	/** Sends a [[Request]] to the peer and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
-	private[service] def askPeer[R <: Request](requestExchange: OutgoingRequestExchange[R]): Unit = {
-		val timeoutSchedule = sequencer.newDelaySchedule(requestExchange.responseTimeout)
+	private[service] def askPeer[Q <: Request](requestExchange: OutgoingRequestExchange[Q]): Unit = {
 		lastRequestId += 1
 		val requestId = lastRequestId
 		val request = requestExchange.buildRequest(requestId)
 		transmitToPeer(request) {
 			case Delivered =>
 				sequencer.executeSequentially {
-					requestExchangeByRequestId.put(requestId, (timeoutSchedule, requestExchange))
+					val timeoutSchedule = sequencer.newDelaySchedule(requestExchange.responseTimeout)
+					val exchangeSession = requestExchange.newSession(request, timeoutSchedule)
+					requestExchangeStateByRequestId.put(requestId, exchangeSession)
 					sequencer.scheduleSequentially(timeoutSchedule) { () =>
-						requestExchangeByRequestId.remove(requestId).foreach(_._2.asInstanceOf[OutgoingRequestExchange[R]].onTimeout(request))
+						requestExchangeStateByRequestId.remove(requestId).foreach { removedState =>
+							assert(removedState eq exchangeSession)
+							exchangeSession.exchange.onTimeout(exchangeSession)
+						}
 					}
 				}
 			case nd: NotDelivered =>
@@ -267,15 +278,17 @@ class CommunicableDelegate(
 		askPeer(new OutgoingRequestExchange[AreYouInSyncWithMe] {
 			override def buildRequest(requestId: RequestId): AreYouInSyncWithMe = AreYouInSyncWithMe(requestId, clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe)
 
-			override def onResponse(response: Response): Boolean = response match {
+			override def onResponse(request: AreYouInSyncWithMe, response: request.ResponseType): Boolean = response match {
 				case AreWeInSyncResponse(_, myMembershipStatusAccordingToPeerMatches) =>
 					if !myMembershipStatusAccordingToPeerMatches then incitePeerToResolveMembershipConflict()
 					true
 			}
 
-			override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit = restartChannel(why + s" and when trying to ask it `$request` the transmission failed with: $error")
+			override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit =
+				restartChannel(why + s" and when trying to ask it `$request` the transmission failed with: $error")
 
-			override def onTimeout(request: AreYouInSyncWithMe): Unit = restartChannel(why + s" and when asked `$request` he didn't answer within $responseTimeout millis.")
+			override def onTimeout(session: Session): Unit =
+				restartChannel(why + s" and when asked `${session.request}` he didn't answer within $responseTimeout millis.")
 		})
 	}
 
@@ -297,7 +310,7 @@ class CommunicableDelegate(
 			override def buildRequest(requestId: RequestId): AreYouInSyncWithMe =
 				AreYouInSyncWithMe(requestId, clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe)
 
-			override def onResponse(response: Response): Boolean = response match {
+			override def onResponse(request: AreYouInSyncWithMe, response: request.ResponseType): Boolean = response match {
 				case AreWeInSyncResponse(_, myMembershipStatusAccordingToPeerMatches) =>
 					if !myMembershipStatusAccordingToPeerMatches then incitePeerToResolveMembershipConflict()
 					true
@@ -306,7 +319,7 @@ class CommunicableDelegate(
 			override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit =
 				clusterService.removeDelegate(thisCommunicableDelegate, true)
 
-			override def onTimeout(request: AreYouInSyncWithMe): Unit =
+			override def onTimeout(session: Session): Unit =
 				clusterService.removeDelegate(thisCommunicableDelegate, true)
 		})
 	}
@@ -314,10 +327,15 @@ class CommunicableDelegate(
 	/** A partially implemented [[OutgoingRequestExchange]] that:
 	 *  - retries a single time if a non-response timeout occurs,
 	 *  - and causes a channel restart if either the transmission fails or a non-response timeouts occurs twice. */
-	private[service] abstract class SingleRetryOutgoingRequestExchange[R <: Request](responseTimeout: MilliDuration = config.responseTimeout, retryDelay: MilliDuration = config.requestRetryStartingDelay) extends OutgoingRequestExchange[R](responseTimeout) {
-		private var isFirstAttempt = true
+	private[service] abstract class SingleRetryOutgoingRequestExchange[Q <: Request](responseTimeout: MilliDuration = config.responseTimeout, retryDelay: MilliDuration = config.requestRetryStartingDelay) extends OutgoingRequestExchange[Q](responseTimeout) {
 
-		override def onTransmissionError(request: R, error: NotDelivered): Unit = {
+		override def newSession(request: Q, timeoutSchedule: sequencer.Schedule): Session = new SingleRetrySession(request, timeoutSchedule)
+
+		private class SingleRetrySession(request: Q, timeoutSchedule: sequencer.Schedule) extends Session(request, timeoutSchedule) {
+			var isFirstAttempt = true
+		}
+
+		override def onTransmissionError(request: Q, error: NotDelivered): Unit = {
 			reportTransmissionFailure(error)
 			restartChannel(s"Transmission failure while trying to send `$request` to participant at $peerAddress: $error")
 		}
@@ -325,13 +343,14 @@ class CommunicableDelegate(
 		/** Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
 		 * If the peer is alive but not responding (e.g., deadlock, overload), retries would not help.
 		 * In conclusion, no more than a retry is needed. */
-		override def onTimeout(request: R): Unit = {
-			if isFirstAttempt then {
-				isFirstAttempt = false
+		override def onTimeout(session: Session): Unit = {
+			val singleRetrySession = session.asInstanceOf[SingleRetrySession]
+			if singleRetrySession.isFirstAttempt then {
+				singleRetrySession.isFirstAttempt = false
 				val schedule: sequencer.Schedule = sequencer.newDelaySchedule(retryDelay)
 				sequencer.scheduleSequentially(schedule) { () => askPeer(this) }
 			}
-			else restartChannel(s"Non-response timeout after sending the request `$request` to participant at $peerAddress.")
+			else restartChannel(s"Non-response timeout after sending the request `${session.request}` to participant at $peerAddress.")
 		}
 	}
 
@@ -340,12 +359,16 @@ class CommunicableDelegate(
 			override def buildRequest(requestId: RequestId): HelloIExist =
 				HelloIExist(requestId, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses)
 
-			override def onResponse(response: Response): Boolean = handleHelloResponse(response)
-		})
-	}
+			override def onResponse(request: HelloIExist, response: request.ResponseType): Boolean = response match {
+				case welcome: Welcome =>
+					handleWelcome(welcome, false)
+					true
 
-	private[service] def sendPeerAWelcome(requestId: RequestId): Unit = {
-		transmitToPeer(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
+				case svm: SupportedVersionsMismatch =>
+					handleSupportedVersionsMismatch(svm)
+					false
+			}
+		})
 	}
 
 	private[service] def sendPeerAHelloIAmBack(): Unit = {
@@ -353,24 +376,35 @@ class CommunicableDelegate(
 			override def buildRequest(requestId: RequestId): HelloIAmBack =
 				HelloIAmBack(requestId, clusterService.config.versionsISupport, clusterService.myMembershipStatus, clusterService.myCreationInstant)
 
-			override def onResponse(response: Response): Boolean =  handleHelloResponse(response)
+			override def onResponse(request: HelloIAmBack, response: request.ResponseType): Boolean = response match {
+				case welcome: Welcome =>
+					handleWelcome(welcome, true)
+					true
+
+				case svm: SupportedVersionsMismatch =>
+					handleSupportedVersionsMismatch(svm)
+					false
+			}
 		})
 	}
 
-	private def handleHelloResponse(response: Response): Boolean = response match {
+	private def handleWelcome(welcome: Welcome, isReconnection: Boolean): Unit = {
+		// override the peer's membership status and supported versions with the values provided by the source of truth.
+		updateState(welcome.myMembershipStatus, welcome.versionsISupport, welcome.myCreationInstant)
+		assert(agreedVersion != ProtocolVersion.NOT_SPECIFIED)
+		// Create a delegate for each participant that I did not know.
+		clusterService.createADelegateForEachParticipantIDoNotKnowIn(welcome.otherParticipants)
+		// notify
+		clusterService.onConversationStarted(peerAddress)
+	}
 
-		case Welcome(_, membershipStatus, versionsSupportedByPeer, peerCreationInstant, otherParticipantsKnowByPeer) =>
-			// override the peer's membership status and supported versions with the values provided by the source of truth.
-			updateState(membershipStatus, versionsSupportedByPeer, peerCreationInstant)
-			assert(agreedVersion != ProtocolVersion.NOT_SPECIFIED)
-			// Create a delegate for each participant that I did not know.
-			clusterService.createADelegateForEachParticipantIDoNotKnowIn(otherParticipantsKnowByPeer)
-			true
+	private def handleSupportedVersionsMismatch(svm: SupportedVersionsMismatch): Unit = {
+		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
+		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
+	}
 
-		case _: SupportedVersionsMismatch =>
-			clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
-			replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
-			false
+	private[service] def sendPeerAWelcome(requestId: RequestId): Unit = {
+		transmitToPeer(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
 	}
 
 	/** Incites the peer to update his memory of my membership-status and re-check his memory of the membership-status of other participants that differs from my memory. */
