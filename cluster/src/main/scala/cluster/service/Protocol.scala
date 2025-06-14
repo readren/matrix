@@ -125,7 +125,7 @@ case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembership
 /** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Affirmation
 
-case class ConversationStartedWith(participantAddress: ContactAddress) extends Affirmation
+case class ConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends Affirmation
 
 /** Message that a participant A should send to all other participants when a participant B sends him the [[HelloIExist]] message a second time, which is a symptom that B has restarted. */
 case class AnotherParticipantHasBeenRebooted(restartedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation

@@ -388,14 +388,14 @@ class CommunicableDelegate(
 		})
 	}
 
-	private def handleWelcome(welcome: Welcome, isReconnection: Boolean): Unit = {
+	private def handleWelcome(welcome: Welcome, isARestartAfterReconnection: Boolean): Unit = {
 		// override the peer's membership status and supported versions with the values provided by the source of truth.
 		updateState(welcome.myMembershipStatus, welcome.versionsISupport, welcome.myCreationInstant)
 		assert(agreedVersion != ProtocolVersion.NOT_SPECIFIED)
 		// Create a delegate for each participant that I did not know.
 		clusterService.createADelegateForEachParticipantIDoNotKnowIn(welcome.otherParticipants)
 		// notify
-		clusterService.onConversationStarted(peerAddress)
+		clusterService.onConversationStarted(peerAddress, isARestartAfterReconnection)
 	}
 
 	private def handleSupportedVersionsMismatch(svm: SupportedVersionsMismatch): Unit = {
@@ -432,9 +432,9 @@ class CommunicableDelegate(
 		transmitToPeer(ILostCommunicationWith(otherParticipant))(ifFailureReportItAndThen(restartChannel))
 	}
 
-	private[service] def notifyPeerThatAConversationStartedWith(otherParticipant: ContactAddress): Unit = {
+	private[service] def notifyPeerThatAConversationStartedWith(otherParticipant: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
 		assert(otherParticipant != peerAddress && otherParticipant != clusterService.myAddress)
-		transmitToPeer(ConversationStartedWith(otherParticipant))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeer(ConversationStartedWith(otherParticipant, isARestartAfterReconnection))(ifFailureReportItAndThen(restartChannel))
 	}
 
 	private[service] def transmitToPeer(message: Protocol)(onComplete: Transmitter.Report => Unit): Unit = {

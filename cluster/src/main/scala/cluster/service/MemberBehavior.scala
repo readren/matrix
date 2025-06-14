@@ -30,20 +30,10 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		() // TODO
 
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
-		case am: ApplicationMsg =>
-			// TODO
-			true
-
-		case hb: Heartbeat =>
-			???
-
-		case sc: ClusterStateChanged =>
-			???
-
 		case hello: HelloIExist =>
 			senderDelegate.handleMessage(hello)
 
-		case ConversationStartedWith(peerAddress) =>
+		case ConversationStartedWith(peerAddress, isARestartAfterReconnection) =>
 			// TODO
 			true
 			
@@ -100,6 +90,16 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case WeHaveToResolveBrainJoin(peerViewPoint) =>
 			???
+			true
+
+		case hb: Heartbeat =>
+			???
+
+		case sc: ClusterStateChanged =>
+			???
+
+		case am: ApplicationMsg =>
+			// TODO
 			true
 	}
 }

@@ -183,11 +183,11 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 			communicableDelegate.notifyPeerThatILostCommunicationWith(participantAddress)
 	}
 
-	private[service] def onConversationStarted(participantAddress: ContactAddress): Unit = {
+	private[service] def onConversationStarted(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		notifyListenersThat(DelegateStartedConversationWith(participantAddress))
+		notifyListenersThat(DelegateStartedConversationWith(participantAddress, isARestartAfterReconnection))
 		for case communicableDelegate: CommunicableDelegate <- delegateByAddress.valuesIterator do
-			communicableDelegate.notifyPeerThatAConversationStartedWith(participantAddress)
+			communicableDelegate.notifyPeerThatAConversationStartedWith(participantAddress, isARestartAfterReconnection)
 	}
 
 	/**

@@ -24,7 +24,7 @@ case class DelegateBecomeIncommunicable(peerAddress: ContactAddress, reason: Inc
 
 case class DelegateBecomeUnreachable(peerAddress: ContactAddress, cause: Any) extends ClusterEvent
 
-case class DelegateStartedConversationWith(peerAddress: ContactAddress) extends ClusterEvent
+case class DelegateStartedConversationWith(peerAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends ClusterEvent
 
 case class CommunicationChannelReplaced(peerAddress: ContactAddress) extends ClusterEvent
 
