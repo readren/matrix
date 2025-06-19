@@ -20,30 +20,33 @@ sealed trait InitiationMsg extends Protocol
 /** A message that spontaneously affirms a fact without expecting a response. */
 sealed trait Affirmation extends InitiationMsg
 
-/** A message that asks for a response from the receiver, but may affirm something too.  */
+/** A message that asks for a response from the receiver, but may affirm something too. */
 sealed trait Request extends InitiationMsg {
 	type ResponseType <: Response
 	val requestId: RequestId
 }
+
 /** A message that responds a [[Request]] message to that [[Request]]'s sender. */
 sealed trait Response extends Protocol {
 	val toRequest: RequestId
 }
 
-/** First message that a delegate must send to the peer after the first successful connection to it. Its purpose is to:
- * 	- propagate the knowledge of its existence to the participants it knows;
- * 	- be replied with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
- * 	The receiver may assume that the sender is an aspirant.
+/** The first message that a delegate sends to the peer after the first successful connection to it. Its purpose is to:
+ * 	- propagate the knowledge of its existence and of the participants it knows;
+ *  - inform the peer (receiver) the membership-status of the sender;
+ * 	- ask the peer to decide which protocol version to use with him.
+ * 	- expect the peer to reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param otherParticipantsIKnow the address of the participants known by the sender, not including itself. */
-case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, otherParticipantsIKnow: Set[ContactAddress]) extends Request {
+case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus, otherParticipantsIKnow: Set[ContactAddress]) extends Request {
 	override type ResponseType = Welcome | SupportedVersionsMismatch
 }
 
-/** First message that a participant must send to the peer after a successful reconnection to allow the peer to update his viewpoint of the sender.
- * Aspirants reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
- * The reply from members depends on the sender membership. */
-case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myMembershipStatus: MembershipStatus, myCreationInstant: Instant) extends Request{
+/** The first message that a participant sends to the peer after a successful reconnection. Its purpose is to:
+ * - update the peer's viewpoint of the sender.
+ * 	- ask the peer to decide which protocol version to use with him.
+ * 	- expect the peer to reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise. */
+case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus) extends Request {
 	override type ResponseType = Welcome | SupportedVersionsMismatch
 }
 
@@ -122,13 +125,14 @@ case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipSta
 
 case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembershipStatusAccordingToMeMatches: Boolean) extends Response
 
-/** The message that a participant should send to all other participants it knows when it notices the communication between it and one or more other participants is not working properly. */
+/** The message that a participant sends to all other participants it knows when it notices the communication between it and another participant is not working properly. */
 case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Affirmation
 
+/** The message that a participant sends to all other participants it knows when it starts, or restarts, a conversation with another participant. */
 case class ConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends Affirmation
 
-/** Message that a participant A should send to all other participants when a participant B sends him the [[HelloIExist]] message a second time, which is a symptom that B has restarted. */
-case class AnotherParticipantHasBeenRebooted(restartedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation
+/** The message that a participant A sends to all other participants when A receives a [[HelloIExist]] from a participant B that A already knows and remembers as a member. Why? Because this message is sent by aspirants only, and solely when the communication starts. */
+case class AMemberHasBeenRebooted(rebootedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation
 
 /** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
@@ -151,6 +155,7 @@ case class ApplicationMsg(bytes: Array[Byte]) extends Affirmation
 
 
 object Protocol {
+
 	import cluster.channel.Nio2Serializers.given
 
 	import serialization.CommonSerializers.given
@@ -163,16 +168,21 @@ object Protocol {
 
 	val UNSPECIFIED_INSTANT: Instant = Long.MaxValue
 
-	enum MembershipStatus {
-		case UNKNOWN, ASPIRANT, MEMBER
-	}
+	sealed trait MembershipStatus
+	case object ASPIRANT extends MembershipStatus
+	case class MEMBER(clusterCreationInstant: Instant) extends MembershipStatus
+
+
 	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](FLAT)
+
 	given Deserializer[MembershipStatus] = Deserializer.derive[MembershipStatus](FLAT)
 
 	enum IncommunicabilityReason {
 		case IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE
 	}
+
 	given Serializer[IncommunicabilityReason] = Serializer.derive[IncommunicabilityReason](FLAT)
+
 	given Deserializer[IncommunicabilityReason] = Deserializer.derive[IncommunicabilityReason](FLAT)
 
 	/**
@@ -180,25 +190,32 @@ object Protocol {
 	 * @param communicationStatus the communication status that the sender of this information has toward the referred participant
 	 * @param membershipStatus the membership status of the referred participant according to the sender of this information */
 	case class ParticipantInfo(communicationStatus: CommunicationStatus, membershipStatus: MembershipStatus)
+
 	given Serializer[ParticipantInfo] = Serializer.derive[ParticipantInfo](FLAT)
+
 	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](FLAT)
 
-	/** Information about a participant according to itself.
-	 * This information has a single source of truth: the peer. */
+	/** Information about a member according to itself. */
 	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
+
 	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint](FLAT)
+
 	given Deserializer[MemberViewpoint] = Deserializer.derive[MemberViewpoint](FLAT)
 
 	enum CommunicationStatus {
 		case HANDSHOOK, CONNECTED, CONNECTING, INCOMPATIBLE, UNREACHABLE
 	}
+
 	given Serializer[CommunicationStatus] = Serializer.derive[CommunicationStatus](FLAT)
+
 	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](FLAT)
 
 	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](FLAT))
+
 	given Serializer[Protocol] = protocolSerializer
 
 	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](FLAT))
+
 	given Deserializer[Protocol] = protocolDeserializer
 
 
@@ -223,7 +240,7 @@ object Protocol {
 				case _: AreWeInSyncResponse => 26
 				case _: ILostCommunicationWith => 27
 				case _: ConversationStartedWith => 28
-				case _: AnotherParticipantHasBeenRebooted => 29
+				case _: AMemberHasBeenRebooted => 29
 				case _: Heartbeat => 30
 				case _: ClusterStateChanged => 31
 				case _: ChannelDiscarded => 32

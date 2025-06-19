@@ -38,8 +38,8 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 		else UNREACHABLE
 	}
 
-	override def info: ParticipantInfo = 
-		ParticipantInfo(communicationStatus, peerMembershipStatusAccordingToMe)
+	override def info: Maybe[ParticipantInfo] = 
+		oPeerMembershipStatusAccordingToMe.map(ParticipantInfo(communicationStatus, _))
 	
 
 	def tryToConnect(): Unit = {

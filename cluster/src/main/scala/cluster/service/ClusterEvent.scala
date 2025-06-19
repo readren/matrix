@@ -1,16 +1,15 @@
 package readren.matrix
 package cluster.service
 
+import cluster.serialization.ProtocolVersion
 import cluster.service.Protocol.{ContactAddress, IncommunicabilityReason}
-
-import readren.matrix.cluster.serialization.ProtocolVersion
 
 sealed trait ClusterEvent
 
 /** Tells that the participant at the specified address and me can not communicate becase we don't support a common [[ProtocolVersion]]. */
 case class VersionIncompatibilityWith(participantAddress: ContactAddress) extends ClusterEvent
 
-case class ParticipantHasBeenRestarted(rebornParticipantAddress: ContactAddress) extends ClusterEvent
+case class MemberHasBeenRebooted(rebootedMemberAddress: ContactAddress) extends ClusterEvent
 
 case class ParticipantHasGone(participant: ContactAddress) extends ClusterEvent
 

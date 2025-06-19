@@ -1,11 +1,10 @@
 package readren.matrix
 package cluster.channel
 
-import readren.matrix.cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.channel.Transmitter.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
-
-import readren.matrix.cluster.serialization.{ProtocolVersion, Serializer}
+import cluster.serialization.Serializer.{SerializationException, Writer}
+import cluster.serialization.{ProtocolVersion, Serializer}
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
@@ -128,7 +127,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 			onComplete(report, attachment)
 		}
 
-		if frameBuffer(1) != null then throw new TransmissionInProgressException
+		if frameBuffer(1) ne null then throw new TransmissionInProgressException
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[transmit]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
 		object handler extends Writer, CompletionHandler[java.lang.Long, Boolean] { thisHandler =>
@@ -173,7 +172,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 						else sendSentinelValue(false)
 					}
 					// if the serialization failed, write the corrupted-package-sentinel before completing with the failure
-					else if cancellationReason != null then {
+					else if cancellationReason ne null then {
 						if sentinelWasSent then onCompleteWrapper(cancellationReason)
 						else {
 							// Use a distinct sentinel value to indicate serialization failures, enabling the deserializer to:

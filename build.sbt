@@ -1,10 +1,10 @@
 
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.7.0"
+ThisBuild / scalaVersion := "3.7.1"
 
 ThisBuild / libraryDependencies ++= Seq(
-	"readren" %% "taskflow-core" % "0.2.8-SNAPSHOT",
+	"readren" %% "taskflow-core" % "0.2.9-SNAPSHOT",
 
 	"com.outr" %% "scribe" % "3.16.1",
 	"com.outr" %% "scribe-file" % "3.16.1",
@@ -15,6 +15,7 @@ ThisBuild / libraryDependencies ++= Seq(
 
 ThisBuild / scalacOptions ++= Seq(
 	"-source:future",
+//	"-language:strictEquality",
 	"-experimental",
 //	"-deprecation",
 	"-feature",

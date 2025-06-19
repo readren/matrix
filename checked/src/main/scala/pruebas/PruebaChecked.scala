@@ -41,7 +41,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text == null then matrix.doerProvidersManager.shutdown()
+				if response.text eq null then matrix.doerProvidersManager.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

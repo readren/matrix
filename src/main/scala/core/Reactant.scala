@@ -88,7 +88,7 @@ abstract class Reactant[U](
 	 * Design note: This method is necessary to initialize the objects referenced by this [[Reactant]] that also need a reference to this [[Reactant]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
 	def initialize(): doer.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
 		doer.checkWithin()
-		assert(currentBehavior == null)
+		assert(currentBehavior eq null)
 		selfStarts(false, initialBehaviorBuilder).map(_ => thisReactant) // TODO considerar hacer que selfStarts devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
 	}
 
@@ -207,7 +207,7 @@ abstract class Reactant[U](
 			activeWatchSubscriptions.compute(
 				watchedReactant,
 				(_, list) =>
-					if list == null then List(observer)
+					if list eq null then List(observer)
 					else if univocally then {
 						list.foreach(_.unsubscribe())
 						List(observer)

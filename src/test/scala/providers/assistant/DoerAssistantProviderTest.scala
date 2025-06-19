@@ -46,7 +46,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 						assistantData.previousTaskWorkerIndex = currentWorkerIndex
 					}
 					// allocate the counters on different threads to encourage allocation on memory regions separated from the one where the assistantData object is stored.
-					if assistantData.counter == null then {
+					if assistantData.counter eq null then {
 						// allocate large unrelated objects between counters to avoid
 						val dummy = new Array[Long](1024)
 						assistantData.counter = new Counter

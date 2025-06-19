@@ -31,7 +31,7 @@ final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 	private var head: A | Null = null
 
 	def add(freeNode: A): Unit = {
-		assert(freeNode.next == null && !freeNode.removed)
+		assert((freeNode.next eq null) && !freeNode.removed)
 		thisConcurrentList.synchronized {
 			freeNode.next = head
 			head = freeNode
@@ -59,10 +59,10 @@ final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 	 * @return The next non-removed element after the provided `element`, or `null` if it is the last non-removed element of the list or the list is empty.
 	 */
 	def nextOf(element: A | Null): A | Null = {
-		if element == null then updatedHead()
+		if element eq null then updatedHead()
 		else element.synchronized {
 			var nextElem = element.next
-			while nextElem != null do nextElem.synchronized {
+			while nextElem ne null do nextElem.synchronized {
 				if nextElem.removed then {
 					nextElem = nextElem.next
 					element.next = nextElem
@@ -74,7 +74,7 @@ final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 
 	/** Updates and gets the [[head]] of this list. */
 	private def updatedHead(): A | Null = thisConcurrentList.synchronized {
-		while head != null do head.synchronized {
+		while head ne null do head.synchronized {
 			if head.removed then head = head.next
 			else return head
 		}
@@ -91,7 +91,7 @@ final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 		/** @return the next element of the circularized list or `null` if the list is empty. */
 		inline def next(): A | Null = {
 			currentNode = nextOf(currentNode)
-			if currentNode != null then currentNode
+			if currentNode ne null then currentNode
 			else updatedHead()
 		}
 

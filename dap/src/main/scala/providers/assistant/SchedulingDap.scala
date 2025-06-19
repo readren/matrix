@@ -228,7 +228,7 @@ class SchedulingDap(
 				}
 
 				val enabledSchedules = enabledSchedulesByAssistant.remove(assistant)
-				if enabledSchedules != null then enabledSchedules.foreach { schedule =>
+				if enabledSchedules ne null then enabledSchedules.foreach { schedule =>
 					schedule.isActive = false
 					schedule.isEnabled = false
 				}
@@ -251,27 +251,27 @@ class SchedulingDap(
 		override def run(): Unit = {
 			while isRunning do {
 				var command: Runnable | Null = this.synchronized(commandsQueue.poll())
-				while command != null do {
+				while command ne null do {
 					command.run()
 					command = this.synchronized(commandsQueue.poll())
 				}
 
 				var earlierSchedule = peek
 				val currentTime = readCurrentMilliTime
-				while earlierSchedule != null && earlierSchedule.scheduledTime <= currentTime do {
+				while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
 					finishPoll(earlierSchedule)
 					earlierSchedule.isEnabled = true
 					earlierSchedule.enabledTime = currentTime
 					enabledSchedulesByAssistant.compute(
 						earlierSchedule.owner,
-						(_, enabledSchedules) => if enabledSchedules == null then mutable.HashSet(earlierSchedule) else enabledSchedules.addOne(earlierSchedule)
+						(_, enabledSchedules) => if enabledSchedules eq null then mutable.HashSet(earlierSchedule) else enabledSchedules.addOne(earlierSchedule)
 					)
 					earlierSchedule.owner.executeSequentially(earlierSchedule.runnable)
 					earlierSchedule = peek
 				}
 				this.synchronized {
 					if isRunning && commandsQueue.isEmpty then {
-						if earlierSchedule == null then this.wait()
+						if earlierSchedule eq null then this.wait()
 						else {
 							val delay = earlierSchedule.scheduledTime - currentTime
 							earlierSchedule = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention

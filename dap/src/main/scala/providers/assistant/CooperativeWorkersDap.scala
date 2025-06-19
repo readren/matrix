@@ -119,8 +119,8 @@ class CooperativeWorkersDap(
 			try {
 				var task = firstTaskInQueue
 				firstTaskInQueue = null
-				if task	== null then task = taskQueue.poll()
-				while task != null && taskQueueSizeIsPositive do {
+				if task	eq null then task = taskQueue.poll()
+				while (task ne null) && taskQueueSizeIsPositive do {
 					aDecrementIsPending = true
 					task.run()
 					processedTasksCounter += 1
@@ -222,10 +222,10 @@ class CooperativeWorkersDap(
 			workerIndexThreadLocal.set(index)
 			while keepRunning do {
 				val assignedDoerAssistant: DoerAssistantImpl | Null =
-					if queueJumper != null then queueJumper
+					if queueJumper ne null then queueJumper
 					else queuedDoersAssistants.poll()
 				queueJumper = null
-				if assignedDoerAssistant == null then tryToSleep()
+				if assignedDoerAssistant eq null then tryToSleep()
 				else {
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
@@ -235,7 +235,7 @@ class CooperativeWorkersDap(
 					}
 					catch { // TODO analyze if clarity would suffer too much if [[SchedulingAssistantImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
 						case e: Throwable =>
-							if thread.getUncaughtExceptionHandler == null && Thread.getDefaultUncaughtExceptionHandler == null then failureReporter(e)
+							if (thread.getUncaughtExceptionHandler eq null) && (Thread.getDefaultUncaughtExceptionHandler eq null) then failureReporter(e)
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
 								thread = threadFactory.newThread(this)
@@ -330,7 +330,7 @@ class CooperativeWorkersDap(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper != null}%5b")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper ne null}%5b")
 		}
 	}
 

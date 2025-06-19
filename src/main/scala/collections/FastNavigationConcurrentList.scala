@@ -28,7 +28,7 @@ final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcur
 	private var head: A | Null = null
 
 	def add(freeNode: A): Unit = {
-		assert(freeNode.next == null)
+		assert(freeNode.next eq null)
 		thisConcurrentList.synchronized {
 			freeNode.next = head
 			head = freeNode
@@ -53,7 +53,7 @@ final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcur
 	 * @return The next non-removed element after the provided `element`, or `null` if it is the last non-removed element of the list or the list is empty.
 	 */
 	def nextOf(element: A | Null): A | Null = {
-		if element == null then getHead
+		if element eq null then getHead
 		else element.synchronized {
 			element.next
 		}
@@ -71,10 +71,10 @@ final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcur
 	def remove(element: A): Boolean = {
 		var previousNode: A | Null = null
 		var currentNode = getHead
-		while currentNode != null do {
+		while currentNode ne null do {
 			var haveToRestart = false
 			if currentNode eq element then {
-				if previousNode == null then {
+				if previousNode eq null then {
 					thisConcurrentList.synchronized {
 						if head eq element then {
 							head.synchronized {
@@ -120,7 +120,7 @@ final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcur
 		/** @return the next element of the circularized list or `null` if the list is empty. */
 		inline def next(): A | Null = {
 			currentNode = nextOf(currentNode)
-			if currentNode != null then currentNode
+			if currentNode ne null then currentNode
 			else getHead
 		}
 

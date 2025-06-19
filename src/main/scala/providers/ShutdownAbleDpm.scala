@@ -22,7 +22,7 @@ class ShutdownAbleDpm extends DoerProvidersManager, ShutdownAble {
 			if wasShutdown.get() then null
 			else descriptor.build(this)
 		}).asInstanceOf[DoerProvider[D]]
-		if provider == null then throw new IllegalStateException(s"A ${getTypeName[ShutdownAbleDpm]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
+		if provider eq null then throw new IllegalStateException(s"A ${getTypeName[ShutdownAbleDpm]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
 		else provider
 	}
 

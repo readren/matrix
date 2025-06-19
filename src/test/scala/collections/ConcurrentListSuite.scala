@@ -29,7 +29,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 	test("Concurrent addition and traversal") {
 		val list = new ConcurrentList[TestNode]
 
-		val nodes = (1 to 100).map(new TestNode(_)).toList
+		val nodes = (1 to 100).map(TestNode(_)).toList
 
 		val addFutures = Future.sequence(nodes.map(node => Future(list.add(node))))
 
@@ -47,7 +47,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 	test("Concurrent removal and traversal") {
 		val list = new ConcurrentList[TestNode]
 
-		val nodes = (1 to 100).map(new TestNode(_)).toList
+		val nodes = (1 to 100).map(TestNode(_)).toList
 		nodes.foreach(list.add)
 
 		val toRemove = nodes.take(50)
@@ -69,7 +69,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 	test("Concurrent addition preserves all elements") {
 		PropF.forAllF(Gen.listOf(Gen.posNum[Int])) { ids =>
 			val list = new ConcurrentList[TestNode]
-			val nodes = ids.distinct.map(new TestNode(_))
+			val nodes = ids.distinct.map(TestNode(_))
 
 			val addFutures = Future.sequence(nodes.map(node => Future(list.add(node))))
 
@@ -93,7 +93,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 		val addingFutures =
 			for threadIndex <- 0 until PARALLELISM yield Future {
 				for addedId <- threadIndex * NODES_TO_ADD_BY_EACH_THREAD until ((threadIndex + 1) * NODES_TO_ADD_BY_EACH_THREAD) do {
-					val addedNode = new TestNode(addedId, threadIndex)
+					val addedNode = TestNode(addedId, threadIndex)
 					testedList.add(addedNode)
 					expectedNodesById.put(addedId, addedNode)
 					// println(s"Added $addedNode")
@@ -118,7 +118,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 				val circularIterator = testedList.circularIterator
 				while !stopped do {
 					var current = circularIterator.next()
-					while current == null do {
+					while current eq null do {
 						LockSupport.parkNanos(100_000)
 						current = circularIterator.next()
 					}
@@ -154,7 +154,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 			case Success(_) =>
 				var node = testedList.nextOf(null)
 				var nodesCounter = 0
-				while node != null do {
+				while node ne null do {
 					nodesCounter += 1
 					assert(expectedNodesById.containsKey(node.id))
 					node = testedList.nextOf(node)

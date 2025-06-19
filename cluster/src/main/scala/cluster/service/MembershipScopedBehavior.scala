@@ -1,7 +1,6 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.Transmitter
 import cluster.service.Protocol.MembershipStatus
 
 /** The aspect of a [[ClusterService]]'s behavior that depends on the membership status.
@@ -21,7 +20,7 @@ abstract class MembershipScopedBehavior {
 	def openConversationWith(participantDelegate: CommunicableDelegate, isReconnection: Boolean): Unit
 
 	/**
-	 * Handles an incoming `message` from the participant associated to the `delegate`, possibly deferring some reactions (e.g., queueing them for later sequential execution).
+	 * Handles an incoming `message` from the participant associated with the `delegate`, possibly deferring some reactions (e.g., queueing them for later sequential execution).
 	 *
 	 * The method must return *immediately* with a `Boolean` indicating whether the conversation:
 	 * - Should continue (`true`), or

@@ -8,8 +8,9 @@ import cluster.service.ClusterService.*
 import cluster.service.ClusterService.ChannelOrigin.{CLIENT_INITIATED, SERVER_ACCEPTED}
 import cluster.service.Protocol.*
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
-import cluster.service.Protocol.MembershipStatus.MEMBER
+import cluster.service.Protocol.MembershipStatus
 
+import readren.taskflow.Maybe
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.nio.channels.{AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler}
@@ -130,7 +131,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	/** Must be called within the [[sequencer]]. */
 	def doesAClusterExist: Boolean = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		delegateByAddress.exists(_._2.peerMembershipStatusAccordingToMe eq MEMBER)
+		delegateByAddress.exists(_._2.oPeerMembershipStatusAccordingToMe.contentEquals(MEMBER))
 	}
 
 	/**
@@ -139,13 +140,13 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		participantDelegateByAddress.keySet
 	}
 
-	def getKnownParticipantsMembershipStatus: MapView[ContactAddress, MembershipStatus] = {
-		delegateByAddress.view.mapValues(_.peerMembershipStatusAccordingToMe)
+	def getStableParticipantsMembershipStatus: MapView[ContactAddress, MembershipStatus] = {
+		delegateByAddress.view.filter(_._2.isStable).mapValues(_.oPeerMembershipStatusAccordingToMe.get)
 	}
 
-	def getKnownParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
+	def getStableParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		delegateByAddress.view.mapValues(_.info)
+		delegateByAddress.view.filter(_._2.info.isDefined).mapValues(_.info.get)
 	}
 
 	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: Set[ContactAddress]): Unit = {
@@ -309,7 +310,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 			@volatile private var channel: AsynchronousSocketChannel = null
 
 			def connect(attemptNumber: Integer): Unit = {
-				assert(channel == null)
+				assert(channel eq null)
 				try {
 					channel = AsynchronousSocketChannel.open()
 					channel.connect[Integer](contactAddress, attemptNumber, thisHandler)
