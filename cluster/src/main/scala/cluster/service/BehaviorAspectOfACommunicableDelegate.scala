@@ -5,12 +5,12 @@ import cluster.channel.Transmitter.NotDelivered
 import cluster.misc.DoNothing
 import cluster.serialization.ProtocolVersion
 import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
-import cluster.service.Protocol.{ASPIRANT, MembershipStatus, RequestId}
+import cluster.service.Protocol.{Aspirant, MembershipStatus, RequestId}
 import common.CompileTime.getTypeName
 
 /** Defines participant behavior aspects for a [[CommunicableDelegate]].
  *
- * This trait contains methods and functionality related to the [[ClusterService]]'s role as a participant, primarily serving as helper methods for [[MembershipScopedBehavior]] subclasses.
+ * This trait contains methods and functionality related to the [[ClusterService]]'s role as aspirant or member of a cluster, primarily serving as helper methods for [[MembershipScopedBehavior]] subclasses.
  *
  * ==Design Rationale==
  * While all these members could exist directly in [[CommunicableDelegate]], they've been separated into this trait to:
@@ -48,10 +48,10 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		updateState(message.myMembershipStatus, message.versionsISupport, message.myCreationInstant)
 
 		// If the HelloIExist message comes from a participant that, according to my memory, isn't an aspirant; surely it was rebooted, so inform that.
-		if (message.myMembershipStatus eq ASPIRANT) && !previousMembershipStatus.contentEquals(ASPIRANT) then {
+		if (message.myMembershipStatus eq Aspirant) && !previousMembershipStatus.contentEquals(Aspirant) then {
 			clusterService.notifyListenersThat(MemberHasBeenRebooted(peerAddress))
 			for case (contactAddress, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-				if contactAddress != peerAddress then delegate.transmitToPeer(AMemberHasBeenRebooted(peerAddress, message.myCreationInstant))(ifFailureReportItAndThen(restartChannel))
+				if contactAddress != peerAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerAddress, message.myCreationInstant))
 			}
 		}
 
@@ -96,7 +96,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	}
 
 	private def sendPeerAWelcome(requestId: RequestId): Unit = {
-		transmitToPeer(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))
 	}
 
 	/** @param isARestart `false` when triggered by a [[HelloIExist]]; `true` when triggered by a [[HelloIAmBack]] */
@@ -106,8 +106,8 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		assert(getAgreedVersion != ProtocolVersion.NOT_SPECIFIED)
 		// Create a delegate for each participant that I did not know.
 		clusterService.createADelegateForEachParticipantIDoNotKnowIn(welcome.otherParticipants)
-		// notify
-		clusterService.onConversationStarted(peerAddress, isARestart)
+		// notify listeners and other participants
+		clusterService.notifyListenersAndOtherParticipantsThatAConversationStartedWith(peerAddress, isARestart)
 	}
 
 	private def handleSupportedVersionsMismatch(svm: SupportedVersionsMismatch): Unit = {
@@ -137,7 +137,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		if this.peerCreationInstant == Protocol.UNSPECIFIED_INSTANT || this.peerCreationInstant == farewell.myCreationInstant then {
 			if clusterService.removeDelegate(this, true) then {
 				for case (address, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-					transmitToPeer(AnotherParticipantGone(peerAddress, peerCreationInstant))(ifFailureReportItAndThen(restartChannel))
+					transmitToPeerOrRestartChannel(AnotherParticipantGone(peerAddress, peerCreationInstant))
 				}
 			}
 			startPeerChannelClosing()
@@ -151,10 +151,10 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	private[service] def handleMessage(message: AMemberHasBeenRebooted): Unit = {
 		clusterService.delegateByAddress.getOrElse(message.rebootedParticipantAddress, null) match {
 			case rebootedParticipantDelegate: CommunicableDelegate =>
-				if rebootedParticipantDelegate.peerCreationInstant == message.restartedParticipantCreationInstant then {
+				if rebootedParticipantDelegate.getPeerCreationInstant == message.restartedParticipantCreationInstant then {
 					rebootedParticipantDelegate.checkSyncWithPeer(s"participant at $peerAddress told me that participant at ${message.rebootedParticipantAddress} has been rebooted")
 				} else {
-					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${rebootedParticipantDelegate.peerCreationInstant}).")
+					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${rebootedParticipantDelegate.getPeerCreationInstant}).")
 				}
 			case rebootedParticipantDelegate: IncommunicableDelegate =>
 				if !rebootedParticipantDelegate.isConnectingAsClient then rebootedParticipantDelegate.tryToConnect()
@@ -166,10 +166,10 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	private[service] def handleMessage(message: AnotherParticipantGone): Unit = {
 		clusterService.delegateByAddress.getOrElse(message.goneParticipantAddress, null) match {
 			case goneParticipantDelegate: CommunicableDelegate =>
-				if goneParticipantDelegate.peerCreationInstant == message.goneParticipantCreationInstant then {
+				if goneParticipantDelegate.getPeerCreationInstant == message.goneParticipantCreationInstant then {
 					goneParticipantDelegate.removeMyselfIfNoAnswerFromPeer()
 				} else {
-					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${goneParticipantDelegate.peerCreationInstant}).")
+					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${goneParticipantDelegate.getPeerCreationInstant}).")
 				}
 			case goneParticipantDelegate: IncommunicableDelegate =>
 				clusterService.removeDelegate(goneParticipantDelegate, true)
@@ -203,9 +203,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 			askPeer(new OutgoingRequestExchange[AreYouInSyncWithMe] {
 				override def buildRequest(requestId: RequestId): AreYouInSyncWithMe = AreYouInSyncWithMe(requestId, clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe)
 
-				override def onResponse(request: AreYouInSyncWithMe, response: request.ResponseType): Boolean = response match {
+				override def onResponse(request: AreYouInSyncWithMe, response: AreWeInSyncResponse): Boolean = response match {
 					case AreWeInSyncResponse(_, myMembershipStatusAccordingToPeerMatches) =>
-						if !myMembershipStatusAccordingToPeerMatches then incitePeerToResolveMembershipConflict()
+						if !response.yourMembershipStatusAccordingToMeMatches then incitePeerToResolveMembershipConflict()
 						true
 				}
 
@@ -220,12 +220,12 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 	private[service] def handleMessage(message: AreYouInSyncWithMe): Unit = {
 		if message.yourMembershipStatusAccordingToMe ne clusterService.myMembershipStatus then incitePeerToResolveMembershipConflict()
-		transmitToPeer(AreWeInSyncResponse(message.requestId, oPeerMembershipStatusAccordingToMe.contentEquals(message.myMembershipStatus)))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(AreWeInSyncResponse(message.requestId, oPeerMembershipStatusAccordingToMe.contentEquals(message.myMembershipStatus)))
 	}
 
 	/** Incites the peer to update his memory of my membership-status and re-check his memory of the membership-status of other participants that differs from my memory. */
 	private[service] def incitePeerToResolveMembershipConflict(): Unit = {
-		transmitToPeer(WaitMyMembershipStatusIs(clusterService.myMembershipStatus, clusterService.getStableParticipantsMembershipStatus.toMap))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(WaitMyMembershipStatusIs(clusterService.myMembershipStatus, clusterService.getStableParticipantsMembershipStatus.toMap))
 	}
 
 	private[service] def handleMessage(message: WaitMyMembershipStatusIs): Unit = {
@@ -233,8 +233,8 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		val delegateByAddress = clusterService.delegateByAddress
 		for (participantAddress, participantMembershipStatusAccordingToPeer) <- message.membershipStatusOfParticipantsIKnow do {
 			delegateByAddress.getOrElse(participantAddress, null) match {
-				case communicableDelegate: CommunicableDelegate if !communicableDelegate.oPeerMembershipStatusAccordingToMe.contentEquals(participantMembershipStatusAccordingToPeer) =>
-					communicableDelegate.checkSyncWithPeer(s"the participant at $peerAddress told me that the participant at $participantAddress has a different membership status ($participantMembershipStatusAccordingToPeer) than the one I remember (${communicableDelegate.oPeerMembershipStatusAccordingToMe}).")
+				case communicableDelegate: CommunicableDelegate if !communicableDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantMembershipStatusAccordingToPeer) =>
+					communicableDelegate.checkSyncWithPeer(s"the participant at $peerAddress told me that the participant at $participantAddress has a different membership status ($participantMembershipStatusAccordingToPeer) than the one I remember (${communicableDelegate.getPeerMembershipStatusAccordingToMe}).")
 
 				case null =>
 					if participantAddress == clusterService.myAddress then {
@@ -247,9 +247,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 			}
 		}
 	}
-
+	
 	// TODO is not called yet
 	private[service] def sendPeerAHeartbeat(): Unit = {
-		transmitToPeer(Heartbeat(config.heartbeatPeriod))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(Heartbeat(config.heartbeatPeriod))
 	}
 }

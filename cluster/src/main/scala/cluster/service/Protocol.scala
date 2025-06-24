@@ -3,7 +3,7 @@ package cluster.service
 
 import cluster.*
 import cluster.serialization.MacroTools.showCode
-import cluster.serialization.NestedSumMatchMode.FLAT
+import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
@@ -76,7 +76,7 @@ case class ClusterCreatorProposal(proposedCandidate: ContactAddress | Null) exte
  * @param myViewpoint the [[MemberViewpoint]]s of the sender, which is the cluster creator. */
 case class ICreatedACluster(myViewpoint: MemberViewpoint) extends Affirmation
 
-/** Command message that the aspirant has to send to each member of the cluster to get its permission to join. */
+/** The message sent by an aspirant to each member of the cluster to get its permission to join (in the form a token). */
 @deprecated
 case class RequestApprovalToJoin(override val requestId: RequestId) extends Request {
 	override type ResponseType = JoinApprovalGranted
@@ -96,16 +96,20 @@ case class RequestToJoin(override val requestId: RequestId, joinTokenByMemberAdd
 	override type ResponseType = JoinGranted | JoinRejected
 }
 
-
-/** Response to the [[RequestToJoin]] message when the join is successful.
+/** Response to the [[RequestToJoin]] message when the join is granted, and at the same time, a request for a [[JoinDecision]] acknowledgment.
  * @param participantInfoByItsAddress the state of all the participant according to the sender, including his own view of himself (which is the single source of that information)
  */
-case class JoinGranted(override val toRequest: RequestId, clusterCreationInstant: Instant, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response
+case class JoinGranted(override val toRequest: RequestId, override val requestId: RequestId, clusterCreationInstant: Instant, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response, Request {
+	override type ResponseType = JoinDecision
+}
 
 /** Response to the [[RequestToJoin]] message when the join is not successful.
  *
  * @param reason motive of the rejection. */
 case class JoinRejected(override val toRequest: RequestId, youHaveToRetry: Boolean, reason: String) extends Response
+
+/** Acknowledgment to the `JoinGranted` message. */
+case class JoinDecision(override val toRequest: RequestId, accepted: Boolean) extends Response
 
 /**
  * Informs the receiver the membership-status of the sender and reveals his memory of the membership-status of other participants.
@@ -137,18 +141,23 @@ case class AMemberHasBeenRebooted(rebootedParticipantAddress: ContactAddress, re
 /** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
 case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
 
-/** A message that every participant must send when his state, or his viewpoint of another participant's state, changes.
+/** A message that a participant sends to all the participants it knows when his state, or his viewpoint of another participant's state, changes.
  *
- * @param participantInfoByAddress the information, according to the sender, about each participant by its address, including the sender. */
-case class ClusterStateChanged(serial: RingSerial, takenOn: Instant, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Affirmation
+ * @param myStateSerial the sender's current-state serial-number.
+ * @param takenOn the instant at which this message was created.
+ * @param myMembershipStatus the membership-status of the sender.
+ * @param participantInfoByAddress the information, according to the sender, about each participant by its address. */
+case class ClusterStateChanged(myStateSerial: RingSerial, takenOn: Instant, myMembershipStatus: MembershipStatus, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Affirmation
 
 
 /** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections.
  * @param isClientSide `true` when the sender is at the client side of the discarded channel; `false` otherwise. */
 case class ChannelDiscarded(isClientSide: Boolean) extends Affirmation
 
+/** The message sent to all other members when a member discovers the existence of another cluster, to start a brain join process. */
 case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Affirmation
 
+/** The message sent to all other members when a member suspects that a brain split occurred (many other members suddenly become unreachable), to start the process that determines if the division where the sender resides should persist or be shutdown. */
 case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Affirmation
 
 case class ApplicationMsg(bytes: Array[Byte]) extends Affirmation
@@ -164,13 +173,23 @@ object Protocol {
 	type JoinToken = Long
 	/** Milliseconds since 1970-01-01T00:00:00Z */
 	type Instant = Long
-	type RequestId = Int
+
+	type RequestId = Short // changing this type requires updating the `incremented` method implementation below.
+	extension (requestId: RequestId) {
+		inline def incremented: RequestId = (requestId + 1).toShort
+	}
 
 	val UNSPECIFIED_INSTANT: Instant = Long.MaxValue
 
 	sealed trait MembershipStatus
-	case object ASPIRANT extends MembershipStatus
-	case class MEMBER(clusterCreationInstant: Instant) extends MembershipStatus
+
+	case object Aspirant extends MembershipStatus
+
+	case class Member(clusterCreationInstant: Instant) extends MembershipStatus
+
+	case class BrainJoin(clusterIBelongCreationInstants: Instant, otherClustersCreationInstants: Set[Instant]) extends MembershipStatus
+
+	case object BrainSplit extends MembershipStatus
 
 
 	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](FLAT)
@@ -220,33 +239,34 @@ object Protocol {
 
 
 	object protocolDc extends DiscriminationCriteria[Protocol] {
-		override transparent inline def discriminator[P <: Protocol]: RequestId =
+		override transparent inline def discriminator[P <: Protocol]: Int =
 			inline erasedValue[P] match {
 				case _: HelloIExist => 10
 				case _: HelloIAmBack => 11
 				case _: SupportedVersionsMismatch => 13
 				case _: Welcome => 14
-				case _: ClusterCreatorProposal => 15
-				case _: ICreatedACluster => 16
-				case _: RequestApprovalToJoin => 17
-				case _: JoinApprovalGranted => 18
-				case _: RequestToJoin => 19
-				case _: JoinGranted => 20
-				case _: JoinRejected => 21
-				case _: WaitMyMembershipStatusIs => 22
-				case _: Farewell => 23
-				case _: AnotherParticipantGone => 24
-				case _: AreYouInSyncWithMe => 25
-				case _: AreWeInSyncResponse => 26
-				case _: ILostCommunicationWith => 27
-				case _: ConversationStartedWith => 28
-				case _: AMemberHasBeenRebooted => 29
-				case _: Heartbeat => 30
-				case _: ClusterStateChanged => 31
-				case _: ChannelDiscarded => 32
-				case _: WeHaveToResolveBrainJoin => 33
-				case _: WeHaveToResolveBrainSplit => 34
-				case _: ApplicationMsg => 35
+				case _: ClusterCreatorProposal => 20
+				case _: ICreatedACluster => 21
+				case _: RequestApprovalToJoin => 30
+				case _: JoinApprovalGranted => 31
+				case _: RequestToJoin => 32
+				case _: JoinGranted => 33
+				case _: JoinRejected => 34
+				case _: JoinDecision => 35
+				case _: WaitMyMembershipStatusIs => 40
+				case _: Farewell => 41
+				case _: AnotherParticipantGone => 42
+				case _: AreYouInSyncWithMe => 43
+				case _: AreWeInSyncResponse => 44
+				case _: ILostCommunicationWith => 45
+				case _: ConversationStartedWith => 46
+				case _: AMemberHasBeenRebooted => 47
+				case _: Heartbeat => 48
+				case _: ClusterStateChanged => 49
+				case _: ChannelDiscarded => 50
+				case _: WeHaveToResolveBrainJoin => 51
+				case _: WeHaveToResolveBrainSplit => 52
+				case _: ApplicationMsg => 60
 
 				case _: Affirmation => 3
 				case _: Request => 2

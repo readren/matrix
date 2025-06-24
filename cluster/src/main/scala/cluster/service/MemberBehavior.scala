@@ -2,27 +2,36 @@ package readren.matrix
 package cluster.service
 
 import cluster.service.Protocol.*
+import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import common.CompileTime.getTypeName
 
-/** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
+import scala.collection.MapView
 
-	private var stateSerial: RingSerial = RingSerial.create()
+/** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
+class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
+
+	private var stateSerial: RingSerial = startingStateSerial
 
 	inline def currentStateSerial: RingSerial = stateSerial
-	
+
 	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, clusterService.clock.getTime, clusterCreationInstant, clusterService.getStableParticipantsInfo.toMap)
 
-	override val membershipStatus: MembershipStatus = MEMBER(clusterService.myCreationInstant)
+	override val membershipStatus: MembershipStatus = Member(clusterService.myCreationInstant)
 
-	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit =
-		() // TODO
+	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
+		stateSerial = stateSerial.nextSerial
+		// TODO
+	}
 
-	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit =
-		() // TODO
+	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = {
+		stateSerial = stateSerial.nextSerial
+		// TODO
+	}
 
-	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit =
-		() // TODO
+	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = {
+		stateSerial = stateSerial.nextSerial
+		// TODO
+	}
 
 	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean): Unit = {
 		if isReconnection then delegate.sendPeerAHelloIAmBack()
@@ -35,14 +44,28 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case ihr: HelloIAmBack =>
 			ihr.myMembershipStatus match {
-				case ASPIRANT => senderDelegate.handleMessage(ihr)
-				case MEMBER(clusterCreationInstantAccordingToPeer) => ???
+				case Aspirant =>
+					senderDelegate.handleMessage(ihr)
+
+				case Member(clusterCreationInstantAccordingToPeer) =>
+					if clusterCreationInstantAccordingToPeer != clusterCreationInstant then {
+						switchToResolvingBrainJoin(senderDelegate, clusterCreationInstantAccordingToPeer)
+						true
+					} else {
+						senderDelegate.handleMessage(ihr)
+					}
+
+				case BrainSplit =>
+					???
+
+				case BrainJoin(creationInstantOfClusterThePeerBelongsTo, creationInstantOfClustersThePeerIsTryingToMerge) =>
+					???
 			}
 
 		case ConversationStartedWith(peerAddress, isARestartAfterReconnection) =>
 			// TODO
 			true
-			
+
 		case ClusterCreatorProposal(proposedCandidate) =>
 			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[ClusterCreatorProposal]} despite cluster already exists.")
 			senderDelegate.incitePeerToResolveMembershipConflict()
@@ -50,25 +73,36 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case icc: ICreatedACluster =>
 			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
-				clusterService.switchToResolvingBrainJoin()
-				for case (_, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-					delegate.transmitToPeer(WeHaveToResolveBrainJoin(myCurrentViewpoint))(delegate.ifFailureReportItAndThen(delegate.restartChannel))
-				}
-			}
+				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant)
+			} else scribe.warn(s"I have ignored the message `$icc` from the participant at ${senderDelegate.contactCard} because I already am a member of the cluster he created.")
 			true
 
 		case oi: RequestApprovalToJoin =>
 			???
 
 		case rtj: RequestToJoin =>
-			???
+			val members = memberDelegateByAddress
+			// if the sender knows the same members as me and all are stable
+			if members.forall(_._2.communicationStatus eq HANDSHOOK) && members.mapValues(_.getPeerCreationInstant) == rtj.joinTokenByMemberAddress then {
+				senderDelegate.askPeer(new senderDelegate.SingleRetryOutgoingRequestExchange[JoinGranted]() {
+					override def buildRequest(requestId: RequestId): JoinGranted =
+						JoinGranted(rtj.requestId, requestId, clusterService.myCreationInstant, clusterService.getStableParticipantsInfo.toMap)
 
-		case rmc: WaitMyMembershipStatusIs =>
-			senderDelegate.handleMessage(rmc)
+					override def onResponse(request: JoinGranted, response: JoinDecision): Boolean = {
+						if response.accepted then senderDelegate.updateState(membershipStatus)
+						true
+					}
+				})
+			}
+			true
+
+		case wms: WaitMyMembershipStatusIs =>
+			senderDelegate.handleMessage(wms)
 			true
 
 		case lcw: ILostCommunicationWith =>
-			???
+			senderDelegate.checkSyncWithPeer(s"the participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
+			true
 
 		case fw: Farewell =>
 			senderDelegate.handleMessage(fw)
@@ -83,7 +117,7 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 
 		case cd: ChannelDiscarded =>
 			senderDelegate.handleMessage(cd)
-			
+
 		case phr: AMemberHasBeenRebooted =>
 			senderDelegate.handleMessage(phr)
 			true
@@ -105,5 +139,25 @@ class MemberBehavior(clusterService: ClusterService, val clusterCreationInstant:
 		case am: ApplicationMsg =>
 			// TODO
 			true
+
+		case _: Response =>
+			throw new AssertionError("unreachable")
 	}
+
+	private def memberDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
+		clusterService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
+
+
+	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterCreationInstant: Instant): Unit = {
+
+		val newBehavior = BrainJoinBehavior(clusterService, otherClusterCreationInstant)
+		for (_, delegate) <- clusterService.handshookDelegateByAddress do {
+			delegate.transmitToPeerOrRestartChannel(WeHaveToResolveBrainJoin(myCurrentViewpoint))
+		}
+		// TODO
+
+	}
+
+	private def switchToResolvingBrainSplit(): Unit = ???
+
 }

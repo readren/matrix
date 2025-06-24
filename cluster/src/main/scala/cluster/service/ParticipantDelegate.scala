@@ -16,8 +16,11 @@ abstract class ParticipantDelegate {
 	def info: Maybe[ParticipantInfo]
 
 	// TODO consider pushing down the following three variables into the CommunicableDelegate subclass to avoid remembering outdated state. 
-	protected[service] var oPeerMembershipStatusAccordingToMe: Maybe[MembershipStatus] = Maybe.empty
-	protected[service] var peerCreationInstant: Instant = UNSPECIFIED_INSTANT  
+	protected var oPeerMembershipStatusAccordingToMe: Maybe[MembershipStatus] = Maybe.empty
+	inline def getPeerMembershipStatusAccordingToMe: Maybe[MembershipStatus] = oPeerMembershipStatusAccordingToMe
+	
+	protected var peerCreationInstant: Instant = UNSPECIFIED_INSTANT
+	inline def getPeerCreationInstant: Instant = peerCreationInstant
 	
 	export clusterService.sequencer
 	

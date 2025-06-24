@@ -1,11 +1,10 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.Transmitter.NotDelivered
+import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.misc.CommonExtensions.*
-import cluster.serialization.ProtocolVersion
 import cluster.service.ContactCard.*
-import cluster.service.Protocol.{ASPIRANT, CommunicationStatus, ContactAddress, Instant, MEMBER, MembershipStatus, RequestId}
+import cluster.service.Protocol.*
 import common.CompileTime.getTypeName
 
 import readren.taskflow.Maybe
@@ -13,7 +12,7 @@ import readren.taskflow.Maybe
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
 	private val sequencer = clusterService.sequencer
 
-	override val membershipStatus: Protocol.MembershipStatus = ASPIRANT
+	override val membershipStatus: Protocol.MembershipStatus = Aspirant
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
 		updateClusterCreatorProposalIfAppropriate()
@@ -51,12 +50,12 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			if (candidateProposedByPeer ne null) && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
 				clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(candidateProposedByPeer)
 			}
-			if clusterService.doesAClusterExist then senderDelegate.incitePeerToResolveMembershipConflict()
+			if clusterService.clustersExistenceArity > 0 then senderDelegate.incitePeerToResolveMembershipConflict()
 			else updateClusterCreatorProposalIfAppropriate()
 			true
 
 		case icc: ICreatedACluster =>
-			senderDelegate.oPeerMembershipStatusAccordingToMe = Maybe.some(MEMBER(icc.myViewpoint.clusterCreationInstant))
+			senderDelegate.updateState(Member(icc.myViewpoint.clusterCreationInstant))
 			senderDelegate.peerStatePhoto = Maybe.some(icc.myViewpoint)
 			sendRequestToJoinTheClusterIfAppropriate()
 			true
@@ -74,8 +73,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case lcw: ILostCommunicationWith =>
-			scribe.info(s"The participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
-			// TODO
+			senderDelegate.checkSyncWithPeer(s"the participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
 			true
 
 		case fw: Farewell =>
@@ -115,10 +113,13 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case am: ApplicationMsg =>
 			// TODO
 			true
+			
+		case _: Response =>
+			throw new AssertionError("unreachable")
 	}
 
 	/**
-	 * As long as this [[ClusterService]]'s membership status is [[ASPIRANT]], this method must be called whenever:
+	 * As long as this [[ClusterService]]'s membership status is [[Aspirant]], this method must be called whenever:
 	 *  - a delegate is added to, or removed from, the [[ClusterService.delegateByAddress]] map.
 	 *  - the communicability of a delegates changes, including changes in [[CommunicableDelegate.agreedVersion]] and [[ParticipantDelegate.communicationStatus]].
 	 *  - the [[ParticipantDelegate.versionsSupportedByPeer]] changes, because on it depends the [[ContactCard.ordering]].
@@ -132,7 +133,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.isCommunicable)
 		}
 		// if I can communicate with all the seeds and all delegates are aspirants with stable communicability, then propose the cluster creator.
-		if iCanCommunicateToAllSeeds && delegateByAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.oPeerMembershipStatusAccordingToMe.contentEquals(ASPIRANT)) then {
+		if iCanCommunicateToAllSeeds && delegateByAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
 
 			// Determine the candidate from my viewpoint
 			val candidateProposedByMe = delegateByAddress.iterator
@@ -152,7 +153,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			} then { // ... then create it.
 				// Creating the cluster consists of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
 				val clusterCreationInstant: Instant = clusterService.clock.getTime
-				val memberBehavior = clusterService.switchToMember(clusterCreationInstant)
+				val memberBehavior = switchToMember(clusterCreationInstant)
 				val myViewpoint = memberBehavior.myCurrentViewpoint
 				for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
 					communicable.transmitToPeer(ICreatedACluster(myViewpoint))(communicable.ifFailureReportItAndThen(communicable.restartChannel))
@@ -174,29 +175,32 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 	private def sendAClusterCreatorProposalTo(targetDelegate: CommunicableDelegate, proposedAspirantAddress: ContactAddress): Unit = {
 		if proposedAspirantAddress != targetDelegate.lastClusterCreatorProposalSentToPeer then {
 			targetDelegate.lastClusterCreatorProposalSentToPeer = proposedAspirantAddress
-			targetDelegate.transmitToPeer(ClusterCreatorProposal(proposedAspirantAddress))(targetDelegate.ifFailureReportItAndThen(targetDelegate.restartChannel))
+			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(proposedAspirantAddress))
 		}
 	}
 	
 
 	private var aRequestToJoinIsOnTheWay: Boolean = false
 
-	private[service] def sendRequestToJoinTheClusterIfAppropriate(): Unit = {
-		// if a request isn't on the way, a cluster exists, and the communicability of all the delegates is stable, then send a request to join to the member with the lowest [[ContactCard]]
-		if !aRequestToJoinIsOnTheWay && clusterService.doesAClusterExist && clusterService.delegateByAddress.iterator.forall(_._2.isStable) then {
+	private def sendRequestToJoinTheClusterIfAppropriate(): Unit = {
+		// if a request isn't on the way, a single cluster exists, and the communicability of all the delegates is stable, then send a request to join to the member with the lowest [[ContactCard]]
+		if !aRequestToJoinIsOnTheWay && clusterService.clustersExistenceArity == 1 && clusterService.delegateByAddress.iterator.forall(_._2.isStable) then {
 			clusterService.delegateByAddress.iterator
-				.collect { case (_, cd: CommunicableDelegate) if cd.oPeerMembershipStatusAccordingToMe.contentEquals(MEMBER) => cd }
+				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contains(_.isInstanceOf[Member]) => cd }
 				.minByOption(_.contactCard)(using ContactCard.ordering)
 				.foreach { chosenMemberDelegate =>
 					aRequestToJoinIsOnTheWay = true
-					val joinTokenByMember = clusterService.delegateByAddress.iterator
-						.collect { case (_, delegate) if delegate.oPeerMembershipStatusAccordingToMe.contentEquals(MEMBER) => delegate.peerAddress -> 0L } // TODO add token logic or remove them.
-						.toMap
 
 					// send to the chosen member a request to join the cluster
 					chosenMemberDelegate.askPeer(new chosenMemberDelegate.OutgoingRequestExchange[RequestToJoin] {
 						
-						override def buildRequest(requestId: RequestId): RequestToJoin = RequestToJoin(requestId, joinTokenByMember)
+						override def buildRequest(requestId: RequestId): RequestToJoin = {
+							val joinTokenByMember = clusterService.delegateByAddress.collect {
+								case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe == chosenMemberDelegate.getPeerMembershipStatusAccordingToMe =>
+									delegate.peerAddress -> delegate.getPeerCreationInstant
+							}
+							RequestToJoin(requestId, joinTokenByMember)
+						}
 
 						override def onResponse(request: RequestToJoin, response: request.ResponseType): Boolean = {
 							aRequestToJoinIsOnTheWay = false
@@ -204,33 +208,44 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 								case ab: AspirantBehavior =>
 									response match {
 										case jg: JoinGranted =>
-											// verify we are in sync and, if not, start actions to be so.
-											var weAreInSync = true
+											// verify I am in sync with the chosen member about the state of myself and of other participants he knows and, if not, start actions to be so.
+											var inSyncWithChosenMember = true
 											for (participantAddress, participantInfoAccordingToChosenMember) <- jg.participantInfoByItsAddress do {
 												clusterService.delegateByAddress.getOrElse(participantAddress, null) match {
 													case null =>
 														if participantAddress == clusterService.myAddress then {
 															if participantInfoAccordingToChosenMember.membershipStatus ne clusterService.myMembershipStatus then {
-																weAreInSync = false
+																inSyncWithChosenMember = false
 																chosenMemberDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my membership state.")
 															}
 														} else {
-															weAreInSync = false
+															inSyncWithChosenMember = false
 															clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantAddress)
 														}
 													case participantDelegate: CommunicableDelegate =>
-														if !participantDelegate.oPeerMembershipStatusAccordingToMe.contentEquals(participantInfoAccordingToChosenMember.membershipStatus) then {
-															weAreInSync = false
+														if !participantDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantInfoAccordingToChosenMember.membershipStatus) then {
+															inSyncWithChosenMember = false
 															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my memory about the membership-status of the participant at $participantAddress.")
 														}
 													case participantDelegate: IncommunicableDelegate =>
 														if participantInfoAccordingToChosenMember.communicationStatus eq CommunicationStatus.HANDSHOOK then {
-															weAreInSync = false
+															inSyncWithChosenMember = false
 															clusterService.connectToAndThenStartConversationWithParticipant(participantDelegate, false)
 														}
 												}
 											}
-											if weAreInSync then clusterService.switchToMember(jg.clusterCreationInstant)
+											
+											// Send a response to the chosen member's confirming my decision to join.
+											chosenMemberDelegate.transmitToPeer(JoinDecision(jg.requestId, inSyncWithChosenMember)) {
+												case Delivered =>
+													// If the confirmation was delivered and is affirmative (because we are in sync with the chosen member about the state of all the participants he knows), then switch to member.
+													if inSyncWithChosenMember then sequencer.executeSequentially { switchToMember(jg.clusterCreationInstant) }
+												case nd: NotDelivered =>
+													chosenMemberDelegate.reportTransmissionFailure(nd)
+													sequencer.executeSequentially {
+														chosenMemberDelegate.restartChannel(nd)
+													}
+											}
 											true
 
 										case jr: JoinRejected =>
@@ -260,4 +275,18 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 				}
 		}
 	}
+
+	/** Switches this [[ClusterService]] behavior to [[MemberBehavior]]. */
+	private def switchToMember(clusterCreationInstant: Instant): MemberBehavior = {
+		val memberBehavior = new MemberBehavior(RingSerial.create(), clusterService, clusterCreationInstant)
+		clusterService.membershipScopedBehavior = memberBehavior
+		val currentInstant = System.currentTimeMillis()
+		for (_, delegate) <- clusterService.handshookDelegateByAddress do {
+			delegate.transmitToPeerOrRestartChannel(ClusterStateChanged(memberBehavior.currentStateSerial, currentInstant, clusterService.myMembershipStatus, clusterService.getStableParticipantsInfo.toMap))
+		}
+		clusterService.notifyListenersThat(IJoinedTheCluster(clusterService.delegateByAddress))
+		memberBehavior
+	}
+
+
 }

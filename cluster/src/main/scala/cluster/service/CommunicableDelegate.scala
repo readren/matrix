@@ -42,7 +42,7 @@ class CommunicableDelegate(
 	 * Only Used when the cluster service is in aspirant state. */
 	private[service] var lastClusterCreatorProposalSentToPeer: ContactAddress | Null = null
 
-	private var lastRequestId: RequestId = 0
+	private var lastRequestId: Short = 0
 	private val requestExchangeStateByRequestId: mutable.LongMap[OutgoingRequestExchange[?]#Session] = mutable.LongMap.empty
 
 	override def isCommunicable: Boolean = true
@@ -65,7 +65,7 @@ class CommunicableDelegate(
 		peerCreationInstant = newCreationInstant
 		val behavior = clusterService.getMembershipScopedBehavior
 		if peersNewSupportedVersions != previousPeersSupportedVersions then behavior.onDelegateCommunicabilityChange(this)
-		if previousMembershipStatusOfPeerAccordingToMe.isEmpty || (peersNewMembershipStatus ne previousMembershipStatusOfPeerAccordingToMe.get) then behavior.onDelegateMembershipChange(this)
+		if !previousMembershipStatusOfPeerAccordingToMe.contentEquals(peersNewMembershipStatus) then behavior.onDelegateMembershipChange(this)
 	}
 
 	def startConversationAsServer(): Unit = {
@@ -113,12 +113,12 @@ class CommunicableDelegate(
 
 	private[service] def notifyPeerThatAConversationStartedWith(otherParticipant: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
 		assert(otherParticipant != peerAddress && otherParticipant != clusterService.myAddress)
-		transmitToPeer(ConversationStartedWith(otherParticipant, isARestartAfterReconnection))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(ConversationStartedWith(otherParticipant, isARestartAfterReconnection))
 	}
 
 	private[service] def notifyPeerThatILostCommunicationWith(otherParticipant: ContactAddress): Unit = {
 		assert(otherParticipant != peerAddress && otherParticipant != clusterService.myAddress)
-		transmitToPeer(ILostCommunicationWith(otherParticipant))(ifFailureReportItAndThen(restartChannel))
+		transmitToPeerOrRestartChannel(ILostCommunicationWith(otherParticipant))
 	}
 
 	private[service] def reportTransmissionFailure(failure: Transmitter.NotDelivered): Unit = {
@@ -169,7 +169,7 @@ class CommunicableDelegate(
 
 	/** Sends a [[Request]] to the peer and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
 	private[service] def askPeer[Q <: Request](requestExchange: OutgoingRequestExchange[Q]): Unit = {
-		lastRequestId += 1
+		lastRequestId = lastRequestId.incremented
 		val requestId = lastRequestId
 		val request = requestExchange.buildRequest(requestId)
 		transmitToPeer(request) {
@@ -223,6 +223,10 @@ class CommunicableDelegate(
 		}
 	}
 
+	private[service] def transmitToPeerOrRestartChannel(message: Protocol): Unit = {
+		transmitToPeer(message)(ifFailureReportItAndThen(restartChannel))
+	}
+	
 	private[service] def transmitToPeer(message: Protocol)(onComplete: Transmitter.Report => Unit): Unit = {
 		transmitterToPeer.transmit[Protocol](message, agreedVersion, config.transmitterTimeout, config.timeUnit)(onComplete)
 	}
@@ -235,8 +239,8 @@ class CommunicableDelegate(
 			val myReplacement = clusterService.addANewIncommunicableDelegate(peerAddress, reason)
 			myReplacement.initializeStateBasedOn(this)
 			// notify
-			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)
-			clusterService.onDelegateBecomeIncommunicable(peerAddress, reason, motive)
+			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO consider moving this line inside the `notify*` method called in the next line
+			clusterService.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerAddress, reason, motive)
 			Maybe.some(myReplacement)
 		} else Maybe.empty
 	}
