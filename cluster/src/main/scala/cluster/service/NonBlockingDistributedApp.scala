@@ -1,12 +1,11 @@
 package readren.matrix
 package cluster.service
 
-import cluster.service.ClusterService.DelegateConfig
+import cluster.misc.TaskSequencer
+import cluster.serialization.ProtocolVersion
+import cluster.service.ClusterService.{EventListener, DelegateConfig}
 import cluster.service.Protocol.Instant
 import providers.assistant.SchedulingDap
-
-import readren.matrix.cluster.misc.TaskSequencer
-import readren.matrix.cluster.serialization.ProtocolVersion
 
 import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.ByteBuffer
@@ -47,13 +46,8 @@ object NonBlockingDistributedApp {
 			new ClusterService.Clock {
 				override def getTime: Instant = System.currentTimeMillis()
 			},
-			new ClusterService.Config(
-				myAddress,
-				Set(ProtocolVersion.OF_THIS_PROJECT),
-				seedsAddresses,
-				new DelegateConfig(1, 1, TimeUnit.SECONDS, 500, 500),
-				500, 60_000, 8, 500
-			)
+			new ClusterService.Config(myAddress, seedsAddresses, Set(ProtocolVersion.OF_THIS_PROJECT), new DelegateConfig(false, 1, 1, TimeUnit.SECONDS, 500, 500), _ => true, 500, 60_000, 8, 500),
+			Iterable((event: ClusterServiceEvent) => scribe.info(s"The event listener received: $event"))
 		)
 
 		// Connect to peers and send messages with retries

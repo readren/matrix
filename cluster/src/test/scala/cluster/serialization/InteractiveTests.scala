@@ -41,6 +41,8 @@ object InteractiveTests {
 
 
 	@main def runIt(): Unit = {
+		
+		scribe.error("Scribe is working fine")
 		transparent inline def carPartDiscriminatorByVariant[V <: CarPart] = {
 			inline erasedValue[V] match {
 				case _: Wheel => 21

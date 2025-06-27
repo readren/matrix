@@ -38,7 +38,7 @@ object Transmitter {
 	 *  - Acts as an invalid/poison value for downstream processing. */
 	val CORRUPTED_PACKAGE_SENTINEL: Int = 0xffff_fffe // = -2 in two complement
 	val CORRUPTED_PACKAGE_SENTINEL_ENCODED: Array[Byte] = {
-		val array = Array[Byte](VLQ.INT_MAX_LENGTH)
+		val array = new Array[Byte](VLQ.INT_MAX_LENGTH)
 		val writer: VLQ.ByteWriter = new VLQ.ByteWriter {
 			var pos = 0
 			override def putByte(byte: Byte): Unit = {
@@ -79,8 +79,8 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 	 * @param serializer The serializer to be used for serializing the message into outgoing bytes.
 	 * @tparam M The type of the `message` to be sent.
 	 */
-	inline def transmit[M](message: M, msgVersion: ProtocolVersion, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
-		transmitWithAttachment[M, Null](message, msgVersion, null, timeout, timeUnit) { (report, dummy) => onComplete(report) }
+	inline def transmit[M](message: M, msgVersion: ProtocolVersion, behindTransmissionEnabled: Boolean = true, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
+		transmitWithAttachment[M, Null](message, msgVersion, null, behindTransmissionEnabled, timeout, timeUnit) { (report, dummy) => onComplete(report) }
 	}
 
 	// assume that the thread that calls this method is named "main".
@@ -88,6 +88,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		message: M,
 		msgVersion: ProtocolVersion,
 		attachment: A,
+		behindTransmissionEnabled: Boolean = true,
 		timeout: Long = 1,
 		timeUnit: TimeUnit = TimeUnit.SECONDS
 	)(
@@ -141,7 +142,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 					writeEndBuffer.flip()
 					val nextBuffer = circularStorage.advanceWriteEnd()
 					nextBuffer.clear()
-					if !behindTransmissionStarted then {
+					if !behindTransmissionStarted && behindTransmissionEnabled then {
 						behindTransmissionStarted = true
 						sendFrame(writeEndBuffer)
 					}
@@ -152,15 +153,18 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 			/** Send the sentinel value, which is an empty frame. */
 			def sendSentinelValue(forCorruptedPackage: Boolean): Unit = {
+				scribe.debug(s"Transmission progress of message `$message`: sending sentinel: forCorruptedPackage=$forCorruptedPackage.")
 				frameHeaderBuffer.clear()
 				if forCorruptedPackage then frameHeaderBuffer.put(CORRUPTED_PACKAGE_SENTINEL_ENCODED)
 				else frameHeaderBuffer.put(0: Byte)
+				frameHeaderBuffer.flip()
 				channel.write(frameBuffer, 0, 1, timeout, timeUnit, true, thisHandler)
 			}
 
 			// executed sequentially by a thread of the NIO2 group.
 			@tailrec
 			override def completed(bytesTransmitted: java.lang.Long, sentinelWasSent: Boolean): Unit = {
+				scribe.debug(s"Transmission progress of message `$message`: bytesTransmitted=$bytesTransmitted, sentinelWasSent=$sentinelWasSent`, frameHeaderBuffer=${frameBuffer(0)}, frameContentBuffer=${frameBuffer(1)}")
 				if frameBuffer(0).hasRemaining then channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, thisHandler)
 				else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
 				else {

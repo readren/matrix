@@ -6,6 +6,7 @@ import cluster.channel.Receiver.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
 
 import readren.matrix.cluster.serialization.{Deserializer, ProtocolVersion}
+import scribe.LogFeature
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
@@ -17,7 +18,10 @@ object Receiver {
 
 	type Lazy[A <: Matchable] = misc.Lazy[A, Fault]
 
-	sealed trait Fault
+	sealed trait Fault {
+		def logFeatures: Seq[LogFeature] = Seq(this.toString)
+		def scribeContent(message: String): Seq[LogFeature] = message +: logFeatures
+	}
 
 	case class ChannelClosedByPeer(missingBytesAccordingToLastFrame: Int) extends Fault
 
@@ -25,9 +29,13 @@ object Receiver {
 	
 	case class TheDeserializerHasNotConsumedTheWholePackage(remainingBytes: Int, deserializerResult: Any) extends Fault
 
-	case class DeserializationProblem(problem: Throwable) extends Fault
+	case class DeserializationProblem(problem: Throwable) extends Fault {
+		override def logFeatures: Seq[LogFeature] = Seq(this.toString, problem)
+	}
 
-	case class ReceptionFailure(cause: Throwable) extends Fault
+	case class ReceptionFailure(channel: AsynchronousSocketChannel, cause: Throwable) extends Fault {
+		override def logFeatures: Seq[LogFeature] = Seq(this.toString, cause)
+	}
 
 	/** The [[Deserializer]] expected more bytes than the contained in the received package (a sequence of frames finalized with an empty frame). */
 	class LengthMismatchException extends RuntimeException("Unexpected end of package")
@@ -285,7 +293,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192, 
 			}
 
 			override def failed(exc: Throwable, writeEndBuffer: ByteBuffer): Unit = {
-				onComplete(ReceptionFailure(exc), attachment)
+				onComplete(ReceptionFailure(channel, exc), attachment)
 			}
 
 		}

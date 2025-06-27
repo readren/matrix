@@ -117,8 +117,8 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 	private def notifyAboutTheSupportedVersionsMismatch(helloRequestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
 		transmitToPeer(SupportedVersionsMismatch(helloRequestId)) { report =>
+			ifFailureReportItAndThen(DoNothing)(report)
 			sequencer.executeSequentially {
-				ifFailureReportItAndThen(DoNothing)(report)
 				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
 				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
 			}
@@ -191,7 +191,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 				override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit =
 					clusterService.removeDelegate(thisCommunicableDelegate, true)
 
-				override def onTimeout(session: Session): Unit =
+				override def onTimeout(request: AreYouInSyncWithMe): Unit =
 					clusterService.removeDelegate(thisCommunicableDelegate, true)
 			})
 		}
@@ -212,8 +212,8 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 				override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit =
 					restartChannel(why + s" and when trying to ask it `$request` the transmission failed with: $error")
 
-				override def onTimeout(session: Session): Unit =
-					restartChannel(why + s" and when asked `${session.request}` he didn't answer within $responseTimeout millis.")
+				override def onTimeout(request: AreYouInSyncWithMe): Unit =
+					restartChannel(why + s" and when asked `$request` he didn't answer within $responseTimeout millis.")
 			})
 		}
 	}

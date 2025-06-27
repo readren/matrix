@@ -266,9 +266,9 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 
-						override def onTimeout(session: Session): Unit = {
+						override def onTimeout(request: RequestToJoin): Unit = {
 							aRequestToJoinIsOnTheWay = false
-							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `${session.request}` to participant at ${chosenMemberDelegate.peerAddress}.")
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerAddress}.")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 					})

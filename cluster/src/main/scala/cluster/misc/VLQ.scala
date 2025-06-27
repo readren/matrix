@@ -3,9 +3,9 @@ package cluster.misc
 
 object VLQ {
 
-	/** Applies for both, signed and unsigned int */
+	/** Applies for both, signed and unsigned [[Long]] */
 	inline val LONG_MAX_LENGTH = 10
-	/** Applies for both, signed and unsigned long */
+	/** Applies for both, signed and unsigned [[Int]] */
 	inline val INT_MAX_LENGTH = 5
 
 	/** Specifies the reader that the decode methods require to read the bytes consumed by them. */
