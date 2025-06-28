@@ -228,6 +228,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192, 
 
 
 			override def completed(bytesReceived: Integer, writeEndBuffer: ByteBuffer): Unit = {
+				scribe.debug(s"Reception progress of participant at ${channel.getLocalAddress} from ${channel.getRemoteAddress}: bytesReceived=$bytesReceived, writeEndBuffer=$writeEndBuffer, remainingContentBytesUntilNextFrameHeader=$remainingContentBytesUntilNextFrameHeader")
 				if bytesReceived == -1 then onComplete(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
 				else {
 					val posAfterLastReceivedByte = writeEndBuffer.position

@@ -105,18 +105,9 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 		/** This variable is modified one time only, from null to non-null. */
 		@volatile var cancellationReason: SerializationProblem | Null = null
 
-		/** Fills the frame-buffer with the content of the read-end buffer. */
-		def fillFrame(): Unit = {
-			val readEnd = circularStorage.readEnd
-			frameBuffer(1) = readEnd
-			frameHeaderBuffer.clear()
-			VLQ.encodeUnsignedInt(readEnd.limit, frameHeaderWriter)
-		}
-
-		/**
-		 * Sends a frame with the content of the provided [[ByteBuffer]] through the channel. 
-		 * This method is called within the thread that called the [[transmitWithAttachment]] method. */
+		/** Sends a frame with the content of the provided [[ByteBuffer]] through the channel. */
 		def sendFrame(contentBuffer: ByteBuffer): Unit = {
+			scribe.debug(s"Transmission progress of message `$message`: sending frame containing $contentBuffer.")
 			frameHeaderBuffer.clear()
 			VLQ.encodeUnsignedInt(contentBuffer.limit, frameHeaderWriter)
 			frameBuffer(1) = contentBuffer
@@ -136,13 +127,14 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 			override def position: Int = writeEndBuffer.position
 
-			/** This method is called by the serializer only, therefore it runs within the thread that called the [[transmitWithAttachment]] method. */
+			/** This method is called by the serializer only; therefore, it runs within the thread that called the [[transmitWithAttachment]] method. */
 			override def getBuffer(minimumRemaining: Int): ByteBuffer = {
 				if writeEndBuffer.remaining() < minimumRemaining then {
 					writeEndBuffer.flip()
 					val nextBuffer = circularStorage.advanceWriteEnd()
 					nextBuffer.clear()
 					if !behindTransmissionStarted && behindTransmissionEnabled then {
+						assert(writeEndBuffer eq circularStorage.readEnd)
 						behindTransmissionStarted = true
 						sendFrame(writeEndBuffer)
 					}
@@ -151,7 +143,12 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 				writeEndBuffer
 			}
 
-			/** Send the sentinel value, which is an empty frame. */
+			/** Send the sentinel value, which is an empty frame everything is fine or a special value to indicate a serialization a failure.
+			 * This distinction enables the deserializer to:
+			 * 1. Detect failed serializations
+			 * 2. Discard corrupted packets
+			 * 3. Continue processing the following messages without requiring channel restart.
+			 * */
 			def sendSentinelValue(forCorruptedPackage: Boolean): Unit = {
 				scribe.debug(s"Transmission progress of message `$message`: sending sentinel: forCorruptedPackage=$forCorruptedPackage.")
 				frameHeaderBuffer.clear()
@@ -162,40 +159,28 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 			}
 
 			// executed sequentially by a thread of the NIO2 group.
-			@tailrec
 			override def completed(bytesTransmitted: java.lang.Long, sentinelWasSent: Boolean): Unit = {
 				scribe.debug(s"Transmission progress of message `$message`: bytesTransmitted=$bytesTransmitted, sentinelWasSent=$sentinelWasSent`, frameHeaderBuffer=${frameBuffer(0)}, frameContentBuffer=${frameBuffer(1)}")
 				if frameBuffer(0).hasRemaining then channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, thisHandler)
 				else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
 				else {
 					if isSerializationCompleted then {
-						if circularStorage.advanceReadEnd() then {
-							fillFrame()
-							completed(bytesTransmitted, false)
-						} else if sentinelWasSent then onCompleteWrapper(Delivered)
+						if circularStorage.advanceReadEnd() then sendFrame(circularStorage.readEnd)
+						else if sentinelWasSent then onCompleteWrapper(Delivered)
 						else sendSentinelValue(false)
 					}
-					// if the serialization failed, write the corrupted-package-sentinel before completing with the failure
+					// This point may be reached only if behind transmission is enabled.
+					// If the serialization failed, write the corrupted-package-sentinel before completing with the failure
 					else if cancellationReason ne null then {
 						if sentinelWasSent then onCompleteWrapper(cancellationReason)
-						else {
-							// Use a distinct sentinel value to indicate serialization failures, enabling the deserializer to:
-							//       1. Detect failed serializations
-							//       2. Discard corrupted packets
-							//       3. Continue processing subsequent messages
-							//       without requiring channel restart.
-							sendSentinelValue(true)
-						}
+						else sendSentinelValue(true)
 					}
-					// This point is reached only when the time that takes to serialize the whole message (by the thread that called the `transmit` method) is greater than the time to transmit the content of the first buffer of the `circularStorage`.
+					// This point may be reached only if behind transmission is enabled and the transmission of the first frame took less time than the serialization of the whole message to be completed by the thread that called the `transmit` method.
 					else if !behindTransmissionStopped then {
 						// if the read-end catches up to the write-end, stop the behind transmission; else fill the frame buffer with the content of the read-end buffer and transmit it through the channel.
 						val aPendingBufferIsBehind = circularStorage.advanceReadEnd() && circularStorage.hasPendingBuffersBehind // behind transmission is stopped only when serialization is slower than transmission.
 						behindTransmissionStopped = !aPendingBufferIsBehind
-						if aPendingBufferIsBehind || isSerializationCompleted then {
-							fillFrame()
-							completed(bytesTransmitted, false)
-						}
+						if aPendingBufferIsBehind || isSerializationCompleted then sendFrame(circularStorage.readEnd)
 					}
 				}
 			}

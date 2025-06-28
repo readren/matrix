@@ -47,10 +47,7 @@ object InteractiveTests {
 		val seeds = Set(addressA, addressB)
 
 		val socketOptions: Set[SocketOptionValue[Any]] = Set(StandardSocketOptions.SO_REUSEADDR -> java.lang.Boolean.TRUE)
-		val acceptedConnectionsFilter: ContactAddressFilter = {
-			case isa: InetSocketAddress => 8080 <= isa.getPort && isa.getPort < 8090
-			case _ => false
-		}
+		val acceptedConnectionsFilter: ContactAddressFilter = _ => true
 		val configA = new ClusterService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 		val configB = new ClusterService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
