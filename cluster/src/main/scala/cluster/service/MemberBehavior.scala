@@ -33,11 +33,6 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 		// TODO
 	}
 
-	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean): Unit = {
-		if isReconnection then delegate.sendPeerAHelloIAmBack()
-		else delegate.sendPeerAHelloIExist()
-	}
-
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
 		case hello: HelloIExist =>
 			senderDelegate.handleMessage(hello)
@@ -67,14 +62,14 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 			true
 
 		case ClusterCreatorProposal(proposedCandidate) =>
-			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[ClusterCreatorProposal]} despite cluster already exists.")
+			scribe.warn(s"The aspirant at `${senderDelegate.peerContactAddress}` sent me a `${getTypeName[ClusterCreatorProposal]}` despite cluster already exists.")
 			senderDelegate.incitePeerToResolveMembershipConflict()
 			true
 
 		case icc: ICreatedACluster =>
 			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
 				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant)
-			} else scribe.warn(s"I have ignored the message `$icc` from the participant at ${senderDelegate.contactCard} because I already am a member of the cluster he created.")
+			} else scribe.warn(s"I have ignored the message `$icc` from the participant at `${senderDelegate.contactCard}` because I already am a member of the cluster he created.")
 			true
 
 		case oi: RequestApprovalToJoin =>
@@ -101,7 +96,7 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 			true
 
 		case lcw: ILostCommunicationWith =>
-			senderDelegate.checkSyncWithPeer(s"the participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
+			senderDelegate.checkSyncWithPeer(s"the participant at `${senderDelegate.peerContactAddress}` told me that he lost communication with `${lcw.participantsAddress}`.")
 			true
 
 		case fw: Farewell =>

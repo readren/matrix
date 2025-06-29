@@ -19,7 +19,7 @@ object Receiver {
 	type Lazy[A <: Matchable] = misc.Lazy[A, Fault]
 
 	sealed trait Fault {
-		def logFeatures: Seq[LogFeature] = Seq(this.toString)
+		def logFeatures: Seq[LogFeature] = List(this.toString)
 		def scribeContent(message: String): Seq[LogFeature] = message +: logFeatures
 	}
 
@@ -30,11 +30,11 @@ object Receiver {
 	case class TheDeserializerHasNotConsumedTheWholePackage(remainingBytes: Int, deserializerResult: Any) extends Fault
 
 	case class DeserializationProblem(problem: Throwable) extends Fault {
-		override def logFeatures: Seq[LogFeature] = Seq(this.toString, problem)
+		override def logFeatures: Seq[LogFeature] = List(this.toString, problem)
 	}
 
 	case class ReceptionFailure(channel: AsynchronousSocketChannel, cause: Throwable) extends Fault {
-		override def logFeatures: Seq[LogFeature] = Seq(this.toString, cause)
+		override def logFeatures: Seq[LogFeature] = List(this.toString, cause)
 	}
 
 	/** The [[Deserializer]] expected more bytes than the contained in the received package (a sequence of frames finalized with an empty frame). */
@@ -267,7 +267,7 @@ class Receiver(channel: AsynchronousSocketChannel, buffersCapacity: Int = 8192, 
 
 					// If the current write-end buffer has available capacity, continue writing received data into the current write-end buffer.
 					else if writeEndBuffer.hasRemaining then {
-						// If the frame header will be split, avoid the splitting in advance by increasing the limit of the current write-end buffer (using the reserved capacity).
+						// If the frame header were to be split, avoid the splitting in advance by increasing the limit of the current write-end buffer (using the reserved capacity).
 						if buffersInitialLimit > nextFrameHeaderPos && nextFrameHeaderPos > buffersInitialLimit - FRAME_HEADER_MAX_SIZE then {
 							writeEndBuffer.limit(nextFrameHeaderPos + FRAME_HEADER_MAX_SIZE)
 						}

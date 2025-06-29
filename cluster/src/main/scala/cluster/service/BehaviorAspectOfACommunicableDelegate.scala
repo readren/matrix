@@ -24,7 +24,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	private[service] def sendPeerAHelloIExist(): Unit = {
 		askPeer(new SingleRetryOutgoingRequestExchange[HelloIExist] {
 			override def buildRequest(requestId: RequestId): HelloIExist =
-				HelloIExist(requestId, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.myMembershipStatus, clusterService.getKnownParticipantsAddresses)
+				HelloIExist(requestId, clusterService.myAddress, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.myMembershipStatus, clusterService.getKnownParticipantsAddresses)
 
 			override def onResponse(request: HelloIExist, response: request.ResponseType): Boolean = response match {
 				case welcome: Welcome =>
@@ -49,9 +49,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 		// If the HelloIExist message comes from a participant that, according to my memory, isn't an aspirant; surely it was rebooted, so inform that.
 		if (message.myMembershipStatus eq Aspirant) && !previousMembershipStatus.contentEquals(Aspirant) then {
-			clusterService.notifyListenersThat(MemberHasBeenRebooted(peerAddress))
+			clusterService.notifyListenersThat(MemberHasBeenRebooted(peerContactAddress))
 			for case (contactAddress, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-				if contactAddress != peerAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerAddress, message.myCreationInstant))
+				if contactAddress != peerContactAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerContactAddress, message.myCreationInstant))
 			}
 		}
 
@@ -68,7 +68,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	private[service] def sendPeerAHelloIAmBack(): Unit = {
 		askPeer(new SingleRetryOutgoingRequestExchange[HelloIAmBack] {
 			override def buildRequest(requestId: RequestId): HelloIAmBack =
-				HelloIAmBack(requestId, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.myMembershipStatus)
+				HelloIAmBack(requestId, clusterService.myAddress, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.myMembershipStatus)
 
 			override def onResponse(request: HelloIAmBack, response: request.ResponseType): Boolean = response match {
 				case welcome: Welcome =>
@@ -107,11 +107,11 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		// Create a delegate for each participant that I did not know.
 		clusterService.createADelegateForEachParticipantIDoNotKnowIn(welcome.otherParticipants)
 		// notify listeners and other participants
-		clusterService.notifyListenersAndOtherParticipantsThatAConversationStartedWith(peerAddress, isARestart)
+		clusterService.notifyListenersAndOtherParticipantsThatAConversationStartedWith(peerContactAddress, isARestart)
 	}
 
 	private def handleSupportedVersionsMismatch(svm: SupportedVersionsMismatch): Unit = {
-		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
+		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
 		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
 	}
 
@@ -120,7 +120,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 			ifFailureReportItAndThen(DoNothing)(report)
 			sequencer.executeSequentially {
 				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
-				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerAddress))
+				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
 			}
 		}
 	}
@@ -128,7 +128,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	////
 
 	private[service] def handleMessage(message: ChannelDiscarded): false = {
-		scribe.error(s"The participant at $peerAddress sent me a ${getTypeName[ChannelDiscarded]} message through a channel that I already started to use.")
+		scribe.error(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `$message` through a channel that I already started to use.")
 		restartChannel("Channel unexpectedly discarded")
 		false
 	}
@@ -137,7 +137,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		if this.peerCreationInstant == Protocol.UNSPECIFIED_INSTANT || this.peerCreationInstant == farewell.myCreationInstant then {
 			if clusterService.removeDelegate(this, true) then {
 				for case (address, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-					transmitToPeerOrRestartChannel(AnotherParticipantGone(peerAddress, peerCreationInstant))
+					transmitToPeerOrRestartChannel(AnotherParticipantGone(peerContactAddress, peerCreationInstant))
 				}
 			}
 			startPeerChannelClosing()
@@ -152,9 +152,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		clusterService.delegateByAddress.getOrElse(message.rebootedParticipantAddress, null) match {
 			case rebootedParticipantDelegate: CommunicableDelegate =>
 				if rebootedParticipantDelegate.getPeerCreationInstant == message.restartedParticipantCreationInstant then {
-					rebootedParticipantDelegate.checkSyncWithPeer(s"participant at $peerAddress told me that participant at ${message.rebootedParticipantAddress} has been rebooted")
+					rebootedParticipantDelegate.checkSyncWithPeer(s"participant at `$peerContactAddress` told me that participant at `${message.rebootedParticipantAddress}` has been rebooted")
 				} else {
-					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${rebootedParticipantDelegate.getPeerCreationInstant}).")
+					scribe.warn(s"I received the message `$message` from `$peerContactAddress` with an unmatching creation instant (expected: ${rebootedParticipantDelegate.getPeerCreationInstant}).")
 				}
 			case rebootedParticipantDelegate: IncommunicableDelegate =>
 				if !rebootedParticipantDelegate.isConnectingAsClient then rebootedParticipantDelegate.tryToConnect()
@@ -169,7 +169,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 				if goneParticipantDelegate.getPeerCreationInstant == message.goneParticipantCreationInstant then {
 					goneParticipantDelegate.removeMyselfIfNoAnswerFromPeer()
 				} else {
-					scribe.warn(s"I received the message `$message` from $peerAddress with an unmatching creation instant (expected: ${goneParticipantDelegate.getPeerCreationInstant}).")
+					scribe.warn(s"I received the message `$message` from `$peerContactAddress` with an unmatching creation instant (expected: ${goneParticipantDelegate.getPeerCreationInstant}).")
 				}
 			case goneParticipantDelegate: IncommunicableDelegate =>
 				clusterService.removeDelegate(goneParticipantDelegate, true)
@@ -234,7 +234,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		for (participantAddress, participantMembershipStatusAccordingToPeer) <- message.membershipStatusOfParticipantsIKnow do {
 			delegateByAddress.getOrElse(participantAddress, null) match {
 				case communicableDelegate: CommunicableDelegate if !communicableDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantMembershipStatusAccordingToPeer) =>
-					communicableDelegate.checkSyncWithPeer(s"the participant at $peerAddress told me that the participant at $participantAddress has a different membership status ($participantMembershipStatusAccordingToPeer) than the one I remember (${communicableDelegate.getPeerMembershipStatusAccordingToMe}).")
+					communicableDelegate.checkSyncWithPeer(s"the participant at `$peerContactAddress` told me that the participant at $participantAddress has a different membership status ($participantMembershipStatusAccordingToPeer) than the one I remember (${communicableDelegate.getPeerMembershipStatusAccordingToMe}).")
 
 				case null =>
 					if participantAddress == clusterService.myAddress then {

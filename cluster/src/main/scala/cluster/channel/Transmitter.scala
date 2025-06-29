@@ -107,10 +107,11 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 		/** Sends a frame with the content of the provided [[ByteBuffer]] through the channel. */
 		def sendFrame(contentBuffer: ByteBuffer): Unit = {
-			scribe.debug(s"Transmission progress of message `$message`: sending frame containing $contentBuffer.")
 			frameHeaderBuffer.clear()
 			VLQ.encodeUnsignedInt(contentBuffer.limit, frameHeaderWriter)
+			frameHeaderBuffer.flip()
 			frameBuffer(1) = contentBuffer
+			scribe.debug(s"Transmission progress of message `$message`: sending frame with size=${frameHeaderBuffer.limit} + ${contentBuffer.limit}")
 			channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, handler)
 		}
 
@@ -160,7 +161,7 @@ class Transmitter(channel: AsynchronousSocketChannel, buffersCapacity: Int = 819
 
 			// executed sequentially by a thread of the NIO2 group.
 			override def completed(bytesTransmitted: java.lang.Long, sentinelWasSent: Boolean): Unit = {
-				scribe.debug(s"Transmission progress of message `$message`: bytesTransmitted=$bytesTransmitted, sentinelWasSent=$sentinelWasSent`, frameHeaderBuffer=${frameBuffer(0)}, frameContentBuffer=${frameBuffer(1)}")
+				scribe.debug(s"Transmission progress of message `$message`: bytesTransmitted=$bytesTransmitted, sentinelWasSent=$sentinelWasSent`, remaining=${frameBuffer(0).remaining()}+${if sentinelWasSent then 0 else frameBuffer(1).remaining()}")
 				if frameBuffer(0).hasRemaining then channel.write(frameBuffer, 0, 2, timeout, timeUnit, false, thisHandler)
 				else if frameBuffer(1).hasRemaining then channel.write(frameBuffer, 1, 2, timeout, timeUnit, false, thisHandler)
 				else {

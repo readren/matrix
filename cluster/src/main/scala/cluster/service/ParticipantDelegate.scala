@@ -11,9 +11,8 @@ abstract class ParticipantDelegate {
 	/** The [[ClusterService]] that this instance is a delegate of. */
 	val clusterService: ClusterService
 	/** The [[ContactAddress]] of the participant this instance manages.  */
-	val peerAddress: ContactAddress
+	val peerContactAddress: ContactAddress
 	def communicationStatus: CommunicationStatus
-	def info: Maybe[ParticipantInfo]
 
 	// TODO consider pushing down the following three variables into the CommunicableDelegate subclass to avoid remembering outdated state. 
 	protected var oPeerMembershipStatusAccordingToMe: Maybe[MembershipStatus] = Maybe.empty
@@ -28,7 +27,9 @@ abstract class ParticipantDelegate {
 
 	/** The communicability is stable: connection and handshaking have completed (successfully or not). */
 	def isStable: Boolean
-	
+
+	def info: Maybe[ParticipantInfo] = oPeerMembershipStatusAccordingToMe.map(ParticipantInfo(communicationStatus, _))
+
 	inline def initializeStateBasedOn(other: ParticipantDelegate): Unit = {
 		this.oPeerMembershipStatusAccordingToMe = other.oPeerMembershipStatusAccordingToMe
 		this.peerCreationInstant = other.peerCreationInstant

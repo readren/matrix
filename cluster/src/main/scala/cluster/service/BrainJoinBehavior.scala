@@ -19,10 +19,6 @@ class BrainJoinBehavior(clusterService: ClusterService, otherClusterCreationInst
 
 	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = ???
 
-	/** Called just after a successful connection to the participant corresponding to the specified `delegate` when I am at the client side of the delegate's channel.
-	 * The implementation should transmit the conversation-opening message. */
-	override def openConversationWith(participantDelegate: CommunicableDelegate, isReconnection: Boolean): Unit = ???
-
 	/**
 	 * Handles an incoming `message` from the participant associated with the `delegate`, possibly deferring some reactions (e.g., queueing them for later sequential execution).
 	 *

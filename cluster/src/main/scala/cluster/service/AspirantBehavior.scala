@@ -27,12 +27,6 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		updateClusterCreatorProposalIfAppropriate()
 	}
 
-	override def openConversationWith(delegate: CommunicableDelegate, isReconnection: Boolean): Unit = {
-		if isReconnection then delegate.sendPeerAHelloIAmBack()
-		else delegate.sendPeerAHelloIExist()
-	}
-
-
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
 		case hie: HelloIExist =>
 			senderDelegate.handleMessage(hie)
@@ -64,7 +58,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			???
 
 		case rtj: RequestToJoin =>
-			scribe.warn(s"The aspirant at ${senderDelegate.peerAddress} sent me a ${getTypeName[RequestToJoin]} despite I am not a member of any cluster. ")
+			scribe.warn(s"The aspirant at ${senderDelegate.peerContactAddress} sent me a ${getTypeName[RequestToJoin]} despite I am not a member of any cluster. ")
 			senderDelegate.incitePeerToResolveMembershipConflict()
 			true
 
@@ -73,7 +67,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case lcw: ILostCommunicationWith =>
-			senderDelegate.checkSyncWithPeer(s"the participant at ${senderDelegate.peerAddress} told me that he lost communication with ${lcw.participantsAddress}.")
+			senderDelegate.checkSyncWithPeer(s"the participant at ${senderDelegate.peerContactAddress} told me that he lost communication with ${lcw.participantsAddress}.")
 			true
 
 		case fw: Farewell =>
@@ -197,7 +191,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 						override def buildRequest(requestId: RequestId): RequestToJoin = {
 							val joinTokenByMember = clusterService.delegateByAddress.collect {
 								case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe == chosenMemberDelegate.getPeerMembershipStatusAccordingToMe =>
-									delegate.peerAddress -> delegate.getPeerCreationInstant
+									delegate.peerContactAddress -> delegate.getPeerCreationInstant
 							}
 							RequestToJoin(requestId, joinTokenByMember)
 						}
@@ -216,7 +210,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 														if participantAddress == clusterService.myAddress then {
 															if participantInfoAccordingToChosenMember.membershipStatus ne clusterService.myMembershipStatus then {
 																inSyncWithChosenMember = false
-																chosenMemberDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my membership state.")
+																chosenMemberDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerContactAddress} does not match my membership state.")
 															}
 														} else {
 															inSyncWithChosenMember = false
@@ -225,7 +219,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 													case participantDelegate: CommunicableDelegate =>
 														if !participantDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantInfoAccordingToChosenMember.membershipStatus) then {
 															inSyncWithChosenMember = false
-															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerAddress} does not match my memory about the membership-status of the participant at $participantAddress.")
+															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerContactAddress} does not match my memory about the membership-status of the participant at $participantAddress.")
 														}
 													case participantDelegate: IncommunicableDelegate =>
 														if participantInfoAccordingToChosenMember.communicationStatus eq CommunicationStatus.HANDSHOOK then {
@@ -262,13 +256,13 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 						override def onTransmissionError(request: RequestToJoin, nd: NotDelivered): Unit = {
 							aRequestToJoinIsOnTheWay = false
 							chosenMemberDelegate.reportTransmissionFailure(nd)
-							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to participant at ${chosenMemberDelegate.peerAddress}: $nd")
+							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to participant at ${chosenMemberDelegate.peerContactAddress}: $nd")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 
 						override def onTimeout(request: RequestToJoin): Unit = {
 							aRequestToJoinIsOnTheWay = false
-							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerAddress}.")
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerContactAddress}.")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 					})

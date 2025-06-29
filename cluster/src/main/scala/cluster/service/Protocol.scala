@@ -31,14 +31,18 @@ sealed trait Response extends Protocol {
 	val toRequest: RequestId
 }
 
-/** The first message that a delegate sends to the peer after the first successful connection to it. Its purpose is to:
+sealed trait Hello extends Request {
+	val myContactAddress: ContactAddress
+}
+
+/** The first message that a participant sends to the participant to which it has successfully connected as a client. Its purpose is to:
  * 	- propagate the knowledge of its existence and of the participants it knows;
  *  - inform the peer (receiver) the membership-status of the sender;
  * 	- ask the peer to decide which protocol version to use with him.
  * 	- expect the peer to reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise.
  * 	@param versionsISupport the set of versions supported by the sender.
  * 	@param otherParticipantsIKnow the address of the participants known by the sender, not including itself. */
-case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus, otherParticipantsIKnow: Set[ContactAddress]) extends Request {
+case class HelloIExist(override val requestId: RequestId, override val myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus, otherParticipantsIKnow: Set[ContactAddress]) extends Hello {
 	override type ResponseType = Welcome | SupportedVersionsMismatch
 }
 
@@ -46,7 +50,7 @@ case class HelloIExist(override val requestId: RequestId, versionsISupport: Set[
  * - update the peer's viewpoint of the sender.
  * 	- ask the peer to decide which protocol version to use with him.
  * 	- expect the peer to reply with [[Welcome]] if there is version compatibility or with [[SupportedVersionsMismatch]] otherwise. */
-case class HelloIAmBack(override val requestId: RequestId, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus) extends Request {
+case class HelloIAmBack(override val requestId: RequestId, override val myContactAddress: ContactAddress, versionsISupport: Set[ProtocolVersion], myCreationInstant: Instant, myMembershipStatus: MembershipStatus) extends Hello {
 	override type ResponseType = Welcome | SupportedVersionsMismatch
 }
 
@@ -152,7 +156,7 @@ case class ClusterStateChanged(myStateSerial: RingSerial, takenOn: Instant, myMe
 
 /** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections.
  * @param isClientSide `true` when the sender is at the client side of the discarded channel; `false` otherwise. */
-case class ChannelDiscarded(isClientSide: Boolean) extends Affirmation
+case class ChannelDiscarded(@deprecated("not used") isClientSide: Boolean) extends Affirmation
 
 /** The message sent to all other members when a member discovers the existence of another cluster, to start a brain join process. */
 case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Affirmation
@@ -268,10 +272,11 @@ object Protocol {
 				case _: WeHaveToResolveBrainSplit => 52
 				case _: ApplicationMsg => 60
 
+				case _: Hello => 5
+				case _: Request => 4
 				case _: Affirmation => 3
-				case _: Request => 2
+				case _: InitiationMsg => 2
 				case _: Response => 1
-				case _: InitiationMsg => 0
 			}
 	}
 

@@ -23,14 +23,16 @@ import scala.util.control.NonFatal
 /** A [[ParticipantDelegate]] that is currently able to communicable with the participant. */
 class CommunicableDelegate(
 	override val clusterService: ClusterService,
-	override val peerAddress: SocketAddress,
-	val peerChannel: AsynchronousSocketChannel,
+	override val peerContactAddress: ContactAddress,
+	val channel: AsynchronousSocketChannel,
+	receiverFromPeer: Receiver,
+	val oPeerRemoteAddress: Maybe[SocketAddress],
 	val channelOrigin: ChannelOrigin
 ) extends ParticipantDelegate, BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate =>
 	val config: DelegateConfig = clusterService.config.participantDelegatesConfig
 
-	private val transmitterToPeer: Transmitter = new Transmitter(peerChannel)
-	private val receiverFromPeer: Receiver = new Receiver(peerChannel)
+	private val transmitterToPeer: Transmitter = new Transmitter(channel, config.frameCapacity)
+
 	private var agreedVersion: ProtocolVersion = ProtocolVersion.NOT_SPECIFIED
 	inline def getAgreedVersion: ProtocolVersion = agreedVersion
 	private var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
@@ -53,10 +55,7 @@ class CommunicableDelegate(
 
 	override def communicationStatus: CommunicationStatus = if isStable then HANDSHOOK else CONNECTED
 
-	override def info: Maybe[ParticipantInfo] =
-		oPeerMembershipStatusAccordingToMe.map(ParticipantInfo(communicationStatus, _))
-
-	inline def contactCard: ContactCard = (peerAddress, versionsSupportedByPeer)
+	inline def contactCard: ContactCard = (peerContactAddress, versionsSupportedByPeer)
 
 	private[service] def updateState(peersNewMembershipStatus: MembershipStatus, peersNewSupportedVersions: Set[ProtocolVersion] = versionsSupportedByPeer, newCreationInstant: Instant = peerCreationInstant): Unit = {
 		val previousPeersSupportedVersions = versionsSupportedByPeer
@@ -70,13 +69,16 @@ class CommunicableDelegate(
 		if !previousMembershipStatusOfPeerAccordingToMe.contentEquals(peersNewMembershipStatus) then behavior.onDelegateMembershipChange(this)
 	}
 
-	def startConversationAsServer(): Unit = {
+	/** Called just after a successfully connecting through a brand-new connection initiated by me and accepted by the peer (I am at the client side of the channel). */
+	def startConversationAsClient(isReconnection: Boolean): Unit = {
+		if isReconnection then sendPeerAHelloIAmBack()
+		else sendPeerAHelloIExist()
 		receiveNextMessages()
 	}
 
-	def startConversationAsClient(isReconnection: Boolean): Unit = {
-		clusterService.getMembershipScopedBehavior.openConversationWith(this, isReconnection)
-		receiveNextMessages()
+	/** Called just after a successfully receiving the first message (which should be a [[Hello]]) through a brand-new connection initiated by the peer and accepted by me (I am at the server side of the channel). */
+	def startConversationAsServer(hello: Hello): Unit = {
+		if clusterService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, hello) then receiveNextMessages()
 	}
 
 	/** Receives the messages sent by the peer to me. The received messages are consumed sequentially and eagerly, but the handling of them is governed by the [[MembershipScopedBehavior.handleInitiatorMessageFrom]] which may defer some reactions. */
@@ -85,7 +87,7 @@ class CommunicableDelegate(
 			case responseFromPeer: Response =>
 				sequencer.executeSequentially {
 					requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
-						scribe.warn(s"I have received a response from the participant at $peerAddress to a request I haven't made: response = $responseFromPeer")
+						scribe.warn(s"I have received a response from the participant at $peerContactAddress to a request I haven't made: response = $responseFromPeer")
 					} { ore =>
 						sequencer.cancel(ore.oTimeoutSchedule.get)
 						val request = ore.oRequest.get
@@ -101,35 +103,35 @@ class CommunicableDelegate(
 				}
 
 			case fault: Receiver.Fault =>
-				val errorMessage = s"Failure while I (${clusterService.myAddress}) was receiving a message from `$peerAddress`."
+				val errorMessage = s"Failure while I (${clusterService.myAddress}) was receiving a message from `$peerContactAddress`."
 				scribe.error(fault.scribeContent(errorMessage)*)
 				sequencer.executeSequentially(restartChannel(errorMessage + fault))
 		}
 	}
 
 	private def onTerminatingMessageReceived(message: Protocol): Unit = {
-		scribe.debug(s"The channel `$peerChannel` reception completed with the terminal message $message")
-		peerChannel.shutdownInput()
+		scribe.debug(s"The channel `$channel` reception completed with the terminal message $message")
+		channel.shutdownInput()
 		// TODO analyze if something else should be done here (or it is responsibility of the message handlers when they return `false`).
 	}
 
 
 	private[service] def notifyPeerThatAConversationStartedWith(otherParticipant: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
-		assert(otherParticipant != peerAddress && otherParticipant != clusterService.myAddress)
+		assert(otherParticipant != peerContactAddress && otherParticipant != clusterService.myAddress)
 		transmitToPeerOrRestartChannel(ConversationStartedWith(otherParticipant, isARestartAfterReconnection))
 	}
 
 	private[service] def notifyPeerThatILostCommunicationWith(otherParticipant: ContactAddress): Unit = {
-		assert(otherParticipant != peerAddress && otherParticipant != clusterService.myAddress)
+		assert(otherParticipant != peerContactAddress && otherParticipant != clusterService.myAddress)
 		transmitToPeerOrRestartChannel(ILostCommunicationWith(otherParticipant))
 	}
 
 	private[service] def reportTransmissionFailure(failure: Transmitter.NotDelivered): Unit = {
 		failure match {
 			case transmissionFailure: Transmitter.TransmissionFailure =>
-				scribe.error(s"A transmission failure occurred while transmitting the message `${transmissionFailure.rootMessage}` from `${clusterService.myAddress}` to `$peerAddress` through the channel `$peerChannel`.", transmissionFailure.cause)
+				scribe.error(s"A transmission failure occurred while transmitting the message `${transmissionFailure.rootMessage}` from `${clusterService.myAddress}` to `$peerContactAddress` through the channel `$channel`.", transmissionFailure.cause)
 			case serializationFailure: Transmitter.SerializationProblem =>
-				scribe.error(s"A serialization failure occurred at position ${serializationFailure.problem.position} while transmitting the message `${serializationFailure.rootMessage}` from `${clusterService.myAddress}` to `$peerAddress` through the channel `$peerChannel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted." else "before any byte was transmitted."}", serializationFailure.problem)
+				scribe.error(s"A serialization failure occurred at position ${serializationFailure.problem.position} while transmitting the message `${serializationFailure.rootMessage}` from `${clusterService.myAddress}` to `$peerContactAddress` through the channel `$channel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted." else "before any byte was transmitted."}", serializationFailure.problem)
 		}
 	}
 
@@ -204,7 +206,7 @@ class CommunicableDelegate(
 		private[CommunicableDelegate] var isFirstTry: Boolean = true
 
 		override def onTransmissionError(request: Q, error: NotDelivered): Unit = {
-			restartChannel(s"Transmission failure while trying to send `$request` to participant at $peerAddress: $error")
+			restartChannel(s"Transmission failure while trying to send `$request` to participant at $peerContactAddress: $error")
 		}
 
 		/** Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
@@ -216,7 +218,7 @@ class CommunicableDelegate(
 				val schedule: sequencer.Schedule = sequencer.newDelaySchedule(retryDelay)
 				sequencer.scheduleSequentially(schedule) { () => askPeer(this) }
 			}
-			else restartChannel(s"Non-response timeout: request ${oRequest.get} was sent to participant at $peerAddress twice (initial attempt got no response within response timeout), but no response was received.")
+			else restartChannel(s"Non-response timeout: request ${oRequest.get} was sent to participant at $peerContactAddress twice (initial attempt got no response within response timeout), but no response was received.")
 		}
 	}
 
@@ -233,65 +235,65 @@ class CommunicableDelegate(
 		startPeerChannelClosing()
 		// replace me with an incommunicable delegate.
 		if clusterService.removeDelegate(this, false) then {
-			val myReplacement = clusterService.addANewIncommunicableDelegate(peerAddress, reason)
+			val myReplacement = clusterService.addANewIncommunicableDelegate(peerContactAddress, reason)
 			myReplacement.initializeStateBasedOn(this)
 			// notify
 			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO consider moving this line inside the `notify*` method called in the next line
-			clusterService.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerAddress, reason, motive)
+			clusterService.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerContactAddress, reason, motive)
 			Maybe.some(myReplacement)
 		} else Maybe.empty
 	}
 
-	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, channelOrigin: ChannelOrigin): Maybe[CommunicableDelegate] = {
+	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, newFromPeerReceiver: Receiver, oPeerNewRemoteAddress: Maybe[SocketAddress], channelOrigin: ChannelOrigin): Maybe[CommunicableDelegate] = {
 		// release this delegate
 		startPeerChannelClosing()
 		// replace me with a communicable delegate.
 		if clusterService.removeDelegate(this, false) then {
-			val myReplacement = clusterService.addANewCommunicableDelegate(peerAddress, newChannel, channelOrigin)
+			val myReplacement = clusterService.addANewCommunicableDelegate(peerContactAddress, newChannel, newFromPeerReceiver, oPeerNewRemoteAddress, channelOrigin)
 			myReplacement.initializeStateBasedOn(this)
 			// notify
 			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO this isn't exactly a communicability change. Analyze it. 
-			clusterService.notifyListenersThat(CommunicationChannelReplaced(peerAddress))
+			clusterService.notifyListenersThat(CommunicationChannelReplaced(peerContactAddress))
 			Maybe.some(myReplacement)
 		} else Maybe.empty
 	}
 
 	private[service] def restartChannel(motive: Transmitter.NotDelivered): Unit =
-		restartChannel(s"A transmission to $peerAddress failed with $motive")
+		restartChannel(s"A transmission to $peerContactAddress failed with $motive")
 
 	private[service] def restartChannel(motive: String): Unit = {
-		scribe.debug(s"The channel between me (`${clusterService.myAddress}`) and participant at`$peerChannel` is restarting becase: $motive" )
+		scribe.debug(s"The channel between me (`${clusterService.myAddress}`) and participant at`$channel` is restarting becase: $motive" )
 		replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel because of: $motive").foreach { myReplacement =>
 			clusterService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
 		}
 	}
 
-	/** Initiates a graceful closing of the [[peerChannel]], if it is open. */
+	/** Initiates a graceful closing of the [[channel]], if it is open. */
 	private[service] def startPeerChannelClosing(): Unit = {
 		// if the channel is open, close it gracefully.
-		if peerChannel.isOpen then {
-			peerChannel.shutdownOutput()
+		if channel.isOpen then {
+			channel.shutdownOutput()
 
 			def loop(): Unit = {
 				try {
 					receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
 						case cbp: ChannelClosedByPeer if cbp.missingBytesAccordingToLastFrame == 0 =>
-							peerChannel.close()
-							scribe.info(s"Channel closed by peer while purging the channel's input connection of a released delegate of the participant at $peerAddress.")
+							channel.close()
+							scribe.info(s"The participant at `$peerContactAddress` closed a connection to me (`${clusterService.myAddress}`) while I was purging its channel.")
 						case fault: Receiver.Fault =>
-							peerChannel.close()
-							scribe.error(s"Failure while purging the channel's input connection of a released delegate of the participant at $peerAddress.", fault.toString)
+							channel.close()
+							scribe.error(fault.scribeContent(s"Failure while purging the connection between me (`${clusterService.myAddress}`) and the participant at `$peerContactAddress`.")*)
 						case cd: ChannelDiscarded =>
-							scribe.info(s"The channel of the released delegate of the participant at $peerAddress was gracefully closed")
-							peerChannel.close()
+							scribe.info(s"The connection between me (`${clusterService.myAddress}`) and the participant at `$peerContactAddress` was gracefully discarded.")
+							channel.close()
 						case message: Protocol =>
-							scribe.warn(s"The following message from the participant at $peerAddress was ignored because it was received after the delegate was released:", message.toString)
+							scribe.warn(s"The message `$message` from the participant at `$peerContactAddress` was ignored by the participant (at `${clusterService.myAddress}`) because it was received while the connection channel was being released.")
 							loop()
 					}
 				} catch {
 					case NonFatal(e) =>
-						peerChannel.close()
-						scribe.error(s"Failure when trying to purge the next ignored message from the channel's input connection of a released delegate of the participant at $peerAddress.", e)
+						channel.close()
+						scribe.error(s"Failure when I (`${clusterService.myAddress}`) tried to purge the connection to `$peerContactAddress`:", e)
 				}
 			}
 

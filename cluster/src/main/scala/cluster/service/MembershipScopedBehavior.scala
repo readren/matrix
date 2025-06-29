@@ -15,17 +15,14 @@ abstract class MembershipScopedBehavior {
 
 	def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit
 
-	/** Called just after a successful connection to the participant corresponding to the specified `delegate` when I am at the client side of the delegate's channel.
-	 * The implementation should transmit the conversation-opening message. */
-	def openConversationWith(participantDelegate: CommunicableDelegate, isReconnection: Boolean): Unit
+//	/** Called just after a successful connection to the participant corresponding to the specified `delegate` when I am at the client side of the channel.
+//	 * The implementation should transmit the conversation-opening message. */
+//	def openConversationWith(participantDelegate: CommunicableDelegate, isReconnection: Boolean): Unit
 
 	/**
 	 * Handles an incoming `message` from the participant associated with the `delegate`, possibly deferring some reactions (e.g., queueing them for later sequential execution).
 	 *
-	 * The method must return *immediately* with a `Boolean` indicating whether the conversation:
-	 * - Should continue (`true`), or
-	 * - Should terminate (`false`).
-	 *
+	 * The method must return *immediately* with a `Boolean` indicating whether the conversation should continue (`true`), or terminate (`false`).
 	 * Note: While reactions to the message may be deferred (e.g., processed later in a strict order), the decision to continue/end the conversation must be made synchronously.
 	 */
 	def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean
