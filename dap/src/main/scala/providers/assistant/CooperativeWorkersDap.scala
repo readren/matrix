@@ -9,7 +9,6 @@ import providers.assistant.DoerAssistantProvider.Tag
 import readren.taskflow.Doer
 
 import java.lang.invoke.VarHandle
-import java.util
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -22,11 +21,14 @@ object CooperativeWorkersDap {
 
 	inline val debugEnabled = false
 
-	private val workerIndexThreadLocal: ThreadLocal[Int] = ThreadLocal.withInitial(() => -1)
-	private val doerAssistantThreadLocal: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
+	private val doerAssistantThreadLocal: ThreadLocal[DoerAssistant] = new ThreadLocal()
 
-	def currentWorkerIndex: Int = workerIndexThreadLocal.get
-	// val UNSAFE: Unsafe = Unsafe.getUnsafe
+	/** @return the [[CooperativeWorkersDap.Worker]] that owns the current [[Thread]], if any. */
+	def currentWorker: Runnable | Null = workerThreadLocal.get
+	
+	/** @return the [[DoerAssistant]] that is currently associated to the current [[Thread]], if any. */
+	def currentAssistant: DoerAssistant | Null = doerAssistantThreadLocal.get
 
 	trait DoerAssistant extends Doer.Assistant {
 		def id: Tag
@@ -96,7 +98,7 @@ class CooperativeWorkersDap(
 			}
 		}
 
-		override def current: Doer.Assistant = doerAssistantThreadLocal.get()
+		override def current: Doer.Assistant = currentAssistant
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 
@@ -219,7 +221,7 @@ class CooperativeWorkersDap(
 
 		/** Worker main loop. */
 		override def run(): Unit = {
-			workerIndexThreadLocal.set(index)
+			workerThreadLocal.set(thisWorker)
 			while keepRunning do {
 				val assignedDoerAssistant: DoerAssistantImpl | Null =
 					if queueJumper ne null then queueJumper
@@ -235,6 +237,11 @@ class CooperativeWorkersDap(
 					}
 					catch { // TODO analyze if clarity would suffer too much if [[SchedulingAssistantImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
 						case e: Throwable =>
+							// If neither a thread-local nor a global uncaught exception handler is configured, use the provided failureReporter to expose the error.
+							// This ensures that exceptions are always reported somewhere, but if a handler is configured (either per-thread or globally),
+							// the standard JVM uncaught exception handling mechanism will take precedence. In all cases, the exception is rethrown to ensure
+							// the thread terminates abruptly, as is standard for uncaught exceptions in threads.
+							// This design respects user/system configuration and only uses failureReporter as a fallback.
 							if (thread.getUncaughtExceptionHandler eq null) && (Thread.getDefaultUncaughtExceptionHandler eq null) then failureReporter(e)
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
@@ -261,7 +268,7 @@ class CooperativeWorkersDap(
 			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a DoerAssistants was enqueued into `enqueuedDoerAssistants` by an external thread and is still not visible from the threads of the workers that were awake)
 			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
 			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
-			// If other worker's thread is leaving the sleeping state
+			// If another worker's thread is leaving the sleeping state
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
 				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoersAssistants`.
 				sleepingWorkersCount.getAndDecrement()

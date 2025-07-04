@@ -7,6 +7,7 @@ import cluster.service.ContactCard.*
 import cluster.service.Protocol.*
 import common.CompileTime.getTypeName
 
+import readren.matrix.cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import readren.taskflow.Maybe
 
 class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedBehavior {
@@ -81,8 +82,8 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			senderDelegate.handleMessage(isw)
 			true
 
-		case cd: ChannelDiscarded =>
-			senderDelegate.handleMessage(cd)
+		case ChannelDiscarded =>
+			senderDelegate.handleChannelDiscarded()
 
 		case phr: AMemberHasBeenRebooted =>
 			senderDelegate.handleMessage(phr)
@@ -123,11 +124,11 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 	private def updateClusterCreatorProposalIfAppropriate(): Unit = {
 		val config = clusterService.config
 		val delegateByAddress = clusterService.delegateByAddress
-		val iCanCommunicateToAllSeeds = config.seeds.forall { seed =>
-			seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.isCommunicable)
+		val iHandShookWithAllSeeds = config.seeds.forall { seed =>
+			seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.communicationStatus eq HANDSHOOK)
 		}
-		// if I can communicate with all the seeds and all delegates are aspirants with stable communicability, then propose the cluster creator.
-		if iCanCommunicateToAllSeeds && delegateByAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
+		// if I have hand-shaken with all the seeds and all delegates are aspirants with stable communicability, then propose the cluster creator.
+		if iHandShookWithAllSeeds && delegateByAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
 
 			// Determine the candidate from my viewpoint
 			val candidateProposedByMe = delegateByAddress.iterator

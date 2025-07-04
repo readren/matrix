@@ -11,7 +11,7 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
 object RoundRobinDap {
-	private val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal
+	private val currentAssistant: ThreadLocal[AssistantImpl] = new ThreadLocal
 
 	class AssistantImpl(
 		val index: Int,
@@ -31,7 +31,7 @@ object RoundRobinDap {
 
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
-		override def current: Doer.Assistant = currentAssistant.get
+		override def current: AssistantImpl = currentAssistant.get
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}

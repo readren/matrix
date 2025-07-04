@@ -110,8 +110,8 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 			senderDelegate.handleMessage(isw)
 			true
 
-		case cd: ChannelDiscarded =>
-			senderDelegate.handleMessage(cd)
+		case ChannelDiscarded =>
+			senderDelegate.handleChannelDiscarded()
 
 		case phr: AMemberHasBeenRebooted =>
 			senderDelegate.handleMessage(phr)

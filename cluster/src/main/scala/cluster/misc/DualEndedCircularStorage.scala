@@ -1,7 +1,6 @@
 package readren.matrix
 package cluster.misc
 
-import java.util
 import java.util.function.Supplier
 
 
@@ -21,18 +20,18 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
 	}
 
 	/**
-	 * The write end points to the current buffer unit where new data is appended.
+	 * The write-end points to the buffer where new data is appended.
 	 * Data written here will be consumed later, potentially at a different pace, from the read end.
 	 */
 	@volatile private var writeEndNode: Node = new Node
-	/** The read end points to the buffer that contains the oldest data. */
+	/** The read-end points to the buffer that contains the oldest data. */
 	@volatile private var readEndNode: Node = writeEndNode
 
 	/**
-	 * Returns the buffer at the write end, where new information is appended.
+	 * Returns the buffer at the write-end, where new information is appended.
 	 * Data appended here will be consumed later, potentially at a different pace, from the read end.
 	 *
-	 * @return The buffer at the write end.
+	 * @return The buffer at the write-end.
 	 */
 	inline def writeEnd: T = writeEndNode.buffer
 
@@ -63,9 +62,9 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
 	}
 
 	/**
-	 * Advances the write end to the next buffer. If the write end catches up to the read end, the circular storage grows by adding a new buffer in between.
+	 * Advances the write-end to the next buffer. If the write-end catches up to the read end, the circular storage grows by adding a new buffer in between.
 	 *
-	 * @return The buffer at the new write end position.
+	 * @return The buffer at the new write-end position.
 	 */
 	def advanceWriteEnd(): T = {
 		val nextNode = writeEndNode.next
@@ -74,9 +73,28 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
 			newNode.next = nextNode
 			writeEndNode.next = newNode
 			writeEndNode = newNode
-		} else writeEndNode = writeEndNode.next
+		} else writeEndNode = nextNode
 		writeEndNode.buffer
 	}
 
+	/**
+	 * Returns an iterator over the buffers in the circular storage.
+	 * The iterator starts from the read-end and traverses the buffers until the write-end inclusive.
+	 *
+	 * @return An iterator over the buffers in the circular storage.
+	 */
+	def iterator: Iterator[T] = new Iterator[T] {
+		private var current = readEndNode
+
+		override def hasNext: Boolean =
+			current ne null
+
+		override def next(): T = {
+			if current eq null then throw new NoSuchElementException("No more buffers")
+			val buf = current.buffer
+			current = if current eq writeEndNode then null else current.next
+			buf
+		}
+	}
 }
 

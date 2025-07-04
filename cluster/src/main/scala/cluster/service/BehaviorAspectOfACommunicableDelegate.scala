@@ -99,7 +99,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		transmitToPeerOrRestartChannel(Welcome(requestId, clusterService.myMembershipStatus, clusterService.config.versionsISupport, clusterService.myCreationInstant, clusterService.getKnownParticipantsAddresses))
 	}
 
-	/** @param isARestart `false` when triggered by a [[HelloIExist]]; `true` when triggered by a [[HelloIAmBack]] */
+	/** @param isARestart `false` when triggered by a [[HelloIExist]]; `true` when triggered by a [[HelloIAmBack]]. */
 	private def handleWelcome(welcome: Welcome, isARestart: Boolean): Unit = {
 		// override the peer's membership status and supported versions with the values provided by the source of truth.
 		updateState(welcome.myMembershipStatus, welcome.versionsISupport, welcome.myCreationInstant)
@@ -127,8 +127,8 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 	////
 
-	private[service] def handleMessage(message: ChannelDiscarded): false = {
-		scribe.error(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `$message` through a channel that I already started to use.")
+	private[service] def handleChannelDiscarded(): false = {
+		scribe.error(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `${getTypeName[ChannelDiscarded.type]}` through a channel that I already started to use.")
 		restartChannel("Channel unexpectedly discarded")
 		false
 	}
@@ -140,7 +140,6 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 					transmitToPeerOrRestartChannel(AnotherParticipantGone(peerContactAddress, peerCreationInstant))
 				}
 			}
-			startPeerChannelClosing()
 			false
 		} else {
 			scribe.warn(s"A ${getTypeName[Farewell]} from $peerCreationInstant was ignored because the creation instant does not match.")

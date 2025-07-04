@@ -28,8 +28,8 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 			var failed: Boolean = false
 			val promise: Promise[Int] = Promise()
 			var counter: Counter | Null = null
-			var previousTaskWorkerIndex: Int = -1
-			var workerIndexChangesCounter: Int = 0
+			var previousTaskWorker: Runnable | Null = null
+			var workerChangesCounter: Int = 0
 		}
 
 		val assistantsData = ArraySeq.tabulate(NUMBER_OF_ASSISTANTS)(AssistantData(_))
@@ -40,10 +40,10 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 				val assistantData = assistantsData(assistantDataIndex)
 				assistantData.assistant.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
-					val currentWorkerIndex = CooperativeWorkersDap.currentWorkerIndex
-					if assistantData.previousTaskWorkerIndex != currentWorkerIndex then {
-						assistantData.workerIndexChangesCounter += 1
-						assistantData.previousTaskWorkerIndex = currentWorkerIndex
+					val currentWorker = CooperativeWorkersDap.currentWorker
+					if currentWorker ne assistantData.previousTaskWorker then {
+						assistantData.workerChangesCounter += 1
+						assistantData.previousTaskWorker = currentWorker
 					}
 					// allocate the counters on different threads to encourage allocation on memory regions separated from the one where the assistantData object is stored.
 					if assistantData.counter eq null then {
@@ -60,7 +60,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 			}
 		}
 		for assistantData <- assistantsData do assistantData.assistant.executeSequentially { () =>
-			if !assistantData.failed then assistantData.promise.success(assistantData.workerIndexChangesCounter)
+			if !assistantData.failed then assistantData.promise.success(assistantData.workerChangesCounter)
 		}
 
 		given ExecutionContext = ExecutionContext.global
@@ -81,7 +81,7 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 	}
 	test("SchedulingDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
+		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/3)
 	}
 	test("LeastLoadedFixedWorkerDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 

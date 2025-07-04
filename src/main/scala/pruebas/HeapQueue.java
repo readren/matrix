@@ -250,7 +250,7 @@ class HeapQueue extends AbstractQueue<Runnable> implements BlockingQueue<Runnabl
      * Performs common bookkeeping for poll and take: Replaces
      * first element with last and sifts it down.  Call only when
      * holding lock.
-     * @param f the task to remove and return
+     * @param f the task to remove and return.
      */
     private RunnableScheduledFuture<?> finishPoll(RunnableScheduledFuture<?> f) {
         int s = --size;
