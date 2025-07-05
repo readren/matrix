@@ -1,8 +1,7 @@
 package readren.matrix
 package cluster.service
 
-import cluster.channel.Receiver.ChannelClosedByPeer
-import cluster.channel.Transmitter.{Delivered, NotDelivered, Report}
+import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
 import cluster.serialization.ProtocolVersion
 import cluster.service.ClusterService.{ChannelOrigin, DelegateConfig}
@@ -33,7 +32,9 @@ class CommunicableDelegate(
 	private val transmitterToPeer: SequentialTransmitter[Protocol] = clusterService.buildTransmitterFor(channel, Maybe.some(peerContactAddress))
 
 	private var agreedVersion: ProtocolVersion = ProtocolVersion.NOT_SPECIFIED
+
 	inline def getAgreedVersion: ProtocolVersion = agreedVersion
+
 	private var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 
 	/** The state of the peer according to it */
@@ -44,6 +45,10 @@ class CommunicableDelegate(
 	/** Memorizes which was the cluster-creator proposal sent to the peer. 
 	 * Only Used when the cluster service is in aspirant state. */
 	private[service] var lastClusterCreatorProposalSentToPeer: ContactAddress | Null = null
+
+	@volatile private var isWaitingForAMessage: Boolean = false
+	@volatile private var isClosingChannel: Boolean = false
+	@volatile private var onReceptionComplete: Option[() => Unit] = None
 
 	private var lastRequestId: Short = 0
 	private val requestExchangeByRequestId: mutable.LongMap[OutgoingRequestExchange[?]] = mutable.LongMap.empty
@@ -82,36 +87,46 @@ class CommunicableDelegate(
 
 	/** Receives the messages sent by the peer to me. The received messages are consumed sequentially and eagerly, but the handling of them is governed by the [[MembershipScopedBehavior.handleInitiatorMessageFrom]] which may defer some reactions. */
 	private def receiveNextMessages(): Unit = {
-		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) {
-			case responseFromPeer: Response =>
-				scribe.debug(s"I (`${clusterService.myAddress}`) have received the response `$responseFromPeer from participant at `$peerContactAddress`.")
-				sequencer.executeSequentially {
-					requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
-						scribe.warn(s"I have received a response from the participant at $peerContactAddress to a request I haven't made: response = $responseFromPeer")
-					} { ore =>
-						sequencer.cancel(ore.oTimeoutSchedule.get)
-						val request = ore.oRequest.get
-						if ore.asInstanceOf[OutgoingRequestExchange[request.type]].onResponse(request, responseFromPeer.asInstanceOf[request.ResponseType]) then receiveNextMessages()
-						else onTerminatingMessageReceived(responseFromPeer)
+		if isClosingChannel then return
+		isWaitingForAMessage = true
+		receiverFromPeer.receive[Protocol](agreedVersion, config.receiverTimeout, config.timeUnit) { receptionResult =>
+			isWaitingForAMessage = false
+			// Check if we're closing and this was the last reception
+			onReceptionComplete.foreach { callback =>
+				onReceptionComplete = None
+				callback()
+			}
+			receptionResult match {
+				case responseFromPeer: Response =>
+					scribe.debug(s"${clusterService.myAddress}: I have received the response `$responseFromPeer from participant at `$peerContactAddress` through the channel that I $channelOrigin.")
+					sequencer.executeSequentially {
+						requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
+							scribe.warn(s"${clusterService.myAddress}: I have received the response to a request I haven't made from $peerContactAddress through the channel that I $channelOrigin. The response is `$responseFromPeer`.")
+						} { ore =>
+							sequencer.cancel(ore.oTimeoutSchedule.get)
+							val request = ore.oRequest.get
+							if ore.asInstanceOf[OutgoingRequestExchange[request.type]].onResponse(request, responseFromPeer.asInstanceOf[request.ResponseType]) then receiveNextMessages()
+							else onTerminatingMessageReceived(responseFromPeer)
+						}
 					}
-				}
 
-			case initiatorMessageFromPeer: InitiationMsg =>
-				scribe.debug(s"I (`${clusterService.myAddress}`) have received the message `$initiatorMessageFromPeer from participant at `$peerContactAddress`.")
-				sequencer.executeSequentially {
-					if clusterService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, initiatorMessageFromPeer) then receiveNextMessages()
-					else onTerminatingMessageReceived(initiatorMessageFromPeer)
-				}
+				case initiatorMessageFromPeer: InitiationMsg =>
+					scribe.debug(s"${clusterService.myAddress}: I have received the message `$initiatorMessageFromPeer from `$peerContactAddress`.")
+					sequencer.executeSequentially {
+						if clusterService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, initiatorMessageFromPeer) then receiveNextMessages()
+						else onTerminatingMessageReceived(initiatorMessageFromPeer)
+					}
 
-			case fault: Receiver.Fault =>
-				val errorMessage = s"Failure while I (${clusterService.myAddress}) was receiving a message from `$peerContactAddress`."
-				scribe.error(fault.scribeContent(errorMessage)*)
-				sequencer.executeSequentially(restartChannel(errorMessage + fault))
+				case fault: Receiver.Fault =>
+					val errorMessage = s"${clusterService.myAddress}: Failure while I was receiving a message from `$peerContactAddress` through the channel that I $channelOrigin."
+					scribe.error(fault.scribeContent(errorMessage) *)
+					sequencer.executeSequentially(restartChannel(errorMessage + fault))
+			}
 		}
 	}
 
 	private def onTerminatingMessageReceived(message: Protocol): Unit = {
-		scribe.info(s"The conversation between me (`${clusterService.myAddress}`) and $peerContactAddress was terminated after I received the message `$message``")
+		scribe.info(s"${clusterService.myAddress}: The conversation to `$peerContactAddress` that I $channelOrigin was terminated after I received the message `$message``")
 		if clusterService.removeDelegate(thisCommunicableDelegate, true) then startChannelClosing()
 		// TODO analyze if something else should be done here (or it is responsibility of the message handlers when they return `false`).
 	}
@@ -130,9 +145,9 @@ class CommunicableDelegate(
 	private[service] def reportTransmissionFailure(failure: Transmitter.NotDelivered): Unit = {
 		failure match {
 			case transmissionFailure: Transmitter.TransmissionFailure =>
-				scribe.error(s"I (`${clusterService.myAddress}`) failed to transmit the message `${transmissionFailure.rootMessage}` to `$peerContactAddress` through the channel `$channel`.", transmissionFailure.cause)
+				scribe.error(s"${clusterService.myAddress}: I failed to transmit the message `${transmissionFailure.rootMessage}` to `$peerContactAddress` through the channel that I $channelOrigin.", transmissionFailure.cause)
 			case serializationFailure: Transmitter.SerializationProblem =>
-				scribe.error(s"I (`${clusterService.myAddress}`) failed to serialize the message `${serializationFailure.rootMessage}` at position ${serializationFailure.problem.position} while transmitting to `$peerContactAddress` through the channel `$channel` ${if serializationFailure.aFragmentWasTransmitted then "after some bytes were transmitted." else "before any byte was transmitted."}", serializationFailure.problem)
+				scribe.error(s"${clusterService.myAddress}: I failed to serialize the message `${serializationFailure.rootMessage}` (at position ${serializationFailure.problem.position}) for `$peerContactAddress` ${if serializationFailure.aFragmentWasTransmitted then "after" else "before"} the transmission started, through the channel that I $channelOrigin.", serializationFailure.problem)
 		}
 	}
 
@@ -207,7 +222,7 @@ class CommunicableDelegate(
 		private[CommunicableDelegate] var isFirstTry: Boolean = true
 
 		override def onTransmissionError(request: Q, error: NotDelivered): Unit = {
-			restartChannel(s"Transmission failure while trying to send `$request` to participant at $peerContactAddress: $error")
+			restartChannel(s"Transmission failure while trying to send `$request` to participant at $peerContactAddress through the channel that I $channelOrigin: $error")
 		}
 
 		/** Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
@@ -226,18 +241,24 @@ class CommunicableDelegate(
 	private[service] def transmitToPeerOrRestartChannel(message: Protocol): Unit = {
 		transmitToPeer(message)(ifFailureReportItAndThen(restartChannel))
 	}
-	
+
 	private[service] def transmitToPeer(message: Protocol)(onTransmissionComplete: Transmitter.Report => Unit): Unit = {
 		transmitterToPeer.transmit(message, agreedVersion, config.behindTransmissionEnabled, config.transmitterTimeout, config.timeUnit)(onTransmissionComplete)
+		scribe.trace(s"${clusterService.myAddress}: The message `$message` was queued for transmission to `$peerContactAddress` through the channel that I $channelOrigin.")
 	}
 
+	/** Replaces this communicable delegate with an incommunicable delegate. */
 	private[service] def replaceMyselfWithAnIncommunicableDelegate(reason: IncommunicabilityReason, motive: Any): Maybe[IncommunicableDelegate] = {
-		// release this delegate
-		startChannelClosing()
 		// replace me with an incommunicable delegate.
 		if clusterService.removeDelegate(this, false) then {
 			val myReplacement = clusterService.addANewIncommunicableDelegate(peerContactAddress, reason)
 			myReplacement.initializeStateBasedOn(this)
+
+			// Delay channel closing to allow the peer to close the channel first.
+			sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+				startChannelClosing()
+			}
+
 			// notify
 			clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO consider moving this line inside the `notify*` method called in the next line
 			clusterService.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerContactAddress, reason, motive)
@@ -246,13 +267,24 @@ class CommunicableDelegate(
 	}
 
 	private[service] def replaceMyselfWithACommunicableDelegate(newChannel: AsynchronousSocketChannel, newFromPeerReceiver: Receiver, oPeerNewRemoteAddress: Maybe[SocketAddress], newChannelOrigin: ChannelOrigin): CommunicableDelegate = {
-		// release this delegate
-		startChannelClosing()
+
 		// replace me with a communicable delegate.
 		val wasRemoved = clusterService.removeDelegate(this, false)
 		assert(wasRemoved)
 		val myReplacement = clusterService.addANewCommunicableDelegate(peerContactAddress, newChannel, newFromPeerReceiver, oPeerNewRemoteAddress, newChannelOrigin)
 		myReplacement.initializeStateBasedOn(this)
+
+		transmitToPeer(ChannelDiscarded) {
+			case Delivered =>
+				// If delivery is successful, schedule channel closing to happen later to allow the peer to close it first.
+				sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+					startChannelClosing()
+				}
+			case nd: NotDelivered =>
+				// If delivery fails, close the channel immediately.
+				startChannelClosing()
+		}
+
 		// notify
 		clusterService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO this isn't exactly a communicability change. Analyze it. 
 		clusterService.notifyListenersThat(CommunicationChannelReplaced(peerContactAddress))
@@ -260,22 +292,52 @@ class CommunicableDelegate(
 	}
 
 	private[service] def restartChannel(notDeliveredCause: Transmitter.NotDelivered): Unit =
-		restartChannel(s"A transmission to $peerContactAddress failed with $notDeliveredCause")
+		restartChannel(s"A transmission to $peerContactAddress through the channel that I $channelOrigin failed with $notDeliveredCause")
 
 	private[service] def restartChannel(motive: String): Unit = {
-		scribe.debug(s"The channel between me (`${clusterService.myAddress}`) and participant at`$channel` is restarting becase: $motive" )
-		replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel because of: $motive").foreach { myReplacement =>
+		scribe.debug(s"${clusterService.myAddress}: The channel to `$peerContactAddress` that I $channelOrigin is restarting becase: $motive")
+		replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart the channel (that I $channelOrigin) because of: $motive").foreach { myReplacement =>
 			clusterService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
 		}
 	}
 
-	/** Initiates a graceful closing of the [[channel]], if it is open. */
+	/** Initiates a graceful closing of the [[channel]] by waiting for both transmission and reception to be idle.
+	 * This method prevents new receptions from starting and schedules the actual closing when both operations are complete.
+	 *
+	 * @note This method can be called from any thread.
+	 */
 	private[service] def startChannelClosing(): Unit = {
-		// if the channel is open, close it gracefully.
-		if channel.isOpen then {
-			scribe.trace(s"About to gracefully close the connection that I $channelOrigin between `$peerContactAddress` and me (`${clusterService.myAddress}`).")
-			channel.shutdownInput()  // TODO handle exceptions
-			transmitterToPeer.triggerOnIdle(() => channel.close()) // TODO handle exceptions
+		if isClosingChannel then return
+		isClosingChannel = true
+		
+		scribe.trace(s"${clusterService.myAddress}: About to close the channel to `$peerContactAddress` that I $channelOrigin.")
+		
+		// Set the callback first to avoid race condition, then check if reception is in progress
+		onReceptionComplete = Some { () =>
+			// Reception completed, now wait for transmission to be idle
+			transmitterToPeer.triggerOnIdle { () =>
+				// Both reception and transmission are now idle, safe to close
+				scribe.trace(s"${clusterService.myAddress}: Both reception and transmission are idle, closing channel to `$peerContactAddress` that I $channelOrigin.")
+				try {
+					channel.shutdownInput()
+					channel.close()
+				} catch {
+					case NonFatal(e) =>
+						scribe.warn(s"${clusterService.myAddress}: Exception while closing channel to `$peerContactAddress` that I $channelOrigin:", e)
+				}
+			}
 		}
-	}	
+		
+		// Check if reception is currently in progress
+		if isWaitingForAMessage then {
+			// Reception is in progress, the callback will be triggered when it completes
+			scribe.trace(s"${clusterService.myAddress}: Waiting for current reception to complete before closing channel to `$peerContactAddress` that I $channelOrigin.")
+		} else {
+			// No reception in progress, trigger the callback immediately
+			onReceptionComplete.foreach { callback =>
+				onReceptionComplete = None
+				callback()
+			}
+		}
+	}
 }

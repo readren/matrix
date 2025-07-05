@@ -6,6 +6,7 @@ import cluster.service.Protocol.{ContactAddress, IncommunicabilityReason}
 
 sealed trait ClusterServiceEvent
 
+
 /** Tells that the participant at the specified address and me cannot communicate becase we don't support a common [[ProtocolVersion]]. */
 case class VersionIncompatibilityWith(participantAddress: ContactAddress) extends ClusterServiceEvent
 

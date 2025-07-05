@@ -11,6 +11,7 @@ import cluster.service.Protocol.ContactAddress
 import readren.taskflow.Maybe
 import scribe.LogFeature
 
+import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
 import java.util.concurrent.TimeUnit
@@ -36,7 +37,7 @@ object Receiver {
 		override def logFeatures: Seq[LogFeature] = List(this.toString, problem)
 	}
 
-	case class ReceptionFailure(channel: AsynchronousSocketChannel, cause: Throwable) extends Fault {
+	case class ReceptionFailure(myAddress: ContactAddress, peerContactAddress: Maybe[ContactAddress], channelEphemeralAddress: Maybe[SocketAddress], cause: Throwable) extends Fault {
 		override def logFeatures: Seq[LogFeature] = List(this.toString, cause)
 	}
 
@@ -53,6 +54,7 @@ object Receiver {
 	trait Context {
 		def myAddress: ContactAddress
 		def oPeerAddress: Maybe[ContactAddress]
+		def oEphemeralAddress: Maybe[SocketAddress]
 		def showPeerAddress: String = oPeerAddress.fold("unknown")(_.toString)
 	}
 }
@@ -79,7 +81,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 
 		/** Attaches this reader to the provided buffer.
 		 *  - Buffer must already be positioned at the header start.
-		 *  - Actual mutation (consumption) of the buffer will happen when the `readByte()` method is called by the VLQ decoder method..
+		 *  - Actual mutation (consumption) of the buffer will happen when the `readByte()` method is called by the VLQ decoder method.
 		 * @param bufferPositionedAtFrameHeader a [[ByteBuffer]] that contains and points to the frame header to be read.
 		 */
 		def attachTo(bufferPositionedAtFrameHeader: ByteBuffer): Unit = {
@@ -173,7 +175,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 				if readEndBuffer.remaining == 0 then advanceReadEndOrFail()
 
 				if readEndBuffer.position == nextFrameHeaderPosRelativeToReadEndBufferBase then {
-					assert(readEndBuffer.remaining >= FRAME_HEADER_MAX_SIZE) // this is ensured by the `completed` method by extending the buffer limit (using the reserved capacity).
+//					assert(readEndBuffer.remaining >= FRAME_HEADER_MAX_SIZE, s"${readEndBuffer.remaining()} >= $FRAME_HEADER_MAX_SIZE") // this is ensured by the `completed` method by extending the buffer limit (using the reserved capacity).
 					frameHeaderReader.attachTo(readEndBuffer)
 					val currentFrameContentLength = VLQ.decodeUnsignedInt(frameHeaderReader)
 					if currentFrameContentLength == 0 then throw new LengthMismatchException()
@@ -247,7 +249,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 				else {
 					val posAfterLastReceivedByte = writeEndBuffer.position
 
-					// Find, within the write-end buffer, either, the package's sentinel, or the position of the first frame (of the package) whose header was not already received and written to the write-end buffer.
+					// Find, within the write-end buffer, either, the package's sentinel, a split frame-header, or the position of the first frame-header (of the package) whose first byte was not already received and written to the write-end buffer.
 					var nextFrameHeaderPos = remainingContentBytesUntilNextFrameHeader
 					var sentinelFound = SentinelFound.NONE
 					while nextFrameHeaderPos < posAfterLastReceivedByte && sentinelFound == SentinelFound.NONE do {
@@ -261,14 +263,14 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 					// Invariants here: `sentinelFound != None || nextFrameHeaderPos >= posAfterLastReceivedByte`
 
 					// If a whole package was received (written to the buffers) that is followed by an untainted sentinel, deserialize its content, consume the sentinel, compact the write-end buffer, call the onComplete call-back with the result, and exit the reception cycle.
-					if sentinelFound == SentinelFound.UNTAINTED then {
+					if sentinelFound eq SentinelFound.UNTAINTED then {
 						writeEndBuffer.flip()
 						val outcome = deserializePackage(writeEndBuffer, nextFrameHeaderPos)
 						prepareStorageForNextCall(writeEndBuffer, nextFrameHeaderPos, posAfterLastReceivedByte)
 						onComplete(outcome, attachment)
 					}
 					// If a whole package was received (written to the buffers) that is followed by a tainted sentinel, discard the package and start receiving the next.
-					else if sentinelFound == SentinelFound.TAINTED then {
+					else if sentinelFound eq SentinelFound.TAINTED then {
 						while circularStorage.advanceReadEnd() do ()
 						writeEndBuffer.position(nextFrameHeaderPos + Transmitter.CORRUPTED_PACKAGE_SENTINEL_ENCODED.length)
 						writeEndBuffer.limit(posAfterLastReceivedByte)
@@ -279,20 +281,19 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 					}
 					// Invariants here: `sentinelFound == SPLIT || nextFrameHeaderPos >= posAfterLastReceivedByte`
 
-					// If the current write-end buffer has available capacity, continue writing received data into the current write-end buffer.
-					else if writeEndBuffer.hasRemaining then {
-						// If the frame header were to be split, avoid the splitting in advance by increasing the limit of the current write-end buffer (using the reserved capacity).
-						if buffersInitialLimit > nextFrameHeaderPos && nextFrameHeaderPos > buffersInitialLimit - FRAME_HEADER_MAX_SIZE then {
-							writeEndBuffer.limit(nextFrameHeaderPos + FRAME_HEADER_MAX_SIZE)
+					// if the next frame header was partially received, receive more bytes into the current write-end buffer. 	
+					else if sentinelFound eq SentinelFound.SPLIT then {
+						val necessarySpaceToStoreTheMissingPart = FRAME_HEADER_MAX_SIZE - frameHeaderFetcher.numberOfBytesRead
+						// If the write-end buffer has not enough remaining space to store the missing part of the header, increase its limit using the reserved capacity. There is no risk of including part of the following frame header because, for a header to be split, it has to be longer than one byte, and therefore the frame size is greater than the reserved space.
+						if writeEndBuffer.remaining() < necessarySpaceToStoreTheMissingPart then {
+							writeEndBuffer.limit(nextFrameHeaderPos + necessarySpaceToStoreTheMissingPart)
 						}
 						channel.read(writeEndBuffer, timeout, timeUnit, writeEndBuffer, thisHandler)
 					}
-					// Invariants here: `sentinelFound == SPLIT || nextFrameHeaderPos >= buffersInitialLimit`
+					// Invariants here: `nextFrameHeaderPos >= posAfterLastReceivedByte`
 
-					// Else, if a fragment of the frame header is written at the end of the current write-end buffer, increase the limit (using the reserved capacity) and write the missing part in the same buffer.
-					else if nextFrameHeaderPos < buffersInitialLimit then {
-						assert(sentinelFound == SentinelFound.SPLIT)
-						writeEndBuffer.limit(nextFrameHeaderPos + FRAME_HEADER_MAX_SIZE)
+					// If the current write-end buffer has available capacity and its reserved space was not used, continue writing received data into the current write-end buffer.
+					else if writeEndBuffer.hasRemaining && writeEndBuffer.limit == buffersInitialLimit then {
 						channel.read(writeEndBuffer, timeout, timeUnit, writeEndBuffer, thisHandler)
 					}
 					// Else, advance the write-end to the next buffer.
@@ -308,7 +309,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 			}
 
 			override def failed(exc: Throwable, writeEndBuffer: ByteBuffer): Unit = {
-				onComplete(ReceptionFailure(channel, exc), attachment)
+				onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.oEphemeralAddress, exc), attachment)
 			}
 
 		}

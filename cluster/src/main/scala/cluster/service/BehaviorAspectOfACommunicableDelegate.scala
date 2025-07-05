@@ -48,7 +48,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		updateState(message.myMembershipStatus, message.versionsISupport, message.myCreationInstant)
 
 		// If the HelloIExist message comes from a participant that, according to my memory, isn't an aspirant; surely it was rebooted, so inform that.
-		if (message.myMembershipStatus eq Aspirant) && !previousMembershipStatus.contentEquals(Aspirant) then {
+		if previousMembershipStatus.fold(false)(Aspirant ne _) && (message.myMembershipStatus eq Aspirant) then {
 			clusterService.notifyListenersThat(MemberHasBeenRebooted(peerContactAddress))
 			for case (contactAddress, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
 				if contactAddress != peerContactAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerContactAddress, message.myCreationInstant))
@@ -128,8 +128,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	////
 
 	private[service] def handleChannelDiscarded(): false = {
-		scribe.error(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `${getTypeName[ChannelDiscarded.type]}` through a channel that I already started to use.")
-		restartChannel("Channel unexpectedly discarded")
+		scribe.warn(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `${getTypeName[ChannelDiscarded.type]}` through a channel that I already started to use.")
 		false
 	}
 

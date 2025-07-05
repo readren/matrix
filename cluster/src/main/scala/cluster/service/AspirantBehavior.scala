@@ -42,7 +42,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 		case ClusterCreatorProposal(candidateProposedByPeer) =>
 			senderDelegate.clusterCreatorProposedByPeer = candidateProposedByPeer
 			// If I don't know the candidate, create a delegate for it.
-			if (candidateProposedByPeer ne null) && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
+			if (candidateProposedByPeer ne null) && candidateProposedByPeer != clusterService.myAddress && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
 				clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(candidateProposedByPeer)
 			}
 			if clusterService.clustersExistenceArity > 0 then senderDelegate.incitePeerToResolveMembershipConflict()

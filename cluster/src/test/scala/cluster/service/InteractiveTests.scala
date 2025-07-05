@@ -4,9 +4,9 @@ package readren.matrix.cluster.service
 import readren.matrix.cluster.misc.TaskSequencer
 import readren.matrix.cluster.service.ClusterService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue}
 import readren.matrix.cluster.service.Protocol.Instant
+import common.ToStringWithFields.toStringWithFields // Ignore this warning
 import readren.matrix.providers.assistant.{CooperativeWorkersDap, SchedulingDap}
 import scribe.*
-
 import java.net.{InetSocketAddress, StandardSocketOptions}
 import scala.language.implicitConversions
 
@@ -16,20 +16,20 @@ object InteractiveTests {
 
 	object csAEventListener extends EventListener {
 		override def handle(event: ClusterServiceEvent): Unit = {
-			scribe.info(s"Cluster A event: $event")
+			scribe.info(s"Service A event: ${event.toStringWithFields}")
 		}
 	}
 	object csBEventListener extends EventListener {
 		override def handle(event: ClusterServiceEvent): Unit = {
-			scribe.info(s"Cluster B event: $event")
+			scribe.info(s"Service B event: ${event.toStringWithFields}")
 		}
 	}
 
 	@main def testClusterFormation(): Unit = {
-		scribe.info("Scribe works fine - info")
-		scribe.debug("Scribe works fine - debug")
-		val addressA = new InetSocketAddress("localhost", 8080)
-		val addressB = new InetSocketAddress("localhost", 8081)
+		val portA = 8080
+		val portB = 8081
+		val addressA = new InetSocketAddress("localhost", portA)
+		val addressB = new InetSocketAddress("localhost", portB)
 		val seeds = Set(addressA, addressB)
 
 		val socketOptions: Set[SocketOptionValue[Any]] = Set(StandardSocketOptions.SO_REUSEADDR -> java.lang.Boolean.TRUE)
@@ -37,14 +37,14 @@ object InteractiveTests {
 		val configA = new ClusterService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 		val configB = new ClusterService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
-		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer with tag ${CooperativeWorkersDap.currentAssistant.id}", _))
+		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDap.currentAssistant.id}", _))
 		val sequencerA = new TaskSequencer {
 			override type Assistant = SchedulingDap.SchedulingAssistant
-			override val assistant: Assistant = schedulingDap.provide(0)
+			override val assistant: Assistant = schedulingDap.provide(portA)
 		}
 		val sequencerB = new TaskSequencer {
 			override type Assistant = SchedulingDap.SchedulingAssistant
-			override val assistant: Assistant = schedulingDap.provide(1)
+			override val assistant: Assistant = schedulingDap.provide(portB)
 		}
 		val clock = new ClusterService.Clock {
 			override def getTime: Instant = System.currentTimeMillis()

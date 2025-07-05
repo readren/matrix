@@ -253,20 +253,20 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		try serverChannel.accept(null, new CompletionHandler[AsynchronousSocketChannel, Null]() {
 			override def completed(channel: AsynchronousSocketChannel, attachment: Null): Unit = {
 				val oClientParticipantEphemeralAddress = Try(channel.getRemoteAddress).fold(_ => Maybe.empty, Maybe.some)
-				scribe.debug(s"The server at `$myAddress` is accepting a connection from `${oClientParticipantEphemeralAddress.fold("unknown")(_.toString)}`.")
+				scribe.debug(s"$myAddress: Accepting a connection from `${oClientParticipantEphemeralAddress.fold("unknown")(_.toString)}`.")
 				// Note that this method body is executed sequentially by nature of the NIO2. Nevertheless, the `executeSequentially` is necessary because some of the member variables accessed here need to be accessed by procedures that are started from other handlers that are concurrent.
 
 				new ParticipantDelegateEgg(thisClusterService, channel).incubate()
 			}
 
 			override def failed(exc: Throwable, attachment: Null): Unit = {
-				scribe.error(s"Error while trying to accept a connection", exc)
+				scribe.error(s"$myAddress: Error while trying to accept a connection:", exc)
 				acceptClientConnections(serverChannel)
 			}
 		})
 		catch {
 			case NonFatal(e) =>
-				scribe.error("Closing the cluster service because it is unable to accept connections from peers. Cause:", e)
+				scribe.error(s"$myAddress: Closing the cluster service because it is unable to accept connections from peers. Cause:", e)
 				release()
 		}
 	}
@@ -295,28 +295,29 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		assert(delegateByAddress.contains(peerContactAddress))
 		connectTo(peerContactAddress) {
 			case Success(channel) =>
-				scribe.trace(s"I (`$myAddress`) have successfully initiated a connection to the participant at `$peerContactAddress`.")
+				scribe.trace(s"$myAddress: I have successfully initiated a connection to the participant at `$peerContactAddress`.")
 				sequencer.executeSequentially {
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
 					if relievedConnectingDelegate eq currentDelegate then {
 						val oPeerContactAddress = Maybe.some(peerContactAddress)
-						val receiver = buildReceiverFor(channel, () => oPeerContactAddress)
+						val oChannelLocalAddress = try Maybe.some(channel.getLocalAddress) catch { case NonFatal(_) => Maybe.empty }
+						val receiver = buildReceiverFor(channel, () => oPeerContactAddress, oChannelLocalAddress)
 						relievedConnectingDelegate.replaceMyselfWithACommunicableDelegate(channel, receiver, oPeerContactAddress, INITIATED)
 							.get.startConversationAsClient(isReconnection)
 					}
 					// else (if the `relievedConnectingDelegate` was removed in the middle), close the communication channel gracefully.
 					else {
 						if relievedConnectingDelegate.isConnectingAsClient && currentDelegate.isInstanceOf[CommunicableDelegate] && (whichChannelShouldIKeepWhenMutualConnectionWith(peerContactAddress) eq ACCEPTED) then {
-							scribe.info(s"Closing the brand-new connection to $peerContactAddress that I (`$myAddress`) had initiated recently, because I received a Hello message through another connection initiated by the same peer which has priority because my address is greater than the peer's")
+							scribe.info(s"$myAddress: Closing the brand-new connection to $peerContactAddress that I had initiated recently, because I received a Hello message through another connection initiated by the same peer which has priority because my address is greater than the peer's")
 						} else {
-							scribe.warn(s"Closing the brand-new connection to $peerContactAddress that I (`$myAddress`) had initiated recently, because the situation changed.")
+							scribe.warn(s"$myAddress: Closing the brand-new connection to $peerContactAddress that I had initiated recently, because the situation changed.")
 						}
 						closeDiscardedChannelGracefully(channel, buildTransmitterFor(channel, Maybe.some(peerContactAddress)), INITIATED)
 					}
 				}
 			case Failure(exc) =>
-				scribe.error(s"The connection that I ($myAddress) started to the participant at `$peerContactAddress` has been aborted after many failed tries.", exc)
+				scribe.error(s"$myAddress: The connection that I started to the participant at `$peerContactAddress` has been aborted after many failed tries.", exc)
 				sequencer.executeSequentially(relievedConnectingDelegate.onConnectionAborted(exc))
 		}
 	}
@@ -380,7 +381,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	}
 
 	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelOrigin: ChannelOrigin): Unit = {
-		scribe.trace(s"About to gracefully close the discarded connection that I $channelOrigin between `${transmitter.context.showPeerAddress}` and me (`$myAddress`).")
+		scribe.trace(s"$myAddress: About to discard the connection to `${transmitter.context.showPeerAddress}` that I $channelOrigin.")
 		discardedChannel.shutdownInput()
 		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, false, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
 			case failure: Transmitter.NotDelivered =>
@@ -412,10 +413,11 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		new SequentialTransmitter[Protocol](channel, context, config.participantDelegatesConfig.frameCapacity)
 	}
 	
-	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress]): Receiver = {
+	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], oChannelEphemeralAddress: Maybe[SocketAddress]): Receiver = {
 		object context extends Receiver.Context {
 			override def myAddress: ContactAddress = thisClusterService.myAddress
 			override def oPeerAddress: Maybe[ContactAddress] = peerContactAddressGetter()
+			override val oEphemeralAddress: Maybe[SocketAddress] = oChannelEphemeralAddress
 		}
 		new Receiver(channel, context, config.participantDelegatesConfig.frameCapacity)
 	}
