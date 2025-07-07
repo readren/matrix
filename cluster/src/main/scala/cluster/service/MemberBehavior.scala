@@ -69,7 +69,7 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 		case icc: ICreatedACluster =>
 			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
 				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant)
-			} else scribe.warn(s"I have ignored the message `$icc` from the participant at `${senderDelegate.contactCard}` because I already am a member of the cluster he created.")
+			} else scribe.warn(s"I have ignored the message `$icc` from `${senderDelegate.contactCard}` because I already am a member of the cluster he created.")
 			true
 
 		case oi: RequestApprovalToJoin =>

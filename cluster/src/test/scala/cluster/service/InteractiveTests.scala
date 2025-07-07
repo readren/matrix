@@ -34,8 +34,8 @@ object InteractiveTests {
 
 		val socketOptions: Set[SocketOptionValue[Any]] = Set(StandardSocketOptions.SO_REUSEADDR -> java.lang.Boolean.TRUE)
 		val acceptedConnectionsFilter: ContactAddressFilter = _ => true
-		val configA = new ClusterService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
-		val configB = new ClusterService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configA = new ClusterService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 10_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configB = new ClusterService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 10_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
 		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDap.currentAssistant.id}", _))
 		val sequencerA = new TaskSequencer {

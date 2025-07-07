@@ -257,6 +257,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 				// Note that this method body is executed sequentially by nature of the NIO2. Nevertheless, the `executeSequentially` is necessary because some of the member variables accessed here need to be accessed by procedures that are started from other handlers that are concurrent.
 
 				new ParticipantDelegateEgg(thisClusterService, channel).incubate()
+				acceptClientConnections(serverChannel)
 			}
 
 			override def failed(exc: Throwable, attachment: Null): Unit = {
@@ -295,7 +296,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		assert(delegateByAddress.contains(peerContactAddress))
 		connectTo(peerContactAddress) {
 			case Success(channel) =>
-				scribe.trace(s"$myAddress: I have successfully initiated a connection to the participant at `$peerContactAddress`.")
+				scribe.trace(s"$myAddress: I have successfully initiated a connection to `$peerContactAddress`.")
 				sequencer.executeSequentially {
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
@@ -317,7 +318,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 					}
 				}
 			case Failure(exc) =>
-				scribe.error(s"$myAddress: The connection that I started to the participant at `$peerContactAddress` has been aborted after many failed tries.", exc)
+				scribe.error(s"$myAddress: The connection that I started to `$peerContactAddress` has been aborted after many failed tries.", exc)
 				sequencer.executeSequentially(relievedConnectingDelegate.onConnectionAborted(exc))
 		}
 	}
@@ -381,7 +382,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	}
 
 	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelOrigin: ChannelOrigin): Unit = {
-		scribe.trace(s"$myAddress: About to discard the connection to `${transmitter.context.showPeerAddress}` that I $channelOrigin.")
+		scribe.trace(s"$myAddress: About to gracefully close the connection to ${transmitter.context.showPeerAddress} (that I had $channelOrigin) in four steps: 1) shutdown input, 2) send a $ChannelDiscarded message, 3) shutdown output, 4) completely close the channel after a while.")
 		discardedChannel.shutdownInput()
 		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, false, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
 			case failure: Transmitter.NotDelivered =>
@@ -398,7 +399,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 			notifyListenersThat(IAmGoingToCloseAllChannels())
 			serverChannel.close()
 			for case communicableDelegate: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-				communicableDelegate.startChannelClosing()
+				communicableDelegate.completeChannelClosing()
 			}
 			participantDelegateByAddress = Map.empty
 		}

@@ -75,12 +75,12 @@ class ParticipantDelegateEgg(clusterService: ClusterService, channel: Asynchrono
 						delegate.replaceMyselfWithACommunicableDelegate(channel, receiverFromPeer, oChannelRemoteAddress, ACCEPTED)
 							.startConversationAsServer(hello)
 					} else if clusterService.whichChannelShouldIKeepWhenMutualConnectionWith(peerContactAddress) eq ACCEPTED then {
-						scribe.info(s"${clusterService.myAddress}: I accepted a new connection initiated by the participant at $peerContactAddress despite we are already connected with a connection recently initiated by me. The replacement is because the accepted (and helloed) one has higher priority than the initiated by me (but still not welcomed). The old delegates's channel will be gracefully closed.")
+						scribe.info(s"${clusterService.myAddress}: I accepted a new connection initiated by $peerContactAddress despite we are already connected with a connection recently initiated by me. The replacement is because the accepted (and helloed) one has higher priority than the initiated by me (but still not welcomed). The old delegates's channel will be gracefully closed.")
 						// Replace the old lower priority connection with the brand-new accepted higher priority one.
 						delegate.replaceMyselfWithACommunicableDelegate(channel, receiverFromPeer, oChannelRemoteAddress, ACCEPTED)
 							.startConversationAsServer(hello)
 					} else {
-						scribe.info(s"${clusterService.myAddress}: The connection initiated by the participant at `$peerContactAddress` that I had accepted (incubated), is being discarded to let us continue with the already established connection (that I have initiated) because it has higher priority.")
+						scribe.info(s"${clusterService.myAddress}: The connection initiated by `$peerContactAddress` that I had accepted (incubated), is being discarded to let us continue with the already established connection (that I have initiated) because it has higher priority.")
 						// Keep the current delegate's connection (initiated by me) and discard the brand-new accepted connection.
 						abortIncubated(Maybe.some(peerContactAddress))
 					}
@@ -88,11 +88,11 @@ class ParticipantDelegateEgg(clusterService: ClusterService, channel: Asynchrono
 				case incommunicableDelegate: IncommunicableDelegate => // Happens if I knew the peer, but we are not fully connected.
 					// If I am simultaneously initiating a connection to the peer as a client, then I have to cancel it (by removing the connecting delegate) and continue with accepted one (because it has already received the hello message).
 					if incommunicableDelegate.isConnectingAsClient then {
-						scribe.info(s"${clusterService.myAddress}: A connection from the participant at `$peerContactAddress` was accepted despite I am simultaneously trying to connect to him as client. Given the connection I am initiating has lower priority, I will discard it as soon as it completes.") // TODO investigate if it is possible to cancel the connection while it is in progress.
+						scribe.info(s"${clusterService.myAddress}: A connection from `$peerContactAddress` was accepted despite I am simultaneously trying to connect to him as client. Given the connection I am initiating has lower priority, I will discard it as soon as it completes.") // TODO investigate if it is possible to cancel the connection while it is in progress.
 					}
 					// If I know the peer and I am not currently trying to connect to it
 					else {
-						scribe.info(s"${clusterService.myAddress}: A connection from the participant at $peerContactAddress, which I considered incommunicable ${incommunicableDelegate.communicationStatus}, has been accepted. Let's see if we can communicate with it this time.")
+						scribe.info(s"${clusterService.myAddress}: A connection from `$peerContactAddress`, which I considered incommunicable ${incommunicableDelegate.communicationStatus}, has been accepted. Let's see if we can communicate with it this time.")
 					}
 					val communicableDelegate = incommunicableDelegate.replaceMyselfWithACommunicableDelegate(channel, receiverFromPeer, oChannelRemoteAddress, ACCEPTED).get
 					// TODO analyze if a notification of the communicability change should be issued here.

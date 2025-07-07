@@ -127,8 +127,12 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 	////
 
-	private[service] def handleChannelDiscarded(): false = {
-		scribe.warn(s"The participant at `$peerContactAddress` sent me (`${clusterService.myAddress}`) the message `${getTypeName[ChannelDiscarded.type]}` through a channel that I already started to use.")
+	private[service] def handleChannelDiscarded(): Boolean = {
+		if thisCommunicableDelegate.isChannelClosing then {
+			scribe.trace(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that is being closed.")
+		} else {
+			scribe.warn(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I was not already closing.")
+		}
 		false
 	}
 

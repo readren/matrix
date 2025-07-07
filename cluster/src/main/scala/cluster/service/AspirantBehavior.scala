@@ -36,6 +36,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			senderDelegate.handleMessage(hib)
 
 		case csw: ConversationStartedWith =>
+			updateClusterCreatorProposalIfAppropriate()
 			// TODO
 			true
 
@@ -220,7 +221,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 													case participantDelegate: CommunicableDelegate =>
 														if !participantDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantInfoAccordingToChosenMember.membershipStatus) then {
 															inSyncWithChosenMember = false
-															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerContactAddress} does not match my memory about the membership-status of the participant at $participantAddress.")
+															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerContactAddress} does not match my memory about the membership-status of $participantAddress.")
 														}
 													case participantDelegate: IncommunicableDelegate =>
 														if participantInfoAccordingToChosenMember.communicationStatus eq CommunicationStatus.HANDSHOOK then {
@@ -257,13 +258,13 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 						override def onTransmissionError(request: RequestToJoin, nd: NotDelivered): Unit = {
 							aRequestToJoinIsOnTheWay = false
 							chosenMemberDelegate.reportTransmissionFailure(nd)
-							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to participant at ${chosenMemberDelegate.peerContactAddress}: $nd")
+							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to ${chosenMemberDelegate.peerContactAddress}: $nd")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 
 						override def onTimeout(request: RequestToJoin): Unit = {
 							aRequestToJoinIsOnTheWay = false
-							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to participant at ${chosenMemberDelegate.peerContactAddress}.")
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to  ${chosenMemberDelegate.peerContactAddress}.")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 					})
