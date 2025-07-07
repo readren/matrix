@@ -77,7 +77,7 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 
 		case rtj: RequestToJoin =>
 			val members = memberDelegateByAddress
-			// if the sender knows the same members as me and all are stable
+			// if the sender knows the same members as me and all have handshook with me
 			if members.forall(_._2.communicationStatus eq HANDSHOOK) && members.mapValues(_.getPeerCreationInstant) == rtj.joinTokenByMemberAddress then {
 				senderDelegate.askPeer(new senderDelegate.SingleRetryOutgoingRequestExchange[JoinGranted]() {
 					override def buildRequest(requestId: RequestId): JoinGranted =
