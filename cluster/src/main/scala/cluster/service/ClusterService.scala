@@ -145,6 +145,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	def handshookDelegateByAddress: MapView[ContactAddress, CommunicableDelegate] =
 		delegateByAddress.view.filter(_._2.communicationStatus eq HANDSHOOK).asInstanceOf[MapView[ContactAddress, CommunicableDelegate]]
 
+	/** Creates and adds (to the set of known participants delegates) a new [[CommunicableDelegate]] to manage the communication with the participant at the specified [[ContactAddress]]. */
 	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, oPeerRemoteAddress: Maybe[SocketAddress], channelOrigin: ChannelOrigin): CommunicableDelegate = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		assert(peerContactAddress != myAddress)
@@ -153,6 +154,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		newParticipant
 	}
 
+	/** Creates and adds (to the set of known participants delegates) a new [[IncommunicableDelegate]] to remember if this service is currently connecting to the participant at the specified [[ContactAddress]] or has desisted to communicate with it. */
 	private[service] def addANewIncommunicableDelegate(participantAddress: ContactAddress, reason: IncommunicabilityReason): IncommunicableDelegate = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		assert(participantAddress != myAddress)
@@ -383,9 +385,9 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 
 	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelOrigin: ChannelOrigin): Unit = {
 		scribe.trace(s"$myAddress: About to gracefully close the connection to ${transmitter.context.showPeerAddress} (that I had $channelOrigin) in four steps: 1) shutdown input, 2) send a $ChannelDiscarded message, 3) shutdown output, 4) completely close the channel after a while.")
-		discardedChannel.shutdownInput()
 		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, false, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
 			case failure: Transmitter.NotDelivered =>
+				scribe.trace(s"$myAddress: The transmission of the $ChannelDiscarded message to ${transmitter.context.showPeerAddress} failed with `$failure`. Closing the channel immediately.")
 				discardedChannel.close()
 			case Transmitter.Delivered =>
 				discardedChannel.shutdownOutput()

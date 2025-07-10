@@ -7,6 +7,7 @@ import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
+import readren.taskflow.Maybe
 import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
@@ -77,7 +78,7 @@ case class Welcome(override val toRequest: RequestId, myMembershipStatus: Member
  * The chosen aspirant is the one with the lowest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
  * @param proposedCandidate the [[ContactAddress]] of the cluster's creator candidate proposed by the sender.
  * */
-case class ClusterCreatorProposal(proposedCandidate: ContactAddress | Null) extends Affirmation
+case class ClusterCreatorProposal(proposedCandidate: Maybe[ContactAddress]) extends Affirmation
 
 /** Informs that the sender has created a cluster.
  * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender proposing him.
@@ -127,15 +128,18 @@ case class JoinDecision(override val toRequest: RequestId, accepted: Boolean) ex
  */
 case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Affirmation
 
-/** The message that a participant should send to as many other participants as possible before leaving the network or shooting down. */
+/** The message sent by a participant to as many other participants as possible before leaving the network or shooting down. */
 case class Farewell(myCreationInstant: Instant) extends Affirmation
 
+/** The message sent to other participants after receiving a [[Farewell]] message. */
 case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends Affirmation
 
+/** The message sent by a participant A to another B when A has doubts about his communication-status with B and/or B's knowledge about A's membership status.  */
 case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Request {
 	override type ResponseType = AreWeInSyncResponse
 }
 
+/** Response to the [[AreYouInSyncWithMe]] query. */
 case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembershipStatusAccordingToMeMatches: Boolean) extends Response
 
 /** The message that a participant sends to all other participants it knows when it notices the communication between it and another participant is not working properly. */
@@ -144,7 +148,7 @@ case class ILostCommunicationWith(participantsAddress: ContactAddress) extends A
 /** The message that a participant sends to all other participants it knows when it starts, or restarts, a conversation with another participant. */
 case class ConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends Affirmation
 
-/** The message that a participant A sends to all other participants when A receives a [[HelloIExist]] from a participant B that A already knows and remembers as a member. Why? Because this message is sent by aspirants only, and solely when the communication starts. */
+/** The message that a participant A sends to all other participants when A receives a [[HelloIExist]] from a participant B that A already knows and remembers as a member. Why? Because the [[HelloIExist]] message is only sent by aspirants (not members) when the communication starts. */
 case class AMemberHasBeenRebooted(rebootedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation
 
 /** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */

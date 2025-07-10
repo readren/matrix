@@ -41,10 +41,11 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 			true
 
 		case ClusterCreatorProposal(candidateProposedByPeer) =>
-			senderDelegate.clusterCreatorProposedByPeer = candidateProposedByPeer
+			senderDelegate.clusterCreatorProposedByPeer = candidateProposedByPeer.getOrElse(null)
 			// If I don't know the candidate, create a delegate for it.
-			if (candidateProposedByPeer ne null) && candidateProposedByPeer != clusterService.myAddress && !clusterService.delegateByAddress.contains(candidateProposedByPeer) then {
-				clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(candidateProposedByPeer)
+			candidateProposedByPeer.foreach { c =>
+				if c != clusterService.myAddress && !clusterService.delegateByAddress.contains(c) then
+					clusterService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(c)
 			}
 			if clusterService.clustersExistenceArity > 0 then senderDelegate.incitePeerToResolveMembershipConflict()
 			else updateClusterCreatorProposalIfAppropriate()
@@ -125,53 +126,57 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 	private def updateClusterCreatorProposalIfAppropriate(): Unit = {
 		val config = clusterService.config
 		val delegateByAddress = clusterService.delegateByAddress
-		val iHandShookWithAllSeeds = config.seeds.forall { seed =>
-			seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.communicationStatus eq HANDSHOOK)
-		}
-		// if I have hand-shaken with all the seeds and all delegates are aspirants with stable communicability, then propose the cluster creator.
-		if iHandShookWithAllSeeds && delegateByAddress.valuesIterator.forall(delegate => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
+		// If all the participants I know are aspirants with stable communicability, then propose the cluster creator.
+		if delegateByAddress.forall((_, delegate) => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
+			// if I have hand-shaken with all the seeds, then propose the cluster creator.
+			if config.seeds.forall { seed =>
+				seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.communicationStatus eq HANDSHOOK)
+			} then {
 
-			// Determine the candidate from my viewpoint
-			val candidateProposedByMe = delegateByAddress.iterator
-				.foldLeft(clusterService.myContactCard) { (min, entry) =>
-					entry._2 match {
-						case cd: CommunicableDelegate => ContactCard.ordering.min(cd.contactCard, min)
-						case _ => min
+				// Determine the candidate from my viewpoint
+				val candidateProposedByMe = delegateByAddress.iterator
+					.foldLeft(clusterService.myContactCard) { (min, entry) =>
+						entry._2 match {
+							case cd: CommunicableDelegate => ContactCard.ordering.min(cd.contactCard, min)
+							case _ => min
+						}
+					}
+
+				val myAddress = clusterService.myAddress
+				// scribe.trace(s"$myAddress: candidateProposedByMe=$candidateProposedByMe, candidateProposedByOthers=${delegateByAddress.collect { case (a, d: CommunicableDelegate) => s"$a proposes ${d.clusterCreatorProposedByPeer} and my previous proposal sent to him was ${d.lastClusterCreatorProposalSentToPeer}" }.mkString(",")}")
+				// First check if I should be the candidate. If me, and all the aspirant that I can communicate with, propose me to be the cluster creator...
+				if candidateProposedByMe.address == myAddress && delegateByAddress.valuesIterator.forall {
+					case communicableDelegate: CommunicableDelegate =>
+						communicableDelegate.clusterCreatorProposedByPeer == myAddress
+					case _ => true
+				} then { // ... then create it.
+					// Creating the cluster consists of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
+					val clusterCreationInstant: Instant = clusterService.clock.getTime
+					val memberBehavior = switchToMember(clusterCreationInstant)
+					val myViewpoint = memberBehavior.myCurrentViewpoint
+					for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
+						communicable.transmitToPeer(ICreatedACluster(myViewpoint))(communicable.ifFailureReportItAndThen(communicable.restartChannel))
+					}
+				} else { // ... else, send my proposal to all the participants I can communicate with.
+					for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
+						sendAClusterCreatorProposalTo(communicable, candidateProposedByMe.address)
 					}
 				}
-
-			val myAddress = clusterService.myAddress
-			// First check if I should be the candidate. If me, and all the aspirant that I can communicate with, propose me to be the cluster creator...
-			if candidateProposedByMe == myAddress && delegateByAddress.valuesIterator.forall {
-				case communicableDelegate: CommunicableDelegate =>
-					communicableDelegate.clusterCreatorProposedByPeer == myAddress
-				case _ => true
-			} then { // ... then create it.
-				// Creating the cluster consists of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
-				val clusterCreationInstant: Instant = clusterService.clock.getTime
-				val memberBehavior = switchToMember(clusterCreationInstant)
-				val myViewpoint = memberBehavior.myCurrentViewpoint
-				for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-					communicable.transmitToPeer(ICreatedACluster(myViewpoint))(communicable.ifFailureReportItAndThen(communicable.restartChannel))
-				}
-			} else { // ... else, send my proposal to all the participants I can communicate with.
-				for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-					sendAClusterCreatorProposalTo(communicable, candidateProposedByMe.address)
-				}
 			}
-		}
-		// if the conditions for the proposal are not meet, undo the old proposal if any.
-		else {
-			for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
-				sendAClusterCreatorProposalTo(communicable, null)
+
+			// else (if a handshake is not complete) undo the old proposal if any.
+			else {
+				for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
+					sendAClusterCreatorProposalTo(communicable, null)
+				}
 			}
 		}
 	}
 
-	private def sendAClusterCreatorProposalTo(targetDelegate: CommunicableDelegate, proposedAspirantAddress: ContactAddress): Unit = {
+	private def sendAClusterCreatorProposalTo(targetDelegate: CommunicableDelegate, proposedAspirantAddress: ContactAddress | Null): Unit = {
 		if proposedAspirantAddress != targetDelegate.lastClusterCreatorProposalSentToPeer then {
 			targetDelegate.lastClusterCreatorProposalSentToPeer = proposedAspirantAddress
-			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(proposedAspirantAddress))
+			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(Maybe.apply(proposedAspirantAddress)))
 		}
 	}
 	
@@ -245,7 +250,7 @@ class AspirantBehavior(clusterService: ClusterService) extends MembershipScopedB
 											true
 
 										case jr: JoinRejected =>
-											scribe.info(s"A request to join the cluster was rejected because: ${jr.reason}")
+											scribe.info(s"${clusterService.myAddress}: A request to join the cluster was rejected by ${chosenMemberDelegate.peerContactAddress} because ${jr.reason}.")
 											if jr.youHaveToRetry then ab.sendRequestToJoinTheClusterIfAppropriate()
 											true
 									}

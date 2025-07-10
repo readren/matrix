@@ -56,4 +56,8 @@ class IncommunicableDelegate(override val clusterService: ClusterService, overri
 			Maybe.some(myReplacement)
 		} else Maybe.empty
 	}
+
+	override def removeByOther(): Unit = {
+		clusterService.removeDelegate(this, true)
+	}
 }

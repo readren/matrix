@@ -77,8 +77,10 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 
 		case rtj: RequestToJoin =>
 			val members = memberDelegateByAddress
-			// if the sender knows the same members as me and all have handshook with me
-			if members.forall(_._2.communicationStatus eq HANDSHOOK) && members.mapValues(_.getPeerCreationInstant) == rtj.joinTokenByMemberAddress then {
+			val allMembersHaveHandshookWithMe = members.forall(_._2.communicationStatus eq HANDSHOOK)
+			val theSenderKnowsTheSameMembersAsMe = 
+				(members.mapValues(_.getPeerCreationInstant).toMap + (clusterService.myAddress -> clusterService.myCreationInstant)) == rtj.joinTokenByMemberAddress
+			if allMembersHaveHandshookWithMe && theSenderKnowsTheSameMembersAsMe then {
 				senderDelegate.askPeer(new senderDelegate.SingleRetryOutgoingRequestExchange[JoinGranted]() {
 					override def buildRequest(requestId: RequestId): JoinGranted =
 						JoinGranted(rtj.requestId, requestId, clusterService.myCreationInstant, clusterService.getStableParticipantsInfo.toMap)
@@ -88,6 +90,13 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 						true
 					}
 				})
+			} else {
+				val aMemberIsNotStable = members.exists(!_._2.isStable)
+				var reasons = List.empty[String]
+				if aMemberIsNotStable then reasons = "A member is not stable" :: reasons
+				if !allMembersHaveHandshookWithMe then reasons = "A member has not handshook with me" :: reasons
+				if !theSenderKnowsTheSameMembersAsMe then reasons = "The members you know aren't the same as the ones I know." :: reasons
+				senderDelegate.transmitToPeerOrRestartChannel(JoinRejected(rtj.requestId, aMemberIsNotStable, reasons.mkString(", ")))
 			}
 			true
 
@@ -129,7 +138,8 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 			???
 
 		case sc: ClusterStateChanged =>
-			???
+			// TODO
+			true
 
 		case am: ApplicationMsg =>
 			// TODO

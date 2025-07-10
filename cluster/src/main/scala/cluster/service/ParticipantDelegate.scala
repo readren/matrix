@@ -34,5 +34,10 @@ abstract class ParticipantDelegate {
 		this.oPeerMembershipStatusAccordingToMe = other.oPeerMembershipStatusAccordingToMe
 		this.peerCreationInstant = other.peerCreationInstant
 	}
+
+	private[service] inline def isAssociated: Boolean = this eq clusterService.delegateByAddress.getOrElse(peerContactAddress, null)
+
+	/** Removes this participant from outside this delegate's reception-cycle thread. */
+	def removeByOther(): Unit
 }
 

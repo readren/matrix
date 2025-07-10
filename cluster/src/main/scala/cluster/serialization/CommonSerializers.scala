@@ -1,6 +1,8 @@
 package readren.matrix
 package cluster.serialization
 
+import readren.taskflow.Maybe
+
 import java.nio.charset.StandardCharsets
 import scala.collection.SortedMap
 import scala.reflect.ClassTag
@@ -94,6 +96,16 @@ object CommonSerializers {
 
 	given Deserializer[String] = stringDeserializer
 
+	//// Maybe
+	given [E] =>(sE: Serializer[E]) => Serializer[Maybe[E]] = (message, writer) =>
+		message.fold(writer.putBoolean(false)) { e =>
+			writer.putBoolean(true)
+			sE.serialize(e, writer)
+		}
+
+	given [E] =>(dE: Deserializer[E]) => Deserializer[Maybe[E]] = reader =>
+		if reader.readBoolean() then Maybe.some(dE.deserialize(reader))
+		else Maybe.empty
 
 	/// Iterable
 	given iterableSerializer: [E, Ic[e] <: Iterable[e]] =>(sE: Serializer[E]) =>Serializer[Ic[E]] {

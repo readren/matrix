@@ -2,11 +2,11 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.Transmitter.NotDelivered
+import cluster.misc.CommonExtensions.*
 import cluster.misc.DoNothing
 import cluster.serialization.ProtocolVersion
 import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
-import cluster.service.Protocol.{Aspirant, MembershipStatus, RequestId}
-import common.CompileTime.getTypeName
+import cluster.service.Protocol.{Aspirant, MembershipStatus, RequestId, UNSPECIFIED_INSTANT}
 
 /** Defines participant behavior aspects for a [[CommunicableDelegate]].
  *
@@ -41,9 +41,6 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	private[service] def handleMessage(message: HelloIExist): Boolean = {
 		val previousMembershipStatus = oPeerMembershipStatusAccordingToMe
 
-		// Connect to participants I didn't know.
-		clusterService.createADelegateForEachParticipantIDoNotKnowIn(message.otherParticipantsIKnow)
-
 		// update my viewpoint of the peer's membership.
 		updateState(message.myMembershipStatus, message.versionsISupport, message.myCreationInstant)
 
@@ -54,6 +51,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 				if contactAddress != peerContactAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerContactAddress, message.myCreationInstant))
 			}
 		}
+
+		// Connect to participants I didn't know.
+		clusterService.createADelegateForEachParticipantIDoNotKnowIn(message.otherParticipantsIKnow)
 
 		// transmit the response: `Welcome` or `SupportedVersionsMismatch` accordingly.
 		if getAgreedVersion == ProtocolVersion.NOT_SPECIFIED then {
@@ -111,41 +111,38 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	}
 
 	private def handleSupportedVersionsMismatch(svm: SupportedVersionsMismatch): Unit = {
-		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
-		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.")
-	}
-
-	private def notifyAboutTheSupportedVersionsMismatch(helloRequestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
-		transmitToPeer(SupportedVersionsMismatch(helloRequestId)) { report =>
-			ifFailureReportItAndThen(DoNothing)(report)
-			sequencer.executeSequentially {
-				replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
-				clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
-			}
+		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"The peer told me we are not compatible.").foreach { _ =>
+			clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
 		}
 	}
 
+	// TODO correct this method, either the name or the behavior
+	private def notifyAboutTheSupportedVersionsMismatch(helloRequestId: RequestId, versionsSupportedByPeer: Set[ProtocolVersion]): Unit = {
+		replaceMyselfWithAnIncommunicableDelegate(IS_INCOMPATIBLE, s"None of the peer's supported versions according to his hello message are supported by me. Versions supported by peer: $versionsSupportedByPeer")
+		clusterService.notifyListenersThat(VersionIncompatibilityWith(peerContactAddress))
+		transmitToPeer(SupportedVersionsMismatch(helloRequestId)) { report =>
+			ifFailureReportItAndThen(DoNothing)(report)
+		}
+	}
 	////
 
 	private[service] def handleChannelDiscarded(): Boolean = {
-		if thisCommunicableDelegate.isChannelClosing then {
-			scribe.trace(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that is being closed.")
+		if thisCommunicableDelegate eq clusterService.delegateByAddress.getOrElse(peerContactAddress, null) then {
+			scribe.warn(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I $channelOrigin and is not being closed.")
 		} else {
-			scribe.warn(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I was not already closing.")
+			scribe.trace(s"${clusterService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I $channelOrigin and is already being closed.")
 		}
 		false
 	}
 
 	private[service] def handleMessage(farewell: Farewell): Boolean = {
 		if this.peerCreationInstant == Protocol.UNSPECIFIED_INSTANT || this.peerCreationInstant == farewell.myCreationInstant then {
-			if clusterService.removeDelegate(this, true) then {
-				for case (address, delegate: CommunicableDelegate) <- clusterService.delegateByAddress do {
-					transmitToPeerOrRestartChannel(AnotherParticipantGone(peerContactAddress, peerCreationInstant))
-				}
+			for case (address, delegate: CommunicableDelegate) <- clusterService.delegateByAddress if address != peerContactAddress do {
+				delegate.transmitToPeerOrRestartChannel(AnotherParticipantGone(peerContactAddress, peerCreationInstant))
 			}
 			false
 		} else {
-			scribe.warn(s"A ${getTypeName[Farewell]} from $peerCreationInstant was ignored because the creation instant does not match.")
+			checkSyncWithPeer(s"`$peerContactAddress` sent me a `$farewell` message with a creation instant that does not match my memory ($peerCreationInstant)")
 			true
 		}
 	}
@@ -166,36 +163,12 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 	}
 
 	private[service] def handleMessage(message: AnotherParticipantGone): Unit = {
-		clusterService.delegateByAddress.getOrElse(message.goneParticipantAddress, null) match {
-			case goneParticipantDelegate: CommunicableDelegate =>
-				if goneParticipantDelegate.getPeerCreationInstant == message.goneParticipantCreationInstant then {
-					goneParticipantDelegate.removeMyselfIfNoAnswerFromPeer()
-				} else {
-					scribe.warn(s"I received the message `$message` from `$peerContactAddress` with an unmatching creation instant (expected: ${goneParticipantDelegate.getPeerCreationInstant}).")
-				}
-			case goneParticipantDelegate: IncommunicableDelegate =>
-				clusterService.removeDelegate(goneParticipantDelegate, true)
-		}
-	}
-
-	protected def removeMyselfIfNoAnswerFromPeer(): Unit = {
-		for peerMembershipStatusAccordingToMe <- oPeerMembershipStatusAccordingToMe do {
-			askPeer(new OutgoingRequestExchange[AreYouInSyncWithMe] {
-				override def buildRequest(requestId: RequestId): AreYouInSyncWithMe =
-					AreYouInSyncWithMe(requestId, clusterService.myMembershipStatus, peerMembershipStatusAccordingToMe)
-
-				override def onResponse(request: AreYouInSyncWithMe, response: request.ResponseType): Boolean = response match {
-					case AreWeInSyncResponse(_, myMembershipStatusAccordingToPeerMatches) =>
-						if !myMembershipStatusAccordingToPeerMatches then incitePeerToResolveMembershipConflict()
-						true
-				}
-
-				override def onTransmissionError(request: AreYouInSyncWithMe, error: NotDelivered): Unit =
-					clusterService.removeDelegate(thisCommunicableDelegate, true)
-
-				override def onTimeout(request: AreYouInSyncWithMe): Unit =
-					clusterService.removeDelegate(thisCommunicableDelegate, true)
-			})
+		clusterService.delegateByAddress.getAndApply(message.goneParticipantAddress) { goneParticipantDelegate =>
+			if goneParticipantDelegate.getPeerCreationInstant == message.goneParticipantCreationInstant || goneParticipantDelegate.getPeerCreationInstant == UNSPECIFIED_INSTANT then {
+				goneParticipantDelegate.removeByOther()
+			} else {
+				scribe.error(s"${clusterService.myAddress}: I received the message `$message` from `$peerContactAddress` with an unmatching creation instant (expected: ${goneParticipantDelegate.getPeerCreationInstant}).")
+			}
 		}
 	}
 
