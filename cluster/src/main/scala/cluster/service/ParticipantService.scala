@@ -4,8 +4,8 @@ package cluster.service
 import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
 import cluster.misc.TaskSequencer
 import cluster.serialization.ProtocolVersion
-import cluster.service.ClusterService.*
-import cluster.service.ClusterService.ChannelOrigin.{INITIATED, ACCEPTED}
+import cluster.service.ParticipantService.*
+import cluster.service.ChannelOrigin.{INITIATED, ACCEPTED}
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
@@ -24,14 +24,14 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 import java.net.SocketAddress
 
-object ClusterService {
+object ParticipantService {
 
 	trait Clock {
 		def getTime: Instant
 	}
 
 	trait EventListener {
-		def handle(event: ClusterServiceEvent): Unit
+		def handle(event: ParticipantServiceEvent): Unit
 	}
 
 	class CovariantSocketOption[+T](val value: SocketOption[T @uncheckedVariance])
@@ -79,7 +79,7 @@ object ClusterService {
 		val heartbeatMargin: MilliDuration = 12_000,
 	)
 
-	def start(sequencer: TaskSequencer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ClusterService = {
+	def start(sequencer: TaskSequencer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ParticipantService = {
 
 		val serverChannel = AsynchronousServerSocketChannel.open()
 		for option <- serviceConfig.socketOptions do {
@@ -90,7 +90,7 @@ object ClusterService {
 		val eventListeners = new java.util.WeakHashMap[EventListener, None.type]()
 		for eventListener <- startingListeners do eventListeners.put(eventListener, None)
 
-		val service = new ClusterService(sequencer, clock, serviceConfig, serverChannel, eventListeners)
+		val service = new ParticipantService(sequencer, clock, serviceConfig, serverChannel, eventListeners)
 		// start the listening server
 		service.acceptClientConnections(serverChannel)
 		// start connection to seeds
@@ -101,26 +101,18 @@ object ClusterService {
 	val ignorableErrorCatcher: PartialFunction[Throwable, Unit] = {
 		case NonFatal(t) => scribe.error(t)
 	}
-
-	/** The origin of the [[AsynchronousSocketChannel]] instance owned by instances of [[CommunicableDelegate]]. */
-	enum ChannelOrigin {
-		/** The channel was initiated by the [[ClusterService]] that owns the [[CommunicableDelegate]]. It is on the client side. */
-		case INITIATED
-		/** The channel was accepted by the [[ClusterService]] that owns the [[CommunicableDelegate]]). It is on the server side. */
-		case ACCEPTED
-	}
 }
 
 /**
- * A service that manages the propagation of its own existence and the awareness of other [[ClusterService]] instances
+ * A service that manages the propagation of its own existence and the awareness of other [[ParticipantService]] instances
  * to support intercommunication between their users across different JVMs, which maybe (and usually are) on different host machines.
  *
  * For brevity, instances of this class are referred to as "participants."
  * Depending on its membership status (from its own viewpoint), a participant behaves either as a "member" or as an "aspirant" to become a member of the cluster.
  *
- * The [[ClusterService]] class delegates the knowledge about, and communication with, other participants, to implementations of the [[ParticipantDelegate]] trait: it creates one delegate per participant it is aware of (excluding itself).
+ * The [[ParticipantService]] class delegates the knowledge about, and communication with, other participants, to implementations of the [[ParticipantDelegate]] trait: it creates one delegate per participant it is aware of (excluding itself).
  */
-class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val config: ClusterService.Config, serverChannel: AsynchronousServerSocketChannel, eventListeners: java.util.WeakHashMap[EventListener, None.type]) { thisClusterService =>
+class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock, val config: ParticipantService.Config, serverChannel: AsynchronousServerSocketChannel, eventListeners: java.util.WeakHashMap[EventListener, None.type]) { thisParticipantService =>
 
 	export config.myAddress
 
@@ -149,7 +141,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, oPeerRemoteAddress: Maybe[SocketAddress], channelOrigin: ChannelOrigin): CommunicableDelegate = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		assert(peerContactAddress != myAddress)
-		val newParticipant = new CommunicableDelegate(thisClusterService, peerContactAddress, channel, receiverFromPeer, oPeerRemoteAddress, channelOrigin)
+		val newParticipant = new CommunicableDelegate(thisParticipantService, peerContactAddress, channel, receiverFromPeer, oPeerRemoteAddress, channelOrigin)
 		participantDelegateByAddress += peerContactAddress -> newParticipant
 		newParticipant
 	}
@@ -158,7 +150,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	private[service] def addANewIncommunicableDelegate(participantAddress: ContactAddress, reason: IncommunicabilityReason): IncommunicableDelegate = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		assert(participantAddress != myAddress)
-		val newParticipant = new IncommunicableDelegate(thisClusterService, participantAddress, reason)
+		val newParticipant = new IncommunicableDelegate(thisParticipantService, participantAddress, reason)
 		participantDelegateByAddress += participantAddress -> newParticipant
 		newParticipant
 	}
@@ -198,7 +190,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	}
 
 	/**
-	 * Gets the address of all the participants known by this [[ClusterService]]. */
+	 * Gets the address of all the participants known by this [[ParticipantService]]. */
 	def getKnownParticipantsAddresses: Set[ContactAddress] = {
 		participantDelegateByAddress.keySet
 	}
@@ -222,7 +214,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		}
 	}
 
-	/** @return the newest [[ProtocolVersion]] of the specified set that this [[ClusterService]] supports. */
+	/** @return the newest [[ProtocolVersion]] of the specified set that this [[ParticipantService]] supports. */
 	private[service] def determineAgreedVersion(versionsSupportedByPeer: Set[ProtocolVersion]): Option[ProtocolVersion] = {
 		val versionsSupportedByBoth = config.versionsISupport.intersect(versionsSupportedByPeer)
 		versionsSupportedByBoth.minOption(using ProtocolVersion.newerFirstOrdering)
@@ -247,7 +239,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	}
 
 	/**
-	 * Manages incoming client connections to the server component of this [[ClusterService]].
+	 * Manages incoming client connections to the server component of this [[ParticipantService]].
 	 *
 	 * @param serverChannel The [[AsynchronousServerSocketChannel]] used to listen for and accept client connections.
 	 */
@@ -258,7 +250,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 				scribe.debug(s"$myAddress: Accepting a connection from `${oClientParticipantEphemeralAddress.fold("unknown")(_.toString)}`.")
 				// Note that this method body is executed sequentially by nature of the NIO2. Nevertheless, the `executeSequentially` is necessary because some of the member variables accessed here need to be accessed by procedures that are started from other handlers that are concurrent.
 
-				new ParticipantDelegateEgg(thisClusterService, channel).incubate()
+				new ParticipantDelegateEgg(thisParticipantService, channel).incubate()
 				acceptClientConnections(serverChannel)
 			}
 
@@ -379,7 +371,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 		eventListeners.remove(listener) eq None
 	}
 
-	private[service] def notifyListenersThat(event: ClusterServiceEvent): Unit = {
+	private[service] def notifyListenersThat(event: ParticipantServiceEvent): Unit = {
 		eventListeners.forEach { (listener, _) => listener.handle(event) }
 	}
 
@@ -409,7 +401,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	
 	private[service] def buildTransmitterFor(channel: AsynchronousSocketChannel, oPeerContactAddress: Maybe[ContactAddress]): SequentialTransmitter[Protocol] = {
 		object context extends Transmitter.Context {
-			override def myAddress: ContactAddress = thisClusterService.myAddress
+			override def myAddress: ContactAddress = thisParticipantService.myAddress
 
 			override def oPeerAddress: Maybe[ContactAddress] = oPeerContactAddress
 		}
@@ -418,7 +410,7 @@ class ClusterService private(val sequencer: TaskSequencer, val clock: Clock, val
 	
 	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], oChannelEphemeralAddress: Maybe[SocketAddress]): Receiver = {
 		object context extends Receiver.Context {
-			override def myAddress: ContactAddress = thisClusterService.myAddress
+			override def myAddress: ContactAddress = thisParticipantService.myAddress
 			override def oPeerAddress: Maybe[ContactAddress] = peerContactAddressGetter()
 			override val oEphemeralAddress: Maybe[SocketAddress] = oChannelEphemeralAddress
 		}

@@ -4,14 +4,14 @@ package cluster.service
 import scala.collection.mutable
 import cluster.service.Protocol.{BrainJoin, Instant}
 
-class BrainJoinBehavior(clusterService: ClusterService, otherClusterCreationInstant: Instant) extends MembershipScopedBehavior {
+class BrainJoinBehavior(participantService: ParticipantService, otherClusterCreationInstant: Instant) extends MembershipScopedBehavior {
 	
 	class CompetingCluster
 	
 	var otherClustersByCreationInstant: mutable.Map[Instant, CompetingCluster] = mutable.Map(otherClusterCreationInstant -> CompetingCluster())
 	
 	/** The [[MembershipStatus]] this behavior corresponds to. */
-	override val membershipStatus: Protocol.MembershipStatus = BrainJoin(clusterService.myCreationInstant, otherClustersByCreationInstant.keySet.toSet)
+	override val membershipStatus: Protocol.MembershipStatus = BrainJoin(participantService.myCreationInstant, otherClustersByCreationInstant.keySet.toSet)
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = ???
 

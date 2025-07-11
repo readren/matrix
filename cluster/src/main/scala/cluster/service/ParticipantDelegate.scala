@@ -5,11 +5,11 @@ import cluster.service.Protocol.*
 
 import readren.taskflow.Maybe
 
-/** A [[ClusterService]]'s delegate responsible to manage the communication with other instances of [[ClusterService]].
- * We name "participant" to each instance of [[ClusterService]] */
+/** A [[ParticipantService]]'s delegate responsible to manage the communication with other instances of [[ParticipantService]].
+ * We name "participant" to each instance of [[ParticipantService]] */
 abstract class ParticipantDelegate {
-	/** The [[ClusterService]] that this instance is a delegate of. */
-	val clusterService: ClusterService
+	/** The [[ParticipantService]] that this instance is a delegate of. */
+	val participantService: ParticipantService
 	/** The [[ContactAddress]] of the participant this instance manages.  */
 	val peerContactAddress: ContactAddress
 	def communicationStatus: CommunicationStatus
@@ -21,7 +21,7 @@ abstract class ParticipantDelegate {
 	protected var peerCreationInstant: Instant = UNSPECIFIED_INSTANT
 	inline def getPeerCreationInstant: Instant = peerCreationInstant
 	
-	export clusterService.sequencer
+	export participantService.sequencer
 	
 	def isCommunicable: Boolean
 
@@ -35,7 +35,7 @@ abstract class ParticipantDelegate {
 		this.peerCreationInstant = other.peerCreationInstant
 	}
 
-	private[service] inline def isAssociated: Boolean = this eq clusterService.delegateByAddress.getOrElse(peerContactAddress, null)
+	private[service] inline def isAssociated: Boolean = this eq participantService.delegateByAddress.getOrElse(peerContactAddress, null)
 
 	/** Removes this participant from outside this delegate's reception-cycle thread. */
 	def removeByOther(): Unit

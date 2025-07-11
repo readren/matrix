@@ -3,8 +3,8 @@ package cluster.service
 
 import cluster.service.Protocol.MembershipStatus
 
-/** The aspect of a [[ClusterService]]'s behavior that depends on the membership status.
- * Implementations may have member variables that are needed, or refer to object that exists, only when the [[ClusterService]] is in the corresponding [[MembershipStatus]]. */
+/** The aspect of a [[ParticipantService]]'s behavior that depends on the membership status.
+ * Implementations may have member variables that are needed, or refer to object that exists, only when the [[ParticipantService]] is in the corresponding [[MembershipStatus]]. */
 abstract class MembershipScopedBehavior {
 	/** The [[MembershipStatus]] this behavior corresponds to. */
 	val membershipStatus: MembershipStatus

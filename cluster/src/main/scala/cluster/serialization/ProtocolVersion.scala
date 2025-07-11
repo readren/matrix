@@ -6,7 +6,7 @@ opaque type ProtocolVersion <: AnyVal = Byte
 
 object ProtocolVersion {
 
-	/** The identifier of the version of the [[ClusterService]]'s [[Protocol]] corresponding to this project version.
+	/** The identifier of the version of the [[ParticipantService]]'s [[Protocol]] corresponding to this project version.
 	 * Every time a new version of the cluster subproject that changes the [[Protocol]] will be released, this identifier must be circularly incremented by one.
 	 * */
 	val OF_THIS_PROJECT: ProtocolVersion = 1

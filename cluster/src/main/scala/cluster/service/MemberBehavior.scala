@@ -7,16 +7,16 @@ import common.CompileTime.getTypeName
 
 import scala.collection.MapView
 
-/** A communicable participant's delegate suited for a [[ClusterService]] with a [[MemberBehavior]]. */
-class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
+/** A communicable participant's delegate suited for a [[ParticipantService]] with a [[MemberBehavior]]. */
+class MemberBehavior(startingStateSerial: RingSerial, participantService: ParticipantService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
 
 	private var stateSerial: RingSerial = startingStateSerial
 
 	inline def currentStateSerial: RingSerial = stateSerial
 
-	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, clusterService.clock.getTime, clusterCreationInstant, clusterService.getStableParticipantsInfo.toMap)
+	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, participantService.clock.getTime, clusterCreationInstant, participantService.getStableParticipantsInfo.toMap)
 
-	override val membershipStatus: MembershipStatus = Member(clusterService.myCreationInstant)
+	override val membershipStatus: MembershipStatus = Member(participantService.myCreationInstant)
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
 		stateSerial = stateSerial.nextSerial
@@ -79,11 +79,11 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 			val members = memberDelegateByAddress
 			val allMembersHaveHandshookWithMe = members.forall(_._2.communicationStatus eq HANDSHOOK)
 			val theSenderKnowsTheSameMembersAsMe = 
-				(members.mapValues(_.getPeerCreationInstant).toMap + (clusterService.myAddress -> clusterService.myCreationInstant)) == rtj.joinTokenByMemberAddress
+				(members.mapValues(_.getPeerCreationInstant).toMap + (participantService.myAddress -> participantService.myCreationInstant)) == rtj.joinTokenByMemberAddress
 			if allMembersHaveHandshookWithMe && theSenderKnowsTheSameMembersAsMe then {
 				senderDelegate.askPeer(new senderDelegate.SingleRetryOutgoingRequestExchange[JoinGranted]() {
 					override def buildRequest(requestId: RequestId): JoinGranted =
-						JoinGranted(rtj.requestId, requestId, clusterService.myCreationInstant, clusterService.getStableParticipantsInfo.toMap)
+						JoinGranted(rtj.requestId, requestId, participantService.myCreationInstant, participantService.getStableParticipantsInfo.toMap)
 
 					override def onResponse(request: JoinGranted, response: JoinDecision): Boolean = {
 						if response.accepted then senderDelegate.updateState(membershipStatus)
@@ -150,13 +150,13 @@ class MemberBehavior(startingStateSerial: RingSerial, clusterService: ClusterSer
 	}
 
 	private def memberDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
-		clusterService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
+		participantService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
 
 
 	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterCreationInstant: Instant): Unit = {
 
-		val newBehavior = BrainJoinBehavior(clusterService, otherClusterCreationInstant)
-		for (_, delegate) <- clusterService.handshookDelegateByAddress do {
+		val newBehavior = BrainJoinBehavior(participantService, otherClusterCreationInstant)
+		for (_, delegate) <- participantService.handshookDelegateByAddress do {
 			delegate.transmitToPeerOrRestartChannel(WeHaveToResolveBrainJoin(myCurrentViewpoint))
 		}
 		// TODO
