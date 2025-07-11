@@ -2,16 +2,18 @@ package readren.matrix
 package cluster.service
 
 import scala.collection.mutable
-import cluster.service.Protocol.{BrainJoin, Instant}
+import cluster.service.Protocol.{BrainJoin, ClusterId, Instant}
 
-class BrainJoinBehavior(participantService: ParticipantService, otherClusterCreationInstant: Instant) extends MembershipScopedBehavior {
+class BrainJoinBehavior(participantService: ParticipantService, startingStateSerial: RingSerial, clusterIBelongTo: ClusterId, otherClusterId: ClusterId) extends MembershipScopedBehavior {
+
+	private var stateSerial: RingSerial = startingStateSerial
 	
 	class CompetingCluster
 	
-	var otherClustersByCreationInstant: mutable.Map[Instant, CompetingCluster] = mutable.Map(otherClusterCreationInstant -> CompetingCluster())
+	var otherClustersById: mutable.Map[ClusterId, CompetingCluster] = mutable.Map(otherClusterId -> CompetingCluster())
 	
 	/** The [[MembershipStatus]] this behavior corresponds to. */
-	override val membershipStatus: Protocol.MembershipStatus = BrainJoin(participantService.myCreationInstant, otherClustersByCreationInstant.keySet.toSet)
+	override val membershipStatus: Protocol.MembershipStatus = BrainJoin(clusterIBelongTo, otherClustersById.keySet.toSet)
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = ???
 

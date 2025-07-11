@@ -103,7 +103,7 @@ case class JoinApprovalGranted(override val toRequest: RequestId, joinToken: Joi
 /** Command message that an aspirant has to send to any member in order to join the cluster.
  *
  * @param joinTokenByMemberAddress the join-token provided by each approving member. */
-case class RequestToJoin(override val requestId: RequestId, clusterCreationInstant: Instant, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
+case class RequestToJoin(override val requestId: RequestId, clusterId: ClusterId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
 	override type ResponseType = JoinGranted | JoinRejected
 }
 
@@ -186,6 +186,8 @@ object Protocol {
 	type JoinToken = Long
 	/** Milliseconds since 1970-01-01T00:00:00Z */
 	type Instant = Long
+	opaque type ClusterId = Instant
+	inline def generateClusterId(clusterCreationInstant: Instant): ClusterId = clusterCreationInstant 
 
 	type RequestId = Short // changing this type requires updating the `incremented` method implementation below.
 	extension (requestId: RequestId) {
@@ -200,9 +202,9 @@ object Protocol {
 
 	case object Aspirant extends MembershipStatus
 
-	case class Member(clusterCreationInstant: Instant) extends MembershipStatus
+	case class Member(clusterId: ClusterId) extends MembershipStatus
 
-	case class BrainJoin(clusterIBelongCreationInstants: Instant, otherClustersCreationInstants: Set[Instant]) extends MembershipStatus
+	case class BrainJoin(clusterIBelongId: ClusterId, otherClustersIds: Set[ClusterId]) extends MembershipStatus
 
 	case object BrainSplit extends MembershipStatus
 
@@ -230,8 +232,12 @@ object Protocol {
 
 	given Deserializer[ParticipantInfo] = Deserializer.derive[ParticipantInfo](FLAT)
 
-	/** Information about a member according to itself. */
-	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterCreationInstant: Instant, participantsInfo: Map[ContactAddress, ParticipantInfo])
+	/** A photo of the community's state from the viewpoint of a member.
+	 * @param serial the serial number (or revision) that identifies the photo of the member's viewpoint-state from previous photos.
+	 * @param takenOn the [[Instant]] when this photo was taken.
+	 * @param clusterId the identifier of the cluster to which the member belongs.
+	 * @param participantsInfo the information about each participant in the community that the member had when the photo was taken. */
+	case class MemberViewpoint(serial: RingSerial, takenOn: Instant, clusterId: ClusterId, participantsInfo: Map[ContactAddress, ParticipantInfo])
 
 	given Serializer[MemberViewpoint] = Serializer.derive[MemberViewpoint](FLAT)
 

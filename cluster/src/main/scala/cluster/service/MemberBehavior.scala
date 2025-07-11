@@ -8,15 +8,15 @@ import common.CompileTime.getTypeName
 import scala.collection.MapView
 
 /** A communicable participant's delegate suited for a [[ParticipantService]] with a [[MemberBehavior]]. */
-class MemberBehavior(startingStateSerial: RingSerial, participantService: ParticipantService, val clusterCreationInstant: Instant) extends MembershipScopedBehavior {
+class MemberBehavior(startingStateSerial: RingSerial, participantService: ParticipantService, val clusterId: ClusterId) extends MembershipScopedBehavior {
 
 	private var stateSerial: RingSerial = startingStateSerial
 
 	inline def currentStateSerial: RingSerial = stateSerial
 
-	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, participantService.clock.getTime, clusterCreationInstant, participantService.getStableParticipantsInfo.toMap)
+	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, participantService.clock.getTime, clusterId, participantService.getStableParticipantsInfo.toMap)
 
-	override val membershipStatus: MembershipStatus = Member(clusterCreationInstant)
+	override val membershipStatus: MembershipStatus = Member(clusterId)
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
 		stateSerial = stateSerial.nextSerial
@@ -42,9 +42,9 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 				case Aspirant =>
 					senderDelegate.handleMessage(ihr)
 
-				case Member(clusterCreationInstantAccordingToPeer) =>
-					if clusterCreationInstantAccordingToPeer != clusterCreationInstant then {
-						switchToResolvingBrainJoin(senderDelegate, clusterCreationInstantAccordingToPeer, s"I received a `$ihr` from a member of another cluster.")
+				case Member(clusterIdThePeerBelongsTo) =>
+					if clusterIdThePeerBelongsTo != clusterId then {
+						switchToResolvingBrainJoin(senderDelegate, clusterIdThePeerBelongsTo, s"I received a `$ihr` from a member of another cluster.")
 						true
 					} else {
 						senderDelegate.handleMessage(ihr)
@@ -67,8 +67,8 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 			true
 
 		case icc: ICreatedACluster =>
-			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
-				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant, s"I received a `$icc` when a cluster with a different creation instant already exists, of which I am a member of.")
+			if icc.myViewpoint.clusterId != clusterId then {
+				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterId, s"I received a `$icc` when a cluster with a different creation instant already exists, of which I am a member of.")
 			} else scribe.warn(s"I have ignored the message `$icc` from `${senderDelegate.contactCard}` because I already am a member of the cluster he created.")
 			true
 
@@ -152,10 +152,10 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 		participantService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
 
 
-	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterCreationInstant: Instant, why: String): Unit = {
+	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterId: ClusterId, why: String): Unit = {
 		scribe.warn(s"${participantService.myAddress}: Switched to `BrainJoinBehavior` because: $why")
 
-		val newBehavior = BrainJoinBehavior(participantService, otherClusterCreationInstant)
+		val newBehavior = BrainJoinBehavior(participantService, stateSerial.nextSerial, clusterId, otherClusterId)
 		for (_, delegate) <- participantService.handshookDelegateByAddress do {
 			delegate.transmitToPeerOrRestartChannel(WeHaveToResolveBrainJoin(myCurrentViewpoint))
 		}
