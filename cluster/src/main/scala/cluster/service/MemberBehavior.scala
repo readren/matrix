@@ -16,7 +16,7 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 
 	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, participantService.clock.getTime, clusterCreationInstant, participantService.getStableParticipantsInfo.toMap)
 
-	override val membershipStatus: MembershipStatus = Member(participantService.myCreationInstant)
+	override val membershipStatus: MembershipStatus = Member(clusterCreationInstant)
 
 	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
 		stateSerial = stateSerial.nextSerial
@@ -44,7 +44,7 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 
 				case Member(clusterCreationInstantAccordingToPeer) =>
 					if clusterCreationInstantAccordingToPeer != clusterCreationInstant then {
-						switchToResolvingBrainJoin(senderDelegate, clusterCreationInstantAccordingToPeer)
+						switchToResolvingBrainJoin(senderDelegate, clusterCreationInstantAccordingToPeer, s"I received a `$ihr` from a member of another cluster.")
 						true
 					} else {
 						senderDelegate.handleMessage(ihr)
@@ -68,7 +68,7 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 
 		case icc: ICreatedACluster =>
 			if icc.myViewpoint.clusterCreationInstant != clusterCreationInstant then {
-				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant)
+				switchToResolvingBrainJoin(senderDelegate, icc.myViewpoint.clusterCreationInstant, s"I received a `$icc` when a cluster with a different creation instant already exists, of which I am a member of.")
 			} else scribe.warn(s"I have ignored the message `$icc` from `${senderDelegate.contactCard}` because I already am a member of the cluster he created.")
 			true
 
@@ -78,12 +78,11 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 		case rtj: RequestToJoin =>
 			val members = memberDelegateByAddress
 			val allMembersHaveHandshookWithMe = members.forall(_._2.communicationStatus eq HANDSHOOK)
-			val theSenderKnowsTheSameMembersAsMe = 
-				(members.mapValues(_.getPeerCreationInstant).toMap + (participantService.myAddress -> participantService.myCreationInstant)) == rtj.joinTokenByMemberAddress
+			val theSenderKnowsTheSameMembersAsMe = members.size + 1 == rtj.joinTokenByMemberAddress.size && members.forall { (memberAddress, delegate) => rtj.joinTokenByMemberAddress.get(memberAddress).contains(delegate.getPeerCreationInstant) }
 			if allMembersHaveHandshookWithMe && theSenderKnowsTheSameMembersAsMe then {
 				senderDelegate.askPeer(new senderDelegate.SingleRetryOutgoingRequestExchange[JoinGranted]() {
 					override def buildRequest(requestId: RequestId): JoinGranted =
-						JoinGranted(rtj.requestId, requestId, participantService.myCreationInstant, participantService.getStableParticipantsInfo.toMap)
+						JoinGranted(rtj.requestId, requestId, participantService.getStableParticipantsInfo.toMap)
 
 					override def onResponse(request: JoinGranted, response: JoinDecision): Boolean = {
 						if response.accepted then senderDelegate.updateState(membershipStatus)
@@ -153,7 +152,8 @@ class MemberBehavior(startingStateSerial: RingSerial, participantService: Partic
 		participantService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
 
 
-	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterCreationInstant: Instant): Unit = {
+	private def switchToResolvingBrainJoin(delegateMemberOfForeignCluster: CommunicableDelegate, otherClusterCreationInstant: Instant, why: String): Unit = {
+		scribe.warn(s"${participantService.myAddress}: Switched to `BrainJoinBehavior` because: $why")
 
 		val newBehavior = BrainJoinBehavior(participantService, otherClusterCreationInstant)
 		for (_, delegate) <- participantService.handshookDelegateByAddress do {

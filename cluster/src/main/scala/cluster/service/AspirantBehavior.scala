@@ -47,7 +47,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 				if c != participantService.myAddress && !participantService.delegateByAddress.contains(c) then
 					participantService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(c)
 			}
-			if participantService.clustersExistenceArity > 0 then senderDelegate.incitePeerToResolveMembershipConflict()
+			if participantService.findClusterCreatorsCreationInstants.nonEmpty then senderDelegate.incitePeerToResolveMembershipConflict()
 			else updateClusterCreatorProposalIfAppropriate()
 			true
 
@@ -184,10 +184,13 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 	private var aRequestToJoinIsOnTheWay: Boolean = false
 
 	private def sendRequestToJoinTheClusterIfAppropriate(): Unit = {
+		if aRequestToJoinIsOnTheWay then return
+		val foundClusters = participantService.findClusterCreatorsCreationInstants
 		// if a request isn't on the way, a single cluster exists, and the communicability of all the delegates is stable, then send a request to join to the member with the lowest [[ContactCard]]
-		if !aRequestToJoinIsOnTheWay && participantService.clustersExistenceArity == 1 && participantService.delegateByAddress.iterator.forall(_._2.isStable) then {
+		if foundClusters.size == 1 && participantService.delegateByAddress.iterator.forall(_._2.isStable) then {
+			val membershipStatus = Member(foundClusters.head)
 			participantService.delegateByAddress.iterator
-				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contains(_.isInstanceOf[Member]) => cd }
+				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) => cd }
 				.minByOption(_.contactCard)(using ContactCard.ordering)
 				.foreach { chosenMemberDelegate =>
 					aRequestToJoinIsOnTheWay = true
@@ -200,7 +203,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 								case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe == chosenMemberDelegate.getPeerMembershipStatusAccordingToMe =>
 									delegate.peerContactAddress -> delegate.getPeerCreationInstant
 							}
-							RequestToJoin(requestId, joinTokenByMember)
+							RequestToJoin(requestId, membershipStatus.clusterCreationInstant, joinTokenByMember)
 						}
 
 						override def onResponse(request: RequestToJoin, response: request.ResponseType): Boolean = {
@@ -240,7 +243,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 											chosenMemberDelegate.transmitToPeer(JoinDecision(jg.requestId, inSyncWithChosenMember)) {
 												case Delivered =>
 													// If the confirmation was delivered and is affirmative (because we are in sync with the chosen member about the state of all the participants he knows), then switch to member.
-													if inSyncWithChosenMember then sequencer.executeSequentially { switchToMember(jg.clusterCreationInstant) }
+													if inSyncWithChosenMember then sequencer.executeSequentially { switchToMember(request.clusterCreationInstant) }
 												case nd: NotDelivered =>
 													chosenMemberDelegate.reportTransmissionFailure(nd)
 													sequencer.executeSequentially {

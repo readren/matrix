@@ -34,8 +34,8 @@ object InteractiveTests {
 
 		val socketOptions: Set[SocketOptionValue[Any]] = Set(StandardSocketOptions.SO_REUSEADDR -> java.lang.Boolean.TRUE)
 		val acceptedConnectionsFilter: ContactAddressFilter = _ => true
-		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 10_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
-		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 10_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
 		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDap.currentAssistant.id}", _))
 		val sequencerA = new TaskSequencer {
@@ -47,7 +47,8 @@ object InteractiveTests {
 			override val assistant: Assistant = schedulingDap.provide(portB)
 		}
 		val clock = new ParticipantService.Clock {
-			override def getTime: Instant = System.currentTimeMillis()
+			private val startingInstant = System.currentTimeMillis()
+			override def getTime: Instant = System.currentTimeMillis() - startingInstant
 		}
 
 		val csA = ParticipantService.start(sequencerA, clock, configA, Some(csAEventListener))

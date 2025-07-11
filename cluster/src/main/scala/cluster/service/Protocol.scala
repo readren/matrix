@@ -103,14 +103,14 @@ case class JoinApprovalGranted(override val toRequest: RequestId, joinToken: Joi
 /** Command message that an aspirant has to send to any member in order to join the cluster.
  *
  * @param joinTokenByMemberAddress the join-token provided by each approving member. */
-case class RequestToJoin(override val requestId: RequestId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
+case class RequestToJoin(override val requestId: RequestId, clusterCreationInstant: Instant, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
 	override type ResponseType = JoinGranted | JoinRejected
 }
 
 /** Response to the [[RequestToJoin]] message when the join is granted, and at the same time, a request for a [[JoinDecision]] acknowledgment.
  * @param participantInfoByItsAddress the state of all the participant according to the sender, including his own view of himself (which is the single source of that information).
  */
-case class JoinGranted(override val toRequest: RequestId, override val requestId: RequestId, clusterCreationInstant: Instant, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response, Request {
+case class JoinGranted(override val toRequest: RequestId, override val requestId: RequestId, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response, Request {
 	override type ResponseType = JoinDecision
 }
 

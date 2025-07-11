@@ -6,14 +6,13 @@ import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.serialization.ProtocolVersion
 import cluster.service.ChannelOrigin.ACCEPTED
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
-import cluster.service.{ChannelId, Protocol}
 import cluster.service.Protocol.ContactAddress
+import cluster.service.{ChannelId, Protocol}
 
 import readren.taskflow.Maybe
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
-import scala.util.control.NonFatal
 
 /** Manages an accepted connection until a hello message is received or a reception timeout occurs.  */
 class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel: AsynchronousSocketChannel, oEggClientAddress: Maybe[SocketAddress], eggChannelId: ChannelId) {
@@ -67,8 +66,8 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 					// We can't just keep the connection that completed earlier because that is vulnerable to race condition because each side may see a different connection completing first.
 					// We have to establish an absolute and global criteria for this decision which is the comparison of the addresses: the kept connection is the one in which the server has the highest address. The other connection is gracefully closed.
 					// The `ParticipantService.whichChannelShouldIKeepWhenMutualConnectionWith` method encapsulates said criteria.
-					if (incumbentDelegate.channelId.channelOrigin.eq(ACCEPTED)) || (incumbentDelegate.communicationStatus eq HANDSHOOK) then {
-						scribe.info(s"${participantService.myAddress}: I accepted a new connection initiated by `$peerContactAddress` with channel $eggChannel, assuming that the incumbent one is stale. The incumbent channel ${incumbentDelegate.channel} will be gracefully closed. This happens only (if I am not mistaken) when the peer restarts the channel.")
+					if incumbentDelegate.channelId.channelOrigin.eq(ACCEPTED) || (incumbentDelegate.communicationStatus eq HANDSHOOK) then {
+						scribe.info(s"${participantService.myAddress}: I accepted a new connection initiated by `$peerContactAddress` with channel $eggChannelId, assuming that the incumbent one is stale. The incumbent channel ${incumbentDelegate.channelId} will be gracefully closed. This happens only (if I am not mistaken) when the peer restarts the channel.")
 						// Replace the old stale connection with a new one that uses the brand-new accepted connection's channel.
 						replace(incumbentDelegate)
 							.startConversationAsServer(hello)

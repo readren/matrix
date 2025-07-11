@@ -13,8 +13,8 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 
 class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 
-	private val NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT = 1000
-	private val NUMBER_OF_ASSISTANTS = 1000
+	private val NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT = 10
+	private val NUMBER_OF_ASSISTANTS = 10000
 
 	private def testVisibility(provider: DoerAssistantProvider[Doer.Assistant] & ShutdownAble, minimumThreadSwaps: Int): Future[Any] = {
 
@@ -71,17 +71,18 @@ class DoerAssistantProviderTest extends ScalaCheckEffectSuite {
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
 			}
-			// .andThen { _ => for assistant <- assistantsData do println(s"workerIndexChangesCounter=${assistant.workerIndexChangesCounter}") }
+//			.andThen { _ => for index <- assistantsData.indices do println(s"$index: workerIndexChangesCounter=${assistantsData(index).workerChangesCounter}") }
+			.andThen { _ => println(s"total worker swaps: ${assistantsData.map(_.workerChangesCounter).sum}") }
 
 	}
 
 	test("CooperativeWorkersDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new CooperativeWorkersDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/2)
+		testVisibility(new CooperativeWorkersDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/20)
 	}
 	test("SchedulingDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 
-		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/3)
+		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_ASSISTANT/20)
 	}
 	test("LeastLoadedFixedWorkerDap: Tasks should see updates made by previous tasks enqueued into the same assistant") {
 

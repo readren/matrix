@@ -168,27 +168,47 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		}
 	}
 
+//	/** Must be called within the [[sequencer]].
+//	 * @return `0` if no cluster exists among the know participants; `1` if only one cluster exists; and `2` if two or more exist. */
+//	def clustersExistenceArity: Int = {
+//		assert(sequencer.assistant.isWithinDoSiThEx)
+//		val iterator = delegateByAddress.valuesIterator
+//
+//		@tailrec
+//		def loop(creationInstant: Instant): Int = {
+//			if iterator.hasNext then {
+//				iterator.next().getPeerMembershipStatusAccordingToMe.fold(loop(creationInstant)) {
+//					case Member(creationInstantOfTheClusterTheMemberBelongsTo) =>
+//						if creationInstant == UNSPECIFIED_INSTANT then loop(creationInstantOfTheClusterTheMemberBelongsTo)
+//						else if creationInstantOfTheClusterTheMemberBelongsTo == creationInstant then loop(creationInstant)
+//						else 2
+//					case _ =>
+//						loop(creationInstant)
+//				}
+//			} else if creationInstant == UNSPECIFIED_INSTANT then 0 else 1
+//		}
+//
+//		loop(UNSPECIFIED_INSTANT)
+//	}
+
 	/** Must be called within the [[sequencer]].
-	 * @return `0` if no cluster exists among the know participants; `1` if only one cluster exists; and `2` if two or more exist. */
-	def clustersExistenceArity: Int = {
+	 * @return A set with as many elements as clusters among the know participants, with each element equal to the cluster creation [[Instant]]. */
+	def findClusterCreatorsCreationInstants: Set[Instant] = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		val iterator = delegateByAddress.valuesIterator
 
 		@tailrec
-		def loop(creationInstant: Instant): Int = {
+		def loop(alreadyFound: Set[Instant]): Set[Instant] = {
 			if iterator.hasNext then {
-				iterator.next().getPeerMembershipStatusAccordingToMe.fold(loop(creationInstant)) {
+				iterator.next().getPeerMembershipStatusAccordingToMe.fold(loop(alreadyFound)) {
 					case Member(creationInstantOfTheClusterTheMemberBelongsTo) =>
-						if creationInstant == UNSPECIFIED_INSTANT then loop(creationInstantOfTheClusterTheMemberBelongsTo)
-						else if creationInstantOfTheClusterTheMemberBelongsTo == creationInstant then loop(creationInstant)
-						else 2
+						loop(alreadyFound + creationInstantOfTheClusterTheMemberBelongsTo)
 					case _ =>
-						loop(creationInstant)
+						loop(alreadyFound)
 				}
-			} else if creationInstant == UNSPECIFIED_INSTANT then 0 else 1
+			} else alreadyFound
 		}
-
-		loop(UNSPECIFIED_INSTANT)
+		loop(Set.empty)
 	}
 
 	/**
