@@ -4,6 +4,7 @@ package cluster.service
 import cluster.channel.Receiver
 import cluster.service.Protocol.CommunicationStatus.{CONNECTING, INCOMPATIBLE, UNREACHABLE}
 import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
+import cluster.service.{ChannelId, Protocol}
 import cluster.service.Protocol.{CommunicationStatus, ContactAddress, IncommunicabilityReason}
 
 import readren.taskflow.Maybe
@@ -45,10 +46,10 @@ class IncommunicableDelegate(override val participantService: ParticipantService
 		participantService.connectToAndThenStartConversationWithParticipant(this, false)
 	}
 	
-	def replaceMyselfWithACommunicableDelegate(channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, oPeerRemoteAddress: Maybe[SocketAddress], channelOrigin: ChannelOrigin): Maybe[CommunicableDelegate] = {
+	def replaceMyselfWithACommunicableDelegate(channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, channelId: ChannelId): Maybe[CommunicableDelegate] = {
 		// replace me with a communicable delegate.
 		if participantService.removeDelegate(this, false) then {
-			val myReplacement = participantService.addANewCommunicableDelegate(peerContactAddress, channel, receiverFromPeer, oPeerRemoteAddress, channelOrigin)
+			val myReplacement = participantService.addANewCommunicableDelegate(peerContactAddress, channel, receiverFromPeer, channelId)
 			myReplacement.initializeStateBasedOn(this)
 			// notify
 			participantService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement)

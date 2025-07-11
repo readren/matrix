@@ -263,13 +263,13 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 						override def onTransmissionError(request: RequestToJoin, nd: NotDelivered): Unit = {
 							aRequestToJoinIsOnTheWay = false
 							chosenMemberDelegate.reportTransmissionFailure(nd)
-							chosenMemberDelegate.restartChannel(s"Transmission failure while trying to send `$request` to ${chosenMemberDelegate.peerContactAddress}: $nd")
+							chosenMemberDelegate.restartChannel(nd)
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 
 						override def onTimeout(request: RequestToJoin): Unit = {
 							aRequestToJoinIsOnTheWay = false
-							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request` to  ${chosenMemberDelegate.peerContactAddress}.")
+							chosenMemberDelegate.restartChannel(s"Non-response timeout after sending `$request`.")
 							sendRequestToJoinTheClusterIfAppropriate()
 						}
 					})

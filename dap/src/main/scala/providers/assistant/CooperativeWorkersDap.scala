@@ -71,10 +71,6 @@ class CooperativeWorkersDap(
 	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepingWorkersCount.get <= workers.length }}} */
 	private val sleepingWorkersCount = AtomicInteger(0)
 
-	/** Tracks the worker that was awakened during the last call to [[wakeUpASleepingWorkerIfAny]], with the sole purpose of distributing the load more evenly across physical processors.
-	 * This variable is exclusive to the [[wakeUpASleepingWorkerIfAny]] method and is not intended to be accessed from anywhere else. */
-	private var lastAwakenedWorkerIndex = 0
-
 	{
 		workers.foreach(_.start())
 	}
@@ -83,6 +79,8 @@ class CooperativeWorkersDap(
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
+		/** Remembers the index of the worker that executed this assistant tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
+		var lastTimeWorkerIndex = 0
 
 		override def numOfPendingTasks: Int = taskQueueSize.get
 
@@ -156,16 +154,17 @@ class CooperativeWorkersDap(
 	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistantImpl): Boolean = {
 		if debugEnabled then assert(!queuedDoersAssistants.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
-			var workerIndex = lastAwakenedWorkerIndex - 1
-			while workerIndex != lastAwakenedWorkerIndex do {
-				if workerIndex <= 0 then workerIndex = workers.length
-				workerIndex -= 1
-				if workers(workerIndex).wakeUpIfSleeping(stimulator) then return {
-					lastAwakenedWorkerIndex = workerIndex
-					true
+			val startingWorkerIndex = stimulator.lastTimeWorkerIndex
+			if workers(startingWorkerIndex).wakeUpIfSleeping(stimulator) then true
+			else {
+				var workerIndex = startingWorkerIndex - 1
+				while workerIndex != startingWorkerIndex do {
+					if workerIndex <= 0 then workerIndex = workers.length
+					workerIndex -= 1
+					if workers(workerIndex).wakeUpIfSleeping(stimulator) then return true
 				}
+				false
 			}
-			false
 		} else false
 	}
 
@@ -231,6 +230,7 @@ class CooperativeWorkersDap(
 				else {
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
+					assignedDoerAssistant.lastTimeWorkerIndex = this.index
 					try {
 						processedTasksCounter += assignedDoerAssistant.executePendingTasks()
 						completedMainLoopsCounter += 1

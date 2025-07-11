@@ -12,6 +12,7 @@ import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
 import scala.compiletime.erasedValue
+import scala.util.control.NonFatal
 
 sealed trait Protocol
 
@@ -192,6 +193,8 @@ object Protocol {
 	}
 
 	val UNSPECIFIED_INSTANT: Instant = Long.MaxValue
+
+
 
 	sealed trait MembershipStatus
 

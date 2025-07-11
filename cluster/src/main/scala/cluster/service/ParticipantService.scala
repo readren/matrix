@@ -41,6 +41,7 @@ object ParticipantService {
 	given [T] =>Conversion[SocketOption[T], CovariantSocketOption[T]] {
 		def apply(so: SocketOption[T]): CovariantSocketOption[T] = so
 	}
+
 	given [T] =>Conversion[(SocketOption[T], T), SocketOptionValue[T]] {
 		def apply(so: (SocketOption[T], T)): SocketOptionValue[T] = (CovariantSocketOption[T](so._1), so._2)
 	}
@@ -62,7 +63,7 @@ object ParticipantService {
 		val socketOptions: Iterable[(CovariantSocketOption[Any], Any)] = Iterable.empty
 	)
 
-	/** 
+	/**
 	 * Since the [[AsynchronousSocketChannel]] uses TCP, it ensures loss-less in-order delivery. Therefore, the purpose to retry a request after a no-response timeout is to reveal any silent communication problem or to detect silent middlebox interference.
 	 * If the peer is alive but not responding (e.g., deadlock, overload), retries would not help. In conclusion, no more than a single retry is needed. 
 	 */
@@ -108,7 +109,7 @@ object ParticipantService {
  * to support intercommunication between their users across different JVMs, which maybe (and usually are) on different host machines.
  *
  * For brevity, instances of this class are referred to as "participants."
- * Depending on its membership status (from its own viewpoint), a participant behaves either as a "member" or as an "aspirant" to become a member of the cluster.
+ * Depending on its membership status (from its own viewpoint), a participant behaves either, as a "member", or as an "aspirant" to become a member of the cluster.
  *
  * The [[ParticipantService]] class delegates the knowledge about, and communication with, other participants, to implementations of the [[ParticipantDelegate]] trait: it creates one delegate per participant it is aware of (excluding itself).
  */
@@ -123,7 +124,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	private var participantDelegateByAddress: Map[ContactAddress, ParticipantDelegate] = Map.empty
 
 	private[service] var membershipScopedBehavior: MembershipScopedBehavior = new AspirantBehavior(this)
-	
+
 	private[service] var isShutDown: Boolean = false
 
 	inline def myCreationInstant: Instant = creationInstant
@@ -138,13 +139,14 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		delegateByAddress.view.filter(_._2.communicationStatus eq HANDSHOOK).asInstanceOf[MapView[ContactAddress, CommunicableDelegate]]
 
 	/** Creates and adds (to the set of known participants delegates) a new [[CommunicableDelegate]] to manage the communication with the participant at the specified [[ContactAddress]]. */
-	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, oPeerRemoteAddress: Maybe[SocketAddress], channelOrigin: ChannelOrigin): CommunicableDelegate = {
+	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, channelId: ChannelId): CommunicableDelegate = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		assert(peerContactAddress != myAddress)
-		val newParticipant = new CommunicableDelegate(thisParticipantService, peerContactAddress, channel, receiverFromPeer, oPeerRemoteAddress, channelOrigin)
+		val newParticipant = new CommunicableDelegate(thisParticipantService, peerContactAddress, channel, receiverFromPeer, channelId)
 		participantDelegateByAddress += peerContactAddress -> newParticipant
 		newParticipant
 	}
+
 
 	/** Creates and adds (to the set of known participants delegates) a new [[IncommunicableDelegate]] to remember if this service is currently connecting to the participant at the specified [[ContactAddress]] or has desisted to communicate with it. */
 	private[service] def addANewIncommunicableDelegate(participantAddress: ContactAddress, reason: IncommunicabilityReason): IncommunicableDelegate = {
@@ -246,11 +248,14 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	private def acceptClientConnections(serverChannel: AsynchronousServerSocketChannel): Unit = {
 		try serverChannel.accept(null, new CompletionHandler[AsynchronousSocketChannel, Null]() {
 			override def completed(channel: AsynchronousSocketChannel, attachment: Null): Unit = {
-				val oClientParticipantEphemeralAddress = Try(channel.getRemoteAddress).fold(_ => Maybe.empty, Maybe.some)
-				scribe.debug(s"$myAddress: Accepting a connection from `${oClientParticipantEphemeralAddress.fold("unknown")(_.toString)}`.")
+				val oClientAddress = try Maybe.some(channel.getRemoteAddress) catch {
+					case NonFatal(_) => Maybe.empty
+				}
+				val channelId = ChannelId(ACCEPTED, oClientAddress)
+				scribe.debug(s"$myAddress: Accepting a connection from `${channelId.clientAddress}` with channel $channelId.")
 				// Note that this method body is executed sequentially by nature of the NIO2. Nevertheless, the `executeSequentially` is necessary because some of the member variables accessed here need to be accessed by procedures that are started from other handlers that are concurrent.
 
-				new ParticipantDelegateEgg(thisParticipantService, channel).incubate()
+				new ParticipantDelegateEgg(thisParticipantService, channel, oClientAddress, channelId).incubate()
 				acceptClientConnections(serverChannel)
 			}
 
@@ -290,15 +295,18 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		assert(delegateByAddress.contains(peerContactAddress))
 		connectTo(peerContactAddress) {
 			case Success(channel) =>
-				scribe.trace(s"$myAddress: I have successfully initiated a connection to `$peerContactAddress`.")
+				val oChannelLocalAddress = try Maybe.some(channel.getLocalAddress) catch {
+					case NonFatal(_) => Maybe.empty
+				}
+				val channelId = ChannelId(INITIATED, oChannelLocalAddress)
+				scribe.trace(s"$myAddress: I have successfully initiated a connection to `$peerContactAddress` with channel $channelId.")
 				sequencer.executeSequentially {
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
 					if relievedConnectingDelegate eq currentDelegate then {
 						val oPeerContactAddress = Maybe.some(peerContactAddress)
-						val oChannelLocalAddress = try Maybe.some(channel.getLocalAddress) catch { case NonFatal(_) => Maybe.empty }
-						val receiver = buildReceiverFor(channel, () => oPeerContactAddress, oChannelLocalAddress)
-						relievedConnectingDelegate.replaceMyselfWithACommunicableDelegate(channel, receiver, oPeerContactAddress, INITIATED)
+						val receiver = buildReceiverFor(channel, () => oPeerContactAddress, channelId)
+						relievedConnectingDelegate.replaceMyselfWithACommunicableDelegate(channel, receiver, channelId)
 							.get.startConversationAsClient(isReconnection)
 					}
 					// else (if the `relievedConnectingDelegate` was removed in the middle), close the communication channel gracefully.
@@ -308,7 +316,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 						} else {
 							scribe.warn(s"$myAddress: Closing the brand-new connection to $peerContactAddress that I had initiated recently, because the situation changed.")
 						}
-						closeDiscardedChannelGracefully(channel, buildTransmitterFor(channel, Maybe.some(peerContactAddress)), INITIATED)
+						closeDiscardedChannelGracefully(channel, buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId), channelId)
 					}
 				}
 			case Failure(exc) =>
@@ -375,8 +383,8 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		eventListeners.forEach { (listener, _) => listener.handle(event) }
 	}
 
-	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelOrigin: ChannelOrigin): Unit = {
-		scribe.trace(s"$myAddress: About to gracefully close the connection to ${transmitter.context.showPeerAddress} (that I had $channelOrigin) in four steps: 1) shutdown input, 2) send a $ChannelDiscarded message, 3) shutdown output, 4) completely close the channel after a while.")
+	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelId: ChannelId): Unit = {
+		scribe.trace(s"$myAddress: About to gracefully close the connection to ${transmitter.context.showPeerAddress} (channel $channelId) in four steps: 1) shutdown input, 2) send a $ChannelDiscarded message, 3) shutdown output, 4) completely close the channel after a while.")
 		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, false, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
 			case failure: Transmitter.NotDelivered =>
 				scribe.trace(s"$myAddress: The transmission of the $ChannelDiscarded message to ${transmitter.context.showPeerAddress} failed with `$failure`. Closing the channel immediately.")
@@ -398,21 +406,23 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 			participantDelegateByAddress = Map.empty
 		}
 	}
-	
-	private[service] def buildTransmitterFor(channel: AsynchronousSocketChannel, oPeerContactAddress: Maybe[ContactAddress]): SequentialTransmitter[Protocol] = {
-		object context extends Transmitter.Context {
-			override def myAddress: ContactAddress = thisParticipantService.myAddress
 
-			override def oPeerAddress: Maybe[ContactAddress] = oPeerContactAddress
+	private[service] def buildTransmitterFor(channel: AsynchronousSocketChannel, oPeerContactAddress: Maybe[ContactAddress], aChannelId: ChannelId): SequentialTransmitter[Protocol] = {
+		object context extends Transmitter.Context {
+			override val myAddress: ContactAddress = thisParticipantService.myAddress
+			override val oPeerAddress: Maybe[ContactAddress] = oPeerContactAddress
+			override val channelId: ChannelId = aChannelId
 		}
 		new SequentialTransmitter[Protocol](channel, context, config.participantDelegatesConfig.frameCapacity)
 	}
-	
-	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], oChannelEphemeralAddress: Maybe[SocketAddress]): Receiver = {
+
+	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], aChannelId: ChannelId): Receiver = {
 		object context extends Receiver.Context {
-			override def myAddress: ContactAddress = thisParticipantService.myAddress
+			override val myAddress: ContactAddress = thisParticipantService.myAddress
+
 			override def oPeerAddress: Maybe[ContactAddress] = peerContactAddressGetter()
-			override val oEphemeralAddress: Maybe[SocketAddress] = oChannelEphemeralAddress
+
+			override val channelId: ChannelId = aChannelId
 		}
 		new Receiver(channel, context, config.participantDelegatesConfig.frameCapacity)
 	}

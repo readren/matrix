@@ -8,6 +8,7 @@ import cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.serialization.{ProtocolVersion, Serializer}
 import cluster.service.Protocol.ContactAddress
 
+import readren.matrix.cluster.service.ChannelId
 import readren.taskflow.Maybe
 
 import java.nio.ByteBuffer
@@ -55,6 +56,7 @@ object Transmitter {
 	trait Context {
 		def myAddress: ContactAddress
 		def oPeerAddress: Maybe[ContactAddress]
+		def channelId: ChannelId
 		def showPeerAddress: String = oPeerAddress.fold("unknown")(_.toString)
 	}
 }

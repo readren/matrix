@@ -128,9 +128,9 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 
 	private[service] def handleChannelDiscarded(): Boolean = {
 		if thisCommunicableDelegate eq participantService.delegateByAddress.getOrElse(peerContactAddress, null) then {
-			scribe.warn(s"${participantService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I $channelOrigin and is not being closed.")
+			scribe.warn(s"${participantService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through channel $channelId and is not being closed.")
 		} else {
-			scribe.trace(s"${participantService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through a channel that I $channelOrigin and is already being closed.")
+			scribe.trace(s"${participantService.myAddress}: `$peerContactAddress` sent me a `$ChannelDiscarded` through channel $channelId and is already being closed.")
 		}
 		false
 	}

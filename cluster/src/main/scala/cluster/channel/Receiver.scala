@@ -8,6 +8,7 @@ import cluster.misc.{DualEndedCircularStorage, VLQ}
 import cluster.serialization.{Deserializer, ProtocolVersion}
 import cluster.service.Protocol.ContactAddress
 
+import readren.matrix.cluster.service.ChannelId
 import readren.taskflow.Maybe
 import scribe.LogFeature
 
@@ -37,7 +38,7 @@ object Receiver {
 		override def logFeatures: Seq[LogFeature] = List(this.toString, problem)
 	}
 
-	case class ReceptionFailure(myAddress: ContactAddress, peerContactAddress: Maybe[ContactAddress], channelEphemeralAddress: Maybe[SocketAddress], cause: Throwable) extends Fault {
+	case class ReceptionFailure(myAddress: ContactAddress, peerContactAddress: Maybe[ContactAddress], channelId: ChannelId, cause: Throwable) extends Fault {
 		override def logFeatures: Seq[LogFeature] = List(this.toString, cause)
 	}
 
@@ -54,8 +55,8 @@ object Receiver {
 	trait Context {
 		def myAddress: ContactAddress
 		def oPeerAddress: Maybe[ContactAddress]
-		def oEphemeralAddress: Maybe[SocketAddress]
-		def showPeerAddress: String = oPeerAddress.fold("unknown")(_.toString)
+		def channelId: ChannelId
+		def showPeerAddress: String = oPeerAddress.fold("not-accesible")(_.toString)
 	}
 }
 
@@ -309,7 +310,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 			}
 
 			override def failed(exc: Throwable, writeEndBuffer: ByteBuffer): Unit = {
-				onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.oEphemeralAddress, exc), attachment)
+				onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.channelId, exc), attachment)
 			}
 
 		}
