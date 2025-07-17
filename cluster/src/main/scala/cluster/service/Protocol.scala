@@ -35,6 +35,7 @@ sealed trait Response extends Protocol {
 
 sealed trait Hello extends Request {
 	val myContactAddress: ContactAddress
+	val myMembershipStatus: MembershipStatus
 }
 
 /** The first message that a participant sends to another participant after successfully connecting as a client. This message serves to:
@@ -114,10 +115,8 @@ case class JoinGranted(override val toRequest: RequestId, override val requestId
 	override type ResponseType = JoinDecision
 }
 
-/** Response to the [[RequestToJoin]] message when the join is not successful.
- *
- * @param reason motive of the rejection. */
-case class JoinRejected(override val toRequest: RequestId, youHaveToRetry: Boolean, reason: String) extends Response
+/** Response to the [[RequestToJoin]] message when the join is not successful with the motive of the rejection. */
+case class JoinRejected(override val toRequest: RequestId, youHaveToRetrySoon: Boolean, aMemberIsNotStable: Boolean, ourKnownMembersSetDoNotMatch: Boolean, iAmIsolated: Boolean, thereIsAClustersConflict: Boolean) extends Response
 
 /** Acknowledgment to the `JoinGranted` message. */
 case class JoinDecision(override val toRequest: RequestId, accepted: Boolean) extends Response
@@ -200,13 +199,24 @@ object Protocol {
 
 	sealed trait MembershipStatus
 
+	/** An aspirant to become a member.  */
 	case object Aspirant extends MembershipStatus
 
-	case class Member(clusterId: ClusterId) extends MembershipStatus
+	sealed trait Member extends MembershipStatus {
+		/** The identifier of the cluster I am a member of. */
+		val clusterId: ClusterId
+	}
 
-	case class BrainJoin(clusterIBelongId: ClusterId, otherClustersIds: Set[ClusterId]) extends MembershipStatus
+	/** A fully functional member of the specified cluster. */
+	case class Functional(override val clusterId: ClusterId) extends Member
 
-	case object BrainSplit extends MembershipStatus
+	/** A member of the specified cluster that has detected that half or more of the members he knows were simultaneously unreachable.
+	 * Isolated members do not accept join request and remain in this state, even after reconnecting to the majority of the known members, until user intervention. */
+	case class Isolated(override val clusterId: ClusterId) extends Member
+
+	/** A member of the specified cluster that had detected another cluster.
+	 * Conflicted members do not accept join requests and remain in this state until the user intervention */
+	case class Conflicted(override val clusterId: ClusterId, foreignClustersIds: Set[ClusterId], wasIsolated: Boolean) extends Member
 
 
 	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](FLAT)

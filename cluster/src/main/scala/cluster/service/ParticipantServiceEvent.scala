@@ -2,7 +2,8 @@ package readren.matrix
 package cluster.service
 
 import cluster.serialization.ProtocolVersion
-import cluster.service.Protocol.{ContactAddress, IncommunicabilityReason}
+import cluster.service.Protocol.{ClusterId, ContactAddress, IncommunicabilityReason}
+import cluster.service.behavior.{AspirantBehavior, FunctionalBehavior, IsolatedBehavior, MemberBehavior}
 
 sealed trait ParticipantServiceEvent
 
@@ -29,3 +30,16 @@ case class DelegateStartedConversationWith(peerAddress: ContactAddress, isAResta
 case class CommunicationChannelReplaced(peerAddress: ContactAddress) extends ParticipantServiceEvent
 
 case class IAmGoingToCloseAllChannels() extends ParticipantServiceEvent
+
+case class IBecomeIsolated(operator: IsolatedOperator) extends ParticipantServiceEvent
+
+case class IBecomeConflicted(operator: ConflictedOperator, why: String) extends ParticipantServiceEvent
+
+trait IsolatedOperator {
+	def becomeFunctional(): FunctionalBehavior
+}
+
+trait ConflictedOperator {
+	def becomeAspirant(): AspirantBehavior
+	def migrateTo(clusterId: ClusterId): FunctionalBehavior | IsolatedBehavior
+}

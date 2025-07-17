@@ -7,6 +7,7 @@ import cluster.misc.DoNothing
 import cluster.serialization.ProtocolVersion
 import cluster.service.Protocol.IncommunicabilityReason.IS_INCOMPATIBLE
 import cluster.service.Protocol.{Aspirant, MembershipStatus, RequestId, UNSPECIFIED_INSTANT}
+import cluster.service.behavior.MembershipScopedBehavior
 
 /** Defines participant behavior aspects for a [[CommunicableDelegate]].
  *
@@ -37,34 +38,7 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 			}
 		})
 	}
-
-	private[service] def handleMessage(message: HelloIExist): Boolean = {
-		val previousMembershipStatus = oPeerMembershipStatusAccordingToMe
-
-		// update my viewpoint of the peer's membership.
-		updateState(message.myMembershipStatus, message.versionsISupport, message.myCreationInstant)
-
-		// If the HelloIExist message comes from a participant that, according to my memory, isn't an aspirant; surely it was rebooted, so inform that.
-		if previousMembershipStatus.fold(false)(Aspirant ne _) && (message.myMembershipStatus eq Aspirant) then {
-			participantService.notifyListenersThat(MemberHasBeenRebooted(peerContactAddress))
-			for case (contactAddress, delegate: CommunicableDelegate) <- participantService.delegateByAddress do {
-				if contactAddress != peerContactAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerContactAddress, message.myCreationInstant))
-			}
-		}
-
-		// Connect to participants I didn't know.
-		participantService.createADelegateForEachParticipantIDoNotKnowIn(message.otherParticipantsIKnow)
-
-		// transmit the response: `Welcome` or `SupportedVersionsMismatch` accordingly.
-		if getAgreedVersion == ProtocolVersion.NOT_SPECIFIED then {
-			notifyAboutTheSupportedVersionsMismatch(message.requestId, message.versionsISupport)
-			false
-		} else {
-			sendPeerAWelcome(message.requestId)
-			true
-		}
-	}
-
+	
 	private[service] def sendPeerAHelloIAmBack(): Unit = {
 		askPeer(new SingleRetryOutgoingRequestExchange[HelloIAmBack] {
 			override def buildRequest(requestId: RequestId): HelloIAmBack =
@@ -82,17 +56,44 @@ trait BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate: Communic
 		})
 	}
 
-	private[service] def handleMessage(message: HelloIAmBack): Boolean = {
-		assert(message.myCreationInstant == peerCreationInstant)
-		updateState(message.myMembershipStatus, message.versionsISupport)
-		if getAgreedVersion == ProtocolVersion.NOT_SPECIFIED then {
-			notifyAboutTheSupportedVersionsMismatch(message.requestId, message.versionsISupport)
-			false
-		}
-		else {
-			sendPeerAWelcome(message.requestId)
-			true
-		}
+	private [service] def handleHello(hello: Hello): Boolean = hello match {
+		case message: HelloIExist =>
+			val previousMembershipStatus = oPeerMembershipStatusAccordingToMe
+
+			// update my viewpoint of the peer's membership.
+			updateState(message.myMembershipStatus, message.versionsISupport, message.myCreationInstant)
+
+			// If the HelloIExist message comes from a participant that, according to my memory, isn't an aspirant; surely it was rebooted, so inform that.
+			if previousMembershipStatus.fold(false)(Aspirant ne _) && (message.myMembershipStatus eq Aspirant) then {
+				participantService.notifyListenersThat(MemberHasBeenRebooted(peerContactAddress))
+				for case (contactAddress, delegate: CommunicableDelegate) <- participantService.delegateByAddress do {
+					if contactAddress != peerContactAddress then delegate.transmitToPeerOrRestartChannel(AMemberHasBeenRebooted(peerContactAddress, message.myCreationInstant))
+				}
+			}
+
+			// Connect to participants I didn't know.
+			participantService.createADelegateForEachParticipantIDoNotKnowIn(message.otherParticipantsIKnow)
+
+			// transmit the response: `Welcome` or `SupportedVersionsMismatch` accordingly.
+			if getAgreedVersion == ProtocolVersion.NOT_SPECIFIED then {
+				notifyAboutTheSupportedVersionsMismatch(message.requestId, message.versionsISupport)
+				false
+			} else {
+				sendPeerAWelcome(message.requestId)
+				true
+			}
+			
+		case message: HelloIAmBack =>
+			assert(message.myCreationInstant == peerCreationInstant)
+			updateState(message.myMembershipStatus, message.versionsISupport)
+			if getAgreedVersion == ProtocolVersion.NOT_SPECIFIED then {
+				notifyAboutTheSupportedVersionsMismatch(message.requestId, message.versionsISupport)
+				false
+			}
+			else {
+				sendPeerAWelcome(message.requestId)
+				true
+			}
 	}
 
 	private def sendPeerAWelcome(requestId: RequestId): Unit = {

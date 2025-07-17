@@ -79,3 +79,6 @@ docker / dockerfile := {
 		expose(5000, 5001, 5002) // Expose ports
 	}
 }
+
+// Add Scalafmt configuration
+ThisBuild / scalafmtOnCompile := true

@@ -5,11 +5,12 @@ import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
 import cluster.misc.TaskSequencer
 import cluster.serialization.ProtocolVersion
 import cluster.service.ParticipantService.*
-import cluster.service.ChannelOrigin.{INITIATED, ACCEPTED}
+import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 
+import readren.matrix.cluster.service.behavior.{AspirantBehavior, MembershipScopedBehavior}
 import readren.taskflow.Maybe
 import readren.taskflow.SchedulingExtension.MilliDuration
 
@@ -178,7 +179,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		def loop(alreadyFound: Set[ClusterId]): Set[ClusterId] = {
 			if iterator.hasNext then {
 				iterator.next().getPeerMembershipStatusAccordingToMe.fold(loop(alreadyFound)) {
-					case Member(idOfTheClusterTheMemberBelongsTo) =>
+					case Functional(idOfTheClusterTheMemberBelongsTo) =>
 						loop(alreadyFound + idOfTheClusterTheMemberBelongsTo)
 					case _ =>
 						loop(alreadyFound)

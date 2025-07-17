@@ -1,13 +1,15 @@
 package readren.matrix
-package cluster.service
+package cluster.service.behavior
 
 import cluster.channel.Transmitter.{Delivered, NotDelivered}
 import cluster.misc.CommonExtensions.*
 import cluster.service.ContactCard.*
 import cluster.service.Protocol.*
+import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
+import cluster.service.behavior.{MemberBehavior, MembershipScopedBehavior}
+import cluster.service.*
 import common.CompileTime.getTypeName
 
-import readren.matrix.cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import readren.taskflow.Maybe
 
 class AspirantBehavior(participantService: ParticipantService) extends MembershipScopedBehavior {
@@ -29,11 +31,9 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 	}
 
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
-		case hie: HelloIExist =>
-			senderDelegate.handleMessage(hie)
-
-		case hib: HelloIAmBack =>
-			senderDelegate.handleMessage(hib)
+		case hello: HelloIExist => senderDelegate.handleHello(hello)
+		// the previous and next match-cases may be merged, but they are not in order allow the compiler to optimize this whole match construct with a lookup table.
+		case hello: HelloIAmBack => senderDelegate.handleHello(hello)
 
 		case csw: ConversationStartedWith =>
 			updateClusterCreatorProposalIfAppropriate()
@@ -52,7 +52,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 			true
 
 		case icc: ICreatedACluster =>
-			senderDelegate.updateState(Member(icc.myViewpoint.clusterId))
+			senderDelegate.updateState(Functional(icc.myViewpoint.clusterId))
 			senderDelegate.peerStatePhoto = Maybe.some(icc.myViewpoint)
 			sendRequestToJoinTheClusterIfAppropriate()
 			true
@@ -110,8 +110,8 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 		case am: ApplicationMsg =>
 			// TODO
 			true
-			
-		case _: Response =>
+
+		case _: Response => // TODO make Request and InitiationMsg be disjoint to avoid the need of this match-case.
 			throw new AssertionError("unreachable")
 	}
 
@@ -150,7 +150,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 						communicableDelegate.clusterCreatorProposedByPeer == myAddress
 					case _ => true
 				} then { // ... then create it.
-					// Creating the cluster consists of: changing the behavior of communicable delegates to `MemberBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
+					// Creating the cluster consists of: changing the behavior of communicable delegates to `FunctionalBehavior` and sending the `ICreatedACluster` message to the participant I can communicate with.
 					val memberBehavior = switchToMember(generateClusterId(participantService.clock.getTime))
 					val myViewpoint = memberBehavior.myCurrentViewpoint
 					for case communicable: CommunicableDelegate <- delegateByAddress.valuesIterator do {
@@ -178,7 +178,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(Maybe.apply(proposedAspirantAddress)))
 		}
 	}
-	
+
 
 	private var aRequestToJoinIsOnTheWay: Boolean = false
 
@@ -187,7 +187,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 		val foundClusters = participantService.findCluster
 		// if a request isn't on the way, a single cluster exists, and the communicability of all the delegates is stable, then send a request to join to the member with the lowest [[ContactCard]]
 		if foundClusters.size == 1 && participantService.delegateByAddress.iterator.forall(_._2.isStable) then {
-			val membershipStatus = Member(foundClusters.head)
+			val membershipStatus = Functional(foundClusters.head)
 			participantService.delegateByAddress.iterator
 				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) => cd }
 				.minByOption(_.contactCard)(using ContactCard.ordering)
@@ -196,7 +196,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 
 					// send to the chosen member a request to join the cluster
 					chosenMemberDelegate.askPeer(new chosenMemberDelegate.OutgoingRequestExchange[RequestToJoin] {
-						
+
 						override def buildRequest(requestId: RequestId): RequestToJoin = {
 							val joinTokenByMember = participantService.delegateByAddress.collect {
 								case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe == chosenMemberDelegate.getPeerMembershipStatusAccordingToMe =>
@@ -237,12 +237,14 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 														}
 												}
 											}
-											
+
 											// Send a response to the chosen member's confirming my decision to join.
 											chosenMemberDelegate.transmitToPeer(JoinDecision(jg.requestId, inSyncWithChosenMember)) {
 												case Delivered =>
 													// If the confirmation was delivered and is affirmative (because we are in sync with the chosen member about the state of all the participants he knows), then switch to member.
-													if inSyncWithChosenMember then sequencer.executeSequentially { switchToMember(request.clusterId) }
+													if inSyncWithChosenMember then sequencer.executeSequentially {
+														switchToMember(request.clusterId)
+													}
 												case nd: NotDelivered =>
 													chosenMemberDelegate.reportTransmissionFailure(nd)
 													sequencer.executeSequentially {
@@ -252,8 +254,8 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 											true
 
 										case jr: JoinRejected =>
-											scribe.info(s"${participantService.myAddress}: A request to join the cluster was rejected by ${chosenMemberDelegate.peerContactAddress} because ${jr.reason}.")
-											if jr.youHaveToRetry then ab.sendRequestToJoinTheClusterIfAppropriate()
+											scribe.info(s"${participantService.myAddress}: A request to join the cluster was rejected by ${chosenMemberDelegate.peerContactAddress} with `$jr`.")
+											if jr.youHaveToRetrySoon then ab.sendRequestToJoinTheClusterIfAppropriate()
 											true
 									}
 								case _ =>
@@ -279,9 +281,9 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 		}
 	}
 
-	/** Switches this [[ParticipantService]] behavior to [[MemberBehavior]]. */
-	private def switchToMember(clusterId: ClusterId): MemberBehavior = {
-		val memberBehavior = new MemberBehavior(RingSerial.create(), participantService, clusterId)
+	/** Switches the behavior of the hosting [[ParticipantService]] to [[FunctionalBehavior]]. */
+	private def switchToMember(clusterId: ClusterId): FunctionalBehavior = {
+		val memberBehavior = new FunctionalBehavior(participantService, RingSerial.create(), clusterId)
 		participantService.membershipScopedBehavior = memberBehavior
 		val currentInstant = System.currentTimeMillis()
 		for (_, delegate) <- participantService.handshookDelegateByAddress do {
