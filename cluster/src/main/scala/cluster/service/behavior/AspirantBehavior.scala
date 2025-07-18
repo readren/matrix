@@ -30,9 +30,9 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 		updateClusterCreatorProposalIfAppropriate()
 	}
 
-	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
+	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: NonResponse): Boolean = initiationMsg match {
 		case hello: HelloIExist => senderDelegate.handleHello(hello)
-		// the previous and next match-cases may be merged, but they are not in order allow the compiler to optimize this whole match construct with a lookup table.
+		// The previous and next match-cases could be merged, but they are kept separate so the compiler notices that it can optimize this whole match construct with a lookup table.
 		case hello: HelloIAmBack => senderDelegate.handleHello(hello)
 
 		case csw: ConversationStartedWith =>
@@ -110,9 +110,6 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 		case am: ApplicationMsg =>
 			// TODO
 			true
-
-		case _: Response => // TODO make Request and InitiationMsg be disjoint to avoid the need of this match-case.
-			throw new AssertionError("unreachable")
 	}
 
 	/**

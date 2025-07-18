@@ -124,7 +124,7 @@ class CommunicableDelegate(
 						}
 					}
 
-				case initiatorMessageFromPeer: InitiationMsg =>
+				case initiatorMessageFromPeer: NonResponse =>
 					scribe.debug(s"${participantService.myAddress}: I have received the message `$initiatorMessageFromPeer` from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
 					sequencer.executeSequentially {
 						val thisDelegateIsAssociated = isAssociated

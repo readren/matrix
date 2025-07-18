@@ -3,7 +3,7 @@ package cluster.service
 
 import cluster.*
 import cluster.serialization.MacroTools.showCode
-import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
+import cluster.serialization.NestedSumMatchMode.FLAT
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
@@ -12,28 +12,28 @@ import readren.taskflow.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
 import scala.compiletime.erasedValue
-import scala.util.control.NonFatal
 
 sealed trait Protocol
 
-/** A message sent to a peer that is self-initiated, rather than being a response to a prior message from that peer. */
-sealed trait InitiationMsg extends Protocol
+/** A message that isn't a response to a prior message from the receiver, but is not necessarily spontaneous because it could be a consequence of a message from another participant. */
+sealed trait NonResponse extends Protocol
 
-/** A message that spontaneously affirms a fact without expecting a response. */
-sealed trait Affirmation extends InitiationMsg
-
-/** A message that asks for a response from the receiver, but may affirm something too. */
-sealed trait Request extends InitiationMsg {
-	type ResponseType <: Response
-	val requestId: RequestId
-}
-
-/** A message that responds a [[Request]] message to that [[Request]]'s sender. */
+/** A message that responds a [[Request]] message. */
 sealed trait Response extends Protocol {
 	val toRequest: RequestId
 }
 
-sealed trait Hello extends Request {
+/** A message that asks for a response from the receiver, but is not necessarily a non-response because it could be a response to a previous request from the receiver. */
+sealed abstract class Request extends Protocol {
+	type ResponseType <: Response
+	val requestId: RequestId
+}
+
+/** A request that isn't a response to a previous request from the receiver. */
+sealed abstract class LeadRequest extends Request, NonResponse
+
+/** A message that is the first sent after the sender initiates a connection to the receiver. It requests a welcome from the receiver. */
+sealed abstract class Hello extends LeadRequest {
 	val myContactAddress: ContactAddress
 	val myMembershipStatus: MembershipStatus
 }
@@ -80,17 +80,17 @@ case class Welcome(override val toRequest: RequestId, myMembershipStatus: Member
  * The chosen aspirant is the one with the lowest [[ContactAddress]] that supports the newest [[ProtocolVersion]] among all the versions supported by the aspirants he knows.
  * @param proposedCandidate the [[ContactAddress]] of the cluster's creator candidate proposed by the sender.
  * */
-case class ClusterCreatorProposal(proposedCandidate: Maybe[ContactAddress]) extends Affirmation
+case class ClusterCreatorProposal(proposedCandidate: Maybe[ContactAddress]) extends NonResponse
 
 /** Informs that the sender has created a cluster.
  * This message is sent to all known aspirants after having created a cluster, which happens after all aspirants known by the sender have sent [[ClusterCreatorProposal]] message to the sender proposing him.
  *
  * @param myViewpoint the [[MemberViewpoint]]s of the sender, which is the cluster creator. */
-case class ICreatedACluster(myViewpoint: MemberViewpoint) extends Affirmation
+case class ICreatedACluster(myViewpoint: MemberViewpoint) extends NonResponse
 
 /** The message sent by an aspirant to each member of the cluster to get its permission to join (in the form a token). */
 @deprecated
-case class RequestApprovalToJoin(override val requestId: RequestId) extends Request {
+case class RequestApprovalToJoin(override val requestId: RequestId) extends LeadRequest {
 	override type ResponseType = JoinApprovalGranted
 }
 
@@ -104,14 +104,14 @@ case class JoinApprovalGranted(override val toRequest: RequestId, joinToken: Joi
 /** Command message that an aspirant has to send to any member in order to join the cluster.
  *
  * @param joinTokenByMemberAddress the join-token provided by each approving member. */
-case class RequestToJoin(override val requestId: RequestId, clusterId: ClusterId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends Request {
+case class RequestToJoin(override val requestId: RequestId, clusterId: ClusterId, joinTokenByMemberAddress: Map[ContactAddress, JoinToken]) extends LeadRequest {
 	override type ResponseType = JoinGranted | JoinRejected
 }
 
 /** Response to the [[RequestToJoin]] message when the join is granted, and at the same time, a request for a [[JoinDecision]] acknowledgment.
  * @param participantInfoByItsAddress the state of all the participant according to the sender, including his own view of himself (which is the single source of that information).
  */
-case class JoinGranted(override val toRequest: RequestId, override val requestId: RequestId, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Response, Request {
+case class JoinGranted(override val toRequest: RequestId, override val requestId: RequestId, participantInfoByItsAddress: Map[ContactAddress, ParticipantInfo]) extends Request, Response {
 	override type ResponseType = JoinDecision
 }
 
@@ -126,16 +126,16 @@ case class JoinDecision(override val toRequest: RequestId, accepted: Boolean) ex
  * Sent by participant A to participant B when A notices that B's memory of the membership-status of A is incorrect. For example, it is sent by the receiver of a [[ClusterCreatorProposal]] when he knows of the existence of a cluster, and by the receiver of a [[RequestToJoin]] when he is an aspirant.
  * @param membershipStatusOfParticipantsIKnow the [[MembershipStatus]] of the participants that the sender knows according to him, including the receiver.
  */
-case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends Affirmation
+case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends NonResponse
 
 /** The message sent by a participant to as many other participants as possible before leaving the network or shooting down. */
-case class Farewell(myCreationInstant: Instant) extends Affirmation
+case class Farewell(myCreationInstant: Instant) extends NonResponse
 
 /** The message sent to other participants after receiving a [[Farewell]] message. */
-case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends Affirmation
+case class AnotherParticipantGone(goneParticipantAddress: ContactAddress, goneParticipantCreationInstant: Instant) extends NonResponse
 
 /** The message sent by a participant A to another B when A has doubts about his communication-status with B and/or B's knowledge about A's membership status.  */
-case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends Request {
+case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipStatus: MembershipStatus, yourMembershipStatusAccordingToMe: MembershipStatus) extends LeadRequest {
 	override type ResponseType = AreWeInSyncResponse
 }
 
@@ -143,16 +143,16 @@ case class AreYouInSyncWithMe(override val requestId: RequestId, myMembershipSta
 case class AreWeInSyncResponse(override val toRequest: RequestId, yourMembershipStatusAccordingToMeMatches: Boolean) extends Response
 
 /** The message that a participant sends to all other participants it knows when it notices the communication between it and another participant is not working properly. */
-case class ILostCommunicationWith(participantsAddress: ContactAddress) extends Affirmation
+case class ILostCommunicationWith(participantsAddress: ContactAddress) extends NonResponse
 
 /** The message that a participant sends to all other participants it knows when it starts, or restarts, a conversation with another participant. */
-case class ConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends Affirmation
+case class ConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends NonResponse
 
 /** The message that a participant A sends to all other participants when A receives a [[HelloIExist]] from a participant B that A already knows and remembers as a member. Why? Because the [[HelloIExist]] message is only sent by aspirants (not members) when the communication starts. */
-case class AMemberHasBeenRebooted(rebootedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends Affirmation
+case class AMemberHasBeenRebooted(rebootedParticipantAddress: ContactAddress, restartedParticipantCreationInstant: Instant) extends NonResponse
 
 /** The message that every participant sends to every other participant it knows to verify the communication channel that connects them is working. */
-case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
+case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends NonResponse
 
 /** A message that a participant sends to all the participants it knows when his state, or his viewpoint of another participant's state, changes.
  *
@@ -160,19 +160,19 @@ case class Heartbeat(delayUntilNextHeartbeat: MilliDuration) extends Affirmation
  * @param takenOn the instant at which this message was created.
  * @param myMembershipStatus the membership-status of the sender.
  * @param participantInfoByAddress the information, according to the sender, about each participant by its address. */
-case class ClusterStateChanged(myStateSerial: RingSerial, takenOn: Instant, myMembershipStatus: MembershipStatus, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends Affirmation
+case class ClusterStateChanged(myStateSerial: RingSerial, takenOn: Instant, myMembershipStatus: MembershipStatus, participantInfoByAddress: Map[ContactAddress, ParticipantInfo]) extends NonResponse
 
 
 /** The message that a participant's delegate sends to inform the peer delegate that he called [[AsynchronousSocketChannel.shutdownInput]] because the channel was discarded due to duplicate connections. */
-case object ChannelDiscarded extends Affirmation
+case object ChannelDiscarded extends NonResponse
 
 /** The message sent to all other members when a member discovers the existence of another cluster, to start a brain join process. */
-case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends Affirmation
+case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends NonResponse
 
 /** The message sent to all other members when a member suspects that a brain split occurred (many other members suddenly become unreachable), to start the process that determines if the division where the sender resides should persist or be shutdown. */
-case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends Affirmation
+case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends NonResponse
 
-case class ApplicationMsg(bytes: Array[Byte]) extends Affirmation
+case class ApplicationMsg(bytes: Array[Byte]) extends NonResponse
 
 
 object Protocol {
@@ -302,8 +302,7 @@ object Protocol {
 
 				case _: Hello => 5
 				case _: Request => 4
-				case _: Affirmation => 3
-				case _: InitiationMsg => 2
+				case _: NonResponse => 2
 				case _: Response => 1
 			}
 	}

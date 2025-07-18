@@ -43,10 +43,10 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 	
 	protected def onMessage(senderDelegate: CommunicableDelegate, message: RequestToJoin): Unit
 	
-	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: InitiationMsg): Boolean = initiationMsg match {
+	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: NonResponse): Boolean = initiationMsg match {
 
 		case hello: HelloIExist => onHello(senderDelegate, hello)
-		// the previous and next match-cases may be merged, but they are not in order allow the compiler to optimize this whole match construct with a lookup table.
+		// The previous and next match-cases could be merged, but they are kept separate so the compiler notices that it can optimize this whole match construct with a lookup table.
 		case hello: HelloIAmBack => onHello(senderDelegate, hello)
 	
 		case ConversationStartedWith(peerAddress, isARestartAfterReconnection) =>
@@ -111,9 +111,6 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 		case am: ApplicationMsg =>
 			// TODO
 			true
-
-		case _: Response => // TODO make Request and InitiationMsg be disjoint to avoid the need of this match-case.
-			throw new AssertionError("unreachable")
 	}
 
 	protected def memberDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
