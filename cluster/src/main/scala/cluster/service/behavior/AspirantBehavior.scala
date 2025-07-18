@@ -31,9 +31,9 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 	}
 
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: NonResponse): Boolean = initiationMsg match {
-		case hello: HelloIExist => senderDelegate.handleHello(hello)
+		case hello: HelloIExist => senderDelegate.handleHelloCommonLogic(hello)
 		// The previous and next match-cases could be merged, but they are kept separate so the compiler notices that it can optimize this whole match construct with a lookup table.
-		case hello: HelloIAmBack => senderDelegate.handleHello(hello)
+		case hello: HelloIAmBack => senderDelegate.handleHelloCommonLogic(hello)
 
 		case csw: ConversationStartedWith =>
 			updateClusterCreatorProposalIfAppropriate()
@@ -47,7 +47,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 				if c != participantService.myAddress && !participantService.delegateByAddress.contains(c) then
 					participantService.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(c)
 			}
-			if participantService.findCluster.nonEmpty then senderDelegate.incitePeerToResolveMembershipConflict()
+			if participantService.findCluster.nonEmpty then senderDelegate.incitePeerToUpdateHisStateAboutMyStatus()
 			else updateClusterCreatorProposalIfAppropriate()
 			true
 
@@ -62,7 +62,7 @@ class AspirantBehavior(participantService: ParticipantService) extends Membershi
 
 		case rtj: RequestToJoin =>
 			scribe.warn(s"The aspirant at ${senderDelegate.peerContactAddress} sent me a ${getTypeName[RequestToJoin]} despite I am not a member of any cluster. ")
-			senderDelegate.incitePeerToResolveMembershipConflict()
+			senderDelegate.incitePeerToUpdateHisStateAboutMyStatus()
 			true
 
 		case rmc: WaitMyMembershipStatusIs =>

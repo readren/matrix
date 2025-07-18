@@ -26,7 +26,7 @@ class CommunicableDelegate(
 	val channel: AsynchronousSocketChannel,
 	receiverFromPeer: Receiver,
 	val channelId: ChannelId
-) extends ParticipantDelegate, BehaviorAspectOfACommunicableDelegate { thisCommunicableDelegate =>
+) extends ParticipantDelegate, BehaviorsHelper { thisCommunicableDelegate =>
 	val config: DelegateConfig = participantService.config.participantDelegatesConfig
 
 	private val transmitterToPeer: SequentialTransmitter[Protocol] = participantService.buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId)

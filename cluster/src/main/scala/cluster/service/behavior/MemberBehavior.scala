@@ -55,7 +55,7 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 
 		case ccp: ClusterCreatorProposal =>
 			scribe.warn(s"The aspirant at `${senderDelegate.peerContactAddress}` sent me a `${getTypeName[ClusterCreatorProposal]}` despite I already belong to the cluster `$clusterId`.")
-			senderDelegate.incitePeerToResolveMembershipConflict()
+			senderDelegate.incitePeerToUpdateHisStateAboutMyStatus()
 			true
 
 		case icc: ICreatedACluster => onMessage(senderDelegate, icc)

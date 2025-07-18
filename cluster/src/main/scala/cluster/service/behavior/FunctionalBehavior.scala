@@ -1,12 +1,10 @@
 package readren.matrix
 package cluster.service.behavior
 
-import cluster.service.Protocol.*
-import cluster.service.behavior.MemberBehavior
 import cluster.service.*
-import common.CompileTime.getTypeName
-
-import readren.matrix.cluster.service.Protocol.CommunicationStatus.HANDSHOOK
+import cluster.service.Protocol.*
+import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
+import cluster.service.behavior.MemberBehavior
 
 class FunctionalBehavior(participantService: ParticipantService, startingStateSerial: RingSerial, clusterId: ClusterId) extends MemberBehavior(participantService, startingStateSerial, clusterId) {
 
@@ -15,15 +13,15 @@ class FunctionalBehavior(participantService: ParticipantService, startingStateSe
 	override protected def onHello(senderDelegate: CommunicableDelegate, hello: Hello): Boolean = {
 		hello.myMembershipStatus match {
 			case Aspirant =>
-				senderDelegate.handleHello(hello)
+				senderDelegate.handleHelloCommonLogic(hello)
 
 			case Functional(peerClusterId) =>
-				if peerClusterId == clusterId then senderDelegate.handleHello(hello)
+				if peerClusterId == clusterId then senderDelegate.handleHelloCommonLogic(hello)
 				else switchToConflicted(senderDelegate, Set(peerClusterId), false, s"I received a `$hello` from a functional member of another cluster.")
 					.handleInitiatorMessageFrom(senderDelegate, hello)
 
 			case Isolated(peerClusterId) =>
-				if peerClusterId == clusterId then senderDelegate.handleHello(hello)
+				if peerClusterId == clusterId then senderDelegate.handleHelloCommonLogic(hello)
 				else switchToConflicted(senderDelegate, Set(peerClusterId), true, s"I received a `$hello` from an isolated member of another cluster.")
 					.handleInitiatorMessageFrom(senderDelegate, hello)
 

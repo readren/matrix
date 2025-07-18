@@ -124,9 +124,9 @@ case class JoinDecision(override val toRequest: RequestId, accepted: Boolean) ex
 /**
  * Informs the receiver the membership-status of the sender and reveals his memory of the membership-status of other participants.
  * Sent by participant A to participant B when A notices that B's memory of the membership-status of A is incorrect. For example, it is sent by the receiver of a [[ClusterCreatorProposal]] when he knows of the existence of a cluster, and by the receiver of a [[RequestToJoin]] when he is an aspirant.
- * @param membershipStatusOfParticipantsIKnow the [[MembershipStatus]] of the participants that the sender knows according to him, including the receiver.
+ * @param membershipStatusOfParticipantsIHandshookWith the, according to sender, [[MembershipStatus]] of the participants that the sender handshook with, including the receiver.
  */
-case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIKnow: Map[ContactAddress, MembershipStatus]) extends NonResponse
+case class WaitMyMembershipStatusIs(myMembershipStatus: MembershipStatus, membershipStatusOfParticipantsIHandshookWith: Map[ContactAddress, MembershipStatus]) extends NonResponse
 
 /** The message sent by a participant to as many other participants as possible before leaving the network or shooting down. */
 case class Farewell(myCreationInstant: Instant) extends NonResponse

@@ -199,6 +199,10 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		delegateByAddress.view.filter(_._2.isStable).mapValues(_.getPeerMembershipStatusAccordingToMe.get)
 	}
 
+	def getHandshookParticipantsMembershipStatus: MapView[ContactAddress, MembershipStatus] = {
+		delegateByAddress.view.filter(_._2.communicationStatus eq HANDSHOOK).mapValues(_.getPeerMembershipStatusAccordingToMe.get)
+	}
+
 	def getStableParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		delegateByAddress.view.filter(_._2.info.isDefined).mapValues(_.info.get)
