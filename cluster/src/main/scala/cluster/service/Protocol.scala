@@ -167,10 +167,16 @@ case class ClusterStateChanged(myStateSerial: RingSerial, takenOn: Instant, myMe
 case object ChannelDiscarded extends NonResponse
 
 /** The message sent to all other members when a member discovers the existence of another cluster, to start a brain join process. */
-case class WeHaveToResolveBrainJoin(myViewPoint: MemberViewpoint) extends NonResponse
+case class WeHaveToResolveClustersConflict(myViewpoint: MemberViewpoint) extends NonResponse
 
 /** The message sent to all other members when a member suspects that a brain split occurred (many other members suddenly become unreachable), to start the process that determines if the division where the sender resides should persist or be shutdown. */
-case class WeHaveToResolveBrainSplit(myViewPoint: MemberViewpoint) extends NonResponse
+case class AreWeIsolated(override val requestId: RequestId, myViewpoint: MemberViewpoint) extends LeadRequest {
+	override type ResponseType = AreWeIsolatedResponse
+}
+
+case class AreWeIsolatedResponse(override val toRequest: RequestId, myViewpoint: MemberViewpoint) extends Response
+
+case class WeAreIsolated(myViewpoint: MemberViewpoint) extends NonResponse
 
 case class ApplicationMsg(bytes: Array[Byte]) extends NonResponse
 
@@ -197,26 +203,46 @@ object Protocol {
 
 
 
-	sealed trait MembershipStatus
+	sealed trait MembershipStatus {
+		def isMember: Boolean
+	}
 
 	/** An aspirant to become a member.  */
-	case object Aspirant extends MembershipStatus
+	case object Aspirant extends MembershipStatus {
+		override def isMember: false = false
+	}
 
 	sealed trait Member extends MembershipStatus {
 		/** The identifier of the cluster I am a member of. */
 		val clusterId: ClusterId
+		override def isMember: true = true
+		def isIsolated: Boolean
+		def isConflicted: Boolean
+
+		def isColleagueOf(other: MembershipStatus): Boolean = other match {
+			case member: Member => member.clusterId == this.clusterId
+			case Aspirant => false
+		}
 	}
 
 	/** A fully functional member of the specified cluster. */
-	case class Functional(override val clusterId: ClusterId) extends Member
+	case class Functional(override val clusterId: ClusterId) extends Member {
+		override final val isIsolated: Boolean = false
+		override final val isConflicted: Boolean = false
+	}
 
 	/** A member of the specified cluster that has detected that half or more of the members he knows were simultaneously unreachable.
 	 * Isolated members do not accept join request and remain in this state, even after reconnecting to the majority of the known members, until user intervention. */
-	case class Isolated(override val clusterId: ClusterId) extends Member
+	case class Isolated(override val clusterId: ClusterId) extends Member {
+		override final val isIsolated: Boolean = true
+		override final val isConflicted: Boolean = false
+	}
 
 	/** A member of the specified cluster that had detected another cluster.
 	 * Conflicted members do not accept join requests and remain in this state until the user intervention */
-	case class Conflicted(override val clusterId: ClusterId, foreignClustersIds: Set[ClusterId], wasIsolated: Boolean) extends Member
+	case class Conflicted(override val clusterId: ClusterId, foreignClustersIds: Set[ClusterId], override final val isIsolated: Boolean) extends Member {
+		override final val isConflicted: Boolean = true
+	}
 
 
 	given Serializer[MembershipStatus] = Serializer.derive[MembershipStatus](FLAT)
@@ -296,12 +322,14 @@ object Protocol {
 				case _: Heartbeat => 48
 				case _: ClusterStateChanged => 49
 				case ChannelDiscarded => 50
-				case _: WeHaveToResolveBrainJoin => 51
-				case _: WeHaveToResolveBrainSplit => 52
+				case _: WeHaveToResolveClustersConflict => 51
+				case _: AreWeIsolated => 52
 				case _: ApplicationMsg => 60
 
-				case _: Hello => 5
-				case _: Request => 4
+				// The following cases are needed only if the NestedSumMatchMode is NESTED but do not bother if FLAT. 
+				case _: LeadRequest => 5
+				case _: Hello => 4
+				case _: Request => 3
 				case _: NonResponse => 2
 				case _: Response => 1
 			}

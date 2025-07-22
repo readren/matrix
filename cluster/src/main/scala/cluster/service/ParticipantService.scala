@@ -4,13 +4,13 @@ package cluster.service
 import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
 import cluster.misc.TaskSequencer
 import cluster.serialization.ProtocolVersion
-import cluster.service.ParticipantService.*
 import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
+import cluster.service.ParticipantService.*
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
+import cluster.service.behavior.*
 
-import readren.matrix.cluster.service.behavior.{AspirantBehavior, MembershipScopedBehavior}
 import readren.taskflow.Maybe
 import readren.taskflow.SchedulingExtension.MilliDuration
 
@@ -23,7 +23,6 @@ import scala.collection.MapView
 import scala.language.implicitConversions
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
-import java.net.SocketAddress
 
 object ParticipantService {
 
@@ -33,6 +32,16 @@ object ParticipantService {
 
 	trait EventListener {
 		def handle(event: ParticipantServiceEvent): Unit
+	}
+
+	trait IsolationDecider {
+		def shouldIBeIsolated(colleaguesStatuses: Iterable[CommunicationStatus]): Boolean
+	}
+
+	object MajorityIsolationDecider extends IsolationDecider {
+		override def shouldIBeIsolated(colleaguesStatuses: Iterable[CommunicationStatus]): Boolean = {
+			colleaguesStatuses.count(_ eq HANDSHOOK) <= (colleaguesStatuses.size + 1) / 2
+		}
 	}
 
 	class CovariantSocketOption[+T](val value: SocketOption[T @uncheckedVariance])
@@ -56,6 +65,7 @@ object ParticipantService {
 		val seeds: Iterable[ContactAddress],
 		val versionsISupport: Set[ProtocolVersion] = Set(ProtocolVersion.OF_THIS_PROJECT),
 		val participantDelegatesConfig: DelegateConfig = new DelegateConfig(),
+		val isolationDecider: IsolationDecider = MajorityIsolationDecider,
 		val acceptedConnectionsFilter: ContactAddressFilter = (ca: ContactAddress) => true,
 		val connectionRetryMinDelay: MilliDuration = 1000,
 		val connectionRetryMaxDelay: MilliDuration = 60_000,
@@ -124,9 +134,10 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	private var participantDelegateByAddress: Map[ContactAddress, ParticipantDelegate] = Map.empty
 
-	private[service] var membershipScopedBehavior: MembershipScopedBehavior = new AspirantBehavior(this)
+	private var membershipScopedBehavior: MembershipScopedBehavior = new AspirantBehavior(this)
 
-	private[service] var isShutDown: Boolean = false
+	private var _isShutDown: Boolean = false
+	inline def isShutDown: Boolean = _isShutDown
 
 	inline def myCreationInstant: Instant = creationInstant
 
@@ -138,6 +149,9 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	def handshookDelegateByAddress: MapView[ContactAddress, CommunicableDelegate] =
 		delegateByAddress.view.filter(_._2.communicationStatus eq HANDSHOOK).asInstanceOf[MapView[ContactAddress, CommunicableDelegate]]
+		
+	def colleagueDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
+		delegateByAddress.view.filter(_._2.getPeerMembershipStatusAccordingToMe.contentEquals(myMembershipStatus))	
 
 	/** Creates and adds (to the set of known participants delegates) a new [[CommunicableDelegate]] to manage the communication with the participant at the specified [[ContactAddress]]. */
 	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, channelId: ChannelId): CommunicableDelegate = {
@@ -186,6 +200,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				}
 			} else alreadyFound
 		}
+
 		loop(Set.empty)
 	}
 
@@ -229,15 +244,15 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	/** Notifies listeners and other participants that the specified participant has become incommunicable. */
 	private[service] def notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(participantContactAddress: ContactAddress, reason: IncommunicabilityReason, cause: Any): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		notifyListenersThat(DelegateBecomeIncommunicable(participantContactAddress, reason, cause))
+		notifyListenersThat(CommunicationLostWith(participantContactAddress, reason, cause))
 		for case communicableDelegate: CommunicableDelegate <- delegateByAddress.valuesIterator do
 			communicableDelegate.notifyPeerThatILostCommunicationWith(participantContactAddress)
 	}
 
 	/** Notifies listeners and other participants that a conversation with the specified participant has started. */
-	private[service] def notifyListenersAndOtherParticipantsThatAConversationStartedWith(participantAddress: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
+	private[service] def notifyListenersAndOtherParticipantsThatAConversationStartedWith(participantAddress: ContactAddress, membershipStatus: MembershipStatus, isARestartAfterReconnection: Boolean): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
-		notifyListenersThat(DelegateStartedConversationWith(participantAddress, isARestartAfterReconnection))
+		notifyListenersThat(AConversationStartedWith(participantAddress, membershipStatus, isARestartAfterReconnection))
 		for case (address, communicableDelegate: CommunicableDelegate) <- delegateByAddress.iterator do
 			if address != participantAddress then communicableDelegate.notifyPeerThatAConversationStartedWith(participantAddress, isARestartAfterReconnection)
 	}
@@ -284,7 +299,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	/** @return a brand-new [[IncommunicableDelegate]] in connecting state. */
 	private[service] def addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantContactAddress: ContactAddress): IncommunicableDelegate = {
 		val connectingDelegate = addANewIncommunicableDelegate(participantContactAddress, IS_CONNECTING_AS_CLIENT)
-		membershipScopedBehavior.onDelegatedAdded(connectingDelegate)
+		membershipScopedBehavior.onPeerAdded(connectingDelegate)
 		notifyListenersThat(IStartedAConnectionToANewParticipant(participantContactAddress))
 		connectToAndThenStartConversationWithParticipant(connectingDelegate, false)
 		connectingDelegate
@@ -371,6 +386,40 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 
+	/** Switches the behavior from [[AspirantBehavior]] to [[FunctionalBehavior]]. */
+	private[service] def switchToMember(currentBehavior: AspirantBehavior, clusterId: ClusterId): FunctionalBehavior = {
+		val newBehavior = new FunctionalBehavior(thisParticipantService, RingSerial.create(), clusterId)
+		membershipScopedBehavior = newBehavior
+		val currentInstant = System.currentTimeMillis()
+		for (_, delegate) <- handshookDelegateByAddress do {
+			delegate.transmitToPeerOrRestartChannel(ClusterStateChanged(newBehavior.currentStateSerial, currentInstant, newBehavior.membershipStatus, getStableParticipantsInfo.toMap))
+		}
+		notifyListenersThat(IJoinedTheCluster(delegateByAddress))
+		newBehavior
+	}
+
+	private[service] def switchToIsolated(currentBehavior: FunctionalBehavior): IsolatedBehavior = {
+		val newBehavior = IsolatedBehavior(thisParticipantService, currentBehavior.currentStateSerial.nextSerial, currentBehavior.myClusterId)
+		membershipScopedBehavior = newBehavior
+		getMembershipScopedBehavior
+		for (_, delegate) <- handshookDelegateByAddress do {
+			delegate.transmitToPeerOrRestartChannel(WeAreIsolated(currentBehavior.myCurrentViewpoint))
+		}
+		notifyListenersThat(IBecomeIsolated(newBehavior.IsolatedOperatorImpl))
+		newBehavior
+	}
+
+	private[service] def switchToConflicted(currentBehavior: MemberBehavior, otherClustersIds: Set[ClusterId], why: String): ConflictedBehavior = {
+		val newBehavior = ConflictedBehavior(thisParticipantService, currentBehavior.currentStateSerial.nextSerial, currentBehavior.myClusterId, otherClustersIds, currentBehavior.isIsolated, why)
+		membershipScopedBehavior = newBehavior
+
+		for (_, delegate) <- handshookDelegateByAddress do {
+			delegate.transmitToPeerOrRestartChannel(WeHaveToResolveClustersConflict(newBehavior.myCurrentViewpoint))
+		}
+		notifyListenersThat(IBecomeConflicted(newBehavior.ConflictedOperatorImpl, newBehavior.isIsolated, why))
+		newBehavior
+	}
+
 	def subscribe(listener: EventListener): Unit = {
 		assert(sequencer.assistant.isWithinDoSiThEx)
 		eventListeners.put(listener, None)
@@ -399,7 +448,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	private def release(): Unit = {
 		sequencer.executeSequentially {
-			isShutDown = true
+			_isShutDown = true
 			notifyListenersThat(IAmGoingToCloseAllChannels())
 			serverChannel.close()
 			for case communicableDelegate: CommunicableDelegate <- delegateByAddress.valuesIterator do {

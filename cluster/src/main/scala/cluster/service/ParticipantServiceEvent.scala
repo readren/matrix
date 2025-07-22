@@ -2,7 +2,7 @@ package readren.matrix
 package cluster.service
 
 import cluster.serialization.ProtocolVersion
-import cluster.service.Protocol.{ClusterId, ContactAddress, IncommunicabilityReason}
+import cluster.service.Protocol.{ClusterId, ContactAddress, IncommunicabilityReason, MembershipStatus}
 import cluster.service.behavior.{AspirantBehavior, FunctionalBehavior, IsolatedBehavior, MemberBehavior}
 
 sealed trait ParticipantServiceEvent
@@ -21,11 +21,11 @@ case class IJoinedTheCluster(participantDelegateByContactAddress: Map[ContactAdd
 
 case class OtherMemberJoined(memberAddress: ContactAddress, memberDelegate: MemberBehavior) extends ParticipantServiceEvent
 
-case class DelegateBecomeIncommunicable(peerAddress: ContactAddress, reason: IncommunicabilityReason, cause: Any) extends ParticipantServiceEvent
+case class CommunicationLostWith(peerAddress: ContactAddress, reason: IncommunicabilityReason, cause: Any) extends ParticipantServiceEvent
 
-case class DelegateBecomeUnreachable(peerAddress: ContactAddress, cause: Any) extends ParticipantServiceEvent
+case class UnableToConnectTo(peerAddress: ContactAddress, cause: Any) extends ParticipantServiceEvent
 
-case class DelegateStartedConversationWith(peerAddress: ContactAddress, isARestartAfterReconnection: Boolean) extends ParticipantServiceEvent
+case class AConversationStartedWith(peerAddress: ContactAddress, peerMembershipStatus: MembershipStatus, isARestartAfterReconnection: Boolean) extends ParticipantServiceEvent
 
 case class CommunicationChannelReplaced(peerAddress: ContactAddress) extends ParticipantServiceEvent
 
@@ -33,7 +33,9 @@ case class IAmGoingToCloseAllChannels() extends ParticipantServiceEvent
 
 case class IBecomeIsolated(operator: IsolatedOperator) extends ParticipantServiceEvent
 
-case class IBecomeConflicted(operator: ConflictedOperator, why: String) extends ParticipantServiceEvent
+case class IBecomeConflicted(operator: ConflictedOperator, isIsolated: Boolean, why: String) extends ParticipantServiceEvent
+
+case class AMemberStateChanged(peerAddress: ContactAddress, what: ClusterStateChanged) extends ParticipantServiceEvent
 
 trait IsolatedOperator {
 	def becomeFunctional(): FunctionalBehavior

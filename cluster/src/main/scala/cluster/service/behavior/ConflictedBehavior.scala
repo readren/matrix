@@ -1,12 +1,14 @@
 package readren.matrix
 package cluster.service.behavior
 
-import cluster.service.Protocol.{ClusterId, Conflicted, Instant, Member}
+import cluster.service.Protocol.{ClusterId, CommunicationStatus, Conflicted, Instant, Member, MembershipStatus}
 import cluster.service.*
+
+import readren.taskflow.Maybe
 
 import scala.collection.mutable
 
-class ConflictedBehavior(participantService: ParticipantService, startingStateSerial: RingSerial, clusterId: ClusterId, otherClustersIds: Set[ClusterId], wasIsolated: Boolean, why: String) extends MemberBehavior(participantService, startingStateSerial, clusterId) {
+class ConflictedBehavior(override val host: ParticipantService, startingStateSerial: RingSerial, override val myClusterId: ClusterId, otherClustersIds: Set[ClusterId], override val isIsolated: Boolean, why: String) extends MemberBehavior(host, startingStateSerial, myClusterId) {
 
 	class CompetingCluster
 
@@ -16,24 +18,19 @@ class ConflictedBehavior(participantService: ParticipantService, startingStateSe
 		map
 	}
 
-	override val membershipStatus: Protocol.MembershipStatus =
-		Conflicted(clusterId, otherClustersById.keySet.toSet, wasIsolated)
-
+	override def membershipStatus: Conflicted =	Conflicted(myClusterId, otherClustersById.keySet.toSet, isIsolated)
 	
-	participantService.notifyListenersThat(IBecomeConflicted(ConflictedOperatorImpl, why))
-	
-
-	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
+	override def onPeerAdded(delegate: ParticipantDelegate): Unit = {
 		stateSerial = stateSerial.nextSerial
 		// TODO
 	}
 
-	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = {
+	override def onPeerCommunicabilityChange(delegate: ParticipantDelegate, previousStatus: CommunicationStatus): Unit = {
 		stateSerial = stateSerial.nextSerial
 		// TODO
 	}
 
-	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = {
+	override def onPeerMembershipChange(delegate: ParticipantDelegate, previousStatus: Maybe[MembershipStatus]): Unit = {
 		stateSerial = stateSerial.nextSerial
 		// TODO
 	}
@@ -43,8 +40,12 @@ class ConflictedBehavior(participantService: ParticipantService, startingStateSe
 	override protected def onMessage(senderDelegate: CommunicableDelegate, message: ICreatedACluster): Boolean = ???
 
 	override protected def onMessage(senderDelegate: CommunicableDelegate, message: RequestToJoin): Unit = {
-		senderDelegate.transmitToPeerOrRestartChannel(JoinRejected(message.requestId, false, false, false, wasIsolated, true))
+		senderDelegate.transmitToPeerOrRestartChannel(JoinRejected(message.requestId, false, false, false, isIsolated, true))
 	}
+
+	override protected def onMessage(senderDelegate: CommunicableDelegate, message: WeAreIsolated): Unit = ???
+
+	override protected def onMessage(senderDelegate: CommunicableDelegate, isolated: AreWeIsolated): Unit = ???
 
 	object ConflictedOperatorImpl extends ConflictedOperator {
 		override def becomeAspirant(): AspirantBehavior = ???

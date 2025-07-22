@@ -55,6 +55,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 				case null =>
 					scribe.info(s"${participantService.myAddress}: I accepted a new connection initiated by `$peerContactAddress`.")
 					val newParticipantDelegate = participantService.addANewCommunicableDelegate(peerContactAddress, eggChannel, eggReceiver, eggChannelId)
+					participantService.getMembershipScopedBehavior.onPeerAdded(newParticipantDelegate)
 					newParticipantDelegate.startConversationAsServer(hello)
 
 				case incumbentDelegate: CommunicableDelegate =>
@@ -138,7 +139,6 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 		}
 
 		// notify
-		participantService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(replacement) // TODO this isn't exactly a communicability change. Analyze it.
 		participantService.notifyListenersThat(CommunicationChannelReplaced(incumbentDelegate.peerContactAddress))
 		replacement
 	}

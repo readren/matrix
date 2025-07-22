@@ -9,7 +9,7 @@ import readren.taskflow.Maybe
  * We name "participant" to each instance of [[ParticipantService]] */
 abstract class ParticipantDelegate {
 	/** The [[ParticipantService]] that this instance is a delegate of. */
-	val participantService: ParticipantService
+	val owner: ParticipantService
 	/** The [[ContactAddress]] of the participant this instance manages.  */
 	val peerContactAddress: ContactAddress
 	def communicationStatus: CommunicationStatus
@@ -21,7 +21,7 @@ abstract class ParticipantDelegate {
 	protected var peerCreationInstant: Instant = UNSPECIFIED_INSTANT
 	inline def getPeerCreationInstant: Instant = peerCreationInstant
 	
-	export participantService.sequencer
+	export owner.sequencer
 	
 	def isCommunicable: Boolean
 
@@ -35,8 +35,8 @@ abstract class ParticipantDelegate {
 		this.peerCreationInstant = other.peerCreationInstant
 	}
 
-	private[service] inline def isAssociated: Boolean = this eq participantService.delegateByAddress.getOrElse(peerContactAddress, null)
-
+	private[service] inline def isAssociated: Boolean = this eq owner.delegateByAddress.getOrElse(peerContactAddress, null)
+	
 	/** Removes this participant from outside this delegate's reception-cycle thread. */
 	def removeByOther(): Unit
 }

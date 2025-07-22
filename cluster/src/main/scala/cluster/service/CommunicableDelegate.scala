@@ -21,15 +21,15 @@ import scala.util.control.NonFatal
 
 /** A [[ParticipantDelegate]] that is currently able to communicable with the participant. */
 class CommunicableDelegate(
-	override val participantService: ParticipantService,
+	override val owner: ParticipantService,
 	override val peerContactAddress: ContactAddress,
 	val channel: AsynchronousSocketChannel,
 	receiverFromPeer: Receiver,
 	val channelId: ChannelId
 ) extends ParticipantDelegate, BehaviorsHelper { thisCommunicableDelegate =>
-	val config: DelegateConfig = participantService.config.participantDelegatesConfig
+	val config: DelegateConfig = owner.config.participantDelegatesConfig
 
-	private val transmitterToPeer: SequentialTransmitter[Protocol] = participantService.buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId)
+	private val transmitterToPeer: SequentialTransmitter[Protocol] = owner.buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId)
 
 	private var agreedVersion: ProtocolVersion = ProtocolVersion.NOT_SPECIFIED
 
@@ -37,8 +37,9 @@ class CommunicableDelegate(
 
 	private var versionsSupportedByPeer: Set[ProtocolVersion] = Set.empty
 
-	/** The state of the peer according to it */
-	private[service] var peerStatePhoto: Maybe[MemberViewpoint] = Maybe.empty
+	/** The state of the peer according to it.
+	 * CAUTION: Use the [[updateViewpointPhoto]] method to update this variable to ensure it is done within the sequenced execution triggered by the reception-cycle of this delegate. Otherwise, race conditions may occur that cause a message to be ignored. */
+	private var peerViewpointPhoto: Maybe[MemberViewpoint] = Maybe.empty
 
 	/** Only Used when the cluster service is in aspirant state. */
 	private[service] var clusterCreatorProposedByPeer: ContactAddress | Null = null
@@ -52,32 +53,63 @@ class CommunicableDelegate(
 	private var lastRequestId: Short = 0
 	private val requestExchangeByRequestId: mutable.LongMap[OutgoingRequestExchange[?]] = mutable.LongMap.empty
 
+	/** Set to `true` and `false` around the block passed to [[exposingChangesDo]].  
+	 *  Only used by assertions of the [[exposingChangesDo]]-[[updateState]] combo.
+	 *  Should be accessed within a [[sequencer]] execution. */
+	private var insideExposingChangesBlock: Boolean = false
+	
+	/** Set to `true` and `false` around handlers of messages received from the peer.
+	 * Set to `true` and `false` around the message handler passed to [[exposingChangesDo]] method when a message is received from the associated participant.
+	 * Should be accessed within a [[sequencer]] execution. */
+	private var withinReceptionCycle: Boolean = true
+
 	override def isCommunicable: Boolean = true
 
+	/** Should be called within a [[sequencer]] execution. */
 	override def isStable: Boolean = (agreedVersion != ProtocolVersion.NOT_SPECIFIED) && oPeerMembershipStatusAccordingToMe.isDefined
 
 	override def communicationStatus: CommunicationStatus = if isStable then HANDSHOOK else CONNECTED
 
 	inline def contactCard: ContactCard = (peerContactAddress, versionsSupportedByPeer)
 
-	/** Exposes changes of the [[versionsSupportedByPeer]] and the [[oPeerMembershipStatusAccordingToMe]] to the [[participantService.getMembershipScopedBehavior]].
-	 * The calls to [[participantService.getMembershipScopedBehavior.onDelegateCommunicabilityChange]] and [[participantService.getMembershipScopedBehavior.onDelegateMembershipChange]] are deferred to the end of the block and called a single time, no matter how many changes occur within the block. */
-	private[service] inline def exposingChangesDo[T](inline body: () => T): T = {
-		val previousPeersSupportedVersions = this.versionsSupportedByPeer
-		val previousMembershipStatusOfPeerAccordingToMe = this.oPeerMembershipStatusAccordingToMe
+	/** Exposes changes made by the `body` to the [[CommunicationStatus]] and the [[oPeerMembershipStatusAccordingToMe]] fields of this [[CommunicableDelegate]] instance, to the [[owner.getMembershipScopedBehavior]].
+	 * The calls to [[owner.getMembershipScopedBehavior.onDelegateCommunicabilityChange]] and [[owner.getMembershipScopedBehavior.onDelegateMembershipChange]] are deferred to the end of the block and called a single time, no matter how many changes occur within the block.
+	 * Caution: this only exposes changes done to this [[CommunicableDelegate]] instance. Changes to these fields done to other [[ParticipantInstances]] should be exposed by other means. Examples where this could happen are changes done ...
+	 * - by delegate replacement methods;
+	 * - to other [[ParticipantDelegate]] instances. 
+	 * */
+	private[service] inline def exposingChangesDo[T](isWithinReceptionCycle: Boolean)(inline body: () => T): T = {
+		assert(!insideExposingChangesBlock)
+		val previousCommunicationStatus = this.communicationStatus
+		val previousMembershipStatus = this.oPeerMembershipStatusAccordingToMe
+		withinReceptionCycle = isWithinReceptionCycle
+		insideExposingChangesBlock = true
 		val result = body()
-		if previousPeersSupportedVersions != this.versionsSupportedByPeer then participantService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(this)
-		if !previousMembershipStatusOfPeerAccordingToMe.isEqualTo(this.oPeerMembershipStatusAccordingToMe) then participantService.getMembershipScopedBehavior.onDelegateMembershipChange(this)
+		insideExposingChangesBlock = false
+		withinReceptionCycle = false
+		if previousCommunicationStatus != this.communicationStatus then owner.getMembershipScopedBehavior.onPeerCommunicabilityChange(this, previousCommunicationStatus)
+		if !previousMembershipStatus.isEqualTo(this.oPeerMembershipStatusAccordingToMe) then owner.getMembershipScopedBehavior.onPeerMembershipChange(this, previousMembershipStatus)
 		result
 	}
 
 	/** @note should be called within an [[exposingChangesDo]] block. */
 	private[service] def updateState(peersNewMembershipStatus: MembershipStatus, peersNewSupportedVersions: Set[ProtocolVersion] = versionsSupportedByPeer, newCreationInstant: Instant = peerCreationInstant): Unit = {
+		assert(insideExposingChangesBlock)
+		assert(owner.delegateByAddress.contains(peerContactAddress)) // Because updating a removed instance would cause that `exposingChangesDo` to expose irrelevant changes. 
 		oPeerMembershipStatusAccordingToMe = Maybe.some(peersNewMembershipStatus)
 		versionsSupportedByPeer = peersNewSupportedVersions
-		agreedVersion = participantService.determineAgreedVersion(peersNewSupportedVersions).getOrElse(ProtocolVersion.NOT_SPECIFIED)
+		agreedVersion = owner.determineAgreedVersion(peersNewSupportedVersions).getOrElse(ProtocolVersion.NOT_SPECIFIED)
 		peerCreationInstant = newCreationInstant
 	}
+
+	private[service] inline def getViewpointPhoto: Maybe[MemberViewpoint] = peerViewpointPhoto
+	
+	/** Updates the peer's viewpoint photo. */
+	private[service] def updateViewpointPhoto(viewpoint: MemberViewpoint): Unit = {
+		assert(withinReceptionCycle)
+		peerViewpointPhoto = Maybe.some(viewpoint)
+	}
+
 
 	/** Called just after a successfully connecting through a brand-new connection initiated by me and accepted by the peer (I am at the client side of the channel). */
 	private[service] def startConversationAsClient(isReconnection: Boolean): Unit = {
@@ -88,8 +120,8 @@ class CommunicableDelegate(
 
 	/** Called just after a successfully receiving the first message (which should be a [[Hello]]) through a brand-new connection initiated by the peer and accepted by me (I am at the server side of the channel). */
 	private[service] def startConversationAsServer(hello: Hello): Unit = {
-		val continueReceiving = exposingChangesDo { () =>
-			participantService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, hello)
+		val continueReceiving = exposingChangesDo(true) { () =>
+			owner.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, hello)
 		}
 		if continueReceiving then receiveNextMessages()
 	}
@@ -107,16 +139,16 @@ class CommunicableDelegate(
 			
 			receptionResult match {
 				case responseFromPeer: Response =>
-					scribe.debug(s"${participantService.myAddress}: I have received the response `$responseFromPeer from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
+					scribe.debug(s"${owner.myAddress}: I have received the response `$responseFromPeer from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
 					sequencer.executeSequentially {
 						requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
-							scribe.warn(s"${participantService.myAddress}: I have received a response to a request that I haven't made. It arrived from $peerContactAddress through channel $channelId and contains `$responseFromPeer`.")
+							scribe.warn(s"${owner.myAddress}: I have received a response to a request that I haven't made. It arrived from $peerContactAddress through channel $channelId and contains `$responseFromPeer`.")
 						} { ore =>
 							sequencer.cancel(ore.oTimeoutSchedule.get)
 							val request = ore.oRequest.get
 							val thisDelegateIsAssociated = isAssociated
 							if !thisDelegateIsAssociated then scribe.info(s"The response `$responseFromPeer` from `$peerContactAddress` was ignored because it was handled after the delegate was removed. It was received through channel $channelId.")
-							val continueReceiving = thisDelegateIsAssociated && exposingChangesDo(
+							val continueReceiving = thisDelegateIsAssociated && exposingChangesDo(true)(
 								() => ore.asInstanceOf[OutgoingRequestExchange[request.type]].onResponse(request, responseFromPeer.asInstanceOf[request.ResponseType])
 							)
 							if continueReceiving then receiveNextMessages()
@@ -125,20 +157,20 @@ class CommunicableDelegate(
 					}
 
 				case initiatorMessageFromPeer: NonResponse =>
-					scribe.debug(s"${participantService.myAddress}: I have received the message `$initiatorMessageFromPeer` from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
+					scribe.debug(s"${owner.myAddress}: I have received the message `$initiatorMessageFromPeer` from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
 					sequencer.executeSequentially {
 						val thisDelegateIsAssociated = isAssociated
-						if !thisDelegateIsAssociated then scribe.info(s"${participantService.myAddress}: The message `$initiatorMessageFromPeer` from `$peerContactAddress` was ignored because it was handled after the delegate was removed. It was received through channel $channelId.")
-						val continueReceiving = thisDelegateIsAssociated && exposingChangesDo {
-							() => participantService.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, initiatorMessageFromPeer)
+						if !thisDelegateIsAssociated then scribe.info(s"${owner.myAddress}: The message `$initiatorMessageFromPeer` from `$peerContactAddress` was ignored because it was handled after the delegate was removed. It was received through channel $channelId.")
+						val continueReceiving = thisDelegateIsAssociated && exposingChangesDo(true) {
+							() => owner.getMembershipScopedBehavior.handleInitiatorMessageFrom(thisCommunicableDelegate, initiatorMessageFromPeer)
 						}
 						if continueReceiving then receiveNextMessages()
 						else if thisDelegateIsAssociated then onTerminatingMessageReceived(initiatorMessageFromPeer)
 					}
 
 				case fault: Receiver.Fault =>
-					if channelClosingCallback eq null then scribe.error(fault.scribeContent(s"${participantService.myAddress}: Failure while I was waiting for, or receiving, a message from `$peerContactAddress` through channel $channelId.") *)
-					else scribe.trace(s"${participantService.myAddress}: Expected receiver failure due to graceful closing of the connection to $peerContactAddress with channel $channelId.")
+					if channelClosingCallback eq null then scribe.error(fault.scribeContent(s"${owner.myAddress}: Failure while I was waiting for, or receiving, a message from `$peerContactAddress` through channel $channelId.") *)
+					else scribe.trace(s"${owner.myAddress}: Expected receiver failure due to graceful closing of the connection to $peerContactAddress with channel $channelId.")
 					sequencer.executeSequentially {
 						if isAssociated then restartChannel(s"The reception failed with $fault")
 					}
@@ -147,29 +179,29 @@ class CommunicableDelegate(
 	}
 
 	private def onTerminatingMessageReceived(message: Protocol): Unit = {
-		if isAssociated then scribe.info(s"${participantService.myAddress}: The connection to `$peerContactAddress` with channel $channelId is being closed because I received the terminating message `$message`. {communicationStatus: $communicationStatus}")
-		else scribe.trace(s"${participantService.myAddress}: I received the terminating message `$message` from `$peerContactAddress` through the channel $channelId which is already closed.")
-		if participantService.removeDelegate(thisCommunicableDelegate, true) then completeChannelClosing()
+		if isAssociated then scribe.info(s"${owner.myAddress}: The connection to `$peerContactAddress` with channel $channelId is being closed because I received the terminating message `$message`. {communicationStatus: $communicationStatus}")
+		else scribe.trace(s"${owner.myAddress}: I received the terminating message `$message` from `$peerContactAddress` through the channel $channelId which is already closed.")
+		if owner.removeDelegate(thisCommunicableDelegate, true) then completeChannelClosing()
 		// TODO analyze if something else should be done here (or it is responsibility of the message handlers when they return `false`).
 	}
 
 
 	private[service] def notifyPeerThatAConversationStartedWith(otherParticipant: ContactAddress, isARestartAfterReconnection: Boolean): Unit = {
-		assert(otherParticipant != peerContactAddress && otherParticipant != participantService.myAddress)
+		assert(otherParticipant != peerContactAddress && otherParticipant != owner.myAddress)
 		transmitToPeerOrRestartChannel(ConversationStartedWith(otherParticipant, isARestartAfterReconnection))
 	}
 
 	private[service] def notifyPeerThatILostCommunicationWith(otherParticipant: ContactAddress): Unit = {
-		assert(otherParticipant != peerContactAddress && otherParticipant != participantService.myAddress)
+		assert(otherParticipant != peerContactAddress && otherParticipant != owner.myAddress)
 		transmitToPeerOrRestartChannel(ILostCommunicationWith(otherParticipant))
 	}
 
 	private[service] def reportTransmissionFailure(failure: Transmitter.NotDelivered): Unit = {
 		failure match {
 			case transmissionFailure: Transmitter.TransmissionFailure =>
-				scribe.error(s"${participantService.myAddress}: I failed to transmit the message `${transmissionFailure.rootMessage}` to `$peerContactAddress` through channel $channelId.", transmissionFailure.cause)
+				scribe.error(s"${owner.myAddress}: I failed to transmit the message `${transmissionFailure.rootMessage}` to `$peerContactAddress` through channel $channelId.", transmissionFailure.cause)
 			case serializationFailure: Transmitter.SerializationProblem =>
-				scribe.error(s"${participantService.myAddress}: I failed to serialize the message `${serializationFailure.rootMessage}` (at position ${serializationFailure.problem.position}) for `$peerContactAddress` ${if serializationFailure.aFragmentWasTransmitted then "after" else "before"} the transmission started, through channel $channelId.", serializationFailure.problem)
+				scribe.error(s"${owner.myAddress}: I failed to serialize the message `${serializationFailure.rootMessage}` (at position ${serializationFailure.problem.position}) for `$peerContactAddress` ${if serializationFailure.aFragmentWasTransmitted then "after" else "before"} the transmission started, through channel $channelId.", serializationFailure.problem)
 		}
 	}
 
@@ -228,14 +260,14 @@ class CommunicableDelegate(
 					sequencer.scheduleSequentially(timeoutSchedule) { () =>
 						requestExchangeByRequestId.remove(requestId).foreach { removedExchange =>
 							assert(removedExchange eq requestExchange)
-							if isAssociated then exposingChangesDo { () => requestExchange.onTimeout(request) }
+							if isAssociated then exposingChangesDo(false) { () => requestExchange.onTimeout(request) }
 						}
 					}
 				}
 			case nd: NotDelivered =>
 				reportTransmissionFailure(nd)
 				sequencer.executeSequentially {
-					exposingChangesDo { () =>
+					exposingChangesDo(false) { () =>
 						requestExchange.onTransmissionError(request, nd)
 					}
 				}
@@ -272,39 +304,41 @@ class CommunicableDelegate(
 
 	private[service] def transmitToPeer(message: Protocol)(onTransmissionComplete: Transmitter.Report => Unit): Unit = {
 		transmitterToPeer.transmit(message, agreedVersion, config.behindTransmissionEnabled, config.transmitterTimeout, config.timeUnit)(onTransmissionComplete)
-		scribe.trace(s"${participantService.myAddress}: The message `$message` was queued for transmission to `$peerContactAddress` through channel $channelId.")
+		scribe.trace(s"${owner.myAddress}: The message `$message` was queued for transmission to `$peerContactAddress` through channel $channelId.")
 	}
 
 	/** Replaces this communicable delegate with an incommunicable one if not already removed. */
 	protected def replaceMyselfWithAnIncommunicableDelegate(reason: IncommunicabilityReason, motive: Any): Maybe[IncommunicableDelegate] = {
 		// replace me with an incommunicable delegate.
-		if participantService.removeDelegate(this, false) then {
-			val myReplacement = participantService.addANewIncommunicableDelegate(peerContactAddress, reason)
+		if owner.removeDelegate(this, false) then {
+			val myReplacement = owner.addANewIncommunicableDelegate(peerContactAddress, reason)
 			myReplacement.initializeStateBasedOn(this)
 
-			// Delay channel closing to allow the peer to close the channel first.
+			// notify the listener and other participants.
+			owner.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerContactAddress, reason, motive)
+			// notify the behavior
+			owner.getMembershipScopedBehavior.onPeerCommunicabilityChange(myReplacement, this.communicationStatus)
+
+			// Close the channel after a delay to allow the peer to close the channel first.
 			sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.closeDelay)) { () =>
 				completeChannelClosing()
 			}
-
-			// notify
-			participantService.getMembershipScopedBehavior.onDelegateCommunicabilityChange(myReplacement) // TODO consider moving this line inside the `notify*` method called in the next line
-			participantService.notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(peerContactAddress, reason, motive)
+			
 			Maybe.some(myReplacement)
 		} else Maybe.empty
 	}
 
 	override def removeByOther(): Unit = {
-		if participantService.removeDelegate(this, true) then completeChannelClosing()
+		if owner.removeDelegate(this, true) then completeChannelClosing()
 	}
 
 	private[service] def restartChannel(notDeliveredCause: Transmitter.NotDelivered): Unit =
 		restartChannel(s"A transmission failed with $notDeliveredCause.")
 
 	private[service] def restartChannel(motive: String): Unit = {
-		scribe.debug(s"${participantService.myAddress}: Restarting the connection to `$peerContactAddress` with channel $channelId because: $motive")
+		scribe.debug(s"${owner.myAddress}: Restarting the connection to `$peerContactAddress` with channel $channelId because: $motive")
 		replaceMyselfWithAnIncommunicableDelegate(IS_CONNECTING_AS_CLIENT, s"To restart channel $channelId because of: $motive").foreach { myReplacement =>
-			participantService.connectToAndThenStartConversationWithParticipant(myReplacement, true)
+			owner.connectToAndThenStartConversationWithParticipant(myReplacement, true)
 		}
 	}
 
@@ -314,20 +348,20 @@ class CommunicableDelegate(
 	 */
 	private[service] def completeChannelClosing(): Unit = {
 		assert(!isAssociated)
-		scribe.trace(s"${participantService.myAddress}: About to complete the closing of channel $channelId to `$peerContactAddress`.")
+		scribe.trace(s"${owner.myAddress}: About to complete the closing of channel $channelId to `$peerContactAddress`.")
 
 		// Set the "on reception complete" callback first (before checking the [[isWaitingForAMessage]] flag) to avoid race condition.
 		onReceptionCompleted.set { () =>
 			// Reception completed, now wait for transmission to be idle
 			transmitterToPeer.triggerOnIdle { () =>
 							// Both reception and transmission are now idle, safe to close
-			scribe.trace(s"${participantService.myAddress}: Both reception and transmission are idle, closing channel $channelId to `$peerContactAddress`.")
+			scribe.trace(s"${owner.myAddress}: Both reception and transmission are idle, closing channel $channelId to `$peerContactAddress`.")
 				try {
 					channel.shutdownInput()
 					channel.close()
 				} catch {
 					case NonFatal(e) =>
-						scribe.warn(s"${participantService.myAddress}: Exception while closing channel $channelId to `$peerContactAddress`:", e)
+						scribe.warn(s"${owner.myAddress}: Exception while closing channel $channelId to `$peerContactAddress`:", e)
 				}
 			}
 		}
@@ -335,7 +369,7 @@ class CommunicableDelegate(
 		// Check if reception is currently in progress
 		if isWaitingForAMessage then {
 			// If reception is in progress, the callback referenced by `onReceptionCompleted` will be triggered when it completes.
-			scribe.trace(s"${participantService.myAddress}: Waiting for current reception to complete before closing channel $channelId to `$peerContactAddress`.")
+			scribe.trace(s"${owner.myAddress}: Waiting for current reception to complete before closing channel $channelId to `$peerContactAddress`.")
 		} else {
 			// If no reception in progress, trigger the callback immediately 
 			val callback = onReceptionCompleted.getAndSet(null)

@@ -3,36 +3,39 @@ package cluster.service.behavior
 
 import cluster.service.*
 import cluster.service.Protocol.*
-import cluster.service.behavior.ConflictedBehavior
 import common.CompileTime.getTypeName
+
+import readren.taskflow.Maybe
 
 import scala.collection.MapView
 
 /** A communicable participant's delegate suited for a [[ParticipantService]] with a [[MemberBehavior]].
- * @param participantService the [[ParticipantService]] that hosts this behavior.
+ * @param host the [[ParticipantService]] that hosts this behavior.
  * @param startingStateSerial the revision number of the state this instance starts with.
- * @param clusterId the id [[ClusterId]] of the cluster thet the hosting [[ParticipantService]] belongs to. */
-abstract class MemberBehavior(participantService: ParticipantService, startingStateSerial: RingSerial, clusterId: ClusterId) extends MembershipScopedBehavior {
+ * @param myClusterId the id [[ClusterId]] of the cluster thet the hosting [[ParticipantService]] belongs to. */
+abstract class MemberBehavior(override val host: ParticipantService, startingStateSerial: RingSerial, val myClusterId: ClusterId) extends MembershipScopedBehavior {
 
+	override type MS = Member
 	protected var stateSerial: RingSerial = startingStateSerial
 
 	inline def currentStateSerial: RingSerial = stateSerial
 
-	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, participantService.clock.getTime, clusterId, participantService.getStableParticipantsInfo.toMap)
+	def isIsolated: Boolean
+	
+	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, host.clock.getTime, myClusterId, host.getStableParticipantsInfo.toMap)
+
+	def isColleague(delegate: ParticipantDelegate): Boolean = delegate.getPeerMembershipStatusAccordingToMe.contains {
+		case member: Member if member.clusterId == myClusterId => true
+		case _ => false	
+	}
 
 
-	override def onDelegatedAdded(delegate: ParticipantDelegate): Unit = {
+	override def onPeerAdded(delegate: ParticipantDelegate): Unit = {
 		stateSerial = stateSerial.nextSerial
 		// TODO
 	}
 
-	override def onDelegateCommunicabilityChange(delegate: ParticipantDelegate): Unit = {
-		stateSerial = stateSerial.nextSerial
-		// TODO
-	}
-
-
-	override def onDelegateMembershipChange(delegate: ParticipantDelegate): Unit = {
+	override def onPeerMembershipChange(delegate: ParticipantDelegate, previousStatus: Maybe[MembershipStatus]): Unit = {
 		stateSerial = stateSerial.nextSerial
 		// TODO
 	}
@@ -42,6 +45,10 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 	protected def onMessage(senderDelegate: CommunicableDelegate, message: ICreatedACluster): Boolean
 	
 	protected def onMessage(senderDelegate: CommunicableDelegate, message: RequestToJoin): Unit
+	
+	protected def onMessage(senderDelegate: CommunicableDelegate, message: AreWeIsolated): Unit
+	
+	protected def onMessage(senderDelegate: CommunicableDelegate, message: WeAreIsolated): Unit
 	
 	override def handleInitiatorMessageFrom(senderDelegate: CommunicableDelegate, initiationMsg: NonResponse): Boolean = initiationMsg match {
 
@@ -54,7 +61,7 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 			true
 
 		case ccp: ClusterCreatorProposal =>
-			scribe.warn(s"The aspirant at `${senderDelegate.peerContactAddress}` sent me a `${getTypeName[ClusterCreatorProposal]}` despite I already belong to the cluster `$clusterId`.")
+			scribe.warn(s"The aspirant at `${senderDelegate.peerContactAddress}` sent me a `${getTypeName[ClusterCreatorProposal]}` despite I already belong to the cluster `$myClusterId`.")
 			senderDelegate.incitePeerToUpdateHisStateAboutMyStatus()
 			true
 
@@ -93,16 +100,27 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 			senderDelegate.handleMessage(phr)
 			true
 
-		case WeHaveToResolveBrainSplit(peerViewPoint) =>
-			???
+		case awi: AreWeIsolated =>
+			onMessage(senderDelegate, awi)
+			true
+			
+		case wai: WeAreIsolated =>
+			onMessage(senderDelegate, wai)
 			true
 
-		case WeHaveToResolveBrainJoin(peerViewPoint) =>
-			???
+		case WeHaveToResolveClustersConflict(peerViewpoint) =>
+			var otherClusters: Set[ClusterId] = if peerViewpoint.clusterId == myClusterId then Set.empty else Set(peerViewpoint.clusterId)
+			for	pi <- peerViewpoint.participantsInfo do pi._2.membershipStatus match {
+				case member: Member if member.clusterId != myClusterId => otherClusters += member.clusterId
+				case _ => // do nothing
+			}
+			if otherClusters.nonEmpty then host.switchToConflicted(this, otherClusters, s"I received `$initiationMsg` from `${senderDelegate.peerContactAddress}`")
+			else scribe.warn(s"I received `$initiationMsg` from `${senderDelegate.peerContactAddress}` which is contradictory because only one cluster is mentioned.")
 			true
 
 		case hb: Heartbeat =>
-			???
+			// TODO
+			true
 
 		case sc: ClusterStateChanged =>
 			// TODO
@@ -114,16 +132,6 @@ abstract class MemberBehavior(participantService: ParticipantService, startingSt
 	}
 
 	protected def memberDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
-		participantService.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
+		host.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
 
-
-	protected def switchToConflicted(delegateMemberOfForeignCluster: CommunicableDelegate, otherClustersIds: Set[ClusterId], wasIsolated: Boolean, why: String): ConflictedBehavior = {
-		val newBehavior = ConflictedBehavior(participantService, stateSerial.nextSerial, clusterId, otherClustersIds, wasIsolated, why)
-
-		for (_, delegate) <- participantService.handshookDelegateByAddress do {
-			delegate.transmitToPeerOrRestartChannel(WeHaveToResolveBrainJoin(myCurrentViewpoint))
-		}
-		// TODO
-		newBehavior
-	}
 }
