@@ -4,16 +4,17 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / scalaVersion := "3.7.1"
 
 ThisBuild / libraryDependencies ++= Seq(
-	"readren" %% "taskflow-core" % "0.2.10-SNAPSHOT",
+	"readren" %% "taskflow-core" % "0.2.11-SNAPSHOT",
 
-	"com.outr" %% "scribe" % "3.16.1",
-	"com.outr" %% "scribe-file" % "3.16.1",
+	"com.outr" %% "scribe" % "3.17.0",
+	"com.outr" %% "scribe-file" % "3.17.0",
 
 	"org.typelevel" %% "scalacheck-effect" % "1.0.4" % Test,
 	"org.typelevel" %% "scalacheck-effect-munit" % "1.0.4" % Test
 )
 
 ThisBuild / scalacOptions ++= Seq(
+	"-preview",
 	"-source:future",
 //	"-language:strictEquality",
 	"-experimental",
@@ -57,6 +58,11 @@ lazy val checked = (project in file("checked")).dependsOn(root)
 		idePackagePrefix := Some("readren.matrix")
 	)
 
+lazy val consensus = (project in file("consensus"))
+	.settings(
+		name := "consensus",
+		idePackagePrefix := Some("readren.matrix")
+	)
 
 enablePlugins(DockerPlugin)
 
@@ -79,6 +85,3 @@ docker / dockerfile := {
 		expose(5000, 5001, 5002) // Expose ports
 	}
 }
-
-// Add Scalafmt configuration
-ThisBuild / scalafmtOnCompile := true

@@ -116,7 +116,7 @@ object ParticipantService {
 }
 
 /**
- * A service that manages the propagation of its own existence and the awareness of other [[ParticipantService]] instances
+ * A cluster-participant-service that manages the propagation of its own existence and the awareness of other [[ParticipantService]] instances
  * to support intercommunication between their users across different JVMs, which maybe (and usually are) on different host machines.
  *
  * For brevity, instances of this class are referred to as "participants."
@@ -155,7 +155,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	/** Creates and adds (to the set of known participants delegates) a new [[CommunicableDelegate]] to manage the communication with the participant at the specified [[ContactAddress]]. */
 	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, channelId: ChannelId): CommunicableDelegate = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		assert(peerContactAddress != myAddress)
 		val newParticipant = new CommunicableDelegate(thisParticipantService, peerContactAddress, channel, receiverFromPeer, channelId)
 		participantDelegateByAddress += peerContactAddress -> newParticipant
@@ -165,7 +165,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	/** Creates and adds (to the set of known participants delegates) a new [[IncommunicableDelegate]] to remember if this service is currently connecting to the participant at the specified [[ContactAddress]] or has desisted to communicate with it. */
 	private[service] def addANewIncommunicableDelegate(participantAddress: ContactAddress, reason: IncommunicabilityReason): IncommunicableDelegate = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		assert(participantAddress != myAddress)
 		val newParticipant = new IncommunicableDelegate(thisParticipantService, participantAddress, reason)
 		participantDelegateByAddress += participantAddress -> newParticipant
@@ -173,7 +173,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	private[service] inline def removeDelegate(delegate: ParticipantDelegate, notifyListeners: Boolean): Boolean = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		delegateByAddress.getOrElse(delegate.peerContactAddress, null) match {
 			case referencedDelegate if referencedDelegate eq delegate =>
 				participantDelegateByAddress -= delegate.peerContactAddress
@@ -186,7 +186,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	/** Must be called within the [[sequencer]].
 	 * @return A set with as many elements as clusters among the know participants, with each element equal to the [[ClusterId]]. */
 	def findCluster: Set[ClusterId] = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		val iterator = delegateByAddress.valuesIterator
 
 		@tailrec
@@ -219,12 +219,12 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	def getStableParticipantsInfo: MapView[ContactAddress, ParticipantInfo] = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		delegateByAddress.view.filter(_._2.info.isDefined).mapValues(_.info.get)
 	}
 
 	def createADelegateForEachParticipantIDoNotKnowIn(participantsKnownByPeer: Set[ContactAddress]): Unit = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		// Create a delegate for each participant that I did not know.
 		for participantAddress <- participantsKnownByPeer do {
 			if participantAddress != myAddress && !delegateByAddress.contains(participantAddress) then {
@@ -243,7 +243,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	/** Notifies listeners and other participants that the specified participant has become incommunicable. */
 	private[service] def notifyListenersAndOtherParticipantsThatAParticipantBecomeIncommunicable(participantContactAddress: ContactAddress, reason: IncommunicabilityReason, cause: Any): Unit = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		notifyListenersThat(CommunicationLostWith(participantContactAddress, reason, cause))
 		for case communicableDelegate: CommunicableDelegate <- delegateByAddress.valuesIterator do
 			communicableDelegate.notifyPeerThatILostCommunicationWith(participantContactAddress)
@@ -251,7 +251,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 
 	/** Notifies listeners and other participants that a conversation with the specified participant has started. */
 	private[service] def notifyListenersAndOtherParticipantsThatAConversationStartedWith(participantAddress: ContactAddress, membershipStatus: MembershipStatus, isARestartAfterReconnection: Boolean): Unit = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		notifyListenersThat(AConversationStartedWith(participantAddress, membershipStatus, isARestartAfterReconnection))
 		for case (address, communicableDelegate: CommunicableDelegate) <- delegateByAddress.iterator do
 			if address != participantAddress then communicableDelegate.notifyPeerThatAConversationStartedWith(participantAddress, isARestartAfterReconnection)
@@ -421,12 +421,12 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	def subscribe(listener: EventListener): Unit = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		eventListeners.put(listener, None)
 	}
 
 	def unsubscribe(listener: EventListener): Boolean = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		eventListeners.remove(listener) eq None
 	}
 

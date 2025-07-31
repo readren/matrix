@@ -104,8 +104,7 @@ class CooperativeWorkersDap(
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 *
 		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
-		 * This ensures that another thread invoking `queuedForSequentialExecution` does not call [[wakeUpASleepingWorkerIfAny]] passing this [[DoerAssistantImpl]] or enqueue this [[DoerAssistantImpl]] into the [[queuedDoersAssistants]] queue,
-		 * which would violate the constraint that prevents two workers from being assigned to the same [[DoerAssistantImpl]] instance simultaneously.
+		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same assistant being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerAssistantImpl]] instance simultaneously.
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistantImpl]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
 		 */
@@ -125,13 +124,15 @@ class CooperativeWorkersDap(
 					task.run()
 					processedTasksCounter += 1
 					aDecrementIsPending = false
-					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `queuedForSequentialExecution` to enqueue this SchedulingAssistantImpl into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same SchedulingAssistantImpl.
+					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this assistant into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same SchedulingAssistantImpl.
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 					if taskQueueSizeIsPositive then task = taskQueue.poll()
 				}
 			} finally {
 				if applyMemoryFence then VarHandle.storeStoreFence()
+				// If a task throws an exception and control jumps to this finally block, the necessary update to `taskQueueSizeIsPositive` would have been skipped. So do it here.
 				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
+				// if there are pending tasks, enqueue this assistant back into the queue of assistants with pending tasks. 
 				if taskQueueSizeIsPositive then {
 					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
 					queuedDoersAssistants.offer(thisDoerAssistant)

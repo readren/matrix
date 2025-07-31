@@ -246,7 +246,7 @@ class CommunicableDelegate(
 
 	/** Sends a [[Request]] to the peer and then calls once exactly one of the `on*` methods of the specified [[OutgoingRequestExchange]]. */
 	private[service] def askPeer[Q <: Request](requestExchange: OutgoingRequestExchange[Q]): Unit = {
-		assert(sequencer.assistant.isWithinDoSiThEx)
+		assert(sequencer.isInSequence)
 		val requestId = lastRequestId.incremented
 		lastRequestId = requestId
 		val request = requestExchange.buildRequest(requestId)

@@ -100,6 +100,11 @@ class SchedulingDap(
 		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
 			new ScheduleImpl(initialDelay, delay, false)
 
+		/** Programs the execution of the provided [[Runnable]] according to the provided [[Schedule]].
+		 * The [[Runnable]]s received by this and the [[executeSequentially]] methods are executed sequentially.
+		 * @param schedule determines when the provided [[runnable]] will be run.
+		 * @param originalRunnable the [[Runnable]] to be run according to the provided [[schedule]].
+		 * The implementation should not throw non-fatal exceptions. */
 		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
 			val currentTime = readCurrentMilliTime
 			assert(!schedule.isActive)
@@ -145,8 +150,16 @@ class SchedulingDap(
 			scheduler.schedule(schedule, currentTime + schedule.initialDelay)
 		}
 
+		/**
+		 * Removes the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
+		 * If called near its scheduled time from outside this assistant current thread, the [[Runnable]] may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this assistant current thread, it is ensured that no more execution of the [[Runnable]] can occur. */
 		override def cancel(schedule: Schedule): Unit = scheduler.cancel(schedule)
 
+		/**
+		 * Removes all the scheduled [[Runnable]]s corresponding to this [[Assistant]] from the schedule.
+		 * If called near a scheduled time from outside this assistant current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this assistant current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur.. */
 		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingAssistant)
 
 		/** An instance becomes active when is passed to the [[scheduleSequentially]] method.
