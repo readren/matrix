@@ -1,12 +1,14 @@
-package readren.matrix.cluster.service
+package readren.matrix
+package cluster.service
 
+import cluster.misc.TaskSequencer
+import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue}
+import cluster.service.Protocol.Instant
+import common.ToStringWithFields.toStringWithFields // ignore this false error.
+import providers.assistant.{CooperativeWorkersDap, SchedulingDap}
 
-import readren.matrix.cluster.misc.TaskSequencer
-import readren.matrix.cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue}
-import readren.matrix.cluster.service.Protocol.Instant
-import common.ToStringWithFields.toStringWithFields // Ignore this warning
-import readren.matrix.providers.assistant.{CooperativeWorkersDap, SchedulingDap}
 import scribe.*
+
 import java.net.{InetSocketAddress, StandardSocketOptions}
 import scala.language.implicitConversions
 

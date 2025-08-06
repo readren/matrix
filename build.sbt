@@ -59,6 +59,7 @@ lazy val checked = (project in file("checked")).dependsOn(root)
 	)
 
 lazy val consensus = (project in file("consensus"))
+	.dependsOn(doerAssistantProviders % Test)
 	.settings(
 		name := "consensus",
 		idePackagePrefix := Some("readren.matrix")
