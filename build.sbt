@@ -1,5 +1,5 @@
 
-ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / version := "0.1.1-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.7.1"
 
@@ -30,40 +30,48 @@ ThisBuild / scalacOptions ++= Seq(
 )
 lazy val common = (project in file("common"))
 	.settings(
-		name := "common",
+		name := "matrix-common",
 		idePackagePrefix := Some("readren.matrix")
 	)
 
 lazy val doerAssistantProviders = (project in file("dap")).dependsOn(common)
 	.settings(
-		name := "dap",
+		name := "matrix-dap",
 		idePackagePrefix := Some("readren.matrix")
 	)
 
 lazy val cluster = (project in file("cluster")).dependsOn(common, doerAssistantProviders)
 	.settings(
-		name := "cluster",
+		name := "matrix-cluster",
 		idePackagePrefix := Some("readren.matrix")
 	)
 
-lazy val root = (project in file(".")).dependsOn(common, doerAssistantProviders)
+lazy val core = (project in file("core")).dependsOn(common, doerAssistantProviders)
 	.settings(
-		name := "matrix",
+		name := "matrix-core",
 		idePackagePrefix := Some("readren.matrix")
 	)
 
-lazy val checked = (project in file("checked")).dependsOn(root)
+lazy val checkedReactant = (project in file("checked")).dependsOn(core)
 	.settings(
-		name := "checked",
+		name := "matrix-checked_reactant",
 		idePackagePrefix := Some("readren.matrix")
 	)
 
 lazy val consensus = (project in file("consensus"))
 	.dependsOn(doerAssistantProviders % Test)
 	.settings(
-		name := "consensus",
+		name := "matrix-consensus",
 		idePackagePrefix := Some("readren.matrix")
 	)
+
+// Root project - aggregates all subprojects
+lazy val root = (project in file("."))
+	.aggregate(common, doerAssistantProviders, core, checkedReactant, cluster, consensus)
+	.settings(
+		name := "matrix",
+		idePackagePrefix := Some("readren.matrix")
+	)	
 
 enablePlugins(DockerPlugin)
 
