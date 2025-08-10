@@ -11,6 +11,30 @@ import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 import scala.collection.IndexedSeq as GenIndexedSeq
 
+
+object Conciliator {
+	/** The type of record indices.
+	 * Index base is 1.
+	 * Zero means before the first record. */
+	final type RecordIndex = Long
+	/** The type of terms.
+	 * Starts from 1.
+	 * Zero means "before first election". */
+	final type Term = Int
+	/** The type of behavior ids. */
+	final type BehaviorOrdinal = Byte
+
+
+	final val UNBORN: BehaviorOrdinal = -1
+	final val STOPPED: BehaviorOrdinal = 0
+	final val STARTING: BehaviorOrdinal = 1
+	final val ISOLATED: BehaviorOrdinal = 2
+	final val CANDIDATE: BehaviorOrdinal = 3
+	final val FOLLOWER: BehaviorOrdinal = 4
+	final val LEADER: BehaviorOrdinal = 5
+}
+
+
 /**
  * Service Module Trait that defines the consensus algorithm interface and types.
  *
@@ -34,16 +58,7 @@ import scala.collection.IndexedSeq as GenIndexedSeq
  */
 trait Conciliator { thisConciliator =>
 
-	/** The type of record indices.
-	 * Index base is 1.
-	 * Zero means before the first record. */
-	final type RecordIndex = Long
-	/** The type of terms.
-	 * Starts from 1.
-	 * Zero means "before first election". */
-	final type Term = Int
-	/** The type of behavior ids. */
-	final type BehaviorOrdinal = Int
+	import Conciliator.*
 
 	/** The type of participant ids. */
 	type ParticipantId <: AnyRef: {Ordering, ClassTag}
@@ -316,102 +331,106 @@ trait Conciliator { thisConciliator =>
 		def saves(workspace: WS): sequencer.Task[Unit]
 	}
 
+	//// NOTIFICATIONS
+
+
 	trait NotificationListener {
-		def onStarting(isRestart: Boolean): Unit
+		def onStarting(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit
 
-		def onStarted(term: Term, isRestart: Boolean): Unit
+		def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit
 
-		def onBecameStopped(term: Term, motive: Throwable): Unit
+		def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit
 
-		def onBecameIsolated(term: Term, previousBehavior: BehaviorOrdinal): Unit
+		def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit
 
-		def onBecameCandidate(term: Term): Unit
+		def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit
 
-		def onBecameFollower(term: Term, leaderId: ParticipantId): Unit
+		def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: ParticipantId): Unit
 
-		def onBecameLeader(term: Term): Unit
+		def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit
+
+		def onLeft(left: BehaviorOrdinal, term: Term): Unit
 	}
 
-	abstract class AbstractNotificationListener extends NotificationListener {
-		override def onStarting(isRestart: Boolean): Unit = ()
+	/**
+	 * A convenience [[NotificationListener]] implementation with no-op methods.
+	 * Extend this class and override only the methods you need.
+	 */
+	open class DefaultNotificationListener extends NotificationListener {
+		override def onStarting(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = ()
 
-		override def onStarted(term: Term, isRestart: Boolean): Unit = ()
+		override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = ()
 
-		override def onBecameStopped(term: Term, motive: Throwable): Unit = ()
+		override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = ()
 
-		override def onBecameIsolated(term: Term, previousBehavior: BehaviorOrdinal): Unit = ()
+		override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = ()
 
-		override def onBecameCandidate(term: Term): Unit = ()
+		override def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit = ()
 
-		override def onBecameFollower(term: Term, leaderId: ParticipantId): Unit = ()
+		override def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: ParticipantId): Unit = ()
 
-		override def onBecameLeader(term: Term): Unit = ()
+		override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = ()
+
+		def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
 	}
 
 
 	//// PARTICIPANT'S CONSENSUS SERVICE
 
-	/*
-	* A consensus algorithm for managing a replicated log in distributed systems.
-	* 
-	* This algorithm enables multiple participants (typically hosted on different nodes) to reach agreement on values.
-	* Once consensus is reached on a value, that decision becomes final and irreversible.
-	* 
-	* Like Raft, this consensus algorithm relies on strong leadership and makes progress when a majority of participants
-	* are available. The algorithm is based on the following core principles:
-	* 
-	* - Each participant has a unique identifier.
-	* - Each participant operates in one of several behavioral states: starting, isolated, candidate, follower, leader, or stopped.
-	* - The system makes progress when a leader is elected and can replicate client commands to a majority of participants.
-	* - Only the leader accepts and processes client commands.
-	* - Time is divided into terms, with each term beginning with a leader election.
-	* - Each participant maintains a persistent log that stores client commands along with the term in which they were appended.
-	* - Each participant tracks a commit index representing the highest log entry known to be committed.
-	* - The leader maintains replication state for each follower, tracking the next record to send and the highest replicated record index.
-	* 
-	* The key innovation of this algorithm is its deterministic election process, which differs from Raft in several ways:
-	* 
-	* - No heartbeat mechanism: Elections are triggered by client fallback requests rather than periodic timeouts. Fallback requests are those that are a retry of a previous request sent to a different participant.
-	* - Deterministic candidate selection: All participants choose the same leader candidate when they have identical knowledge
-	*   of cluster state, even with partial information about other participants
-	* - Leader selection criteria (in order of priority): highest last record term, longest log, highest current term, 
-	*   highest behavior ordinal, and lexicographically smallest participant ID.
-	* 
-	* The election process works as follows:
-	* 
-	* - Elections are triggered when a client request is received by a participant in isolated or candidate state, or a follower if the request is marked with "isFallback" flag.
-	* - The initiating participant queries other participants with "how are you" questions to update its view of cluster state and its role.
-	* - These queries include a flag indicating that "a leader may be missing" to prompt followers to update their own views and roles.
-	* - When a participant receives a "how are you" query, it responds with its current state information.
-	* - Participants in "isolated" or "candidate" also update their view of the cluster state and their role by querying other participants. Followers do the same but only if the query is tagged with "a leader may be missing".
-	* - A participant becomes leader if either:
-	*   - It receives responses from all participants and is determined to be the chosen candidate according to the selection criteria.
-	*   - It receives responses from a majority of participants and, when asked for their vote, all of them vote for it. Note that votes are requested only when a participant is not reachable.
-	* - The term number is incremented by the newly elected leader. The other participants notice about the new term when they receive an "append log records" request.
-	* 
-	* Invariants:
-	* - Election Safety: at most one leader can be elected in a given term. §5.2
-	* - Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3
-	* - Log Matching: if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index. §5.3
-	* - Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4
-	* - State Machine Safety: if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index. §5.4.3
-	*
-	* Design notes:
-	* - Only one [[ConsensusParticipant]] instance should exist per participant in the cluster.
-	* - All state mutations must occur within the sequencer thread to ensure consistency.
-	*/
-	class ConsensusParticipant(val cluster: Cluster, storage: Storage, machine: StateMachine, initialListeners: Iterable[NotificationListener], stateMachineNeedsRestart: Boolean) { thisConsensusParticipant =>
+	/**
+	 * A consensus algorithm for managing a replicated log in distributed systems.
+	 *
+	 * This algorithm enables multiple participants (typically hosted on different nodes) to reach agreement on values.
+	 * Once consensus is reached on a value, that decision becomes final and irreversible.
+	 *
+	 * Like Raft, this consensus algorithm relies on strong leadership and makes progress when a majority of participants
+	 * are available. The algorithm is based on the following core principles:
+	 *
+	 * - Each participant has a unique identifier.
+	 * - Each participant operates in one of several behavioral states: starting, isolated, candidate, follower, leader, or stopped.
+	 * - The system makes progress when a leader is elected and can replicate client commands to a majority of participants.
+	 * - Only the leader accepts and processes client commands.
+	 * - Time is divided into terms, with each term beginning with a leader election.
+	 * - Each participant maintains a persistent log that stores client commands along with the term in which they were appended.
+	 * - Each participant tracks a commit index representing the highest log entry known to be committed.
+	 * - The leader maintains replication state for each follower, tracking the next record to send and the highest replicated record index.
+	 *
+	 * The key innovation of this algorithm is its deterministic election process, which differs from Raft in several ways:
+	 *
+	 * - No heartbeat mechanism: Elections are triggered by client fallback requests rather than periodic timeouts. Fallback requests are those that are a retry of a previous request sent to a different participant.
+	 * - Deterministic candidate selection: All participants choose the same leader candidate when they have identical knowledge
+	 *   of cluster state, even with partial information about other participants
+	 * - Leader selection criteria (in order of priority): highest last record term, longest log, highest current term,
+	 *   highest behavior ordinal, and lexicographically smallest participant ID.
+	 *
+	 * The election process works as follows:
+	 *
+	 * - Elections are triggered when a client request is received by a participant in isolated or candidate state, or a follower if the request is marked with "isFallback" flag.
+	 * - The initiating participant queries other participants with "how are you" questions to update its view of cluster state and its role.
+	 * - These queries include a flag indicating that "a leader may be missing" to prompt followers to update their own views and roles.
+	 * - When a participant receives a "how are you" query, it responds with its current state information.
+	 * - Participants in "isolated" or "candidate" also update their view of the cluster state and their role by querying other participants. Followers do the same but only if the query is tagged with "a leader may be missing".
+	 * - A participant becomes leader if either:
+	 *   - It receives responses from all participants and is determined to be the chosen candidate according to the selection criteria.
+	 *   - It receives responses from a majority of participants and, when asked for their vote, all of them vote for it. Note that votes are requested only when a participant is not reachable.
+	 * - The term number is incremented by the newly elected leader. The other participants notice about the new term when they receive an "append log records" request.
+	 *
+	 * Invariants:
+	 * - Election Safety: at most one leader can be elected in a given term. §5.2
+	 * - Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3
+	 * - Log Matching: if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index. §5.3
+	 * - Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4
+	 * - State Machine Safety: if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index. §5.4.3
+	 *
+	 * Design notes:
+	 * - Only one [[ConsensusParticipant]] instance should exist per participant in the cluster.
+	 * - All state mutations must occur within the sequencer thread to ensure consistency.
+	 */
+	class ConsensusParticipant(cluster: Cluster, storage: Storage, machine: StateMachine, initialListeners: Iterable[NotificationListener], stateMachineNeedsRestart: Boolean) { thisConsensusParticipant =>
 
 		import cluster.*
 
 		val module: thisConciliator.type = thisConciliator
-
-		inline val STOPPED = 0
-		inline val STARTING = 1
-		inline val ISOLATED = 2
-		inline val CANDIDATE = 3
-		inline val FOLLOWER = 4
-		inline val LEADER = 5
 
 		/** The current set of participants in the cluster, according to this participant, sorted.
 		 * Should be reflected in the [[Workspace]].
@@ -449,13 +468,13 @@ trait Conciliator { thisConciliator =>
 
 		{
 			initialListeners.foreach(notificationListeners.put(_, None))
-			currentBehavior.run()
+			currentBehavior.onEnter(STOPPED)
 		}
 
 		private object participantIdComparator extends Comparator[ParticipantId] {
 			private val ordering = summon[Ordering[ParticipantId]]
 
-			override def compare(a: ParticipantId, b: ParticipantId): BehaviorOrdinal = ordering.compare(a, b)
+			override def compare(a: ParticipantId, b: ParticipantId): Int = ordering.compare(a, b)
 		}
 
 		/** @return the ordinal of the current behavior. */
@@ -479,9 +498,11 @@ trait Conciliator { thisConciliator =>
 				currentBehavior.onLeave()
 				currentSchedule.foreach(sequencer.cancel(_))
 				currentSchedule = Maybe.empty
+				val previousBehaviorOrdinal = currentBehavior.ordinal
+				notifyListeners(_.onLeft(previousBehaviorOrdinal, currentTerm))
 				currentBehavior = newBehavior
 				cluster.setMessagesListener(newBehavior)
-				newBehavior.run()
+				newBehavior.onEnter(previousBehaviorOrdinal)
 			}
 			currentBehavior
 		}
@@ -495,18 +516,22 @@ trait Conciliator { thisConciliator =>
 		 *
 		 * All behavior methods are executed within the sequencer thread to ensure thread safety.
 		 */
-		private sealed abstract class Behavior extends MessagesListener, Runnable {
+		private sealed abstract class Behavior extends MessagesListener {
+			/** The ordinal corresponding to this [[Behavior]] */
 			val ordinal: BehaviorOrdinal
+
+			def onEnter(previous: BehaviorOrdinal): Unit
 
 			/** Called by [[become]] before transitioning to another behavior. */
 			def onLeave(): Unit = ()
 
 			def buildMyStateInfo: StateInfo = {
-				if ordinal <= STARTING then StateInfo(0, ordinal, 0, 0)
+				val currentBehaviorOrdinal = currentBehavior.ordinal
+				if currentBehaviorOrdinal <= STARTING then StateInfo(0, ordinal, 0, 0)
 				else {
 					val lastRecordIndex = workspace.firstEmptyRecordIndex - 1
 					val lastRecordTerm = workspace.getRecordTermAt(lastRecordIndex)
-					StateInfo(currentTerm, ordinal, lastRecordTerm, lastRecordIndex)
+					StateInfo(currentTerm, currentBehaviorOrdinal, lastRecordTerm, lastRecordIndex)
 				}
 			}
 
@@ -515,7 +540,7 @@ trait Conciliator { thisConciliator =>
 				if inquirerTerm > currentTerm && ordinal >= ISOLATED then {
 					currentTerm = inquirerTerm
 					// start the state-updater process
-					updatesState.triggerAndForget(true)
+					updatesState.triggerExposingFailures()
 				}
 				buildMyStateInfo
 			}
@@ -525,14 +550,14 @@ trait Conciliator { thisConciliator =>
 				if ordinal <= STARTING then sequencer.Task.successful(Vote(0, hostId, 0, ordinal))
 				else decidesMyVote(inquirerId, inquirerInfo).andThen {
 					case Success(vote) =>
-						if (vote.term > currentTerm && ordinal >= ISOLATED) || (vote.reachableCandidateCount < smallestMajority && ordinal >= CANDIDATE) then {
+						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidateCount < smallestMajority && ordinal >= CANDIDATE) then {
 							// start the state-updater process
-							updatesState(vote).triggerAndForget(true)
+							updatesState(vote).triggerExposingFailures()
 						}
 					case Failure(e) =>
 						scribe.error(s"$hostId: Unexpected error while deciding my vote for $inquirerId.")
 						// start the state-updater process
-						updatesState.triggerAndForget(true)
+						updatesState.triggerExposingFailures()
 				}
 			}
 
@@ -544,10 +569,7 @@ trait Conciliator { thisConciliator =>
 				else {
 					if inquirerTerm > currentTerm || ordinal <= CANDIDATE then {
 						currentTerm = inquirerTerm
-						updatesState.trigger(true) {
-							case Success(_) => // do nothing
-							case Failure(e) =>
-						}
+						updatesState.triggerExposingFailures() // TODO: analyze what happens if this updateState causes to become the leader, preferably with a test.
 					}
 
 					assert(inquirerTerm == currentTerm)
@@ -590,17 +612,17 @@ trait Conciliator { thisConciliator =>
 					for {
 						_ <- applyRecordLoop(commitIndex + 1)
 						result <- {
-							if ordinal <= STARTING then sequencer.Task.successful(AppendResult(0, false, ordinal))
+							if currentBehavior.ordinal <= STARTING then sequencer.Task.successful(AppendResult(0, false, ordinal))
 							else {
 								commitIndex = newCommitIndex
 								workspace.informCommitIndex(newCommitIndex)
 								storage.saves(workspace).transform {
 									case Success(_) =>
-										Success(AppendResult(currentTerm, true, ordinal))
+										Success(AppendResult(currentTerm, true, currentBehavior.ordinal))
 									case Failure(e) =>
 										scribe.error(s"$hostId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will stop.", e)
 										become(Stopped(e))
-										Success(AppendResult(0, false, ordinal))
+										Success(AppendResult(0, false, currentBehavior.ordinal))
 								}
 							}
 						}
@@ -609,7 +631,7 @@ trait Conciliator { thisConciliator =>
 			}
 
 			protected def updatesState: sequencer.Task[Unit] = {
-				assert(ordinal >= ISOLATED)
+				assert(currentBehavior.ordinal >= ISOLATED)
 				for {
 					myVote <- decidesMyVote(null, null)
 					saveResult <- updatesState(myVote)
@@ -617,20 +639,16 @@ trait Conciliator { thisConciliator =>
 			}
 
 			protected def updatesState(myVote: Vote): sequencer.Task[Unit] = {
-				inline def onConsensus(): Unit = {
-					if myVote.candidateId == hostId then become(Leader())
-					else become(Follower(myVote.candidateId))
-				}
-
-				assert(ordinal >= ISOLATED)
+				assert(currentBehavior.ordinal >= ISOLATED)
 				if myVote.term > currentTerm then currentTerm = myVote.term
 
 				if myVote.reachableCandidateCount == currentParticipants.size then {
-					onConsensus()
+					if myVote.candidateId == hostId then become(Leader())
+					else become(Follower(myVote.candidateId))
 					workspace.setCurrentTerm(currentTerm)
 					storage.saves(workspace)
 				} else if myVote.reachableCandidateCount < smallestMajority then {
-					become(Isolated()())
+					become(Isolated)
 					workspace.setCurrentTerm(currentTerm)
 					storage.saves(workspace)
 				} else {
@@ -648,8 +666,10 @@ trait Conciliator { thisConciliator =>
 								}
 								if replierVote.candidateId == myVote.candidateId && replierVote.reachableCandidateCount >= smallestMajority then votesCount += 1
 							}
-							if myVoteIsValid && votesCount >= smallestMajority then onConsensus()
-							else become(Candidate)
+							if myVoteIsValid && votesCount >= smallestMajority then {
+								if myVote.candidateId == hostId then become(Leader())
+								else become(Follower(myVote.candidateId))
+							} else become(Candidate)
 
 							workspace.setCurrentTerm(currentTerm)
 							storage.saves(workspace)
@@ -657,13 +677,22 @@ trait Conciliator { thisConciliator =>
 					} yield saveResult
 				}
 			}
+
+			extension [T](task: sequencer.Task[T]) {
+				def triggerExposingFailures(): Unit = {
+					updatesState.trigger(true) {
+						case Success(()) => // do nothing
+						case Failure(e) => scribe.error(s"$hostId: Unexpected error:", e)
+					}
+				}
+			}
 		}
 
 		private case class Stopped(motive: Throwable) extends Behavior {
 			override val ordinal: BehaviorOrdinal = STOPPED
 
-			override def run(): Unit = {
-				notifyListeners(_.onBecameStopped(currentTerm, motive))
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
+				notifyListeners(_.onBecameStopped(previous, currentTerm, motive))
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
@@ -677,10 +706,10 @@ trait Conciliator { thisConciliator =>
 		private case class Starting(isRestart: Boolean, stateMachineNeedsRestart: Boolean) extends Behavior {
 			override val ordinal: BehaviorOrdinal = STARTING
 
-			override def run(): Unit = {
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
 				workspace.release()
 				workspace = storage.invalidWorkspace()
-				notifyListeners(_.onStarting(isRestart))
+				notifyListeners(_.onStarting(previous, currentTerm, isRestart))
 				storage.loads.trigger(true) {
 					case Success(newWorkspace) =>
 						// TODO consider the stateMachineNeedsRestart flag
@@ -694,8 +723,8 @@ trait Conciliator { thisConciliator =>
 						currentParticipants = newWorkspace.getCurrentParticipants
 						otherParticipants = currentParticipants.filter(_ != hostId)
 						smallestMajority = currentParticipants.length / 2 + 1
-						notifyListeners(_.onStarted(currentTerm, isRestart))
-						become(Isolated()())
+						notifyListeners(_.onStarted(previous, currentTerm, isRestart))
+						become(Isolated)
 
 					case Failure(e) =>
 						scribe.error(s"$hostId: Unexpected error while restarting the consensus service:", e)
@@ -712,8 +741,9 @@ trait Conciliator { thisConciliator =>
 		/**
 		 * Behavior state to which the participant transitions to when the leader becomes unreachable or receives a message with a term greater than the current term.
 		 * This state is abandoned when the leader is found or the majority of the participants are reachable.
+		 * The [[ConsensusParticipant]] behaves exactly the same in [[Isolated]] and [[Candidate]] states. The only goal of the separation is to allow the user to distinguish if a majority of participants is reachable or not.
 		 */
-		private case class Isolated()(previousBehavior: BehaviorOrdinal = currentBehavior.ordinal) extends Behavior {
+		private case object Isolated extends Behavior {
 			override val ordinal: BehaviorOrdinal = ISOLATED
 
 			/**
@@ -722,13 +752,13 @@ trait Conciliator { thisConciliator =>
 			 * If so, it becomes a follower or a candidate respectively.
 			 * If not, it stays in the isolated state and checks again after a while.
 			 */
-			override def run(): Unit = {
-				notifyListeners(_.onBecameIsolated(currentTerm, previousBehavior))
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
+				notifyListeners(_.onBecameIsolated(previous, currentTerm))
 				if isEager then {
 					val schedule = sequencer.newDelaySchedule(isolatedMainLoopInterval)
 					currentSchedule = Maybe.some(schedule)
 					// schedule the state-updater process
-					updatesState.appointed(schedule).triggerAndForget(true)
+					updatesState.appointed(schedule).triggerExposingFailures()
 				}
 			}
 
@@ -736,9 +766,11 @@ trait Conciliator { thisConciliator =>
 				assert(isInSequence)
 				for {
 					_ <- updatesState
-					result <-
-						if ordinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
-						else sequencer.Task.successful(Unable(ordinal, otherParticipants))
+					result <- {
+						val currentBehaviorOrdinal = currentBehavior.ordinal
+						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
+						else sequencer.Task.successful(Unable(currentBehaviorOrdinal, otherParticipants))
+					}
 				} yield result
 			}
 		}
@@ -746,30 +778,25 @@ trait Conciliator { thisConciliator =>
 		/**
 		 * Behavior state when the participant is running for leadership.
 		 *
-		 * In this state, the participant participates in leader election and may transition to [[Leader]], [[Follower]], or [[Isolated]] based on the election outcome.
+		 * In this state, the participant participates in leader election and may transition to [[Leader]], [[Follower]], or [[Isolated]] based on his viewpoint of other participants state.
 		 * A new term is started when becoming leader.
+		 * The [[ConsensusParticipant]] behaves exactly the same in [[Isolated]] and [[Candidate]] states. The only goal of the separation is to allow the user to distinguish if a majority of participants is reachable or not.
 		 */
 		private case object Candidate extends Behavior {
 			override val ordinal: BehaviorOrdinal = CANDIDATE
 
-			override def run(): Unit = {
-				notifyListeners(_.onBecameCandidate(currentTerm))
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
+				notifyListeners(_.onBecameCandidate(previous, currentTerm))
 				if isEager then {
 					val schedule = sequencer.newDelaySchedule(candidateMainLoopInterval)
 					currentSchedule = Maybe.some(schedule)
 					// schedule the state-update process
-					updatesState.appointed(schedule).triggerAndForget(true)
+					updatesState.appointed(schedule).triggerExposingFailures()
 				}
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
-				assert(isInSequence)
-				for {
-					_ <- updatesState
-					result <-
-						if ordinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
-						else sequencer.Task.successful(Unable(ordinal, otherParticipants))
-				} yield result
+				Isolated.onCommandFromClient(command, isFallback)
 			}
 		}
 
@@ -784,14 +811,14 @@ trait Conciliator { thisConciliator =>
 		private case class Follower(leaderId: ParticipantId) extends Behavior {
 			override val ordinal: BehaviorOrdinal = FOLLOWER
 
-			override def run(): Unit = {
-				notifyListeners(_.onBecameFollower(currentTerm, leaderId))
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
+				notifyListeners(_.onBecameFollower(previous, currentTerm, leaderId))
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
-				if isFallback then updatesState.triggerAndForget(true)
-				sequencer.Task.successful(RedirectTo(leaderId))
+				if isFallback then Isolated.onCommandFromClient(command, isFallback)
+				else sequencer.Task.successful(RedirectTo(leaderId))
 			}
 		}
 
@@ -823,9 +850,9 @@ trait Conciliator { thisConciliator =>
 
 			private var failedReplicationsLoopSchedule: Maybe[sequencer.Schedule] = Maybe.empty
 
-			override def run(): Unit = {
+			override def onEnter(previous: BehaviorOrdinal): Unit = {
 				currentTerm += 1
-				notifyListeners(_.onBecameLeader(currentTerm))
+				notifyListeners(_.onBecameLeader(previous, currentTerm))
 				replicateUncommitedRecords().trigger(true) {
 					case Success(_) => // do nothing
 					case Failure(e) =>
@@ -836,6 +863,19 @@ trait Conciliator { thisConciliator =>
 			override def onLeave(): Unit = {
 				failedReplicationsLoopSchedule.foreach(sequencer.cancel(_))
 				failedReplicationsLoopSchedule = Maybe.empty
+			}
+
+			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+				assert(isInSequence)
+				// append the command to the log buffer
+				val commandRecord = Command(currentTerm, command)
+				val index = workspace.firstEmptyRecordIndex
+				workspace.appendRecord(commandRecord)
+
+				for {
+					_ <- replicateUncommitedRecords()
+					response <- machine.appliesClientCommand(index, command)
+				} yield Processed(index, response)
 			}
 
 			/**
@@ -864,7 +904,7 @@ trait Conciliator { thisConciliator =>
 						// Update the commitIndex if a majority of the followers have replicated the uncommited records.
 						// If there exists an N such that N > commitIndex, a majority of highestEntryIndexKnowToBeReplicated_ByParticipantIndex[i] ≥ N, and getRecordAt[N].term == currentTerm: set commitIndex = N
 						var n = commitIndex + 1
-						while n < workspace.firstEmptyRecordIndex &&  highestRecordIndexKnowToBeReplicated_ByParticipantIndex.count(_ >= n) >= smallestMajority && workspace.getRecordAt(n).term == currentTerm do {
+						while n < workspace.firstEmptyRecordIndex && highestRecordIndexKnowToBeReplicated_ByParticipantIndex.count(_ >= n) >= smallestMajority && workspace.getRecordAt(n).term == currentTerm do {
 							commitIndex = n
 							n += 1
 						}
@@ -890,7 +930,7 @@ trait Conciliator { thisConciliator =>
 														sequencer.Task.successful(())
 													} else {
 														scribe.info(s"$hostId: Retrying to replicate commited records to $followerId because of:", e)
-														appendsRecordsToFollower(followerIndex, commitIndex) // TODO Is `commitIndex` the right index to retry until? Or should it be the index of the last record in the log?
+														appendsRecordsToFollower(followerIndex, workspace.firstEmptyRecordIndex) // TODO Is `firstEmptyRecordIndex` the right index to retry until? Or should it be the `commitIndex`?
 													}
 											}
 										}
@@ -905,11 +945,11 @@ trait Conciliator { thisConciliator =>
 			}
 
 			/**
-			 * Builds a task that appends to the specified follower the records between the follower's next record to send and the given index.
-			 * If the follower's response is not successful because his log does not match mine before the `indexOfNextRecordToSend`, then the task will retry to append the records again starting from the previous record after a delay.
+			 * Creates a task that sends log records to the specified follower, starting from the follower's next expected record up to (but not including) the given index.
+			 * If the follower's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
 			 * @param followerIndex The index of the follower in the [[otherParticipants]] array.
-			 * @param until The index after the last record to send.
-			 * @return A task that appends records to the follower.
+			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[workspace.firstEmptyRecordIndex]]?
+			 * @return A task that attempts to append records to the follower.
 			 */
 			private def appendsRecordsToFollower(followerIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
 				val followerId = otherParticipants(followerIndex)
@@ -927,9 +967,9 @@ trait Conciliator { thisConciliator =>
 							else {
 								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(followerIndex)
 								if followerTerm > currentTerm then {
-									// If the term is greater than the current term, then the leader has changed. So, start the state-update process. 
+									// If the term is greater than the current term, then the leader has changed. So, start the state-update process.
 									currentTerm = followerTerm
-									updatesState.triggerAndForget(true)
+									updatesState.triggerExposingFailures()
 									// Yield a successful result to avoid the retry loop.
 									sequencer.Task.successful(())
 								} else if success then {
@@ -949,19 +989,6 @@ trait Conciliator { thisConciliator =>
 						}
 					} yield result
 				}
-			}
-
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
-				assert(isInSequence)
-				// append the command to the log buffer
-				val commandRecord = Command(currentTerm, command)
-				val index = workspace.firstEmptyRecordIndex
-				workspace.appendRecord(commandRecord)
-
-				for {
-					_ <- replicateUncommitedRecords()
-					response <- machine.appliesClientCommand(index, command)
-				} yield Processed(index, response)
 			}
 		}
 
@@ -1026,7 +1053,6 @@ trait Conciliator { thisConciliator =>
 
 		//// NOTIFICATIONS
 
-
 		def subscribe(listener: NotificationListener): Unit = {
 			assert(isInSequence)
 			notificationListeners.put(listener, None)
@@ -1040,6 +1066,5 @@ trait Conciliator { thisConciliator =>
 		private inline def notifyListeners(inline what: NotificationListener => Unit): Unit = {
 			notificationListeners.forEach { (listener, _) => what(listener) }
 		}
-
 	}
 }

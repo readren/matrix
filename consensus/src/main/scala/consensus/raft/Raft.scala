@@ -1,12 +1,14 @@
 package readren.matrix
-package consensus
+package consensus.raft
+
+import consensus.*
 
 import readren.taskflow.SchedulingExtension.MilliDuration
 import scribe.*
 
 import scala.collection.mutable
-import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Random, Success}
 
 /** Configuration settings for the Raft consensus algorithm */

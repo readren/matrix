@@ -1,5 +1,6 @@
 package readren.matrix
-package consensus
+package consensus.raft
+
 
 import readren.taskflow.{Doer, SchedulingExtension}
 

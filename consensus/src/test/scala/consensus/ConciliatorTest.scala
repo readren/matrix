@@ -1,6 +1,7 @@
 package readren.matrix
 package consensus
 
+import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
 import providers.assistant.{CooperativeWorkersDap, DoerAssistantProvider, SchedulingDap}
 
 import munit.ScalaCheckEffectSuite
@@ -9,11 +10,11 @@ import org.scalacheck.effect.PropF
 import readren.taskflow.SchedulingExtension.MilliDuration
 import readren.taskflow.{Doer, Maybe, SchedulingExtension}
 
-import java.util.concurrent.Executors
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
 import scala.compiletime.uninitialized
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.ExecutionContext
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
@@ -21,6 +22,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 	private given ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
 
+	/** Id of a [[Node]]. Implements [[Conciliator.ParticipantId]]. */
 	private type Id = String
 
 	// Test command type
@@ -35,11 +37,11 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 	private class Net(latency: MilliDuration, timeout: MilliDuration) {
 		val sequencer = Sequencer(0)
-		private var nodeById: Map[Id, TC] = Map.empty
+		private var nodeById: Map[Id, Node] = Map.empty
 		private var indexById: Map[Id, Int] = Map.empty
-		private val nodeByIndex: ArrayBuffer[TC] = ArrayBuffer.empty
+		private val nodeByIndex: ArrayBuffer[Node] = ArrayBuffer.empty
 
-		def addNode(id: Id, node: TC): Unit = synchronized {
+		def addNode(id: Id, node: Node): Unit = synchronized {
 			nodeById += id -> node
 			indexById += id -> nodeByIndex.size
 			nodeByIndex.addOne(node)
@@ -47,17 +49,25 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 		def size: Int = synchronized(nodeById.size)
 
-		def getNode(index: Int): TC = synchronized { nodeByIndex(index) }
-		def getNode(id: String): Option[TC] = synchronized { nodeById.get(id) }
-		def indexOf(id: String): Int = synchronized { indexById(id) }
+		def getNode(index: Int): Node = synchronized {
+			nodeByIndex(index)
+		}
+
+		def getNode(id: String): Option[Node] = synchronized {
+			nodeById.get(id)
+		}
+
+		def indexOf(id: String): Int = synchronized {
+			indexById(id)
+		}
 
 		extension (inquirerId: Id) {
-			def accessNode(id: Id): sequencer.Task[TC] = {
+			def accessNode(id: Id): sequencer.Task[Node] = {
 				sequencer.Task.ownFlat { () =>
 					getNode(id).fold {
 						sequencer.Task.failed(new RuntimeException(s"$inquirerId: no response from $id")).appointed(sequencer.newDelaySchedule(timeout))
-					} { tc =>
-						sequencer.Task.successful(tc).appointed(sequencer.newDelaySchedule(latency))
+					} { node =>
+						sequencer.Task.successful(node).appointed(sequencer.newDelaySchedule(latency))
 					}
 				}
 			}
@@ -68,34 +78,36 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	 * Simulates a client.
 	 * @param net The network to use.
 	 * @param initialReceiverIndex The initial receiver index. */
-	private class Client(val net: Net, initialReceiverIndex: Int) {
-		var receiverIndex: Int = initialReceiverIndex
+	private class Client[N <: Net](val net: N, initialReceiverIndex: Int) {
+		private var receiverIndex: Int = initialReceiverIndex
 
 		/**
 		 * Sends a command to a node of the net.
 		 * Initially, the target node is the node at the `initialReceiverIndex`.
-		 * If the node responds with a [[RedirectTo]] the target node is updated to the redirected node and following commands are sent to the new target node.
-		 * If the node responds with an [[Unable]] the command is retried on the next node of the net.
-		 * If the node responds with a [[Processed]] the command is considered processed and the target node is not updated.
+		 * If the target node responds with a [[RedirectTo]] the target node is updated to the redirected node and following commands are sent to the new target node.
+		 * If the target node responds with an [[Unable]] the command is retried on the next node of the net.
+		 * If the target node responds with a [[Processed]] the command is considered processed and the target node is not updated.
 		 * @param command The command to send.
-		 * @param isFallback Whether the command is a fallback command. */
-		def sendsCommand(command: String, isFallback: Boolean = false, retriesCounter: Int = 0): net.sequencer.Task[Unit] = {
+		 * @param isFallback Whether the command is a fallback command.
+		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
+		def sendsCommand(command: String, isFallback: Boolean = false, retriesCounter: Int = 0): net.sequencer.Task[Boolean] = {
+			if net.size == 0 then net.sequencer.Task.successful(false)
+			if receiverIndex < 0 then receiverIndex = net.size - 1
 			val receiverNode = net.getNode(receiverIndex)
 
-			def retry(): receiverNode.sequencer.Task[Unit] = {
-				receiverIndex += 1
-				if receiverIndex == net.size then receiverIndex = 0
-				if retriesCounter >= net.size then receiverNode.sequencer.Task.unit
+			def retry(): receiverNode.sequencer.Task[Boolean] = {
+				receiverIndex -= 1
+				if retriesCounter > net.size then receiverNode.sequencer.Task.successful(false)
 				else sendsCommand(command, true, retriesCounter + 1).onBehalfOf(receiverNode.sequencer)
 			}
 
 			receiverNode.sequencer.Task.ownFlat { () =>
 				val receiverBehavior = receiverNode.participant.getBehaviorOrdinal
 				receiverNode.cluster.messagesListener.onCommandFromClient(TestCommand(command), isFallback)
-					.transformWith[Unit] {
+					.transformWith[Boolean] {
 						case Success(receiverNode.Processed(index, content)) =>
 							scribe.info(s"Client: command `$command` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
-							receiverNode.sequencer.Task.unit
+							receiverNode.sequencer.Task.successful(true)
 						case Success(receiverNode.RedirectTo(leaderId)) =>
 							scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$command` to the leader $leaderId.")
 							receiverIndex = net.indexOf(leaderId)
@@ -113,9 +125,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	}
 
 	/**
-	 * Test implementation of  [[Conciliator]]
+	 * Test implementation of [[Conciliator]]
 	 */
-	private class TC(val myId: Id, participantsIds: Set[Id], net: Net, stateMachineNeedsRestart: Boolean = false) extends Conciliator { thisTC =>
+	private class Node(val myId: Id, participantsIds: Set[Id], net: Net, stateMachineNeedsRestart: Boolean = false) extends Conciliator { thisNode =>
 		assert(participantsIds.contains(myId))
 
 		import net.accessNode
@@ -124,19 +136,34 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		override type ClientCommand = TestCommand
 		override type StateMachineResponse = String
 
+		var logListener: LogListener = new LogListener() {
+			override def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+		}
+
 		private var _participant: ConsensusParticipant = uninitialized
 
+		/** @return the [[ConsensusParticipant]] instance associated to this node. */
 		inline def participant: ConsensusParticipant = _participant
 
-		def start(initialNotificationListener: NotificationListener): sequencer.Task[Unit] = {
-			sequencer.Task.ownFlat { () =>
-				val startedCommitment = sequencer.Commitment[Unit]
-				val startedListener = new AbstractNotificationListener() {
-					override def onStarted(term: Term, isRestart: Boolean): Unit = if !isRestart then startedCommitment.fulfill(())(_ => ())
+		/** Initializes this node, adding it to the `net` and creating the associated [[ConsensusParticipant]] instance. */
+		def initializes(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
+			net.addNode(myId, thisNode)
+			sequencer.Duty.mine { () =>
+				_participant = ConsensusParticipant(cluster, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
+			}
+		}
+
+
+		/** Initializes this node and waits it's associated [[ConsensusParticipant]] instance to be started. */
+		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
+			net.addNode(myId, thisNode)
+			sequencer.Duty.mineFlat { () =>
+				val startedCovenant = sequencer.Covenant[Unit]
+				val startedListener = new DefaultNotificationListener() {
+					override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = if !isRestart then startedCovenant.fulfill(())(_ => ())
 				}
-				_participant = ConsensusParticipant(cluster, storage, machine, List(startedListener, initialNotificationListener), stateMachineNeedsRestart)
-				net.addNode(myId, thisTC)
-				startedCommitment
+				_participant = ConsensusParticipant(cluster, storage, machine, List(startedListener, initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
+				startedCovenant
 			}
 		}
 
@@ -199,7 +226,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				}
 
 				def asksToAppendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
-					inline def migrateRecordsTo(replier: TC): GenIndexedSeq[replier.Record] = {
+					inline def migrateRecordsTo(replier: Node): GenIndexedSeq[replier.Record] = {
 						for record <- records yield record match {
 							case c: Command => replier.Command(c.term, c.command)
 							case lt: LeaderTransition => replier.LeaderTransition(lt.term)
@@ -336,7 +363,10 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 						newIndex += 1
 					}
 				}
-				if conflictFound then logBuffer.takeInPlace(storedIndex)
+				if conflictFound then {
+					logBuffer.takeInPlace(storedIndex)
+					logListener.onConflict(storedIndex + logBufferOffset, participant.getTerm, participant.getBehaviorOrdinal)
+				}
 				while newIndex < records.size do {
 					logBuffer += records(newIndex)
 					newIndex += 1
@@ -348,21 +378,53 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 			override def release(): Unit = ()
 		}
+
+		trait LogListener {
+			def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit
+		}
+
+		object notificationScribe extends NotificationListener {
+			override def onStarting(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}starting...")
+
+			override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}started.")
+
+			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = scribe.info(s"$myId: became stoped during term $term.", motive)
+
+			override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from $previous during term $term.")
+
+			override def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became candidate during term $term.")
+
+			override def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: Id): Unit = scribe.info(s"$myId: became follower of $leaderId during term $term")
+
+			override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became leader of term $term")
+
+			override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
+		}
 	}
 
 
 	/**
 	 * Helper to create participant ids.
 	 */
-	def createIds(size: Int): IndexedSeq[Id] = {
+	private def createIds(size: Int): IndexedSeq[Id] = {
 		(1 to size).map(i => s"participant-$i")
 	}
 
-	test("Simple test to verify framework works") {
-		PropF.forAllF(Gen.choose(1, 5)) { clusterSize =>
-			Future(assert(clusterSize > 2))
-		}
+
+	/** Helper to create and initialize the nodes. */
+	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int)(notificationListenerBuilder: (node: Node) => node.NotificationListener): net.sequencer.Duty[Array[Unit]] = {
+		val ids = createIds(clusterSize)
+		val nodes = for id <- ids yield Node(id, ids.toSet, net)
+		var notificationsListenersHolder: List[Any] = Nil
+		val nodeInitializerByIndex =
+			for node <- nodes yield {
+				val nl = notificationListenerBuilder(node)
+				notificationsListenersHolder = nl :: notificationsListenersHolder
+				node.initializes(initialNotificationListener = nl).onBehalfOf(net.sequencer)
+			}
+		net.sequencer.Duty.sequenceToArray(nodeInitializerByIndex)
 	}
+
 
 	test("Election Safety - at most one leader can be elected in a given term") {
 		PropF.forAllNoShrinkF(
@@ -370,54 +432,91 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 			Gen.choose(1, 11)
 		) { (t, latency) =>
 			val (clusterSize, receiverIndex) = t
-			val net = new Net(latency, 10)
-			val ids = createIds(clusterSize)
-			val tcs = for id <- ids yield TC(id, ids.toSet, net)
 			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
-			var notificationsListenersHolder: List[Any] = Nil
-			val initTasks: IndexedSeq[net.sequencer.Task[net.sequencer.Commitment[Id]]] =
-				for tc <- tcs yield {
-					val consensusCommitment = net.sequencer.Commitment[Id]
-					val listener = new tc.NotificationListener {
-						override def onStarting(isRestart: Boolean): Unit = scribe.info(s"${tc.myId}: ${if isRestart then "re" else ""}starting...")
+			val net = new Net(latency, 10)
+			val leaderNodeByTerm: ConcurrentMap[Term, Node] = new ConcurrentHashMap()
+			val atMostOneLeaderCommitment = net.sequencer.Commitment[Unit]
 
-						override def onStarted(term: tc.Term, isRestart: Boolean): Unit = scribe.info(s"${tc.myId}: ${if isRestart then "re" else ""}started.")
-
-						override def onBecameStopped(term: tc.Term, motive: Throwable): Unit = scribe.info(s"${tc.myId}: became stoped during term $term.", motive)
-
-						override def onBecameIsolated(term: tc.Term, previousBehavior: tc.BehaviorOrdinal): Unit = scribe.info(s"${tc.myId}: became isolated from $previousBehavior during term $term.")
-
-						override def onBecameCandidate(term: tc.Term): Unit = scribe.info(s"${tc.myId}: became candidate during term $term.")
-
-						override def onBecameFollower(term: tc.Term, leaderId: Id): Unit = {
-							scribe.info(s"${tc.myId}: became follower of $leaderId during term $term")
-							consensusCommitment.fulfill(leaderId)(_ => ())
-						}
-
-						override def onBecameLeader(term: tc.Term): Unit = {
-							scribe.info(s"${tc.myId}: became leader of term $term")
-							consensusCommitment.fulfill(tc.myId)(_ => ())
-						}
+			val initializes = createsAndInitializesNodes(net, clusterSize) { node =>
+				new node.DefaultNotificationListener() {
+					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
+						leaderNodeByTerm.compute(term, (t, previousLeader) =>
+							if previousLeader ne null then atMostOneLeaderCommitment.break(new AssertionError(s"Node $node became leader at term $t despite node $previousLeader was a leader of the same term before"))()
+							node
+						)
 					}
-					// Next line is needed because ConsensusParticipant`s references to notification listeners are weak.
-					notificationsListenersHolder = listener :: notificationsListenersHolder
-					tc.start(listener).map(_ => consensusCommitment).onBehalfOf(net.sequencer)
 				}
-			val commandsReceiver = tcs(receiverIndex)
-			val compares =
-				for {
-					commitments <- net.sequencer.Task.sequenceToArray(initTasks)
-					client = Client(net, receiverIndex)
-					rtc1 <- client.sendsCommand("First")
-						.onBehalfOf(net.sequencer)
-					rtc2 <- client.sendsCommand("Second")
-						.onBehalfOf(net.sequencer)
-					oLeaderByParticipant <- net.sequencer.Task.sequenceToArray(commitments)
-						.timeBounded(net.sequencer.newDelaySchedule(1000))
-				} yield {
-					assert(oLeaderByParticipant.fold(false)(_.toSet.size == 1))
+			}
+			val checks = for _ <- initializes yield {
+
+				val client = Client[net.type](net, receiverIndex)
+
+				inline val MAX_RETRIES = 9
+
+				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.sequencer.Task[Unit] = {
+					if commandIndex >= 10 || atMostOneLeaderCommitment.isCompleted then net.sequencer.Task.unit
+					else if retriesCounter > MAX_RETRIES then net.sequencer.Task.failed(new AssertionError("The cluster got stuck unable to progress"))
+					else for {
+						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
+						_ <- {
+							if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
+							else sendCommandLoop(commandIndex, retriesCounter + 1)
+						}
+					} yield ()
 				}
-			compares.toFuture(false)
+
+				atMostOneLeaderCommitment.completeWith(sendCommandLoop(1, 0))()
+			}
+
+			checks.triggerAndForget(false)
+
+			atMostOneLeaderCommitment.toFuture(false)
+		}
+	}
+
+
+	test("Leader Append-Only - a leader never overwrites or deletes entries in its log") {
+		PropF.forAllNoShrinkF(
+			Gen.choose(3, 5).flatMap(n => Gen.choose(0, n - 1).map(m => (n, m))),
+			Gen.choose(1, 11),
+			Gen.choose(2, 5)
+		) { (t, latency, numCommands) =>
+			val (clusterSize, receiverIndex) = t
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency, numCommands=$numCommands")
+
+			val net = new Net(latency, 10)
+			val leaderNeverOverwritesCommitment = net.sequencer.Commitment[Unit]
+			val initializes = createsAndInitializesNodes(net, clusterSize) { node =>
+				node.logListener = new node.LogListener() {
+					override def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit =
+						if behaviorOrdinal == LEADER then leaderNeverOverwritesCommitment.break(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index in term $term."))()
+				}
+				node.DefaultNotificationListener()
+			}
+
+			val checks = for _ <- initializes yield {
+
+				val client = Client[net.type](net, receiverIndex)
+
+				inline val MAX_RETRIES = 9
+
+				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.sequencer.Task[Unit] = {
+					if commandIndex >= 10 || leaderNeverOverwritesCommitment.isCompleted then net.sequencer.Task.unit
+					else if retriesCounter > MAX_RETRIES then net.sequencer.Task.failed(new AssertionError("The cluster got stuck unable to progress"))
+					else for {
+						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
+						_ <- {
+							if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
+							else sendCommandLoop(commandIndex, retriesCounter + 1)
+						}
+					} yield ()
+				}
+
+				leaderNeverOverwritesCommitment.completeWith(sendCommandLoop(1, 0))()
+			}
+
+			checks.triggerAndForget(false)
+			leaderNeverOverwritesCommitment.toFuture(false)
 		}
 	}
 }
