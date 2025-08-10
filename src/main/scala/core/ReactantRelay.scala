@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.taskflow.{Doer, Maybe}
+import readren.sequencer.{Doer, Maybe}
 
 import scala.collection.MapView
 

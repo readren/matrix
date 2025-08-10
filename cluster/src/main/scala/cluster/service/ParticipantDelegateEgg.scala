@@ -9,7 +9,7 @@ import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.ContactAddress
 import cluster.service.{ChannelId, Protocol}
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel

@@ -4,7 +4,7 @@ package cluster.service.behavior
 import cluster.service.Protocol.*
 import cluster.service.*
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 class IsolatedBehavior(override val host: ParticipantService, startingStateSerial: RingSerial, override val myClusterId: ClusterId) extends MemberBehavior(host, startingStateSerial, myClusterId) {
 

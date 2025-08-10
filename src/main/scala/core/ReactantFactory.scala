@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 trait ReactantFactory {
 

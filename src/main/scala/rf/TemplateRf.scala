@@ -3,7 +3,7 @@ package rf
 
 import core.*
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFactory {
 	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */

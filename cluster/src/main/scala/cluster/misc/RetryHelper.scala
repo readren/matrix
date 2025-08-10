@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.misc
 
-import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.util.function.Consumer
 import scala.util.{Failure, Success, Try}

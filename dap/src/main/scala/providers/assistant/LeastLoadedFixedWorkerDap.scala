@@ -5,7 +5,7 @@ import providers.ShutdownAble
 import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.LeastLoadedFixedWorkerDap.AssistantImpl
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger

@@ -1,8 +1,8 @@
 package readren.matrix
 package consensus
 
-import readren.taskflow.SchedulingExtension.MilliDuration
-import readren.taskflow.{Doer, Maybe, SchedulingExtension}
+import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.{Doer, Maybe, SchedulingExtension}
 
 import java.util
 import java.util.Comparator

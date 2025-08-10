@@ -9,7 +9,7 @@ import cluster.serialization.{ProtocolVersion, Serializer}
 import cluster.service.Protocol.ContactAddress
 
 import readren.matrix.cluster.service.ChannelId
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}

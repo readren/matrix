@@ -6,7 +6,7 @@ import core.{AbstractMatrix, MatrixDoer}
 import providers.ShutdownAble
 import providers.assistant.DoerAssistantProvider
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 import java.util.concurrent.TimeUnit
 

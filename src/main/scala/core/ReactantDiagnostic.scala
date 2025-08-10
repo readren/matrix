@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 class ReactantDiagnostic(val isReadyToProcess: Boolean, val isMarkedToStop: Boolean, val stopWasStarted: Boolean, val inboxSize: Int, val pendingMessages: Iterator[Any], val childrenDiagnostic: Array[ReactantDiagnostic]) {
 	override def toString: String = {

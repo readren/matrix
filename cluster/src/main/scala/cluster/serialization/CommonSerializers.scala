@@ -1,7 +1,7 @@
 package readren.matrix
 package cluster.serialization
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.nio.charset.StandardCharsets
 import scala.collection.SortedMap

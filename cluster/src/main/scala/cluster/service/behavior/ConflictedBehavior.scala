@@ -4,7 +4,7 @@ package cluster.service.behavior
 import cluster.service.Protocol.{ClusterId, CommunicationStatus, Conflicted, Instant, Member, MembershipStatus}
 import cluster.service.*
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import scala.collection.mutable
 

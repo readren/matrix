@@ -3,7 +3,7 @@ package core
 
 import core.Matrix.DoerProviderDescriptor
 
-import readren.taskflow.{Doer, Maybe}
+import readren.sequencer.{Doer, Maybe}
 
 import scala.compiletime.asMatchable
 

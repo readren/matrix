@@ -3,7 +3,7 @@ package msgbuffers
 
 import core.{Inbox, MatrixDoer, Reactant, Receiver}
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.net.URI
 import scala.collection.AbstractIterator

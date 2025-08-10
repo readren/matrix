@@ -3,7 +3,7 @@ package cluster.service
 
 import cluster.service.ChannelOrigin
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.net.SocketAddress
 

@@ -3,7 +3,7 @@ package core
 
 import providers.assistant.DoerAssistantProvider.Tag
 
-import readren.taskflow.AbstractDoer
+import readren.sequencer.AbstractDoer
 
 abstract class MatrixDoer extends AbstractDoer {
 	val tag: Tag

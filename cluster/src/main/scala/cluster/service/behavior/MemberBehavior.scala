@@ -5,7 +5,7 @@ import cluster.service.*
 import cluster.service.Protocol.*
 import common.CompileTime.getTypeName
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import scala.collection.MapView
 

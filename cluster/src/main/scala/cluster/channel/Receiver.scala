@@ -9,7 +9,7 @@ import cluster.serialization.{Deserializer, ProtocolVersion}
 import cluster.service.Protocol.ContactAddress
 
 import readren.matrix.cluster.service.ChannelId
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 import scribe.LogFeature
 
 import java.net.SocketAddress

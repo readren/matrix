@@ -6,7 +6,7 @@ import providers.ShutdownAble
 import providers.assistant.CooperativeWorkersDap.*
 import providers.assistant.DoerAssistantProvider.Tag
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*

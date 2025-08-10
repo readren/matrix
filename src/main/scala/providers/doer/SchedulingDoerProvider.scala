@@ -5,7 +5,7 @@ import core.{AbstractMatrix, MatrixDoer}
 import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.SchedulingDap
 
-import readren.taskflow.SchedulingExtension
+import readren.sequencer.SchedulingExtension
 
 import java.util.concurrent.{Executors, ThreadFactory}
 

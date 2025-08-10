@@ -6,8 +6,8 @@ import providers.assistant.CooperativeWorkersDap.*
 import providers.assistant.DoerAssistantProvider.Tag
 import providers.assistant.SchedulingDap.*
 
-import readren.taskflow.SchedulingExtension
-import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.sequencer.SchedulingExtension
+import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.util
 import java.util.concurrent.*
@@ -182,7 +182,7 @@ class SchedulingDap(
 
 			inline def owner: thisSchedulingAssistant.type = thisSchedulingAssistant
 
-			override def toString: String = readren.taskflow.deriveToString(this)
+			override def toString: String = readren.sequencer.deriveToString(this)
 		}
 	}
 

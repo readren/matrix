@@ -2,7 +2,7 @@ package readren.matrix
 package consensus.raft
 
 
-import readren.taskflow.{Doer, SchedulingExtension}
+import readren.sequencer.{Doer, SchedulingExtension}
 
 import scala.concurrent.Future
 

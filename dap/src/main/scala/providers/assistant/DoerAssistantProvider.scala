@@ -3,7 +3,7 @@ package providers.assistant
 
 import providers.assistant.DoerAssistantProvider.Tag
 
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 object DoerAssistantProvider {
 	type Tag = Long

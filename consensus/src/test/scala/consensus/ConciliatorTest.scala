@@ -7,8 +7,8 @@ import providers.assistant.{CooperativeWorkersDap, DoerAssistantProvider, Schedu
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import readren.taskflow.SchedulingExtension.MilliDuration
-import readren.taskflow.{Doer, Maybe, SchedulingExtension}
+import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.{Doer, Maybe, SchedulingExtension}
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer

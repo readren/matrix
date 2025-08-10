@@ -11,8 +11,8 @@ import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 import cluster.service.behavior.*
 
-import readren.taskflow.Maybe
-import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.sequencer.Maybe
+import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.net.SocketOption
 import java.nio.channels.{AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler}

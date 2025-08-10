@@ -7,7 +7,7 @@ import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT
 import cluster.service.{ChannelId, Protocol}
 import cluster.service.Protocol.{CommunicationStatus, ContactAddress, IncommunicabilityReason}
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel

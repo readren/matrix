@@ -10,7 +10,7 @@ import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.behavior.MembershipScopedBehavior
 import common.CompileTime.getTypeName
 
-import readren.taskflow.Maybe
+import readren.sequencer.Maybe
 
 class AspirantBehavior(override val host: ParticipantService) extends MembershipScopedBehavior { thisAspirantBehavior =>
 	override type MS = Aspirant.type

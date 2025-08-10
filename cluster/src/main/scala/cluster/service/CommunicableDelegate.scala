@@ -10,8 +10,8 @@ import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 
 import readren.matrix.cluster.service.behavior.MembershipScopedBehavior
-import readren.taskflow.Maybe
-import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.sequencer.Maybe
+import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel

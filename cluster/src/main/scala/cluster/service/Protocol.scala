@@ -7,8 +7,8 @@ import cluster.serialization.NestedSumMatchMode.FLAT
 import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVersion, Serializer}
 import cluster.service.Protocol.*
 
-import readren.taskflow.Maybe
-import readren.taskflow.SchedulingExtension.MilliDuration
+import readren.sequencer.Maybe
+import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress
 import scala.compiletime.erasedValue

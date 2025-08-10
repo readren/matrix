@@ -4,7 +4,7 @@ package providers.assistant
 import providers.ShutdownAble
 
 import munit.ScalaCheckEffectSuite
-import readren.taskflow.Doer
+import readren.sequencer.Doer
 
 import java.util.concurrent.TimeUnit
 import scala.collection.immutable.ArraySeq
