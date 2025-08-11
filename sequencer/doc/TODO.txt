@@ -1,1 +1,0 @@
-Investigar si se puede hacer una especie de compilador te Duty y Task que las convierta en una función que hace lo mismo pero sin crear las instancias de Duty y Task en cada ejecución. 

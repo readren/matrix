@@ -1,26 +1,19 @@
 package readren.sequencer
 
-import org.scalatest.funspec.AnyFunSpec
+import munit.ScalaCheckEffectSuite
 
-class MaybeTest extends AnyFunSpec {
-	describe("A Maybe") {
-		describe("when not empty") {
-			val oneMaybe: Maybe[1] = Maybe.some(1)
-			it("should behave as non-empty") {
-				assert(oneMaybe.isDefined)
-			}
-		}
-		describe("when empty") {
-			val intMaybe: Maybe[Int] = Maybe.empty
-			it("should behave as empty") {
-				assert(intMaybe.isEmpty)
-				assert(Maybe[String](null).isEmpty)
-			}
-		}
-		it("Maybe.some(x).get should return x") {
-			assert(Maybe.some(7).get == 7)
-			assert(Maybe.some("seven").get == "seven")
-		}
+class MaybeTest extends ScalaCheckEffectSuite {
+	test("A Maybe, when not empty, should behave as non-empty") {
+		val oneMaybe: Maybe[1] = Maybe.some(1)
+		assert(oneMaybe.isDefined)
 	}
-
+	test("A Maybe, when empty, should behave as empty") {
+		val intMaybe: Maybe[Int] = Maybe.empty
+		assert(intMaybe.isEmpty)
+		assert(Maybe[String](null).isEmpty)
+	}
+	test("Maybe.some(x).get should return x") {
+		assert(Maybe.some(7).get == 7)
+		assert(Maybe.some("seven").get == "seven")
+	}
 }

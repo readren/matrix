@@ -13,3 +13,5 @@ DONE: ya no hay ejecutor separado para los handlers y además se agregó impleme
 
 7) Hacer que ContinueWith y RestartWith tomen un builder en lugar del behavior literal, y ver si eso permite eliminar un parámetro en Behavior.restartNest.
 MALA IDEA: No conviene porque requiere que HandleResult deje de ser contravariante y, por ende, también Behavior.
+
+8) Sequencer: Investigar si se puede hacer una especie de compilador de Duty y Task que las convierta en una función que hace lo mismo pero sin crear las instancias de Duty y Task en cada ejecución.

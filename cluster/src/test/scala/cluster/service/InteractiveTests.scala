@@ -4,7 +4,7 @@ package cluster.service
 import cluster.misc.TaskSequencer
 import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue}
 import cluster.service.Protocol.Instant
-import common.ToStringWithFields.toStringWithFields // ignore this false error.
+import common.ToStringWithFields.toStringWithFields
 import providers.assistant.{CooperativeWorkersDap, SchedulingDap}
 
 import scribe.*

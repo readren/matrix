@@ -59,3 +59,8 @@ metals.sbt
 ### This project ###
 /dump
 /logs
+
+# Ignore build.sbt of the sequencer project, which was embedded with git subtree, to maintain the original project structure in case it is separated back to a standalone project.
+sequencer/build.sbt
+sequencer/project/
+sequencer/target/

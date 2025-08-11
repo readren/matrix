@@ -3,10 +3,9 @@ package readren.sequencer
 import DoerTestSync.currentAssistant
 
 import org.scalacheck.{Arbitrary, Gen}
-import org.scalatest.compatible.Assertion
-import org.scalatest.freespec.AnyFreeSpec
-import org.scalatest.matchers.should.Matchers
-import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
+import munit.ScalaCheckEffectSuite
+import org.scalacheck.Prop
+import org.scalacheck.Prop.propBoolean
 
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
@@ -19,7 +18,7 @@ object DoerTestSync {
  * All the behavior tested in this suite is also tested in the [[DoerTestEffect]] suite. 
  * This suite is kept despite the [[DoerTestEffect]] existence because it is easier to debug in a synchronous environment.
  * */
-class DoerTestSync extends AnyFreeSpec with ScalaCheckPropertyChecks with Matchers {
+class DoerTestSync extends ScalaCheckEffectSuite {
 
 	private var oDoerThreadId: Option[Long] = None
 	private val theAssistant = new Doer.Assistant { thisAssistant =>
@@ -60,38 +59,38 @@ class DoerTestSync extends AnyFreeSpec with ScalaCheckPropertyChecks with Matche
 
 	//	implicit override val generatorDrivenConfig: PropertyCheckConfiguration = PropertyCheckConfiguration(minSuccessful = 1)
 
-	"A task should satisfy monadic laws" - {
+	// "A task should satisfy monadic laws"
 
-		// Left Identity: `unit(a).flatMap(f) == f(a)`
-		"left identity" in {
-			forAll { (a: Int, f: Int => Task[Int]) =>
-				val leftTask = successful(a).flatMap(f)
-				val rightTask = f(a)
-				checkEquality(leftTask, rightTask)
-			}
-		}
-
-		// Right Identity: `m.flatMap(a => unit(a)) == m`
-		"right identity" in {
-			forAll { (m: Task[Int]) =>
-				val left = m.flatMap(a => successful(a))
-				val right = m
-				checkEquality(left, right)
-			}
-		}
-
-		// Associativity: `(m.flatMap(f)).flatMap(g) == m.flatMap(a => f(a).flatMap(g))`
-		"associativity" in {
-			forAll { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
-				val left = m.flatMap(f).flatMap(g)
-				val right = m.flatMap(a => f(a).flatMap(g))
-				checkEquality(left, right)
-			}
+	// Left Identity: `unit(a).flatMap(f) == f(a)`
+	property("A task should satisfy monadic laws: left identity")  {
+		Prop.forAll { (a: Int, f: Int => Task[Int]) =>
+			val leftTask = successful(a).flatMap(f)
+			val rightTask = f(a)
+			checkEquality(leftTask, rightTask)
 		}
 	}
+
+	// Right Identity: `m.flatMap(a => unit(a)) == m`
+	property("A task should satisfy monadic laws: right identity") {
+		Prop.forAll { (m: Task[Int]) =>
+			val left = m.flatMap(a => successful(a))
+			val right = m
+			checkEquality(left, right)
+		}
+	}
+
+    // Associativity: `(m.flatMap(f)).flatMap(g) == m.flatMap(a => f(a).flatMap(g))`
+	property("A task should satisfy monadic laws: associativity") {
+		Prop.forAll { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
+			val left = m.flatMap(f).flatMap(g)
+			val right = m.flatMap(a => f(a).flatMap(g))
+			checkEquality(left, right)
+		}
+	}
+	
 	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
-	"Task can be transformed with map" in {
-		forAll { (m: Task[Int], f: Int => String) =>
+	property("A task is a functor: can be transformed with map") {
+		Prop.forAll { (m: Task[Int], f: Int => String) =>
 			val left = m.map(f)
 			val right = m.flatMap(a => successful(f(a)))
 			checkEquality(left, right)
@@ -99,19 +98,20 @@ class DoerTestSync extends AnyFreeSpec with ScalaCheckPropertyChecks with Matche
 	}
 
 	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
-	"Task can be recovered from failure" in {
-		forAll { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
-			whenever(NonFatal(e)) {
+	property("A task can be recovered from a non fatal failure") {
+		Prop.forAll { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
+			NonFatal(e) ==> {
 				val leftTask = failed[Int](e).recover(f)
-				val rightTask = if f.isDefinedAt(e) then successful(f(e)) else failed(e);
+				val rightTask = if f.isDefinedAt(e) then successful(f(e)) else failed(e)
 				checkEquality(leftTask, rightTask)
+				true
 			}
 		}
 	}
 
 	// Combining Tasks: `combine(taskA, taskB)(zip) == own(() => zip(tryA, tryB))`
-	"Task can be combined" in {
-		forAll(intGen, intGen, Gen.oneOf(true, false), Gen.frequency((3, true), (1, false))) {
+	property("A task can be combined") {
+		Prop.forAll(intGen, intGen, Gen.oneOf(true, false), Gen.frequency((3, true), (1, false))) {
 			(intA, intB, zipReturnsSuccess, zipFinishesNormally) =>
 				def buildTryAndImmediateTask(i: Int): (Try[Int], Task[Int]) = {
 					if i >= 0 then (Success(i), successful(i))
@@ -150,8 +150,8 @@ class DoerTestSync extends AnyFreeSpec with ScalaCheckPropertyChecks with Matche
 		}
 	}
 
-	"Any task can be combined" in {
-		forAll { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
+	property("Any task can be combined") {
+		Prop.forAll { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
 			val combined = combine(taskA, taskB)(f)
 
 			// do the check in all possible triggering orders
