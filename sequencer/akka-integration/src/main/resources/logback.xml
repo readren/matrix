@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration debug="false"  >
+
+	<!--<conversionRule conversionWord="coloredLevel"
+		converterClass="play.api.Logger$ColoredLevel" />
+	-->
+
+	<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<file>${user.dir}/logs/application.log</file>
+		<rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+		  	<!-- daily rollover -->
+		  	<fileNamePattern>${user.dir}/logs/application.%d{yyyy-MM-dd}.log</fileNamePattern>
+
+			<!-- keep 7 days' worth of history capped at 1GB total size -->
+	  		<maxHistory>7</maxHistory>
+	  		<totalSizeCap>1GB</totalSizeCap>
+		</rollingPolicy>
+
+		<encoder>
+			<charset>UTF-8</charset>
+			<pattern>%mdc{akkaTimestamp}| %.-1level| %40.40mdc{akkaSource}| %12.12mdc{sourceThread}| %message. %xException%n</pattern>
+		</encoder>
+		<!--<immediateFlush>false</immediateFlush> -->
+  	</appender> 	
+
+	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+
+		<encoder>
+			<charset>UTF-8</charset>
+			<pattern>%mdc{akkaTimestamp}| %.-1level| %40.40mdc{akkaSource}| %9.9mdc{sourceThread}| %msg. %xException%n</pattern>
+		</encoder>
+		<!--<immediateFlush>false</immediateFlush> -->
+	</appender>
+
+	
+	<logger name="akka.actor.RepointableActorRef" level="INFO"/>
+	<logger name="akka.http.impl.engine.client.PoolGateway" level="INFO"/>
+	<logger name="akka.io.SimpleDnsManager" level="INFO"/>
+	<logger name="akka.io.TcpOutgoingConnection" level="INFO"/>
+
+	<root level="DEBUG">
+		<appender-ref ref="STDOUT" />
+		<appender-ref ref="FILE" />
+	</root>
+
+</configuration>
