@@ -124,7 +124,7 @@ object InteractiveTests {
 					val cases = DiscriminationCriteria.casesOf[CarPart](mode)
 					assert(cases == Seq(FlatEntry(0, "Wheel"), FlatEntry(1, "Motor"), FlatEntry(2, "Glass$")))
 
-					given Serializer[CarPart] = showCode(Serializer.derive[CarPart](mode))
+					given Serializer[CarPart] = Serializer.derive[CarPart](mode)
 					given Deserializer[CarPart] = Deserializer.derive[CarPart](mode)
 
 					test(parts)

@@ -1,4 +1,4 @@
-package readren.matrix
+package readren.sequencer
 package providers
 
 import providers.DoerProvider.Tag

@@ -1,14 +1,13 @@
-package readren.matrix
+package readren.sequencer
 package providers
-
-import providers.CooperativeWorkersDp.*
-import providers.DoerProvider.Tag
-import providers.SchedulingDp.*
 
 import readren.common.CompileTime.getTypeName
 import readren.common.deriveToString
 import readren.sequencer.SchedulingExtension
-import readren.sequencer.SchedulingExtension.MilliDuration
+import SchedulingExtension.MilliDuration
+import providers.CooperativeWorkersDp.*
+import providers.DoerProvider.Tag
+import providers.SchedulingDp.*
 
 import java.util
 import java.util.concurrent.*

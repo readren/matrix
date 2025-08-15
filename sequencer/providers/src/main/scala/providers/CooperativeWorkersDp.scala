@@ -1,4 +1,4 @@
-package readren.matrix
+package readren.sequencer
 package providers
 
 import providers.CooperativeWorkersDp.*
@@ -6,7 +6,7 @@ import providers.DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.{AbstractDoer, Doer}
+import readren.sequencer.AbstractDoer
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*
@@ -119,8 +119,8 @@ class CooperativeWorkersDp(
 			try {
 				var task = firstTaskInQueue
 				firstTaskInQueue = null
-				if task	eq null then task = taskQueue.poll()
-				while (task ne null) && taskQueueSizeIsPositive do {
+				if task == null then task = taskQueue.poll()
+				while (task != null) && taskQueueSizeIsPositive do {
 					aDecrementIsPending = true
 					task.run()
 					processedTasksCounter += 1
@@ -225,10 +225,10 @@ class CooperativeWorkersDp(
 			workerThreadLocal.set(thisWorker)
 			while keepRunning do {
 				val assignedDoer: DoerImpl | Null =
-					if queueJumper ne null then queueJumper
+					if queueJumper != null then queueJumper
 					else queuedDoers.poll()
 				queueJumper = null
-				if assignedDoer eq null then tryToSleep()
+				if assignedDoer == null then tryToSleep()
 				else {
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
@@ -244,7 +244,7 @@ class CooperativeWorkersDp(
 							// the standard JVM uncaught exception handling mechanism will take precedence. In all cases, the exception is rethrown to ensure
 							// the thread terminates abruptly, as is standard for uncaught exceptions in threads.
 							// This design respects user/system configuration and only uses failureReporter as a fallback.
-							if (thread.getUncaughtExceptionHandler eq null) && (Thread.getDefaultUncaughtExceptionHandler eq null) then failureReporter(e)
+							if (thread.getUncaughtExceptionHandler == null) && (Thread.getDefaultUncaughtExceptionHandler == null) then failureReporter(e)
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
 								thread = threadFactory.newThread(this)

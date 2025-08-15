@@ -3,7 +3,7 @@ package cluster.service
 
 import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue, TaskSequencer}
 import cluster.service.Protocol.Instant
-import providers.{CooperativeWorkersDp, SchedulingDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, SchedulingDp}
 
 import readren.common.ToStringWithFields.toStringWithFields
 import scribe.*

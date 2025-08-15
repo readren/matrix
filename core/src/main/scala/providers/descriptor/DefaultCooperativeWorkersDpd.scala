@@ -3,7 +3,7 @@ package providers.descriptor
 
 import core.Matrix
 import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
-import providers.{CooperativeWorkersDp, DoerProvider}
+import readren.sequencer.providers.{CooperativeWorkersDp, DoerProvider}
 
 import readren.common.CompileTime.getTypeName
 

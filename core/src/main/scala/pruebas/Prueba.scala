@@ -4,7 +4,7 @@ package pruebas
 import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
-import providers.{CooperativeWorkersDp, RoundRobinDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 

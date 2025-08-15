@@ -2,14 +2,12 @@ package readren.matrix
 package consensus
 
 import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
-import providers.{CooperativeWorkersDp, DoerProvider, SchedulingDp}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import readren.common.Maybe
 import readren.sequencer.SchedulingExtension.MilliDuration
-import readren.sequencer.{Doer, SchedulingExtension}
+import readren.sequencer.providers.{CooperativeWorkersDp, SchedulingDp}
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer
@@ -116,6 +114,8 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 						case Failure(e) =>
 							scribe.info(s"Client: the participant ${receiverNode.myId} failed (retries=$retriesCounter) to respond to the command `$command`:", e)
 							retry()
+						case Success(_) =>
+							throw new AssertionError("unreachable")
 					}
 			}.onBehalfOf(net.sequencer)
 		}

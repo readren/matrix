@@ -2,7 +2,7 @@ package readren.matrix
 package core
 
 import core.Matrix.DoerProviderDescriptor
-import providers.DoerProvider
+import readren.sequencer.providers.DoerProvider
 
 import readren.common.Maybe
 import readren.sequencer.Doer

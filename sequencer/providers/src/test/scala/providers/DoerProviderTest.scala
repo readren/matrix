@@ -1,5 +1,6 @@
-package readren.matrix
-package providers.assistant
+
+package readren.sequencer
+package providers
 
 import providers.*
 
@@ -76,19 +77,19 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 
 	}
 
-	test("CooperativeWorkersDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("CooperativeWorkersDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
 		testVisibility(new CooperativeWorkersDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
-	test("SchedulingDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("SchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
 		testVisibility(new SchedulingDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
-	test("LeastLoadedFixedWorkerDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("LeastLoadedFixedWorkerDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
 		testVisibility(new LeastLoadedFixedWorkerDp, 0)
 	}
-	test("RoundRobinDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("RoundRobinDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
 		testVisibility(new RoundRobinDp, 0)
 	}

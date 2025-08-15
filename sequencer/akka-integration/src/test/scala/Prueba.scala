@@ -63,7 +63,7 @@ object Prueba {
 
 	def apply2(): Behavior[Pregunta] = {
 		Behaviors.setup[Pregunta | RunProcedure] { ctx =>
-			given Scheduler = ctx.system.scheduler;
+			given Scheduler = ctx.system.scheduler
 
 			given ejecutadoPorEsteActorVar: ExecutionContext = new ExecutionContext {
 				def execute(runnable: Runnable): Unit =
@@ -121,6 +121,7 @@ object Prueba {
 						} yield ()
 						task.trigger(true) { x => ctx.log.info(s"resultado final: $x") }
 						Behaviors.same
+					case _ => assert(false)
 				}
 			}
 		}
@@ -141,6 +142,7 @@ object Prueba {
 					case Pregunta(replyTo1, "Hola") =>
 						flow.apply(replyTo1, true) { x => ctx.log.info(s"resultado final: $x") }
 						Behaviors.same
+					case _ => assert(false)
 				}
 			}
 		}

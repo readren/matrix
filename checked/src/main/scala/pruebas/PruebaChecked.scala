@@ -18,7 +18,6 @@ object PruebaChecked {
 	private case class Relax(replyTo: Endpoint[Response]) extends Cmd
 	
 	private class MyException extends Exception
-	private class NeverException extends MyException
 
 	@main def runPruebaChecked(): Unit = {
 
@@ -27,17 +26,18 @@ object PruebaChecked {
 		val matrix = new Matrix("testChecked", matrixAide)
 
 		matrix.spawns[Cmd](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
-			val cb: CheckedBehavior[Cmd, MyException] =
-				CheckedBehavior.factory[Cmd, MyException, NeverException] {
-					case cmd: DoWork =>
-						if (cmd.integer % 5) >= 3 then throw new MyException
-						cmd.replyTo.tell(Response(cmd.integer.toString))
-						Continue
-					case Relax(replyTo) =>
-						replyTo.tell(Response(null))
-						Continue
-				}
-			CheckedBehavior.makeSafe(cb) { (m: MyException) => cb }
+			CheckedBehavior.factory[Cmd, MyException] {
+				case cmd: DoWork =>
+					if (cmd.integer % 5) >= 3 then throw new MyException
+					cmd.replyTo.tell(Response(cmd.integer.toString))
+					Continue
+				case Relax(replyTo) =>
+					replyTo.tell(Response(null))
+					Continue
+			}.recover { (m: MyException) =>
+				println(s"Recovering from $m")
+				Continue
+			}
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>

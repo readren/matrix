@@ -215,7 +215,7 @@ trait AmigoFutures { actor: Actor =>
 			}
 
 		def pregunta[Respuesta: ClassTag](destino: ActorRef, mensaje: Any, timeout: FiniteDuration): Tarea[Respuesta] =
-			ajena(ask(destino, mensaje, actor.self)(timeout).mapTo[Respuesta])
+			ajena(ask(destino, mensaje, actor.self)(using timeout).mapTo[Respuesta])
 	}
 
 	/** Encapsula una acción aportando mecanismos para facilitar la ejecución y obtención del resultado desde este actor.
@@ -645,7 +645,7 @@ trait AmigoFutures { actor: Actor =>
 	 */
 	class TareaAjena[A](future: Future[A]) extends Tarea[A] {
 		override def realizar(llameYo: Boolean)(cuandoCompleta: Try[A] => Unit): Unit =
-			future.onComplete(cuandoCompleta)(ejecutadoPorEsteActor)
+			future.onComplete(cuandoCompleta)(using ejecutadoPorEsteActor)
 	}
 
 	/** [[Tarea]] que al ejecutarla:

@@ -91,7 +91,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 		}
 		futureEquality.map(assert(_))
 	}
-	
+
 	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
 	test("Duty: left identity") {
 		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
@@ -141,8 +141,8 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			}
 		}
 	}
-	
-	
+
+
 	////////// TASK /////////////
 
 	// Custom equality for Task based on the result of attempt
@@ -157,11 +157,11 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 		futureEquality.map(assert(_))
 	}
 
-//	private def evalNow[A](task: Task[A]): Try[A] = {
-//		Await.result(task.toFutureHardy(), new FiniteDuration(1, TimeUnit.MINUTES))
-//	}
-	
-	
+	//	private def evalNow[A](task: Task[A]): Try[A] = {
+	//		Await.result(task.toFutureHardy(), new FiniteDuration(1, TimeUnit.MINUTES))
+	//	}
+
+
 	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
 	test("Task: left identity") {
 		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
@@ -286,6 +286,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			}
 
 			def f0[A](): A = throw exception
+
 			def f1[A, B](a: A): B = throw exception
 
 			def f2[A, B, C](a: A, b: B): C = throw exception
@@ -299,13 +300,13 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 				withFilterTestResult <- check(_.withFilter(f1))
 				transformTestResult <- check(_.transform(f1))
 				transformWithTestResult <- check(_.transformWith(f1))
-				recoverTestResult <- check(_.transform { _ => Failure(new Exception("for recover")) }.recover(f1))
-				recoverWithTestResult <- check(_.transform { _ => Failure(new Exception("for recoverWith")) }.recoverWith(f1))
+				recoverTestResult <- check(_.transform { _ => Failure(new Exception("for recover")) }.recover { case x => f1(x) })
+				recoverWithTestResult <- check(_.transform { _ => Failure(new Exception("for recoverWith")) }.recoverWith { case x => f1(x) })
 				repeatedHardyUntilSomeTestResult <- check(_.reiteratedHardyUntilSome()(f2))
 				repeatedUntilSomeTestResult <- check(_.reiteratedUntilSome()(f2))
-				repeatedUntilDefinedTestResult <- check(_.reiteratedHardyUntilDefined()(f2))
+				repeatedUntilDefinedTestResult <- check(_.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
 				repeatedWhileNoneTestResult <- check(_.reiteratedWhileEmpty(Success(0))(f2))
-				repeatedWhileUndefinedTestResult <- check(_.reiteratedWhileUndefined(Success(0))(f2))
+				repeatedWhileUndefinedTestResult <- check(_.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
 				ownTestResult <- check(_.flatMap(_ => Task.own(f0)))
 				ownFlatTestResult <- check(_.flatMap(_ => Task.ownFlat(f0)))
 				alienTestResult <- check(_.flatMap(_ => Task.alien(f0)))

@@ -2,10 +2,10 @@ package readren.matrix
 package core
 
 import core.Matrix.DoerProviderDescriptor
-import providers.DoerProvider
-import providers.DoerProvider.Tag
 
 import readren.sequencer.Doer
+import readren.sequencer.providers.DoerProvider
+import readren.sequencer.providers.DoerProvider.Tag
 
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong

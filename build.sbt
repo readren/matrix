@@ -54,21 +54,21 @@ lazy val common = (project in file("common"))
 		scalacOptions ++= Seq("-source:future", "-language:strictEquality")
 	)
 
-lazy val doerAssistantProviders = (project in file("dap")).dependsOn(common, sequencerCore)
+lazy val sequencerProviders = (project in file("sequencer/providers")).dependsOn(common, sequencerCore)
 	.settings(
-		name := "matrix-dap",
-		idePackagePrefix := Some("readren.matrix"),
+		name := "sequencer-providers",
+		idePackagePrefix := Some("readren.sequencer"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val cluster = (project in file("cluster")).dependsOn(common % "compile->compile;test->test", sequencerCore, doerAssistantProviders)
+lazy val cluster = (project in file("cluster")).dependsOn(common % "compile->compile;test->test", sequencerCore, sequencerProviders)
 	.settings(
 		name := "matrix-cluster",
 		idePackagePrefix := Some("readren.matrix"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val core = (project in file("core")).dependsOn(common, sequencerCore, doerAssistantProviders)
+lazy val core = (project in file("core")).dependsOn(common, sequencerCore, sequencerProviders)
 	.settings(
 		name := "matrix-core",
 		idePackagePrefix := Some("readren.matrix"),
@@ -83,7 +83,7 @@ lazy val checkedReactant = (project in file("checked")).dependsOn(core, sequence
 	)
 
 lazy val consensus = (project in file("consensus"))
-	.dependsOn(sequencerCore,doerAssistantProviders % Test)
+	.dependsOn(sequencerCore, sequencerProviders % Test)
 	.settings(
 		name := "matrix-consensus",
 		idePackagePrefix := Some("readren.matrix"),
@@ -92,7 +92,7 @@ lazy val consensus = (project in file("consensus"))
 
 // Root project - aggregates all subprojects
 lazy val root = (project in file("."))
-	.aggregate(sequencerCore, sequencerAkkaIntegration, common, doerAssistantProviders, core, checkedReactant, cluster, consensus)
+	.aggregate(sequencerCore, sequencerAkkaIntegration, sequencerProviders, common, core, checkedReactant, cluster, consensus)
 	.settings(
 		name := "matrix",
 		idePackagePrefix := Some("readren.matrix"),

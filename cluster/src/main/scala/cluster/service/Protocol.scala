@@ -287,11 +287,11 @@ object Protocol {
 
 	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](FLAT)
 
-	private val protocolSerializer: Serializer[Protocol] = showCode(Serializer.derive[Protocol](FLAT))
+	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol](FLAT)
 
 	given Serializer[Protocol] = protocolSerializer
 
-	private val protocolDeserializer: Deserializer[Protocol] = showCode(Deserializer.derive[Protocol](FLAT))
+	private val protocolDeserializer: Deserializer[Protocol] = Deserializer.derive[Protocol](FLAT)
 
 	given Deserializer[Protocol] = protocolDeserializer
 
