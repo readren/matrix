@@ -28,7 +28,7 @@ object PruebaScheduling {
 							} else {
 								val schedule = actorBasedSchedulingDoer.newFixedRateSchedule((ticksCounter % 1000) * 1, 10)
 								var repetitions = 0
-								actorBasedSchedulingDoer.scheduleSequentially(schedule) { () =>
+								actorBasedSchedulingDoer.schedule(schedule) { () =>
 									println(f"counter=$ticksCounter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().getId}%3d, incitingId=$incitingTickId")
 									actorCtx.self.tell(Tick(ticksCounter :: incitingTickId))
 									repetitions += 1

@@ -14,15 +14,15 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 
 	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
 
-	override def createsReactant[U, MD <: MatrixDoer](
-		id: Reactant.SerialNumber,
+	override def createsReactant[U, D <: Doer](
+		serial: Reactant.SerialNumber,
 		progenitor: Spawner[?],
-		reactantDoer: MD,
+		reactantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): reactantDoer.Duty[Reactant[U]] = {
 		reactantDoer.Duty.mineFlat { () =>
-			new Reactant[U](id, progenitor, reactantDoer, isSignalTest, initialBehaviorBuilder) {
+			new Reactant[U](serial, reactantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
 

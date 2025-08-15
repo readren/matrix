@@ -1,7 +1,7 @@
 package readren.sequencer
 
 import Doer.ExceptionReport
-import DoerTestEffect.currentAssistant
+import DoerTestEffect.currentDoer
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Arbitrary
@@ -16,7 +16,7 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object DoerTestEffect {
-	val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	val currentDoer: ThreadLocal[Doer] = new ThreadLocal()
 }
 
 class DoerTestEffect extends ScalaCheckEffectSuite {
@@ -26,16 +26,21 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 	private val unhandledExceptions = mutable.Set.empty[String]
 	private val reportedExceptions = mutable.Set.empty[String]
 
-	private val theAssistant = new Doer.Assistant { thisAssistant => 
+
+	private val doer: Doer = new Doer { thisDoer =>
 		private val doSiThEx = Executors.newSingleThreadExecutor()
 
 		private val sequencer: AtomicInteger = new AtomicInteger(0)
+
+		override type Tag = String
+
+		override val tag = "testing doer"
 
 		override def executeSequentially(runnable: Runnable): Unit = {
 			val id = sequencer.addAndGet(1)
 			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
 			doSiThEx.execute(() => {
-				currentAssistant.set(thisAssistant)
+				currentDoer.set(thisDoer)
 				// println(s"queuedForSequentialExecution: pre run; id=$id; thread=${Thread.currentThread().getName}")
 				try {
 					runnable.run()
@@ -47,13 +52,13 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 						unhandledExceptions.addOne(cause.getMessage);
 						throw cause;
 				} finally {
-					currentAssistant.remove()
+					currentDoer.remove()
 					// println(s"queuedForSequentialExecution: finally; id=$id; thread=${Thread.currentThread().getName}")
 				}
 			})
 		}
 
-		override def current: Doer.Assistant = currentAssistant.get
+		override def current: Doer = currentDoer.get
 
 		override def reportFailure(failure: Throwable): Unit = {
 			// println(s"Reporting failure to munit: ${failure.getMessage}")
@@ -64,11 +69,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			}
 		}
 
-	}
-
-	private val doer: Doer = new Doer {
-		override type Assistant = theAssistant.type
-		override val assistant: Assistant = theAssistant
 	}
 
 	import doer.*
@@ -226,7 +226,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 	private val sleep1ms = Task.alien { () =>
 		Future {
 			Thread.sleep(1)
-		}(global)
+		}(using global)
 	}
 
 

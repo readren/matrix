@@ -4,9 +4,9 @@ package providers.assistant
 import common.CompileTime
 import providers.ShutdownAble
 import providers.assistant.CooperativeWorkersDap.*
-import providers.assistant.DoerAssistantProvider.Tag
+import providers.assistant.DoerProvider.Tag
 
-import readren.sequencer.Doer
+import readren.sequencer.{AbstractDoer, Doer}
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*
@@ -22,31 +22,32 @@ object CooperativeWorkersDap {
 	inline val debugEnabled = false
 
 	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
-	private val doerAssistantThreadLocal: ThreadLocal[DoerAssistant] = new ThreadLocal()
+	private val doerThreadLocal: ThreadLocal[DoerFacade] = new ThreadLocal()
 
 	/** @return the [[CooperativeWorkersDap.Worker]] that owns the current [[Thread]], if any. */
 	def currentWorker: Runnable | Null = workerThreadLocal.get
 	
-	/** @return the [[DoerAssistant]] that is currently associated to the current [[Thread]], if any. */
-	def currentAssistant: DoerAssistant | Null = doerAssistantThreadLocal.get
+	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
+	def currentDoer: DoerFacade | Null = doerThreadLocal.get
 
-	trait DoerAssistant extends Doer.Assistant {
-		def id: Tag
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDap]].  */
+	abstract class DoerFacade extends AbstractDoer {
+		override type Tag = providers.assistant.DoerProvider.Tag
 		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
 	}
 }
 
-/** A [[Doer.Assistant]] provider in which the task queue of the provided [[Doer.Assistant]]s is processed by any worker of the pool, the first that gets free.
+/** A [[DoerProvider]] in which the task queue of the provided [[Doer]]s is processed by any worker of the pool, the first that gets free.
  * How it works:
- * 		- every call to [[provide]] returns a new [[Doer.Assistant]] instance.
- *		- When an assistant (provided by this provider) starts having pending tasks it is enqueued in a queue.
- *		- When a thread-worker of the pool gets free it polls an assistant from said queue and processes all the pending tasks that the thread-worker can sse before continuing with the next assistant from the queue.
- *		- After processing all the visible task, if there is a non-visible one, the assistant is enqueue back.	
+ * 		- every call to [[provide]] returns a new [[Doer]] instance.
+ *		- When an [[Doer]] instance (provided by this provider) starts having pending tasks, it is enqueued in a queue.
+ *		- When a thread-worker of the pool gets free it polls a doer from said queue and processes all the pending tasks that the thread-worker can sse before continuing with the next doer from the queue.
+ *		- After processing all the visible task, if there is a non-visible one, the doer is enqueue back.	
  *		- If the queue is empty the thread-worker goes to sleep.
- *		- When an assistant is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there is some.
+ *		- When a doer is enqueued (because its tasks-queue transitions from empty to nonempty) a single sleeping thread-worker is awakened if there is some.
  * Effective for all purposes. Shines when the processor demand of long-living doers is very variant.   		
- * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
+ * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
 class CooperativeWorkersDap(
@@ -54,15 +55,15 @@ class CooperativeWorkersDap(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends DoerAssistantProvider[DoerAssistant], ShutdownAble { thisSharedQueueDoerAssistantProvider =>
+) extends DoerProvider[DoerFacade], ShutdownAble { thisProvider =>
 
 	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
 
-	/** Queue of [[DoerAssistantImpl]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
+	/** Queue of [[DoerImpl]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
 	 *
-	 * Invariant: this queue contains no duplicate elements due to the [[DoerAssistantImpl.queueForSequentialExecution]] logic.
+	 * Invariant: this queue contains no duplicate elements due to the [[DoerImpl.queueForSequentialExecution]] logic.
 	 * TODO try using my own implementation of concurrent queue that avoids dynamic memory allocation. */
-	private val queuedDoersAssistants = new ConcurrentLinkedQueue[DoerAssistantImpl]()
+	private val queuedDoers = new ConcurrentLinkedQueue[DoerImpl]()
 
 	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(Worker.apply)
 
@@ -75,11 +76,11 @@ class CooperativeWorkersDap(
 		workers.foreach(_.start())
 	}
 
-	protected class DoerAssistantImpl(override val id: Tag) extends DoerAssistant { thisDoerAssistant =>
+	protected class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile private var firstTaskInQueue: Runnable = null
-		/** Remembers the index of the worker that executed this assistant tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
+		/** Remembers the index of the worker that executed this doer's tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
 		var lastTimeWorkerIndex = 0
 
 		override def numOfPendingTasks: Int = taskQueueSize.get
@@ -87,16 +88,16 @@ class CooperativeWorkersDap(
 		override def executeSequentially(task: Runnable): Unit = {
 			if taskQueueSize.getAndIncrement() == 0 then {
 				firstTaskInQueue = task
-				if !wakeUpASleepingWorkerIfAny(thisDoerAssistant) then {
-					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
-					queuedDoersAssistants.offer(thisDoerAssistant)
+				if !wakeUpASleepingWorkerIfAny(thisDoer) then {
+					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
+					queuedDoers.offer(thisDoer)
 				}
 			} else {
 				taskQueue.offer(task)
 			}
 		}
 
-		override def current: Doer.Assistant = currentAssistant
+		override def current: DoerFacade = currentDoer
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 
@@ -104,12 +105,12 @@ class CooperativeWorkersDap(
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 *
 		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
-		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same assistant being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerAssistantImpl]] instance simultaneously.
+		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same doer being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerImpl]] instance simultaneously.
 		 *
-		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerAssistantImpl]] is enqueued into the [[queuedDoersAssistants]] queue to be assigned to a worker at a later time.
+		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerImpl]] is enqueued into the [[queuedDoers]] queue to be assigned to a worker at a later time.
 		 */
 		final def executePendingTasks(): Int = {
-			doerAssistantThreadLocal.set(thisDoerAssistant)
+			doerThreadLocal.set(thisDoer)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
@@ -124,7 +125,7 @@ class CooperativeWorkersDap(
 					task.run()
 					processedTasksCounter += 1
 					aDecrementIsPending = false
-					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this assistant into `queuedDoersAssistants` allowing the worst problem to occur: two workers assigned to the same SchedulingAssistantImpl.
+					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this doer into `queuedDoers` allowing the worst problem to occur: two workers assigned to the same [[DoerImpl]].
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 					if taskQueueSizeIsPositive then task = taskQueue.poll()
 				}
@@ -132,10 +133,10 @@ class CooperativeWorkersDap(
 				if applyMemoryFence then VarHandle.storeStoreFence()
 				// If a task throws an exception and control jumps to this finally block, the necessary update to `taskQueueSizeIsPositive` would have been skipped. So do it here.
 				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-				// if there are pending tasks, enqueue this assistant back into the queue of assistants with pending tasks. 
+				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks. 
 				if taskQueueSizeIsPositive then {
-					if debugEnabled then assert(!queuedDoersAssistants.contains(thisDoerAssistant))
-					queuedDoersAssistants.offer(thisDoerAssistant)
+					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
+					queuedDoers.offer(thisDoer)
 				}
 			}
 			processedTasksCounter
@@ -143,17 +144,17 @@ class CooperativeWorkersDap(
 
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"(id=$id, taskQueueSize=${taskQueueSize.get}%3d)")
+			sb.append(f"(tag=$tag, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 
-		override def toString: String = s"${CompileTime.getTypeName[DoerAssistantImpl]}(id=$id)"
+		override def toString: String = s"${CompileTime.getTypeName[DoerImpl]}(tag=$tag)"
 	}
 
 	/** @return `true` if a worker was awakened.
-	 * The provided [[DoerAssistantImpl]] will be assigned to the awakened worker.
-	 * Asumes the provided [[DoerAssistantImpl]] is and will not be enqueued in [[queuedDoersAssistants]], which ensures it will not be assigned to any other worker simultaneously. */
-	private def wakeUpASleepingWorkerIfAny(stimulator: DoerAssistantImpl): Boolean = {
-		if debugEnabled then assert(!queuedDoersAssistants.contains(stimulator))
+	 * The provided [[DoerImpl]] will be assigned to the awakened worker.
+	 * Asumes the provided [[DoerImpl]] is and will not be enqueued in [[queuedDoers]], which ensures it will not be assigned to any other worker simultaneously. */
+	private def wakeUpASleepingWorkerIfAny(stimulator: DoerImpl): Boolean = {
+		if debugEnabled then assert(!queuedDoers.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
 			val startingWorkerIndex = stimulator.lastTimeWorkerIndex
 			if workers(startingWorkerIndex).wakeUpIfSleeping(stimulator) then true
@@ -186,17 +187,17 @@ class CooperativeWorkersDap(
 		@volatile private var potentiallySleeping: Boolean = false
 
 		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep.
-		 * [[tryToSleep]] avoids sleeping when all other workers are either sleeping or attempting to sleep, leaving this worker as the only one awake, in order to process any pending task that was enqueued after, or was not visible during, the last call to [[findALoadedAndFreeDoerAssistant]].
+		 * [[tryToSleep]] avoids sleeping when all other workers are either sleeping or attempting to sleep, leaving this worker as the only one awake, in order to process any pending task that was enqueued after, or was not visible during, the last call to [[areAllOtherWorkersNotCompletelyAsleep]].
 		 * This field is updated exclusively within this worker [[thread]]. */
 		private var refusedTriesToSleepsCounter: Int = 0
 
 		/**
-		 * A [[DoerAssistantImpl]] instance that jumps the queue established by the [[circularIterator]] that determines the order in which the [[DoerAssistantImpl]] instances are assigned to this worker.
+		 * A [[DoerImpl]] instance that jumps the queue established by the [[circularIterator]] that determines the order in which the [[DoerImpl]] instances are assigned to this worker.
 		 * Should not be modified by any thread other than the [[thread]] of this worker unless this worker is sleeping.
-		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerAssistantImpl.executePendingTasks()]] if the task-queue was not completely emptied;
+		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerImpl.executePendingTasks()]] if the task-queue was not completely emptied;
 		 * is read by this worker after it is awakened;
 		 * and is cleared by this worker after it is awakened. */
-		private var queueJumper: DoerAssistantImpl | Null = null
+		private var queueJumper: DoerImpl | Null = null
 
 		/**
 		 * Remember the greatest value that [[refusedTriesToSleepsCounter]] reached before it has been reset because a pending task becomes visible.
@@ -223,20 +224,20 @@ class CooperativeWorkersDap(
 		override def run(): Unit = {
 			workerThreadLocal.set(thisWorker)
 			while keepRunning do {
-				val assignedDoerAssistant: DoerAssistantImpl | Null =
+				val assignedDoer: DoerImpl | Null =
 					if queueJumper ne null then queueJumper
-					else queuedDoersAssistants.poll()
+					else queuedDoers.poll()
 				queueJumper = null
-				if assignedDoerAssistant eq null then tryToSleep()
+				if assignedDoer eq null then tryToSleep()
 				else {
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
-					assignedDoerAssistant.lastTimeWorkerIndex = this.index
+					assignedDoer.lastTimeWorkerIndex = this.index
 					try {
-						processedTasksCounter += assignedDoerAssistant.executePendingTasks()
+						processedTasksCounter += assignedDoer.executePendingTasks()
 						completedMainLoopsCounter += 1
 					}
-					catch { // TODO analyze if clarity would suffer too much if [[SchedulingAssistantImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
+					catch { // TODO analyze if clarity would suffer too much if [[DoerImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
 						case e: Throwable =>
 							// If neither a thread-local nor a global uncaught exception handler is configured, use the provided failureReporter to expose the error.
 							// This ensures that exceptions are always reported somewhere, but if a handler is configured (either per-thread or globally),
@@ -247,8 +248,8 @@ class CooperativeWorkersDap(
 							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 							thisWorker.synchronized {
 								thread = threadFactory.newThread(this)
-								// Memorize the assigned SchedulingAssistantImpl such that the new thread be assigned to the same [[SchedulingAssistantImpl]]. It will continue with the task after the one that threw the exception.
-								queueJumper = assignedDoerAssistant
+								// Memorize the assigned DoerImpl such that the new thread be assigned to the same [[DoerImpl]]. It will continue with the task after the one that threw the exception.
+								queueJumper = assignedDoer
 							}
 							thread.start()
 							// Terminate the thread abruptly to skip the `runningWorkersLatch` decremental.
@@ -266,12 +267,12 @@ class CooperativeWorkersDap(
 			val sleepingCounter = sleepingWorkersCount.incrementAndGet()
 			// The purpose of this `if` is to avoid all workers go to sleep when maybe there is work to do.
 			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:
-			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a DoerAssistants was enqueued into `enqueuedDoerAssistants` by an external thread and is still not visible from the threads of the workers that were awake)
+			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a [[DoerImpl]] was enqueued into `enqueuedDoers` by an external thread and is still not visible from the threads of the workers that were awake)
 			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
 			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
 			// If another worker's thread is leaving the sleeping state
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
-				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoersAssistants`.
+				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoers`.
 				sleepingWorkersCount.getAndDecrement()
 				refusedTriesToSleepsCounter += 1
 			} else {
@@ -298,11 +299,11 @@ class CooperativeWorkersDap(
 		}
 
 		/** Wakes up this [[Worker]] if it is currently sleeping.
-		 * @param stimulator the [[DoerAssistantImpl]] to be assigned to this worker upon awakening,
+		 * @param stimulator the [[DoerImpl]] to be assigned to this worker upon awakening,
 		 *                   provided it has not already been assigned to another [[Worker]].
 		 * @return `true` if this worker was sleeping and has been awakened, otherwise `false`.
 		 */
-		def wakeUpIfSleeping(stimulator: DoerAssistantImpl): Boolean = {
+		def wakeUpIfSleeping(stimulator: DoerImpl): Boolean = {
 			if potentiallySleeping then {
 				thisWorker.synchronized {
 					if isSleeping then {
@@ -350,12 +351,12 @@ class CooperativeWorkersDap(
 		}
 	}
 
-	override def provide(serial: Tag): DoerAssistant = {
-		new DoerAssistantImpl(serial)
+	override def provide(tag: Tag): DoerFacade = {
+		new DoerImpl(tag)
 	}
 
 	/**
-	 * Makes this [[Matrix.DoerAssistantProvider]] to shut down when all the workers are sleeping.
+	 * Makes this [[DoerProvider]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
@@ -376,11 +377,11 @@ class CooperativeWorkersDap(
 		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
 		sb.append(s"\trunningWorkersLatch=${runningWorkersLatch.getCount}\n")
-		sb.append("\tqueuedDoersAssistants: ")
-		val doersAssistantsIterator = queuedDoersAssistants.iterator()
-		while doersAssistantsIterator.hasNext do {
-			val doerAssistant = doersAssistantsIterator.next()
-			doerAssistant.diagnose(sb)
+		sb.append("\tqueuedDoers: ")
+		val doersIterator = queuedDoers.iterator()
+		while doersIterator.hasNext do {
+			val doer = doersIterator.next()
+			doer.diagnose(sb)
 			sb.append(", ")
 		}
 

@@ -10,25 +10,25 @@ import readren.sequencer.Maybe
 trait Inbox[+M] {
 
 	/** Withdraws the next pending message.
-	 * The implementation may assume that this method is called withing the [[MatrixDoer]] of the owning [[Reactant]] only. */
+	 * The implementation may assume that this method is called withing the [[Doer]] of the owning [[Reactant]] only. */
 	def withdraw(): Maybe[M]
 
 
 	/** Checks if there are no pending messages.
-	 * Should be called withing the [[MatrixDoer]] of the owning [[Reactant]] only. */
+	 * Should be called withing the [[Doer]] of the owning [[Reactant]] only. */
 	def maybeNonEmpty: Boolean
 
 
 	/** 
-	 * Exposes the pending messages for diagnostic only.
-	 * Should be called within the [[MatrixDoer]] of the owning [[Reactant]] only.
-	 * The thread-safety of the returned [[Iterator]] depends on this [[Inbox]] implementation. To ensure correct usage use it withing said [[MatrixDoer]] only.
-	 * The returned iterator may be weakly consistent. */
+	 * Exposes the pending messages for diagnostic.
+	 * Should be called within the [[Doer]] of the owning [[Reactant]] only.
+	 * The thread-safety of the returned [[Iterator]] depends on this [[Inbox]] implementation. To ensure correct usage, use it withing said [[Doer]] only.
+	 * The returned [[Iterator]] may be weakly consistent. */
 	def iterator: Iterator[M]
 
 	/** The number of pending messages.
 	 * Used for diagnostic only.
-	 * Should be called withing the [[MatrixDoer]] of the owning [[Ractant]] only.
+	 * Should be called withing the [[Doer]] of the owning [[Reactant]] only.
 	 * */
 	def size: Int
 }

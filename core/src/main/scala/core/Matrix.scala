@@ -3,32 +3,30 @@ package core
 
 import core.Matrix.DoerProviderDescriptor
 
+import readren.matrix.providers.assistant.DoerProvider
 import readren.sequencer.{Doer, Maybe}
 
+import java.net.{InetAddress, URI}
 import scala.compiletime.asMatchable
 
 
 object Matrix {
 
-	trait DoerProvider[+D <: MatrixDoer] {
-		def provide(matrix: AbstractMatrix): D
-	}
-
 	/**
 	 * Identifies and builds an instance of [[DoerProvider]].
 	 * Subtypes of this trait usually are singleton objects.
 	 * @param id the identifier of this instance used for equality.
-	 * @tparam MD the subtype of [[MatrixDoer]] provided by the [[DoerProvider]] this instance identifies (and builds an instances of).
+	 * @tparam D the subtype of [[Doer]] provided by the [[DoerProvider]] this instance identifies (and builds an instances of).
 	 */
-	trait DoerProviderDescriptor[+MD <: MatrixDoer](val id: String) extends Equals {
+	trait DoerProviderDescriptor[+D <: Doer](val id: String) extends Equals {
 		/**
 		 * Builds a [[DoerProvider]] of the type this instance identifies.
 		 * This method is called a single time per [[DoerProvidersManager]].
 		 *
-		 * @param owner The [[DoerProvidersManager]] that will manage the newly created [[DoerAssistantProvider]].
+		 * @param owner The [[DoerProvidersManager]] that will manage the newly created [[DoerProvider]].
 		 * @return The newly created [[DoerProvider]].
 		 */
-		def build(owner: DoerProvidersManager): DoerProvider[MD]
+		def build(owner: DoerProvidersManager): DoerProvider[D]
 		
 		override def canEqual(that: Any): Boolean = that.isInstanceOf[DoerProviderDescriptor[?]]
 
@@ -46,10 +44,10 @@ object Matrix {
 	trait DoerProvidersManager {
 
 		/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created. */
-		def get[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D]
+		def get[D <: Doer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D]
 
-		inline def provideDoer[D <: MatrixDoer](matrix: AbstractMatrix, descriptor: DoerProviderDescriptor[D]): D =
-			get(descriptor).provide(matrix)
+		inline def provideDoer[D <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[D]): D =
+			get(descriptor).provide(tag)
 	}
 
 	/** Specifies the aide that a [[Matrix]] instance requires. */
@@ -58,7 +56,7 @@ object Matrix {
 		type DPsManager <: DoerProvidersManager
 
 		/** Type of the doers provided by the default [[DoerProvider]] */
-		type DefaultDoer <: MatrixDoer
+		type DefaultDoer <: Doer
 		
 		/** The [[DoerProviderDescriptor]] of the default [[DoerProvider]] */
 		val defaultDoerProviderDescriptor: DoerProviderDescriptor[DefaultDoer]
@@ -67,6 +65,12 @@ object Matrix {
 		val doerProvidersManager: DPsManager
 
 		def buildLogger(owner: Matrix[Self]): Logger
+		
+		def uriScheme: String
+		
+		def uriHost: String
+		
+		def uriPort: Int
 	}
 }
 
@@ -76,18 +80,20 @@ class Matrix[A <: Matrix.Aide[A]](name: String, val aide: A) extends AbstractMat
 	val doerProvidersManager: aide.DPsManager = aide.doerProvidersManager
 
 	override val doer: DefaultDoer =
-		provideDefaultDoer
+		provideDefaultDoer(name)
 
 	override protected val spawner: Spawner[doer.type] =
-		new Spawner(Maybe.empty, doer, 0)
+		new Spawner(this, doer, 0)
 
 	override val logger: Logger =
 		aide.buildLogger(this)
 
-	override def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): D = 
-		doerProvidersManager.provideDoer(thisMatrix, descriptor)
+	override def provideDoer[D <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[D]): D = 
+		doerProvidersManager.provideDoer(tag, descriptor)
 
-	override def provideDefaultDoer: DefaultDoer =
-		doerProvidersManager.get(aide.defaultDoerProviderDescriptor).provide(thisMatrix)
+	override def provideDefaultDoer(tag: DoerProvider.Tag): DefaultDoer =
+		doerProvidersManager.get(aide.defaultDoerProviderDescriptor).provide(tag)
+
+	override val uri: URI = new URI(aide.uriScheme, null, aide.uriHost, aide.uriPort, path, null, null)
 		
 }

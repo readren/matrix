@@ -24,18 +24,27 @@ object Reactant {
 import core.Reactant.*
 
 /**
- *
- * @param doer the [[MatrixDoer]] assigned to this instance.
+ * @param serial identifies a [[Reactant]] among its siblings.
+ * @param progenitor the [[Spawner]] that created this [[Reactant]]. The progenitor of a [[Reactant]] knows the set of its children, and every [[Reactant]] knows its progenitor.           
+ * @param doer the [[Doer]] instance assigned to this [[Reactant]].
+ * @param isSignalTest knows which [[Signal]]s does this [[Reactant]] understand. In other words, knows which concrete [[Signal]] types are assignable to `U`. This information is obtained from the `U` type parameter at compile time.
+ * @param initialBehaviorBuilder a builder of the [[Behavior]] that the created [[Reactant]] will host when is born.                     
  * @tparam U the type of the messages this reactant understands.
  */
 abstract class Reactant[U](
 	val serial: SerialNumber,
-	progenitor: Spawner[MatrixDoer],
-	override val doer: MatrixDoer,
+	override val doer: Doer,
+	progenitor: Spawner[?],
 	isSignalTest: IsSignalTest[U],
 	initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 ) extends ReactantRelay[U] { thisReactant =>
 
+	/** the matrix this[[Reactant]] is part of */
+	val matrix: AbstractMatrix = progenitor.owner match {
+		case ab: AbstractMatrix => ab
+		case r: Reactant[?] => r.matrix
+	}
+	
 	/**
 	 * The initial state is `false` (not ready).
 	 * Is set to `true` after consuming all the pending messages (of this reactant's [[Inbox]]) if the result of [[Behavior.handle]] for the last message returned [[Continue]] or [[ContinueWith]]; and the stop process was not started (e.g. the [[stopWasStarted]] is false).
@@ -70,7 +79,7 @@ abstract class Reactant[U](
 	override val endpointProvider: EndpointProvider[U]
 
 	override val path: String = {
-		val parentPath = progenitor.owner.fold(java.lang.StringBuilder())(pr => java.lang.StringBuilder(pr.path))
+		val parentPath = java.lang.StringBuilder(progenitor.owner.path)
 		parentPath.append('/').append(serial).toString
 	}
 
@@ -102,7 +111,7 @@ abstract class Reactant[U](
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
-				doer.dutyReadyUnit
+				doer.Duty.unit
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart[U @unchecked] =>
@@ -113,7 +122,7 @@ abstract class Reactant[U](
 	/** Should be called withing the [[doer]]. */
 	override def spawns[V](
 		childReactantFactory: ReactantFactory,
-		childDoer: MatrixDoer
+		childDoer: Doer
 	)(
 		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
 	)(
@@ -121,7 +130,7 @@ abstract class Reactant[U](
 	): doer.Duty[ReactantRelay[V]] = {
 		doer.checkWithin()
 		oSpawner.fold {
-				val spawner = new Spawner[doer.type](Maybe.some(thisReactant), doer, serial)
+				val spawner = new Spawner[doer.type](thisReactant, doer, serial)
 				oSpawner = Maybe.some(spawner)
 				childrenRelays = spawner.childrenView
 				spawner
@@ -153,11 +162,11 @@ abstract class Reactant[U](
 					// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one. The signal handler is NOT called again.
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
-							oSpawner.fold(doer.dutyReadyUnit) { spawner =>
+							oSpawner.fold(doer.Duty.unit) { spawner =>
 								spawner.stopsChildren()
 							}
 						}
-						else doer.dutyReadyUnit
+						else doer.Duty.unit
 					stopsChildrenIfInstructed.flatMap(_ => selfStarts(true, tr.restartBehaviorBuilder))
 			}
 		}
@@ -191,7 +200,7 @@ abstract class Reactant[U](
 
 				override def apply(unit: Unit): Unit = {
 					if watchedReactant.doer eq thisReactant.doer then work()
-					else doer.executeSequentially(work())
+					else doer.execute(work())
 				}
 
 				override def unsubscribe(): Unit = {
@@ -199,8 +208,8 @@ abstract class Reactant[U](
 					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
 					activeWatchSubscriptions.computeIfPresent(watchedReactant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
-					if watchedReactant.doer.assistant eq thisReactant.doer.assistant then watchedReactant.stopDuty.unsubscribe(observer)
-					else watchedReactant.doer.executeSequentially(watchedReactant.stopDuty.unsubscribe(observer))
+					if watchedReactant.doer eq thisReactant.doer then watchedReactant.stopDuty.unsubscribe(observer)
+					else watchedReactant.doer.execute(watchedReactant.stopDuty.unsubscribe(observer))
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -214,10 +223,10 @@ abstract class Reactant[U](
 					} else observer :: list
 			)
 			// and then, make the subscription
-			if watchedReactant.doer.assistant eq thisReactant.doer.assistant then {
+			if watchedReactant.doer eq thisReactant.doer then {
 				watchedReactant.stopDuty.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), true)())
-			} else watchedReactant.doer.executeSequentially {
+			} else watchedReactant.doer.execute {
 				watchedReactant.stopDuty.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), false)())
 			}
@@ -230,7 +239,7 @@ abstract class Reactant[U](
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
 			isMarkedToStop = true
-			doer.executeSequentially(selfStop())
+			doer.execute(selfStop())
 		}
 		stopCovenant.subscriptableDuty
 	}
@@ -249,7 +258,7 @@ abstract class Reactant[U](
 			// execute the signal handler and ignore its result
 			handleSignal(isSignalTest.stopReceived)
 			// remove myself form progenitor children
-			progenitor.doer.executeSequentially {
+			progenitor.doer.execute {
 				progenitor.removeChild(thisReactant.serial)
 				stopCovenant.fulfill(())()
 			}
@@ -299,7 +308,7 @@ abstract class Reactant[U](
 	private def beReadyToProcess(): Unit = {
 		doer.checkWithin()
 		assert(!stopWasStarted && !isReadyToProcessMsg)
-		if inbox.maybeNonEmpty then doer.executeSequentially {
+		if inbox.maybeNonEmpty then doer.execute {
 			if !stopWasStarted then {
 				inbox.withdraw().fold(beReadyToProcess())(processMessages)
 			}

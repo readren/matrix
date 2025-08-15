@@ -1,19 +1,18 @@
 package readren.sequencer.akka
 
+import akka.actor.ActorPath
 import akka.actor.typed.{ActorRef, Scheduler}
 import akka.util.Timeout
 import readren.sequencer.Doer
+
 import scala.util.{Failure, Success}
 
-object ActorExtension {
-	trait Aide extends Doer.Assistant {
-		def akkaScheduler: Scheduler
-	}
-}
 
 /** Extends [[Doer]] with akka-actor related operations. */
 trait ActorExtension { thisActorExtension: Doer =>
-	override type Assistant <: ActorExtension.Aide
+	override type Tag = ActorPath
+
+	def akkaScheduler: Scheduler
 
 	extension [A](target: ActorRef[A]) {
 		/** Creates a [[Task]] that sends the provided message to the `target`. */
@@ -22,7 +21,7 @@ trait ActorExtension { thisActorExtension: Doer =>
 		/** Note: The type parameter is required for the compiler to know the type parameter of the resulting [[Task]]. */
 		def queries[B](messageBuilder: ActorRef[B] => A)(using timeout: Timeout): Task[B] = {
 			import akka.actor.typed.scaladsl.AskPattern.*
-			Task.wait(target.ask[B](messageBuilder)(using timeout, assistant.akkaScheduler))
+			Task.wait(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
 		}
 	}
 
@@ -35,7 +34,7 @@ trait ActorExtension { thisActorExtension: Doer =>
 		 * @param isWithinDoSiThEx $isRunningInDoSiThEx
 		 * @param errorHandler called if the execution of this task completed with failure.
 		 */
-		def triggerAndSend(destination: ActorRef[A], isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(errorHandler: Throwable => Unit): Unit = {
+		def triggerAndSend(destination: ActorRef[A], isWithinDoSiThEx: Boolean = isInSequence)(errorHandler: Throwable => Unit): Unit = {
 			task.trigger(isWithinDoSiThEx) {
 				case Success(r) => destination ! r;
 				case Failure(e) => errorHandler(e)

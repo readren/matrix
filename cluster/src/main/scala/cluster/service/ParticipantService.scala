@@ -2,7 +2,6 @@ package readren.matrix
 package cluster.service
 
 import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
-import cluster.misc.TaskSequencer
 import cluster.serialization.ProtocolVersion
 import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
 import cluster.service.ParticipantService.*
@@ -11,7 +10,7 @@ import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 import cluster.service.behavior.*
 
-import readren.sequencer.Maybe
+import readren.sequencer.{AbstractDoer, Maybe, SchedulingExtension}
 import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.net.SocketOption
@@ -25,6 +24,8 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object ParticipantService {
+	
+	type TaskSequencer = AbstractDoer & SchedulingExtension 
 
 	trait Clock {
 		def getTime: Instant
@@ -289,7 +290,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	private def startConnectionToSeeds(seeds: Iterable[ContactAddress]): Unit = {
-		sequencer.executeSequentially {
+		sequencer.execute {
 			for seed <- seeds do if config.myAddress != seed then {
 				if !delegateByAddress.contains(seed) then addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(seed)
 			}
@@ -317,7 +318,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				}
 				val channelId = ChannelId(INITIATED, oChannelLocalAddress)
 				scribe.trace(s"$myAddress: I have successfully initiated a connection to `$peerContactAddress` with channel $channelId.")
-				sequencer.executeSequentially {
+				sequencer.execute {
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
 					if relievedConnectingDelegate eq currentDelegate then {
@@ -338,7 +339,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				}
 			case Failure(exc) =>
 				scribe.error(s"$myAddress: The connection that I started to `$peerContactAddress` has been aborted after many failed tries.", exc)
-				sequencer.executeSequentially(relievedConnectingDelegate.onConnectionAborted(exc))
+				sequencer.execute(relievedConnectingDelegate.onConnectionAborted(exc))
 		}
 	}
 
@@ -366,7 +367,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 					channel = null
 					val retryDelay = config.connectionRetryMinDelay * attemptNumber * attemptNumber
 					val schedule: sequencer.Schedule = sequencer.newDelaySchedule(math.max(config.connectionRetryMaxDelay, retryDelay))
-					sequencer.scheduleSequentially(schedule) { () =>
+					sequencer.schedule(schedule) { () =>
 						connect(attemptNumber + 1)
 					}
 				} else onComplete(Failure(exc))
@@ -442,12 +443,12 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				discardedChannel.close()
 			case Transmitter.Delivered =>
 				discardedChannel.shutdownOutput()
-				sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { () => discardedChannel.close() }
+				sequencer.schedule(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { () => discardedChannel.close() }
 		}
 	}
 
 	private def release(): Unit = {
-		sequencer.executeSequentially {
+		sequencer.execute {
 			_isShutDown = true
 			notifyListenersThat(IAmGoingToCloseAllChannels())
 			serverChannel.close()

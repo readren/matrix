@@ -140,7 +140,7 @@ class CommunicableDelegate(
 			receptionResult match {
 				case responseFromPeer: Response =>
 					scribe.debug(s"${owner.myAddress}: I have received the response `$responseFromPeer from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
-					sequencer.executeSequentially {
+					sequencer.execute {
 						requestExchangeByRequestId.remove(responseFromPeer.toRequest).fold {
 							scribe.warn(s"${owner.myAddress}: I have received a response to a request that I haven't made. It arrived from $peerContactAddress through channel $channelId and contains `$responseFromPeer`.")
 						} { ore =>
@@ -158,7 +158,7 @@ class CommunicableDelegate(
 
 				case initiatorMessageFromPeer: NonResponse =>
 					scribe.debug(s"${owner.myAddress}: I have received the message `$initiatorMessageFromPeer` from `$peerContactAddress` through channel $channelId$gracefulClosingAmendment.")
-					sequencer.executeSequentially {
+					sequencer.execute {
 						val thisDelegateIsAssociated = isAssociated
 						if !thisDelegateIsAssociated then scribe.info(s"${owner.myAddress}: The message `$initiatorMessageFromPeer` from `$peerContactAddress` was ignored because it was handled after the delegate was removed. It was received through channel $channelId.")
 						val continueReceiving = thisDelegateIsAssociated && exposingChangesDo(true) {
@@ -171,7 +171,7 @@ class CommunicableDelegate(
 				case fault: Receiver.Fault =>
 					if channelClosingCallback eq null then scribe.error(fault.scribeContent(s"${owner.myAddress}: Failure while I was waiting for, or receiving, a message from `$peerContactAddress` through channel $channelId.") *)
 					else scribe.trace(s"${owner.myAddress}: Expected receiver failure due to graceful closing of the connection to $peerContactAddress with channel $channelId.")
-					sequencer.executeSequentially {
+					sequencer.execute {
 						if isAssociated then restartChannel(s"The reception failed with $fault")
 					}
 			}
@@ -206,7 +206,7 @@ class CommunicableDelegate(
 	}
 
 	/** Reports the transmission failure and then calls the specified consumer.
-	 * @note The consumer is called within a [[sequencer.executeSequentially]] block but not within a [[exposingChangesDo]] block.
+	 * @note The consumer is called within a [[sequencer.execute]] block but not within a [[exposingChangesDo]] block.
 	 */
 	private[service] def ifFailureReportItAndThen(consumer: Transmitter.NotDelivered => Unit)(report: Transmitter.Report): Unit = {
 		report match {
@@ -214,7 +214,7 @@ class CommunicableDelegate(
 
 			case failure: Transmitter.NotDelivered =>
 				reportTransmissionFailure(failure)
-				sequencer.executeSequentially(consumer(failure))
+				sequencer.execute(consumer(failure))
 		}
 	}
 
@@ -223,7 +223,7 @@ class CommunicableDelegate(
 	 * - and to handle each of the three mutually exclusive outcomes.
 	 * Also maintains the state or the request.
 	 * Instances of this class are single-use and should be disposed after its usage. To ensure this create the instance inline when calling the [[ask]] method.
-	 * Exactly one of the `on*` methods is called once, and the call occurs within a [[sequencer.executeSequentially]] block. */
+	 * Exactly one of the `on*` methods is called once, and the call occurs within a [[sequencer.execute]] block. */
 	private[service] abstract class OutgoingRequestExchange[Q <: Request](val responseTimeout: MilliDuration = config.responseTimeout) { thisOutgoingRequestExchange =>
 
 		private[CommunicableDelegate] var oTimeoutSchedule: Maybe[sequencer.Schedule] = Maybe.empty
@@ -233,14 +233,14 @@ class CommunicableDelegate(
 		 * Called within the thread that called [[askPeer]], which should be the [[sequencer]]'s thread. */
 		def buildRequest(requestId: RequestId): Q
 
-		/** Called (within a [[sequencer.executeSequentially]] block and within an [[exposingChangesDo]] block) if a response to the request is received.
+		/** Called (within a [[sequencer.execute]] block and within an [[exposingChangesDo]] block) if a response to the request is received.
 		 * Should return `true` for the conversation with the peer to continue. */
 		def onResponse(request: Q, response: request.ResponseType): Boolean
 
-		/** Called (within a [[sequencer.executeSequentially]] block and within an [[exposingChangesDo]] block) if the transmission of the request fails. */
+		/** Called (within a [[sequencer.execute]] block and within an [[exposingChangesDo]] block) if the transmission of the request fails. */
 		def onTransmissionError(request: Q, error: NotDelivered): Unit
 
-		/** Called (within a [[sequencer.executeSequentially]] block and within an [[exposingChangesDo]] block) if no response to the request is received within the time passed to the `responseTimeout` parameter of the [[askPeer]] method. */
+		/** Called (within a [[sequencer.execute]] block and within an [[exposingChangesDo]] block) if no response to the request is received within the time passed to the `responseTimeout` parameter of the [[askPeer]] method. */
 		def onTimeout(request: Q): Unit
 	}
 
@@ -253,11 +253,11 @@ class CommunicableDelegate(
 		requestExchange.oRequest = Maybe.some(request)
 		transmitToPeer(request) {
 			case Delivered =>
-				sequencer.executeSequentially {
+				sequencer.execute {
 					val timeoutSchedule = sequencer.newDelaySchedule(requestExchange.responseTimeout)
 					requestExchange.oTimeoutSchedule = Maybe.some(timeoutSchedule)
 					requestExchangeByRequestId.put(requestId, requestExchange)
-					sequencer.scheduleSequentially(timeoutSchedule) { () =>
+					sequencer.schedule(timeoutSchedule) { () =>
 						requestExchangeByRequestId.remove(requestId).foreach { removedExchange =>
 							assert(removedExchange eq requestExchange)
 							if isAssociated then exposingChangesDo(false) { () => requestExchange.onTimeout(request) }
@@ -266,7 +266,7 @@ class CommunicableDelegate(
 				}
 			case nd: NotDelivered =>
 				reportTransmissionFailure(nd)
-				sequencer.executeSequentially {
+				sequencer.execute {
 					exposingChangesDo(false) { () =>
 						requestExchange.onTransmissionError(request, nd)
 					}
@@ -292,7 +292,7 @@ class CommunicableDelegate(
 			if isFirstTry then {
 				isFirstTry = false
 				val schedule: sequencer.Schedule = sequencer.newDelaySchedule(retryDelay)
-				sequencer.scheduleSequentially(schedule) { () => askPeer(this) }
+				sequencer.schedule(schedule) { () => askPeer(this) }
 			}
 			else restartChannel(s"Non-response timeout: request ${oRequest.get} was sent twice (initial attempt got no response within response timeout), but no response was received.")
 		}
@@ -320,7 +320,7 @@ class CommunicableDelegate(
 			owner.getMembershipScopedBehavior.onPeerCommunicabilityChange(myReplacement, this.communicationStatus)
 
 			// Close the channel after a delay to allow the peer to close the channel first.
-			sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+			sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { () =>
 				completeChannelClosing()
 			}
 			

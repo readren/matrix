@@ -2,46 +2,42 @@ package readren.matrix
 package core
 
 import core.Matrix.DoerProviderDescriptor
-import providers.assistant.DoerAssistantProvider.Tag
+import providers.assistant.DoerProvider
+import providers.assistant.DoerProvider.Tag
 
-import java.net.{InetAddress, URI}
+import readren.sequencer.Doer
+
+import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
 
-abstract class AbstractMatrix(val name: String) { thisMatrix =>
+abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix =>
 
-	type DefaultDoer <: MatrixDoer
+	type DefaultDoer <: Doer
 	
 	val doer: DefaultDoer
-
+	
 	protected val spawner: Spawner[doer.type]
 
 	val logger: Logger
 
-	val uri: URI = {
-		val host = InetAddress.getLocalHost.getHostAddress // Or use getHostAddress for IP
+	override val path: String = s"/$name/"
+	
+	val uri: URI
 
-		// Define the URI components
-		val scheme = "http" // You can change this to "https" if needed
-		val port = 8080 // Replace with the desired port, or omit it if not needed
-		val path = s"/$name/" // Replace with your specific path
-
-		// Construct the URI
-		new URI(scheme, null, host, port, path, null, null)
-	}
-
-	private val matrixDoerIdSequencer = new AtomicLong(0)
+	private val doerTagSequencer = new AtomicLong(0)
 	
 	def genTag(): Tag =
-		matrixDoerIdSequencer.getAndIncrement()
+		doerTagSequencer.getAndIncrement().toString
 
-	def provideDoer[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): D
+	def provideDoer[T <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[T]): T
 	
-	def provideDefaultDoer: MatrixDoer
+	/** TODO: add parenthesis because it mutates the [[Matrix.DoerProvider]] */
+	def provideDefaultDoer(tag: DoerProvider.Tag): DefaultDoer
 
 	/** thread-safe */
 	def spawns[U](
 		childFactory: ReactantFactory,
-		childDoer: MatrixDoer = provideDefaultDoer
+		childDoer: Doer
 	)(
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	)(

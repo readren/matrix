@@ -36,7 +36,7 @@ val AkkaVersion = "2.10.1"
 lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration")).dependsOn(sequencerCore)
 	.settings(
 		name := "sequencer-akka_integration",
-		idePackagePrefix := Some("readren.sequencer"),
+		idePackagePrefix := Some("readren.sequencer.akka"),
 		scalacOptions ++= Seq("-language:strictEquality"),
 		resolvers += "Akka library repository".at("https://repo.akka.io/maven"),
 		libraryDependencies ++= Seq(

@@ -234,12 +234,12 @@ class AspirantBehavior(override val host: ParticipantService) extends Membership
 											chosenMemberDelegate.transmitToPeer(JoinDecision(jg.requestId, inSyncWithChosenMember)) {
 												case Delivered =>
 													// If the confirmation was delivered and is affirmative (because we are in sync with the chosen member about the state of all the participants he knows), then switch to member.
-													if inSyncWithChosenMember then host.sequencer.executeSequentially {
+													if inSyncWithChosenMember then host.sequencer.execute {
 														host.switchToMember(thisAspirantBehavior, request.clusterId)
 													}
 												case nd: NotDelivered =>
 													chosenMemberDelegate.reportTransmissionFailure(nd)
-													host.sequencer.executeSequentially {
+													host.sequencer.execute {
 														chosenMemberDelegate.restartChannel(nd)
 													}
 											}

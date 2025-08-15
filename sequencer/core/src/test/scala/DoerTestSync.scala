@@ -1,6 +1,6 @@
 package readren.sequencer
 
-import DoerTestSync.currentAssistant
+import DoerTestSync.currentDoer
 
 import org.scalacheck.{Arbitrary, Gen}
 import munit.ScalaCheckEffectSuite
@@ -11,7 +11,7 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object DoerTestSync {
-	val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	val currentDoer: ThreadLocal[Doer] = new ThreadLocal()
 }
 
 /** This suite is limited to synchronous tests, and therefore, it only tests part of the behavior of [[Doer]].
@@ -21,31 +21,32 @@ object DoerTestSync {
 class DoerTestSync extends ScalaCheckEffectSuite {
 
 	private var oDoerThreadId: Option[Long] = None
-	private val theAssistant = new Doer.Assistant { thisAssistant =>
+
+
+	private val doer: Doer = new Doer { thisDoer =>
+		override type Tag = String
+		
+		override val tag = "testing doer"
+		
 		override def executeSequentially(runnable: Runnable): Unit = {
 			oDoerThreadId match {
 				case None => oDoerThreadId = Some(Thread.currentThread().getId)
 				case Some(doerThreadId) => assert(doerThreadId == Thread.currentThread().getId)
 			}
-			currentAssistant.set(thisAssistant)
+			currentDoer.set(thisDoer)
 			try runnable.run()
-			finally currentAssistant.remove()
+			finally currentDoer.remove()
 		}
 
-		override def current: Doer.Assistant = currentAssistant.get
+		override def current: Doer = currentDoer.get
 
 		override def reportFailure(cause: Throwable): Unit = throw cause
-	}
-
-	val doer: Doer = new Doer {
-		override type Assistant = theAssistant.type
-		override val assistant: Assistant = theAssistant
 	}
 
 	import doer.*
 	import Task.*
 
-	val shared = new DoerTestShared[doer.type](doer, true)
+	private val shared = new DoerTestShared[doer.type](doer, true)
 	import shared.{*, given}
 
 	private def checkEquality[A](task1: Task[A], task2: Task[A]): Unit = {

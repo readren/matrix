@@ -1,7 +1,7 @@
 package readren.sequencer
 
 import Doer.ExceptionReport
-import DoerTestEffect.currentAssistant
+import DoerTestEffect.currentDoer
 import SchedulingExtension.*
 
 import munit.ScalaCheckEffectSuite
@@ -19,7 +19,7 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object ScheduledDoerTestEffect {
-	val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	val currentDoer: ThreadLocal[Doer] = new ThreadLocal()
 }
 
 class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
@@ -29,7 +29,11 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 	private val unhandledExceptions = mutable.Set.empty[String]
 	private val reportedExceptions = mutable.Set.empty[String]
 
-	private object theAssistant extends Doer.Assistant, SchedulingExtension.Assistant { thisAssistant =>
+	private object doer extends Doer, SchedulingExtension { thisDoer =>
+		override type Tag = String
+		
+		val tag: Tag = "testing doer"
+		
 		private val doSiThEx = Executors.newSingleThreadScheduledExecutor()
 
 		private val sequencer: AtomicInteger = new AtomicInteger(0)
@@ -38,7 +42,7 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 			val id = sequencer.addAndGet(1)
 			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
 			doSiThEx.execute(() => {
-				currentAssistant.set(thisAssistant)
+				currentDoer.set(thisDoer)
 				// println(s"queuedForSequentialExecution: pre run; id=$id; thread=${Thread.currentThread().getName}")
 				try {
 					runnable.run()
@@ -50,14 +54,14 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 						unhandledExceptions.addOne(cause.getMessage);
 						throw cause;
 				} finally {
-					currentAssistant.remove()
+					currentDoer.remove()
 					// println(s"queuedForSequentialExecution: finally; id=$id; thread=${Thread.currentThread().getName}")
 				}
 			})
 
 		}
 
-		override def current: Doer.Assistant = currentAssistant.get
+		override def current: Doer = currentDoer.get
 
 		override def reportFailure(failure: Throwable): Unit = {
 			// println(s"Reporting failure to munit: ${failure.getMessage}")
@@ -101,9 +105,9 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 				case TDelaySchedule(delay) =>
 					val wrapper: Runnable = () =>
 						if schedule.isActive then {
-							currentAssistant.set(this)
+							currentDoer.set(this)
 							runnable.run()
-							currentAssistant.remove()
+							currentDoer.remove()
 							activeSchedules.remove(schedule)
 							schedule.isActive = false
 						}
@@ -141,11 +145,6 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 		}
 
 		override def isActive(schedule: Schedule): Boolean = schedule.isActive
-	}
-
-	private object doer extends Doer, SchedulingExtension {
-		override type Assistant = theAssistant.type
-		override val assistant: Assistant = theAssistant
 	}
 
 	import doer.*
@@ -248,10 +247,10 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 				.map { sr =>
 					val actualDelay = System.currentTimeMillis() - startMilli
 					val expectedDelay = interval * repetitions + initialDelay
-					// println(s"counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.assistant.isActive(schedule)}")
+					// println(s"counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 					assertEquals(sr, repetitions)
 					assert(actualDelay >= expectedDelay)
-					assert(!assistant.isActive(schedule))
+					assert(!isActive(schedule))
 				}
 				.toFutureHardy()
 		}
@@ -293,7 +292,7 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * counter + initialDelay
 				if actualDelay < expectedDelay then commitment.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))()
-				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.assistant.isActive(schedule)}")
+				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				if counter == repetitions then {
 					commitment.fulfill(())()
 					cancel(schedule)
@@ -310,13 +309,13 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 			val scheduledDuty = duty.scheduled(schedule)
 			val commitment = Commitment[Unit]()
 			scheduledDuty.trigger() { _ =>
-				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${assistant.isActive(schedule)}"))()
+				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${isActive(schedule)}"))()
 			}
 			val cancelsAndWaits = for {
 				_ <- Duty.mine[Unit] { () =>
-					assert(assistant.isActive(schedule))
+					assert(isActive(schedule))
 					cancel(schedule)
-					assert(!assistant.isActive(schedule))
+					assert(!isActive(schedule))
 				}
 				_ <- Duty.delay(delay)(() => ())
 
@@ -333,9 +332,9 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 			val commitment = Commitment[Unit]()
 			cancel(schedule)
 			scheduledDuty.trigger() { _ =>
-				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${assistant.isActive(schedule)}"))()
+				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${isActive(schedule)}"))()
 			}
-			assert(!assistant.isActive(schedule))
+			assert(!isActive(schedule))
 			commitment.completeWith(Task.sleeps(delay + 1))()
 			commitment.toFuture()
 		}
@@ -456,7 +455,7 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 	private val sleep1ms = Task.alien { () =>
 		Future {
 			Thread.sleep(1)
-		}(global)
+		}(using global)
 	}
 
 

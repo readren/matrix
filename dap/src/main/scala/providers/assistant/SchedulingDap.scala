@@ -3,7 +3,7 @@ package providers.assistant
 
 import common.CompileTime
 import providers.assistant.CooperativeWorkersDap.*
-import providers.assistant.DoerAssistantProvider.Tag
+import providers.assistant.DoerProvider.Tag
 import providers.assistant.SchedulingDap.*
 
 import readren.sequencer.SchedulingExtension
@@ -23,7 +23,9 @@ object SchedulingDap {
 
 	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
 
-	trait SchedulingAssistant extends DoerAssistant, SchedulingExtension.Assistant {
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[SchedulingDap]].
+	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. If that causes problems make [[DoerFacade]] be a trait that extends [[Doer]] instead of [[AbstractDoer]]. */
+	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension {
 		override type Schedule <: AbstractSchedule
 	}
 
@@ -43,7 +45,7 @@ object SchedulingDap {
 		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
 		 * {{{ (actualTime - scheduledTime) / interval }}}
 		 * Updated before the [[Runnable]] is run.
-		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.
+		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.
 		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
 		def numOfSkippedExecutions: Long
 
@@ -53,27 +55,26 @@ object SchedulingDap {
 		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] task that is scheduled by this instance. */
 		def startingTime: MilliTime
 
-		/** An instance becomes enabled after the [[scheduledTime]] is reached, when the [[Runnable]] task that is scheduled by this instance is enqueued for execution (calling [[DoerAssistant.executeSequentially]]).
-		 * An instance becomes disabled after the [[runnable]] execution finishes and the */
+		/** An instance becomes enabled after the [[scheduledTime]] is reached, when the [[Runnable]] task that is scheduled by this instance is enqueued for execution (calling [[SchedulingDoerFacade.executeSequentially]]).
+		 * An instance becomes disabled after the [[Runnable]] execution finishes and the */
 		def isEnabled: Boolean
 
-		/** Exposes the time when the [[Runnable]] task, scheduled by this [[AbstractSchedule]], was last enqueued into the task queue for execution (calling [[SchedulingAssistant.executeSequentially]]). */
+		/** Exposes the time when the [[Runnable]] task, scheduled by this [[AbstractSchedule]], was last enqueued into the task queue for execution (calling [[SchedulingDoerFacade.executeSequentially]]). */
 		def enabledTime: MilliTime
 
-		/** An instance becomes active when is passed to the [[thisSchedulingAssistant.scheduleSequentially]] method.
-		 * An instances becomes inactive when it is passed to the [[thisSchedulingAssistant.cancel]] method or when [[thisSchedulingAssistant.cancelAll]] is called.
+		/** An instance becomes active when is passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
+		 * An instances becomes inactive when it is passed to the [[SchedulingDoerFacade.cancel]] method or when [[SchedulingDoerFacade.cancelAll]] is called.
 		 *
-		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[heapIndex]] to be @volatile. */
+		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[SchedulingDap.SchedulingDoerImpl.ScheduleImpl.heapIndex]] to be @volatile. */
 		def isActive: Boolean
 	}
 
 	inline def readCurrentMilliTime: MilliTime = System.nanoTime() / 1_000_000
 }
 
-/** A dynamically balanced [[Doer.Assistant]] provider with scheduling support.
- * This assistant provider is like [[CooperativeWorkersDap]] but with scheduling capabilities added.
+/** Adds scheduling features to the [[CooperativeWorkersDap]].
  * Scheduling is managed by a dedicated single thread, which operates independently and does not contribute to the thread-pool size.
- * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer.Assistant]]. 
+ * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
 class SchedulingDap(
@@ -81,13 +82,13 @@ class SchedulingDap(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDap, DoerAssistantProvider[SchedulingAssistant] { thisSchedulingAssistantProvider =>
+) extends CooperativeWorkersDap, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
-	override def provide(tag: Tag): SchedulingAssistant = {
-		new SchedulingAssistantImpl(tag)
+	override def provide(tag: Tag): SchedulingDoerFacade = {
+		new SchedulingDoerImpl(tag)
 	}
 
-	private class SchedulingAssistantImpl(aTag: Tag) extends DoerAssistantImpl(aTag), SchedulingAssistant { thisSchedulingAssistant =>
+	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
 
 		override type Schedule = ScheduleImpl
 
@@ -152,15 +153,15 @@ class SchedulingDap(
 
 		/**
 		 * Removes the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
-		 * If called near its scheduled time from outside this assistant current thread, the [[Runnable]] may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this assistant current thread, it is ensured that no more execution of the [[Runnable]] can occur. */
+		 * If called near its scheduled time from outside this [[Doer]]'s current thread, the [[Runnable]] may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this [[Doer]]'s current thread, it is ensured that no more execution of the [[Runnable]] can occur. */
 		override def cancel(schedule: Schedule): Unit = scheduler.cancel(schedule)
 
 		/**
-		 * Removes all the scheduled [[Runnable]]s corresponding to this [[Assistant]] from the schedule.
-		 * If called near a scheduled time from outside this assistant current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this assistant current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur.. */
-		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingAssistant)
+		 * Removes all the scheduled [[Runnable]]s corresponding to this [[Doer]] from the schedule.
+		 * If called near a scheduled time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur.. */
+		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingDoer)
 
 		/** An instance becomes active when is passed to the [[scheduleSequentially]] method.
 		 * An instance becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
@@ -169,7 +170,7 @@ class SchedulingDap(
 
 		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends AbstractSchedule {
-			/** The [[Runnable]] that this [[TimersExtension.Assistant.Schedule]] schedules. */
+			/** The [[Runnable]] that this [[SchedulingExtension.Schedule]] schedules. */
 			var runnable: Runnable | Null = null
 			var scheduledTime: MilliTime = 0L
 			/** The index of this instance in the array-based min-heap. */
@@ -180,7 +181,7 @@ class SchedulingDap(
 			var enabledTime: MilliTime = 0L
 			@volatile var isActive = false
 
-			inline def owner: thisSchedulingAssistant.type = thisSchedulingAssistant
+			inline def owner: thisSchedulingDoer.type = thisSchedulingDoer
 
 			override def toString: String = readren.sequencer.deriveToString(this)
 		}
@@ -188,10 +189,10 @@ class SchedulingDap(
 
 	private object scheduler extends Runnable {
 		private val commandsQueue = new util.ArrayDeque[Runnable]()
-		private var heap: Array[SchedulingAssistantImpl#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
+		private var heap: Array[SchedulingDoerImpl#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var heapSize: Int = 0
-		/** Know the instances of [[SchedulingAssistantImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[SchedulingAssistant.cancelAll()]] method because enabled instances are not in the [[heap]]. */
-		private var enabledSchedulesByAssistant: util.HashMap[SchedulingAssistantImpl, mutable.HashSet[SchedulingAssistantImpl#ScheduleImpl]] = new util.HashMap()
+		/** Know the instances of [[SchedulingDoerImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[SchedulingDoerFacade.cancelAll()]] method because enabled instances are not in the [[heap]]. */
+		private var enabledSchedulesByDoer: util.HashMap[SchedulingDoerImpl, mutable.HashSet[SchedulingDoerImpl#ScheduleImpl]] = new util.HashMap()
 
 		private var isRunning = true
 
@@ -200,15 +201,15 @@ class SchedulingDap(
 
 		def numOfEnabledSchedules: Int = {
 			var accum = 0
-			enabledSchedulesByAssistant.forEach((_, set) => accum += set.size)
+			enabledSchedulesByDoer.forEach((_, set) => accum += set.size)
 			accum
 		}
 
-		def schedule(schedule: SchedulingAssistantImpl#ScheduleImpl, scheduleTime: MilliTime): Unit = {
+		def schedule(schedule: SchedulingDoerImpl#ScheduleImpl, scheduleTime: MilliTime): Unit = {
 			signal { () =>
 				if schedule.isEnabled then {
 					schedule.isEnabled = false
-					enabledSchedulesByAssistant.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule))
+					enabledSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule))
 				}
 				if schedule.isActive then {
 					schedule.scheduledTime = scheduleTime
@@ -217,30 +218,30 @@ class SchedulingDap(
 			}
 		}
 
-		def cancel(schedule: SchedulingAssistantImpl#ScheduleImpl): Unit = {
+		def cancel(schedule: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			schedule.isActive = false
 			signal { () =>
 				if schedule.isEnabled then {
 					schedule.isEnabled = false
-					if enabledSchedulesByAssistant.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule)).isEmpty then
-						enabledSchedulesByAssistant.remove(schedule.owner)
+					if enabledSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule)).isEmpty then
+						enabledSchedulesByDoer.remove(schedule.owner)
 				} else remove(schedule)
 			}
 		}
 
-		def cancelAllBelongingTo(assistant: SchedulingAssistantImpl): Unit = {
+		def cancelAllBelongingTo(doer: SchedulingDoerImpl): Unit = {
 			signal { () =>
 				var index = heapSize
 				while index > 0 do {
 					index -= 1
 					val schedule = heap(index)
-					if schedule.owner eq assistant then {
+					if schedule.owner eq doer then {
 						schedule.isActive = false
 						remove(schedule)
 					}
 				}
 
-				val enabledSchedules = enabledSchedulesByAssistant.remove(assistant)
+				val enabledSchedules = enabledSchedulesByDoer.remove(doer)
 				if enabledSchedules ne null then enabledSchedules.foreach { schedule =>
 					schedule.isActive = false
 					schedule.isEnabled = false
@@ -275,7 +276,7 @@ class SchedulingDap(
 					finishPoll(earlierSchedule)
 					earlierSchedule.isEnabled = true
 					earlierSchedule.enabledTime = currentTime
-					enabledSchedulesByAssistant.compute(
+					enabledSchedulesByDoer.compute(
 						earlierSchedule.owner,
 						(_, enabledSchedules) => if enabledSchedules eq null then mutable.HashSet(earlierSchedule) else enabledSchedules.addOne(earlierSchedule)
 					)
@@ -296,19 +297,19 @@ class SchedulingDap(
 			this.synchronized(commandsQueue.clear()) // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 			for i <- 0 until heapSize do heap(i).isActive = false
 			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
-			enabledSchedulesByAssistant.forEach { (_, enabledSchedules) =>
+			enabledSchedulesByDoer.forEach { (_, enabledSchedules) =>
 				enabledSchedules.foreach { schedule =>
 					schedule.isActive = false
 					schedule.isEnabled = false
 				}
 			}
-			enabledSchedulesByAssistant = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			enabledSchedulesByDoer = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 		}
 
-		private inline def peek: SchedulingAssistantImpl#ScheduleImpl | Null = heap(0)
+		private inline def peek: SchedulingDoerImpl#ScheduleImpl | Null = heap(0)
 
 		/** Adds the provided element to this min-heap based priority queue. */
-		private def enqueue(element: SchedulingAssistantImpl#ScheduleImpl): Unit = {
+		private def enqueue(element: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			val holeIndex = heapSize
 			if holeIndex >= heap.length then grow()
 			heapSize = holeIndex + 1
@@ -324,7 +325,7 @@ class SchedulingDap(
 		 * Assumes the provided element is the same as the returned by [[peek]].
 		 * @param peekedElement the [[ScheduleImpl]] to remove and return.
 		 */
-		private def finishPoll(peekedElement: SchedulingAssistantImpl#ScheduleImpl): SchedulingAssistantImpl#ScheduleImpl = {
+		private def finishPoll(peekedElement: SchedulingDoerImpl#ScheduleImpl): SchedulingDoerImpl#ScheduleImpl = {
 			heapSize -= 1
 			val s = heapSize
 			val replacement = heap(s)
@@ -336,7 +337,7 @@ class SchedulingDap(
 
 		/** Removes the provided element from this queue.
 		 * @return true if the element was removed; false if it is not contained by this queue. */
-		private def remove(element: SchedulingAssistantImpl#ScheduleImpl): Boolean = {
+		private def remove(element: SchedulingDoerImpl#ScheduleImpl): Boolean = {
 			val elemIndex = indexOf(element)
 			if elemIndex < 0 then return false
 			element.heapIndex = -1
@@ -351,14 +352,14 @@ class SchedulingDap(
 			true
 		}
 
-		private inline def indexOf(task: SchedulingAssistantImpl#ScheduleImpl): Int = task.heapIndex
+		private inline def indexOf(task: SchedulingDoerImpl#ScheduleImpl): Int = task.heapIndex
 
 		/**
 		 * Replaces the element at position `holeIndex` of the heap-based array with the `providedElement` and rearranges it and its parents as necessary to ensure that all parents are less than or equal to their children.
 		 * Note that for the entire heap to satisfy the min-heap property, the `providedElement` must be less than or equal to the children of `holeIndex`.
 		 * Sifts element added at bottom up to its heap-ordered spot.
 		 */
-		private def siftUp(holeIndex: Int, providedElement: SchedulingAssistantImpl#ScheduleImpl): Unit = {
+		private def siftUp(holeIndex: Int, providedElement: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var zero = 0
 			while (gapIndex > zero) {
@@ -379,7 +380,7 @@ class SchedulingDap(
 		 * Replaces the element that is currently at position `holeIndex` of the heap-based array with the `providedElement` and rearranges the elements in the subtree rooted at `holeIndex` such that the subtree conform to the min-heap property.
 		 * Sifts element added at top down to its heap-ordered spot.
 		 */
-		private def siftDown(holeIndex: Int, providedElement: SchedulingAssistantImpl#ScheduleImpl): Unit = {
+		private def siftDown(holeIndex: Int, providedElement: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			var gapIndex = holeIndex
 			var half = heapSize >>> 1
 			while gapIndex < half do {
@@ -421,7 +422,7 @@ class SchedulingDap(
 	}
 
 	/**
-	 * Makes this [[Matrix.DoerAssistantProvider]] to shut down when all the workers are sleeping.
+	 * Makes this [[SchedulingDap]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.

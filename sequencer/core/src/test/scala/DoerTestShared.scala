@@ -1,6 +1,6 @@
 package readren.sequencer
 
-import DoerTestShared.currentAssistant
+import DoerTestShared.currentForeignDoer
 
 import org.scalacheck.{Arbitrary, Gen}
 
@@ -9,7 +9,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success, Try}
 
 object DoerTestShared {
-	val currentAssistant: ThreadLocal[Doer.Assistant] = new ThreadLocal()
+	private val currentForeignDoer: ThreadLocal[Doer] = new ThreadLocal()
 }
 
 /** Contains tools used by the suites that test [[Doer]] behavior. */
@@ -17,24 +17,20 @@ class DoerTestShared[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false)
 
 	import doer.*
 
-	val foreignDoer: Doer = {
-		val foreignAssistant: Doer.Assistant = new Doer.Assistant { thisAssistant => 
-			private val executor = Executors.newSingleThreadExecutor()
+	val foreignDoer: Doer = new Doer {
+		override type Tag = String
+		override val tag = "foreign doer for testing"
+		private val executor = Executors.newSingleThreadExecutor()
 
-			override def executeSequentially(runnable: Runnable): Unit = executor.execute { () =>
-				currentAssistant.set(thisAssistant)
-				try runnable.run()
-				finally currentAssistant.remove()
-			}
-
-			override def current: Doer.Assistant = currentAssistant.get
-
-			override def reportFailure(cause: Throwable): Unit = throw cause
+		override def executeSequentially(runnable: Runnable): Unit = executor.execute { () =>
+			currentForeignDoer.set(this)
+			try runnable.run()
+			finally currentForeignDoer.remove()
 		}
-		new Doer {
-			override type Assistant = foreignAssistant.type
-			override val assistant: Assistant = foreignAssistant
-		}
+
+		override def current: Doer = currentForeignDoer.get
+
+		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 
 	extension [A](genA: Gen[A]) {
@@ -51,8 +47,8 @@ class DoerTestShared[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false)
 					delay <- Gen.oneOf(0, 1, 2, 4, 8, 16)
 				} yield {
 					() => {
-						Future(Thread.sleep(delay))(ExecutionContext.global)
-							.transform(_ => tryA)(ExecutionContext.global)
+						Future(Thread.sleep(delay))(using ExecutionContext.global)
+							.transform(_ => tryA)(using ExecutionContext.global)
 					}
 				}
 			Gen.oneOf(immediateGen, delayedGen)
@@ -73,7 +69,7 @@ class DoerTestShared[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false)
 				Task.alien(() => Future {
 					Thread.sleep(delay);
 					a
-				}(ExecutionContext.global)).map(_.asInstanceOf[Success[A]].value)
+				}(using ExecutionContext.global)).map(_.asInstanceOf[Success[A]].value)
 
 			if synchronousOnly then Gen.oneOf(readyGen, mineGen, ownFlatGen)
 			else Gen.oneOf(readyGen, mineGen, ownFlatGen, foreignGen)

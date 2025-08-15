@@ -91,7 +91,7 @@ trait Conciliator { thisConciliator =>
 	/** The tool that the hosting [[ConsensusParticipant]] uses to mutate its state and schedule executions sequentially. */
 	val sequencer: Doer & SchedulingExtension
 
-	inline def isInSequence: Boolean = sequencer.assistant.isWithinDoSiThEx
+	inline def isInSequence: Boolean = sequencer.isInSequence
 
 	//// STATE MACHINE
 
@@ -915,7 +915,7 @@ trait Conciliator { thisConciliator =>
 							if currentBehavior ne this then return
 							val schedule = sequencer.newDelaySchedule(failedReplicationsLoopInterval)
 							failedReplicationsLoopSchedule = Maybe.some(schedule)
-							sequencer.scheduleSequentially(schedule) { () =>
+							sequencer.schedule(schedule) { () =>
 								if currentBehavior eq this then {
 									val retryTasks =
 										for followerIndex <- previousTryResults.indices yield {

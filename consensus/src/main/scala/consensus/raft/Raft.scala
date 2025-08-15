@@ -116,7 +116,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	def startElectionTimeoutScheduler(): Unit = {
 		val schedule = sequencer.newFixedRateSchedule(config.electionTimeoutMin, config.electionTimeoutMin)
 		electionTimeoutSchedule = Some(schedule)
-		sequencer.scheduleSequentially(schedule) { () =>
+		sequencer.schedule(schedule) { () =>
 			checkElectionTimeout()
 		}
 	}
@@ -131,7 +131,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	private def startHeartbeatScheduler(): Unit = {
 		val schedule = sequencer.newFixedRateSchedule(config.heartbeatInterval, config.heartbeatInterval)
 		heartbeatSchedule = Some(schedule)
-		sequencer.scheduleSequentially(schedule) { () =>
+		sequencer.schedule(schedule) { () =>
 			sendHeartbeat()
 		}
 	}
@@ -144,7 +144,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	}
 
 	private def checkElectionTimeout(): Unit = {
-		sequencer.executeSequentially {
+		sequencer.execute {
 			if shouldStartElection then {
 				scribe.info(s"${clusterService.context.showContext}: election timeout expired, starting new election")
 				startElection()
@@ -198,7 +198,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	 */
 	private def handleMessage(message: RaftMessage): Unit = {
 		scribe.trace(s"${clusterService.context.showContext}: received ${message.getClass.getSimpleName} from ${message.sourceNodeId} (term=${message.term})")
-		sequencer.executeSequentially {
+		sequencer.execute {
 			message match {
 				case rv: RequestVote => handleRequestVote(rv)
 				case rvr: RequestVoteResponse => handleRequestVoteResponse(rvr)

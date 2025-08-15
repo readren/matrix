@@ -2,7 +2,7 @@ package readren.matrix
 package consensus
 
 import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
-import providers.assistant.{CooperativeWorkersDap, DoerAssistantProvider, SchedulingDap}
+import providers.assistant.{CooperativeWorkersDap, DoerProvider, SchedulingDap}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
@@ -28,15 +28,12 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	// Test command type
 	private case class TestCommand(value: String)
 
-	private val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${CooperativeWorkersDap.currentAssistant.id}", _))
+	private val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${CooperativeWorkersDap.currentDoer.tag}", _))
 
-	private class Sequencer(tag: DoerAssistantProvider.Tag) extends Doer, SchedulingExtension {
-		override type Assistant = SchedulingDap.SchedulingAssistant
-		override val assistant: Assistant = schedulingDap.provide(tag)
-	}
+	private type ScheduSequen = SchedulingDap.SchedulingDoerFacade
 
 	private class Net(latency: MilliDuration, timeout: MilliDuration) {
-		val sequencer = Sequencer(0)
+		val sequencer: ScheduSequen = schedulingDap.provide("net")
 		private var nodeById: Map[Id, Node] = Map.empty
 		private var indexById: Map[Id, Int] = Map.empty
 		private val nodeByIndex: ArrayBuffer[Node] = ArrayBuffer.empty
@@ -167,8 +164,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		// Real sequencer implementation for testing
-		override val sequencer: Sequencer = new Sequencer(1)
+		override val sequencer: ScheduSequen = schedulingDap.provide("testing")
 
 		object machine extends StateMachine {
 			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {

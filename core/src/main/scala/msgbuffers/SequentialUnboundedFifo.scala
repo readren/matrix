@@ -1,9 +1,9 @@
 package readren.matrix
 package msgbuffers
 
-import core.{Inbox, MatrixDoer, Reactant, Receiver}
+import core.{Inbox, Reactant, Receiver}
 
-import readren.sequencer.Maybe
+import readren.sequencer.{Doer, Maybe}
 
 import java.net.URI
 import scala.collection.AbstractIterator
@@ -15,15 +15,15 @@ class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	/** Should be accessed only within the [[doer]] */
 	private val queue: java.util.ArrayDeque[M] = new java.util.ArrayDeque()
 	
-	val doer: MatrixDoer = owner.doer
+	val doer: Doer = owner.doer
 
 	override val uri: URI = {
-		val mu = doer.matrix.uri
+		val mu = owner.matrix.uri
 		URI(mu.getScheme, null, mu.getHost, mu.getPort, mu.getPath + owner.path, null, null)
 	}
 
 	override def submit(message: M): Unit = {
-		doer.executeSequentially {
+		doer.execute {
 			if queue.isEmpty then {
 				if owner.onInboxBecomesNonempty(message) then queue.add(message)
 			} else queue.add(message)

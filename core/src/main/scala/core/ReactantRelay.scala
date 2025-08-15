@@ -5,27 +5,23 @@ import readren.sequencer.{Doer, Maybe}
 
 import scala.collection.MapView
 
-abstract class ReactantRelay[-U] {
+abstract class ReactantRelay[-U] extends Procreative {
 
-	/** thread-safe */
 	val serial: Reactant.SerialNumber
-	/** thread-safe */
-	val doer: MatrixDoer
-	/** thread-safe */
+	val doer: Doer
 	val endpointProvider: EndpointProvider[U]
-	/** thread-safe */
-	val path: String
+	/** The matrix this [[Reactant]] instance is part of. */
+	val matrix: AbstractMatrix
 
-	
 	/** Indicates whether this [[Reactant]] was marked to be stopped, which does not necessarily mean that the stop process has already started.
-	 * 
+	 *
 	 * This method is thread-safe. */
 	def isMarkedToBeStopped: Boolean
-	
+
 	/** Calls must be within the [[doer]]. */
 	def spawns[V](
 		childFactory: ReactantFactory,
-		childDoer: MatrixDoer = doer.matrix.provideDefaultDoer
+		childDoer: Doer
 	)(
 		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
 	)(
@@ -40,16 +36,16 @@ abstract class ReactantRelay[-U] {
 	 * Supports being called from anywhere at any moment and many times.
 	 * If this reactant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
 	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
-	 * 
+	 *
 	 * This method is thread-safe.
 	 * @return a [[Duty]] that completes when this [[Reactant]] is fully stopped. */
 	def stop(): doer.Duty[Unit]
-	
+
 	/** A [[SubscriptableDuty]] that completes when this [[Reactant]] is fully stopped (after the [[StopReceived]] signal was handled and this [[Reactant]] was removed from its progenitor's children list).
-	 * 
+	 *
 	 * This duty is the same as the returned by the [[stop]] method.
-	 * 
- 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called within the [[doer]]. */
+	 *
+	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called within the [[doer]]. */
 	def stopDuty: doer.SubscriptableDuty[Unit]
 
 	/** Registers this [[Reactant]] to be notified with the specified signal when the given `watchedReactant` is fully stopped.
@@ -69,7 +65,7 @@ abstract class ReactantRelay[-U] {
 	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
 	 */
 	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
-	
+
 	/** Provides diagnostic information about the current instance. */
 	def diagnoses: doer.Duty[ReactantDiagnostic]
 

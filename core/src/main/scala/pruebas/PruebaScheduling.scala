@@ -19,18 +19,18 @@ object PruebaScheduling {
 		val matrix = new Matrix("scheduled", DefaultAide)
 		println(s"Matrix created")
 
-		val schedulingDoer = matrix.provideDoer(DefaultSchedulingDpd)
+		val schedulingDoer = matrix.provideDoer("scheduling-doer", DefaultSchedulingDpd)
 
 		if false then {
 			@volatile var inside = false
 
 			var counter = 0
 			val schedule = schedulingDoer.newFixedRateSchedule(1_000, 1_000)
-			schedulingDoer.scheduleSequentially(schedule) { () =>
+			schedulingDoer.schedule(schedule) { () =>
 				assert(!inside)
 				inside = true
 				counter += 1
-				println(f"counter=$counter%4d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%4d, runDelay=${schedule.startingTime - schedule.enabledTime}%4d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.assistant.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}")
+				println(f"counter=$counter%4d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%4d, runDelay=${schedule.startingTime - schedule.enabledTime}%4d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}")
 				inside = false
 			}
 
@@ -52,8 +52,8 @@ object PruebaScheduling {
 						} else {
 							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule(counter % 10, 10)
 							var repetitions = 0
-							schedulingDoer.scheduleSequentially(schedule) { () =>
-								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%3d, runDelay=${schedule.startingTime - schedule.enabledTime}%3d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.assistant.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}, incitingId=$incitingId")
+							schedulingDoer.schedule(schedule) { () =>
+								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%3d, runDelay=${schedule.startingTime - schedule.enabledTime}%3d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}, incitingId=$incitingId")
 								selfEndpoint.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}

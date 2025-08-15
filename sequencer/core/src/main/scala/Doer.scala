@@ -1,7 +1,5 @@
 package readren.sequencer
 
-import Doer.ExceptionReport
-
 import scala.annotation.tailrec
 import scala.collection.IterableFactory
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -10,36 +8,6 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object Doer {
-	/** Specifies what an instance of [[Doer]] requires to exist. */
-	trait Assistant {
-		/**
-		 * Executes the provided [[Runnable]] in the orden of submission after all the ones that were provided before to this [[Assistant]] instance have been completed.
-		 * The implementation should queue all the [[Runnable]]s this method receives while they are being executed sequentially. The thread that executes them can change as long as sequentiality and happens-before relationship are guaranteed.
-		 * From now on the executor of the queued [[Runnable]] instances will be called "the doer's single-thread executor", or DoSiThEx for short, despite more than one thread may be involved.
-		 * If the call is executed within the current DoSiThEx's [[Thread]], the [[Runnable]]'s execution must not start until the DoSiThEx completes its current execution and all the previously queued ones.
-		 * The implementation should not throw non-fatal exceptions.
-		 * The implementation should be thread-safe.
-		 *
-		 * All the deferred actions preformed by the [[Duty]] and [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
-		 * */
-		def executeSequentially(runnable: Runnable): Unit
-
-		/**
-		 * The implementation should return the [[Assistant]] instance corresponding to the DoSiThEx corresponding to the current [[java.lang.Thread]] if it knows it, or null if it doesn't.
-		 * The implementation should know, at least, if the current [[java.lang.Thread]] corresponds to this [[Assistant]], and return this instance in that case. */
-		def current: Assistant | Null
-
-		/**
-		 * @return true if the current [[java.lang.Thread]] is the currently assigned to this [[Assistant]] (the thread used to execute the [[Runnable]] passed to [[executeSequentially]]); or false otherwise. */
-		inline def isWithinDoSiThEx: Boolean = this eq current
-
-		/**
-		 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSiThEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Task]].
-		 * The implementation should not throw non-fatal exceptions.
-		 * The implementation should be thread-safe.
-		 * */
-		def reportFailure(cause: Throwable): Unit
-	}
 
 	class ExceptionReport(message: String, cause: Throwable) extends RuntimeException(message, cause)
 }
@@ -64,28 +32,63 @@ abstract class AbstractDoer extends Doer
  * - Tasks and duties across different '''Doer''' instances are '''independent''' and may run concurrently.
  * ==Note:==
  * At the time of writing, almost all the operations and classes in this source file are thread-safe and may function properly on any kind of execution context. The only exceptions are the classes [[CombinedTask]] and [[Commitment]], which could be enhanced to support concurrency. However, given that a design goal was to allow [[Task]] and the functions their operators receive to close over variables in code sections guaranteed to be executed solely by the DoSiThEx (doer's single-threaded executor), the effort and cost of making them concurrent would be unnecessary.
- * See [[Doer.Assistant.executeSequentially()]].
+ * See [[Doer.executeSequentially()]].
  *
  * @define DoSiThEx DoSiThEx (doer's single-thread executor)
  * @define onCompleteExecutedByDoSiThEx The `onComplete` callback passed to `engage` is always, with no exception, executed by this $DoSiThEx. This is part of the contract of the [[Task]] trait.
  * @define threadSafe This method is thread-safe.
  * @define isExecutedByDoSiThEx Executed within the DoSiThEx (doer's single-thread executor).
  * @define unhandledErrorsArePropagatedToTaskResult The call to this routine is guarded with try-catch. If it throws a non-fatal exception it will be caught and the [[Task]] will complete with a [[Failure]] containing the error.
- * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.Assistant.reportFailure()]].
+ * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
  * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the duty will never complete. The same occurs with all routines received by [[Duty]] operations. This is one of the main differences with [[Task]] operation.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
  * @define isWithinDoSiThEx indicates whether the caller is certain that this method is being executed within the $DoSiThEx. If there is no such certainty, the caller should set this parameter to `false` (or don't specify a value). This flag is useful for those [[Task]]s whose first action can or must be executed in the DoSiThEx, as it informs them that they can immediately execute said action synchronously. This method is thread-safe when this parameter value is false.
  */
 trait Doer { thisDoer =>
 
-	/** The type of the assistant of this [[Doer]] instance.  */
-	type Assistant <: Doer.Assistant
+	/** Type of the tag attached to [[Doer]] instances. */
+	type Tag
 
-	/** The assistant of this [[Doer]] instance. */
-	val assistant: Assistant
+	/** Convenience tag attached to this [[Doer]] instance.
+	 * This tag is not necessary and even not used by [[Doer]] operations. It exists solely for convenience in tracking and debugging. */
+	val tag: Tag
 
 	/**
-	 * Queues the execution of the specified procedure in the task-queue of this $DoSiThEx. See [[Doer.Assistant.executeSequentially]]
+	 * Specifies what an instance of [[Doer]] requires to execute its operations.
+	 * Executes the provided [[Runnable]] in the order of submission (after all the ones that were submitted before to this [[Doer]] instance have been completed).
+	 * The implementation should queue all the [[Runnable]]s this method receives while they are being executed sequentially. The thread that executes them can change as long as sequentiality and happens-before relationship are guaranteed.
+	 * From now on the executor of the queued [[Runnable]] instances will be called "the doer's single-thread executor", or DoSiThEx for short, despite more than one thread may be involved.
+	 * If the call is executed within the current DoSiThEx's [[Thread]], the [[Runnable]]'s execution must not start until the DoSiThEx completes its current execution and all the previously queued ones.
+	 * The implementation should not throw non-fatal exceptions.
+	 * The implementation should be thread-safe.
+	 *
+	 * All the deferred actions preformed by the [[Duty]] and [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
+	 * */
+	def executeSequentially(runnable: Runnable): Unit
+
+	/**
+	 * The implementation should return the [[Doer]] instance that the current [[java.lang.Thread]] is currently running if it knows it, or null if it doesn't.
+	 * The implementation should know, at least, if the current [[java.lang.Thread]] corresponds to this [[Doer]], and return this instance in that case. */
+	def current: Doer | Null
+
+	/**
+	 * @return true if the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] to execute the [[Runnable]]s passed to this instance's [[executeSequentially]] or [[execute]] methods, which are used to execute all the [[Duty]], [[Task]], and [[Flow]] operations. */
+	inline def isInSequence: Boolean = this eq current
+
+	/** Asserts that the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] instance for sequential execution of its operations. */
+	inline def checkWithin(): Unit = {
+		assert(isInSequence, s"The current thread does not correspond to this Doer: expected=$thisDoer, current=$current, tag=$tag")
+	}
+
+	/**
+	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSiThEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Task]].
+	 * The implementation should not throw non-fatal exceptions.
+	 * The implementation should be thread-safe.
+	 * */
+	def reportFailure(cause: Throwable): Unit
+
+	/**
+	 * Queues the execution of the specified procedure in the task-queue of this $DoSiThEx. See [[Doer.executeSequentially]]
 	 * If the call is executed by the DoSiThEx the [[Runnable]]'s execution will not start until the DoSiThEx completes its current execution and gets free to start a new one.
 	 *
 	 * All the deferred actions preformed by the [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
@@ -96,19 +99,19 @@ trait Doer { thisDoer =>
 	 * ==Note:==
 	 * Is more efficient than the functionally equivalent: {{{ Task.mine(runnable.run).attemptAndForget(); }}}.
 	 */
-	inline def executeSequentially(inline procedure: => Unit): Unit = {
-		${ DoerMacros.executeSequentiallyImpl('assistant, 'procedure) }
+	inline def execute(inline procedure: => Unit): Unit = {
+		${ DoerMacros.executeSequentiallyImpl('thisDoer, 'procedure) }
 	}
 
-	inline def reportFailure(cause: Throwable): Unit =
-		${ DoerMacros.reportFailureImpl('assistant, 'cause) }
+	inline def reportError(cause: Throwable): Unit =
+		${ DoerMacros.reportFailureImpl('thisDoer, 'cause) }
 
 	/**
-	 * An [[ExecutionContext]] that uses the $DoSiThEx. See [[Doer.assistant.executeSequentially]] */
+	 * An [[ExecutionContext]] that uses the $DoSiThEx. See [[Doer.executeSequentially]] */
 	object ownSingleThreadExecutionContext extends ExecutionContext {
-		def execute(runnable: Runnable): Unit = executeSequentially(runnable.run())
+		def execute(runnable: Runnable): Unit = thisDoer.execute(runnable.run())
 
-		def reportFailure(cause: Throwable): Unit = thisDoer.reportFailure(cause)
+		def reportFailure(cause: Throwable): Unit = thisDoer.reportError(cause)
 	}
 
 	/////////////// DUTY ///////////////
@@ -142,7 +145,7 @@ trait Doer { thisDoer =>
 		 *
 		 * The implementation must respect the following exception-handling rules:
 		 * - no exception thrown by the provided callback must be caught.
-		 * - any other non-fatal exception throw by this method must be caught and propagated to the result or reported using [[Doer.assistant.reportFailure]] if propagation is not feasible.
+		 * - any other non-fatal exception throw by this method must be caught and propagated to the result or reported using [[Doer.reportFailure]] if propagation is not feasible.
 		 * In the case of [[Task]] this includes non-fatal exceptions originated from routines passed in the class constructor that this method executes, including those captured over a closure.
 		 * [[Duty]], on the other hand, assumes that these routines never throw exceptions. If an exception is thrown, the stack of the corresponding task will be completely unwound. 
 		 * It is crucial to ensure that exceptions thrown by the onComplete callback are not caught, as this could suppress issues within the callback, preventing the execution of code expected to run and making it extremely difficult to diagnose the cause of a never-completing [[Duty]] or [[Task]].
@@ -169,8 +172,8 @@ trait Doer { thisDoer =>
 		 * Note that if it terminates abruptly the `onComplete` will never be called.
 		 * $isExecutedByDoSiThEx
 		 */
-		inline final def trigger(inline isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(inline onComplete: A => Unit): Unit = {
-			${ DoerMacros.triggerImpl('isWithinDoSiThEx, 'assistant, 'thisDuty, 'onComplete) }
+		inline final def trigger(inline isWithinDoSiThEx: Boolean = isInSequence)(inline onComplete: A => Unit): Unit = {
+			${ DoerMacros.triggerImpl('isWithinDoSiThEx, 'thisDoer, 'thisDuty, 'onComplete) }
 		}
 
 		/** Triggers the execution of this [[Task]] ignoring the result.
@@ -179,7 +182,7 @@ trait Doer { thisDoer =>
 		 *
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
 		 */
-		inline final def triggerAndForget(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Unit =
+		inline final def triggerAndForget(isWithinDoSiThEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSiThEx)(_ => {})
 
 
@@ -255,7 +258,7 @@ trait Doer { thisDoer =>
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
 		 * @return a [[Future]] that will be completed when this [[Task]] is completed.
 		 */
-		def toFutureHardy(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Future[A] = {
+		def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
 			trigger(isWithinDoSiThEx)(a => promise.success(a))
 			promise.future
@@ -607,7 +610,7 @@ trait Doer { thisDoer =>
 	final class Ready[A](a: A) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = onComplete(a)
 
-		override def toFutureHardy(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Future[A] = Future.successful(a)
+		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
 
 		override def toString: String = deriveToString[Ready[A]](this)
 	}
@@ -625,7 +628,7 @@ trait Doer { thisDoer =>
 	}
 
 	final class DelegateTo[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => executeSequentially(onComplete(a)))
+		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => execute(onComplete(a)))
 
 		override def toString: String = deriveToString[DelegateTo[A]](this)
 	}
@@ -705,7 +708,7 @@ trait Doer { thisDoer =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(completedCycles + 1, recursionDepth + 1)
 						} else {
-							executeSequentially(loop(completedCycles + 1, 0))
+							execute(loop(completedCycles + 1, 0))
 						}
 					}(onComplete)
 				}
@@ -737,7 +740,7 @@ trait Doer { thisDoer =>
 				condition(completedCycles, lastDutyResult).fold {
 					dutyA.engagePortal { newA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-						else executeSequentially(loop(completedCycles + 1, newA, 0))
+						else execute(loop(completedCycles + 1, newA, 0))
 					}
 				}(onComplete)
 			}
@@ -768,7 +771,7 @@ trait Doer { thisDoer =>
 					case Right(dutyA) =>
 						dutyA.engagePortal { newA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-							else executeSequentially(loop(completedCycles + 1, newA, 0))
+							else execute(loop(completedCycles + 1, newA, 0))
 						}
 				}
 			}
@@ -799,7 +802,7 @@ trait Doer { thisDoer =>
 					case Left(b) => onComplete(b)
 					case Right(a) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
-						else executeSequentially(loop(executionsCounter + 1, a, 0))
+						else execute(loop(executionsCounter + 1, a, 0))
 				}
 			}
 
@@ -838,7 +841,7 @@ trait Doer { thisDoer =>
 						} else if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(attemptsAlreadyMade + 1, recursionDepth + 1)
 						} else {
-							executeSequentially(loop(attemptsAlreadyMade + 1, 0))
+							execute(loop(attemptsAlreadyMade + 1, 0))
 						}
 				}
 			}
@@ -890,21 +893,21 @@ trait Doer { thisDoer =>
 		/** CAUTION: Should be called within the $DoSiThEx
 		 *  @return true if this [[Covenant]] was fulfilled; or false if it is still pending. */
 		inline def isCompleted: Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			this.oResult.isDefined
 		}
 
 		/** CAUTION: Should be called within the $DoSiThEx
 		 *  @return true if this [[Covenant]] is still pending; or false if it was completed. */
 		inline def isPending: Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			this.oResult.isEmpty
 		}
 
 		protected override def engage(onComplete: A => Unit): Unit = subscribe(onComplete)
 
 		override def subscribe(onComplete: A => Unit): Unit = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			oResult.fold {
 				if firstOnCompleteObserver eq null then firstOnCompleteObserver = onComplete
 				else onCompletedObservers = onComplete :: onCompletedObservers
@@ -912,7 +915,7 @@ trait Doer { thisDoer =>
 		}
 
 		override def unsubscribe(onComplete: A => Unit): Unit = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			if firstOnCompleteObserver eq onComplete then {
 				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
 				else {
@@ -923,19 +926,19 @@ trait Doer { thisDoer =>
 		}
 
 		override def isAlreadySubscribed(onComplete: A => Unit): Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
 		/** Provokes that the [[Duty]] that this [[Covenant]] promises to complete to be completed with the received `result`.
 		 *
 		 * @param result the result of the [[Duty]] this [[Covenant]] promised to complete . */
-		def fulfill(result: A, isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+		def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
 			if isWithinDoSiThEx then {
-				assert(assistant.isWithinDoSiThEx)
+				assert(isWithinDoSiThEx)
 				fulfillHere(result)(onAlreadyCompleted)
 			}
-			else executeSequentially(fulfillHere(result)(onAlreadyCompleted))
+			else execute(fulfillHere(result)(onAlreadyCompleted))
 			this;
 		}
 
@@ -956,7 +959,7 @@ trait Doer { thisDoer =>
 		}
 
 		/** Triggers the execution of the specified [[Duty]] and completes the [[Duty]] that this [[Covenant]] promises to fulfill with the result of the specified duty once it finishes. */
-		def fulfillWith(dutyA: Duty[A], isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+		def fulfillWith(dutyA: Duty[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
 			if (dutyA ne this)
 				dutyA.trigger(isWithinDoSiThEx)(result => fulfillHere(result)(onAlreadyCompleted));
 			this
@@ -987,7 +990,7 @@ trait Doer { thisDoer =>
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
 		 * @return a [[Future]] that will be completed when this [[Task]] is completed.
 		 */
-		def toFuture(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Future[A] = {
+		def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
 			trigger(isWithinDoSiThEx)(promise.complete)
 			promise.future
@@ -998,11 +1001,11 @@ trait Doer { thisDoer =>
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
 		 * @param errorHandler called when the execution of this task completes with a failure. $isExecutedByDoSiThEx $unhandledErrorsAreReported
 		 */
-		def triggerAndForgetHandlingErrors(errorHandler: Throwable => Unit, isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Unit =
+		def triggerAndForgetHandlingErrors(errorHandler: Throwable => Unit, isWithinDoSiThEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSiThEx) {
 				case Failure(e) =>
 					try errorHandler(e) catch {
-						case NonFatal(cause) => reportFailure(cause)
+						case NonFatal(cause) => reportError(cause)
 					}
 				case _ => ()
 			}
@@ -1127,7 +1130,7 @@ trait Doer { thisDoer =>
 		 *		- first executes this task;
 		 *		- second applies the received function to the result and, if the evaluation finishes:
 		 *			- normally, completes with the result of this task.
-		 *			- abruptly with a non-fatal exception, reports the failure cause to [[Doer.Assistant.reportFailure]] and completes with the result of this task.
+		 *			- abruptly with a non-fatal exception, reports the failure cause to [[Doer.reportFailure]] and completes with the result of this task.
 		 *			- abruptly with a fatal exception, never completes.
 		 *
 		 * $threadSafe
@@ -1138,7 +1141,7 @@ trait Doer { thisDoer =>
 			transform { tryA =>
 				try sideEffect(tryA)
 				catch {
-					case NonFatal(e) => reportFailure(e)
+					case NonFatal(e) => reportError(e)
 				}
 				tryA
 			}
@@ -1720,10 +1723,10 @@ trait Doer { thisDoer =>
 		override def engage(onComplete: Try[A] => Unit): Unit =
 			onComplete(tryA)
 
-		override def toFuture(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Future[A] =
+		override def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[A] =
 			Future.fromTry(tryA)
 
-		override def toFutureHardy(isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx): Future[Try[A]] =
+		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[Try[A]] =
 			Future.successful(tryA)
 
 		override def toString: String = deriveToString[Immediate[A]](this)
@@ -1796,7 +1799,7 @@ trait Doer { thisDoer =>
 
 	final class Foreign[+A](foreignDoer: Doer)(foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			foreignTask.trigger() { tryA => executeSequentially(onComplete(tryA)) }
+			foreignTask.trigger() { tryA => execute(onComplete(tryA)) }
 		}
 
 		override def toString: String = deriveToString[Foreign[A]](this)
@@ -2053,7 +2056,7 @@ trait Doer { thisDoer =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(completedCycles + 1, recursionDepth + 1)
 						} else {
-							executeSequentially(loop(completedCycles + 1, 0))
+							execute(loop(completedCycles + 1, 0))
 						}
 					}(onComplete)
 				}
@@ -2103,7 +2106,7 @@ trait Doer { thisDoer =>
 				conditionResult.fold {
 					taskA.engagePortal { newTryA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
-						else executeSequentially(loop(completedCycles + 1, newTryA, 0))
+						else execute(loop(completedCycles + 1, newTryA, 0))
 					}
 				}(onComplete)
 			}
@@ -2145,7 +2148,7 @@ trait Doer { thisDoer =>
 					case Right(taskA) =>
 						taskA.engagePortal { newTryA =>
 							if (recursionDepth < maxRecursionDepthPerExecutor) loop(completedCycles + 1, newTryA, recursionDepth + 1)
-							else executeSequentially(loop(completedCycles + 1, newTryA, 0));
+							else execute(loop(completedCycles + 1, newTryA, 0));
 						}
 				}
 			}
@@ -2187,7 +2190,7 @@ trait Doer { thisDoer =>
 				task.engagePortal {
 					case Success(Right(a)) =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) loop(executionsCounter + 1, a, recursionDepth + 1)
-						else executeSequentially(loop(executionsCounter + 1, a, 0));
+						else execute(loop(executionsCounter + 1, a, 0));
 					case Success(Left(tryB)) =>
 						onComplete(tryB)
 					case Failure(e) =>
@@ -2235,7 +2238,7 @@ trait Doer { thisDoer =>
 								} else if (recursionDepth < maxRecursionDepthPerExecutor) {
 									loop(attemptsAlreadyMade + 1, recursionDepth + 1);
 								} else {
-									executeSequentially(loop(attemptsAlreadyMade + 1, 0))
+									execute(loop(attemptsAlreadyMade + 1, 0))
 								}
 						}
 					case failure: Failure[Either[A, B]] =>
@@ -2290,21 +2293,21 @@ trait Doer { thisDoer =>
 		/** CAUTION: should be called within the $DoSiThEx
 		 * @return true if this [[Commitment]] was either fulfilled or broken; or false if it is still pending. */
 		def isCompleted: Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			oResult.isDefined
 		}
 
 		/** CAUTION: should be called within the $DoSiThEx
 		 * @return true if this [[Commitment]] is still pending; or false if it was completed. */
 		def isPending: Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			oResult.isEmpty
 		}
 
 		protected override def engage(onComplete: Try[A] => Unit): Unit = subscribe(onComplete)
 
 		override def subscribe(onComplete: Try[A] => Unit): Unit = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			oResult.fold {
 				if firstOnCompleteObserver eq null then firstOnCompleteObserver = onComplete
 				else onCompletedObservers = onComplete :: onCompletedObservers
@@ -2312,7 +2315,7 @@ trait Doer { thisDoer =>
 		}
 
 		override def unsubscribe(onComplete: Try[A] => Unit): Unit = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			if firstOnCompleteObserver eq onComplete then {
 				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
 				else {
@@ -2324,16 +2327,16 @@ trait Doer { thisDoer =>
 		}
 
 		override def isAlreadySubscribed(onComplete: Try[A] => Unit): Boolean = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
 		/** Provokes that the [[subscriptableTask]] that this [[Commitment]] promises to complete to be completed with the received `result`.
 		 *
 		 * @param result the result that the [[subscriptableTask]] this [[Commitment]] promised to complete . */
-		def complete(result: Try[A], isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		def complete(result: Try[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if isWithinDoSiThEx then completeHere(result)(onAlreadyCompleted)
-			else executeSequentially(completeHere(result)(onAlreadyCompleted))
+			else execute(completeHere(result)(onAlreadyCompleted))
 			thisCommitment
 		}
 
@@ -2342,7 +2345,7 @@ trait Doer { thisDoer =>
 		 * Caution: Should be called within the $DoSiThEx
 		 * @param result the result that the [[subscriptableTask]] this [[Commitment]] promised to complete . */
 		def completeHere(result: Try[A])(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			assert(assistant.isWithinDoSiThEx)
+			assert(isInSequence)
 			oResult.fold {
 				oResult = Maybe.some(result);
 				onCompletedObservers.foreach(_(result));
@@ -2354,7 +2357,7 @@ trait Doer { thisDoer =>
 			} { value =>
 				try onAlreadyCompleted(value)
 				catch {
-					case NonFatal(cause) => reportFailure(cause)
+					case NonFatal(cause) => reportError(cause)
 				}
 			}
 			thisCommitment
@@ -2362,18 +2365,18 @@ trait Doer { thisDoer =>
 
 
 		/** Provokes that the [[subscriptableTask]] this [[Commitment]] promises to complete to be fulfilled (completed successfully) with the received `result`. */
-		def fulfill(result: A, isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type =
+		def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type =
 			if isWithinDoSiThEx then completeHere(Success(result))(onAlreadyCompleted)
 			else complete(Success(result))(onAlreadyCompleted)
 
 		/** Provokes that the [[subscriptableTask]] this [[Commitment]] promises to complete to be broken (completed with failure) with the received `cause`. */
-		def break(cause: Throwable, isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		def break(cause: Throwable, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if isWithinDoSiThEx then completeHere(Failure(cause))(onAlreadyCompleted)
 			else complete(Failure(cause))(onAlreadyCompleted)
 		}
 
 		/** Programs the completion of the [[subscriptableTask]] this [[Commitment]] promises to complete to be completed with the result of the received [[Task]] when it is completed. */
-		def completeWith(otherTask: Task[A], isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		def completeWith(otherTask: Task[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if (otherTask ne thisCommitment)
 				otherTask.trigger(isWithinDoSiThEx)(result => completeHere(result)(onAlreadyCompleted));
 			thisCommitment
@@ -2394,11 +2397,11 @@ trait Doer { thisDoer =>
 
 		protected def flush(a: A): Duty[B]
 
-		inline def apply(a: A, inline isWithinDoSiThEx: Boolean = assistant.isWithinDoSiThEx)(onComplete: B => Unit): Unit = {
+		inline def apply(a: A, inline isWithinDoSiThEx: Boolean = isInSequence)(onComplete: B => Unit): Unit = {
 			def work(): Unit = flush(a).engagePortal(onComplete)
 
 			if isWithinDoSiThEx then work()
-			else executeSequentially(work())
+			else execute(work())
 		}
 
 		/** Connects this flow output with the input of the received one. */

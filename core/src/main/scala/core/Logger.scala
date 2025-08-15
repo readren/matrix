@@ -7,6 +7,7 @@ object Logger {
 	enum Level { case debug, info, warn, error }
 }
 
+/** TODO this is provisory. Improve it or just use scribe. */
 trait Logger {
 	
 	val level: Level

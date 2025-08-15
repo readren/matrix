@@ -2,8 +2,8 @@ package readren.matrix
 package providers.assistant
 
 import providers.ShutdownAble
-import providers.assistant.DoerAssistantProvider.Tag
-import providers.assistant.LeastLoadedFixedWorkerDap.AssistantImpl
+import providers.assistant.DoerProvider.Tag
+import providers.assistant.LeastLoadedFixedWorkerDap.ProvidedDoer
 
 import readren.sequencer.Doer
 
@@ -11,17 +11,21 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
 object LeastLoadedFixedWorkerDap {
-	private val currentAssistant: ThreadLocal[AssistantImpl] = new ThreadLocal()
+	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal()
 
-	class AssistantImpl(
-		val index: Int,
+	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
+	inline def currentDoer: ProvidedDoer | Null = doerThreadLocal.get
+
+	class ProvidedDoer(
+		override val tag: Tag,
 		failureReporter: Throwable => Unit = _.printStackTrace(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-	) extends Doer.Assistant { thisAssistant =>
+	) extends Doer { thisDoer =>
+		override type Tag = providers.assistant.DoerProvider.Tag
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
-				currentAssistant.set(thisAssistant)
+				doerThreadLocal.set(thisDoer)
 				r.run()
 			}
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
@@ -29,17 +33,17 @@ object LeastLoadedFixedWorkerDap {
 
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
-		override def current: AssistantImpl = currentAssistant.get
+		override def current: ProvidedDoer = currentDoer
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
 }
 
-/** A [[Doer.Assistant]] provider with a non-dynamic thread-load balancing mechanism.
+/** A [[Doer]] provider with a non-dynamic thread-load balancing mechanism.
  * How it works:
- * - Manages a fixed number of assistants equal to the thread pool size, each of which owns a thread-worker.
- * - A call to the [[provide]] method returns the assistant with the shortest task queue at the moment of the call.
- * - All tasks submitted to an assistant are executed by the same thread-worker.
+ * - Manages a fixed number of [[Doer]] instances equal to the thread pool size, each of which owns a thread-worker.
+ * - A call to the [[provide]] method returns the [[Doer]] instance with the shortest task queue at the moment of the call.
+ * - All tasks submitted to a [[Doer]] are executed by the same thread-worker.
  * Effective for short-living doers that are created when the work is demanded.
  * Not suited for long-living doers. */
 class LeastLoadedFixedWorkerDap(
@@ -47,57 +51,57 @@ class LeastLoadedFixedWorkerDap(
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerAssistantProvider[LeastLoadedFixedWorkerDap.AssistantImpl], ShutdownAble {
+) extends DoerProvider[LeastLoadedFixedWorkerDap.ProvidedDoer], ShutdownAble {
 
-	private val assistants = Array.tabulate[AssistantImpl](threadPoolSize)(index => new AssistantImpl(index, failureReporter, threadFactory, queueFactory))
+	private val doers = Array.tabulate[ProvidedDoer](threadPoolSize)(index => new ProvidedDoer(s"LeastLoadedFixedWorker#$index", failureReporter, threadFactory, queueFactory))
 
 	private val switcher = new AtomicInteger(0)
 
-	override def provide(tag: Tag): AssistantImpl = {
-		val assistantsWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
-		val pickedAssistant =
-			if assistantsWithShortestWorkQueue.tail == Nil then assistantsWithShortestWorkQueue.head
+	override def provide(tag: Tag): ProvidedDoer = {
+		val doersWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()
+		val pickedDoer =
+			if doersWithShortestWorkQueue.tail == Nil then doersWithShortestWorkQueue.head
 			else {
-				val pickedExecutorIndex = switcher.getAndIncrement() % assistantsWithShortestWorkQueue.size
-				assistantsWithShortestWorkQueue(pickedExecutorIndex)
+				val pickedExecutorIndex = switcher.getAndIncrement() % doersWithShortestWorkQueue.size
+				doersWithShortestWorkQueue(pickedExecutorIndex)
 			}
-		pickedAssistant
+		pickedDoer
 	}
 
-	private def findExecutorsWithShortestWorkQueue(): List[AssistantImpl] = {
+	private def findExecutorsWithShortestWorkQueue(): List[ProvidedDoer] = {
 		var shortestSize = Integer.MAX_VALUE
-		var result: List[AssistantImpl] = Nil
+		var result: List[ProvidedDoer] = Nil
 
-		for assistant <- assistants do {
-			val executor = assistant.doSiThEx
+		for doer <- doers do {
+			val executor = doer.doSiThEx
 			val queueSize = executor.getQueue.size()
 			if queueSize < shortestSize then {
-				result = List(assistant)
+				result = List(doer)
 				shortestSize = queueSize
 			}
-			else if queueSize == shortestSize then result = assistant :: result
+			else if queueSize == shortestSize then result = doer :: result
 		}
 		result
 	}
 
 	override def shutdown(): Unit = {
-		for assistant <- assistants do {
-			assistant.doSiThEx.shutdown()
+		for doer <- doers do {
+			doer.doSiThEx.shutdown()
 		}
 	}
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		// TODO subtract already waited time
-		assistants.forall(_.doSiThEx.awaitTermination(timeout, unit))
+		doers.forall(_.doSiThEx.awaitTermination(timeout, unit))
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
 		var totalCompletedTaskCount: Long = 0
 		sb.append(this.getClass.getSimpleName)
 		sb.append('\n')
-		for assistant <- assistants do {
-			val executor = assistant.doSiThEx
-			sb.append('\t').append(assistant.index).append(") ")
+		for doer <- doers do {
+			val executor = doer.doSiThEx
+			sb.append('\t').append(doer.tag).append(") ")
 			sb.append(" queue.size=").append(executor.getQueue.size)
 			sb.append(", activeCount=").append(executor.getActiveCount)
 			sb.append(", taskCount=").append(executor.getTaskCount)

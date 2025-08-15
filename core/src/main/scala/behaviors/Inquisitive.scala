@@ -98,7 +98,7 @@ class Inquisitive[A <: Answer, U >: A](val reactant: ReactantRelay[U], unaskedAn
 	 * @return A {{{ reactant.doer.SubscriptableDuty[A] }}} instance that will be completed when the answer is received.
 	 */
 	def ask[Q <: Question[A]](endpoint: Endpoint[Q], questionBuilder: Inquisitive.QuestionId => Q): reactant.doer.SubscriptableDuty[A] = {
-		assert(reactant.doer.assistant.isWithinDoSiThEx)
+		assert(reactant.doer.isInSequence)
 		val covenant = new reactant.doer.Covenant[A]
 		lastQuestionId += 1
 		pendingQuestions.update(lastQuestionId, covenant)

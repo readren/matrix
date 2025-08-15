@@ -3,7 +3,9 @@ package providers
 
 import common.CompileTime.getTypeName
 import core.Matrix.*
-import core.MatrixDoer
+import providers.assistant.DoerProvider
+
+import readren.sequencer.Doer
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
@@ -17,7 +19,7 @@ class ShutdownAbleDpm extends DoerProvidersManager, ShutdownAble {
 
 	/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created.
 	 * @throws IllegalStateException if both, this method is called after [[shutdown]] has been called, and it is the first time that this method receives this reference or an equivalent one. */
-	override def get[D <: MatrixDoer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D] = {
+	override def get[D <: Doer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D] = {
 		val provider = registeredProviders.computeIfAbsent(descriptor, descriptor => {
 			if wasShutdown.get() then null
 			else descriptor.build(this)

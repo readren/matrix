@@ -31,7 +31,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 				oPeerContactAddress = Maybe.some(message.myContactAddress)
 				if participantService.config.acceptedConnectionsFilter.test(message.myContactAddress) then {
 					scribe.debug(s"${participantService.myAddress}: I have received the hello message `$message` from `${message.myContactAddress}` through channel $eggChannelId.")
-					participantService.sequencer.executeSequentially(hatch(message))
+					participantService.sequencer.execute(hatch(message))
 				} else {
 					scribe.info(s"${participantService.myAddress}: A connection to me initiated by `${message.myContactAddress}` with channel $eggChannel was rejected by the contact-addresses' filter")
 					abortIncubated(oPeerContactAddress)
@@ -128,7 +128,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 			report match {
 				case Delivered =>
 					// If delivery is successful, schedule the remaining closing steps to happen later to allow the peer to close it first.
-					sequencer.scheduleSequentially(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+					sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { () =>
 						incumbentDelegate.completeChannelClosing()
 					}
 				case nd: NotDelivered =>

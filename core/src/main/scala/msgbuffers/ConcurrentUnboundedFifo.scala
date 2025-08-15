@@ -20,14 +20,14 @@ class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[
 	private val atomicSize: AtomicInteger = new AtomicInteger(0)
 
 	override val uri: URI = {
-		val mu = owner.doer.matrix.uri
+		val mu = owner.matrix.uri
 		URI(mu.getScheme, null, mu.getHost, mu.getPort, mu.getPath + owner.path, null, null)
 	}
 
 	override def submit(message: M): Unit = {
 		if atomicSize.getAndIncrement() == 0 then {
 			queue.offer(message)
-			owner.doer.executeSequentially(owner.onInboxBecomesNonempty())
+			owner.doer.execute(owner.onInboxBecomesNonempty())
 		} else queue.offer(message)
 	}
 

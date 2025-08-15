@@ -12,72 +12,70 @@ object SchedulingExtension {
 
 	/** A duration in milliseconds. */
 	type MilliDuration = Long
-
-	/** Specifies what an instance of [[Doer]] extended with the [[SchedulingExtension]] requires to exist.
-	 *
-	 * Design note: Why not avoid the vulnerability "using the same instance of Schedule in two calls to scheduleSequentially is illegal" by making Schedule only describe the schedule, and representing the execution plan by a separate trait Plan, with instances returned by the scheduleSequentially operation?
-	 * Because this would require operations on Duty and Task that use scheduleSequentially to include an instance of Plan along with the result.
-	 * This would necessitate a tuple, which not only requires additional memory allocation but also complicates the chaining of operations.
-	 * */
-	trait Assistant extends Doer.Assistant {
-		/** Represents an execution schedule.
-		 * It is tied to the [[Runnable]] passed along it to the [[scheduleSequentially]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[scheduleSequentially]].
-		 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[ScheduingExtesion]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
-		 * TODO: avoid the limitation of using the same instance in more than one call to [[scheduleSequentially]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the runnables that accompany it in a calls to [[scheduleSequentially]], and that the `cancel` method to apply to all of them. */
-		type Schedule
-
-		/** Creates a [[Schedule]] for a single time execution after a delay.
-		 * @param delay duration before the execution.
-		 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[scheduleSequentially]] method. */
-		def newDelaySchedule(delay: MilliDuration): Schedule
-
-		/** Creates a [[Schedule]] for a fixed rate repeated execution after an initial delay.
-		 * @param initialDelay duration before the first execution.
-		 * @param interval duration between the scheduled time of the executions.
-		 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[scheduleSequentially]] method. */
-		def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule
-
-		/** Creates a [[Schedule]] for a fixed delay repeated execution after an initial delay.
-		 * @param initialDelay duration before the first execution.
-		 * @param delay duration between the end of an execution and the scheduled start of the next.
-		 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[scheduleSequentially]] method. */
-		def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule
-
-		/** Programs the execution of the provided [[Runnable]] according to the provided [[Schedule]].
-		 * The implementation must ensure mutual sequentiality of the execution of [[Runnable]]s passed to [[executeSequentially]].
-		 * @param schedule determines when the provided [[runnable]] will be run.
-		 * @param runnable the [[Runnable]] to be run according to the provided [[schedule]].
-		 * The implementation should not throw non-fatal exceptions. */
-		def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit
-
-		/**
-		 * The implementation should remove the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
-		 * The implementation should not execute the [[Runnable]] after this method returns, even if called near its scheduled time.
-		 * The implementation should not throw non-fatal exceptions. */
-		def cancel(schedule: Schedule): Unit
-
-		/**
-		 * The implementation should remove all the scheduled [[Runnable]]s corresponding to this [[Assistant]] instance from the schedule.
-		 * The implementation should not execute the [[Runnable]] after this method returns, even if called near their scheduled time.
-		 * The implementation should not throw non-fatal exceptions. */
-		def cancelAll(): Unit
-
-		def isActive(schedule: Schedule): Boolean
-	}
 }
 
 /** Extends the [[Doer]] trait and its [[Duty]] and [[Task]] inner traits with scheduling operations.
- * @define notReusableDuty CAUTION: the [[Duty]] instance returned by this method should not be reused. It is mutable because it depends on an instance of [[SchedulingExtension.Assistant.Schedule]] which mutate when [[scheduleSequentially]] is executed. // TODO avoid this limitation enforcing the implementation of Schedule be immutable or apparently immutable.
- * @define notReusableTask CAUTION: the [[Task]] instance returned by this method should not be reused. It is mutable because it depends on an instance of [[SchedulingExtension.Assistant.Schedule]] which mutate when [[scheduleSequentially]] is executed. // TODO avoid this limitation enforcing the implementation of Schedule be immutable or apparently immutable.
+ *
+ * The abstract methods specifies what an instance of [[Doer]] extended with the [[SchedulingExtension]] requires to exist.
+ *
+ * Design note: Why not avoid the vulnerability "using the same instance of Schedule in two calls to scheduleSequentially is illegal" by making Schedule only describe the schedule, and representing the execution plan by a separate trait Plan, with instances returned by the scheduleSequentially operation?
+ * Because this would require operations on Duty and Task that use scheduleSequentially to include an instance of Plan along with the result.
+ * This would necessitate a tuple, which not only requires additional memory allocation but also complicates the chaining of operations.
+ * Wait! There is a way. See [[Schedule]]
+ *
+ *
+ * @define notReusableDuty CAUTION: the [[Duty]] instance returned by this method should not be reused. It is mutable because it depends on an instance of [[SchedulingExtension.Schedule]] which mutate when [[schedule]] is executed. // TODO avoid this limitation enforcing the implementation of Schedule be immutable or apparently immutable.
+ * @define notReusableTask CAUTION: the [[Task]] instance returned by this method should not be reused. It is mutable because it depends on an instance of [[SchedulingExtension.Schedule]] which mutate when [[schedule]] is executed. // TODO avoid this limitation enforcing the implementation of Schedule be immutable or apparently immutable.
  * */
 trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
-	override type Assistant <: SchedulingExtension.Assistant
 
-	export assistant.{Schedule, newDelaySchedule, newFixedRateSchedule, newFixedDelaySchedule, cancel, cancelAll}
+	/** Represents an execution schedule.
+	 * It is tied to the [[Runnable]] passed along it to the [[schedule]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[schedule]].
+	 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[ScheduingExtesion]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
+	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the runnables that accompany it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
+	type Schedule
 
-	inline def scheduleSequentially(schedule: Schedule)(runnable: Runnable): Unit =
-		assistant.scheduleSequentially(schedule, runnable)
+	/** Creates a [[Schedule]] for a single time execution after a delay.
+	 * @param delay duration before the execution.
+	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
+	def newDelaySchedule(delay: MilliDuration): Schedule
+
+	/** Creates a [[Schedule]] for a fixed rate repeated execution after an initial delay.
+	 * @param initialDelay duration before the first execution.
+	 * @param interval duration between the scheduled time of the executions.
+	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
+	def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule
+
+	/** Creates a [[Schedule]] for a fixed delay repeated execution after an initial delay.
+	 * @param initialDelay duration before the first execution.
+	 * @param delay duration between the end of an execution and the scheduled start of the next.
+	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
+	def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule
+
+	/** Programs the execution of the provided [[Runnable]] according to the provided [[Schedule]].
+	 * The implementation must ensure mutual sequentiality of the execution of [[Runnable]]s passed to [[executeSequentially]].
+	 * @param schedule determines when the provided [[runnable]] will be run.
+	 * @param runnable the [[Runnable]] to be run according to the provided [[schedule]].
+	 * The implementation should not throw non-fatal exceptions. */
+	def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit
+
+	/**
+	 * The implementation should remove the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
+	 * The implementation should not execute the [[Runnable]] after this method returns, even if called near its scheduled time.
+	 * The implementation should not throw non-fatal exceptions. */
+	def cancel(schedule: Schedule): Unit
+
+	/**
+	 * The implementation should remove all the scheduled [[Runnable]]s corresponding to this [[Doer]] instance from the schedule.
+	 * The implementation should not execute the [[Runnable]] after this method returns, even if called near their scheduled time.
+	 * The implementation should not throw non-fatal exceptions. */
+	def cancelAll(): Unit
+
+	def isActive(schedule: Schedule): Boolean
+
+	inline def schedule(schedule: Schedule)(runnable: Runnable): Unit =
+		scheduleSequentially(schedule, runnable)
 
 	//// Duty extension ////
 
@@ -105,9 +103,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * If the provided `schedule` is a fixed rate then triggering the returned duty causes the function application be executed periodically until the `schedule` is canceled.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty.ready(a).map(f).scheduled(schedule)) }}} but more efficient.
 		 * $notReusableDuty*/
-		def mapScheduled[B](schedule: Schedule)(f: A => B): Duty[B] = new Duty[B] {
+		def mapScheduled[B](aSchedule: Schedule)(f: A => B): Duty[B] = new Duty[B] {
 			override def engage(onComplete: B => Unit): Unit = {
-				thisDuty.engagePortal { a => scheduleSequentially(schedule) { () => onComplete(f(a)) } }
+				thisDuty.engagePortal { a => schedule(aSchedule) { () => onComplete(f(a)) } }
 			}
 		}
 
@@ -131,9 +129,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * If the provided `schedule` is a fixed rate then triggering the returned duty causes the function application be executed periodically until the `schedule` is canceled.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty.ready(a).flatMap(f).scheduled(schedule)) }}} but more efficient.
 		 * $notReusableDuty*/
-		def flatMapScheduled[B](schedule: Schedule)(f: A => Duty[B]): Duty[B] = new Duty[B] {
+		def flatMapScheduled[B](aSchedule: Schedule)(f: A => Duty[B]): Duty[B] = new Duty[B] {
 			override def engage(onComplete: B => Unit): Unit = {
-				thisDuty.engagePortal { a => scheduleSequentially(schedule) { () => f(a).engagePortal(onComplete) } }
+				thisDuty.engagePortal { a => schedule(aSchedule) { () => f(a).engagePortal(onComplete) } }
 			}
 		}
 
@@ -190,9 +188,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		}
 	}
 
-	final class Scheduled[A, B](duty: Duty[A], schedule: Schedule) extends Duty[A] {
+	final class Scheduled[A, B](duty: Duty[A], aSchedule: Schedule) extends Duty[A] {
 		override def engage(onComplete: A => Unit): Unit =
-			scheduleSequentially(schedule)(() => duty.engagePortal(onComplete))
+			schedule(aSchedule)(() => duty.engagePortal(onComplete))
 	}
 
 	/** Used by [[timeLimited]] and [[timeBounded]].
@@ -208,7 +206,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					onComplete(f(Maybe.some(a)))
 				}
 			}
-			scheduleSequentially(timeout) {
+			schedule(timeout) {
 				() =>
 					if (!hasCompleted) {
 						hasElapsed = true;
@@ -242,9 +240,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			delay(duration.toMillis)(supplier)
 	}
 
-	final class Book[A](schedule: Schedule, supplier: () => A) extends Duty[A] {
+	final class Book[A](aSchedule: Schedule, supplier: () => A) extends Duty[A] {
 		override def engage(onComplete: A => Unit): Unit =
-			scheduleSequentially(schedule)(() => onComplete(supplier()))
+			schedule(aSchedule)(() => onComplete(supplier()))
 	}
 
 	//// Task extension ////
@@ -253,9 +251,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Duty.scheduled]] but for [[Task]]s.
 		 * $notReusableTask */
-		def appointed(schedule: Schedule): Task[A] = new Task[A] {
+		def appointed(aSchedule: Schedule): Task[A] = new Task[A] {
 			override def engage(onComplete: Try[A] => Unit): Unit = {
-				scheduleSequentially(schedule)(() => thisTask.engagePortal(onComplete))
+				schedule(aSchedule)(() => thisTask.engagePortal(onComplete))
 			}
 		}
 
@@ -273,10 +271,10 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * If the provided `schedule` is a fixed rate then triggering the returned task causes the function application be executed periodically until the `schedule` is canceled.
 		 * Is equivalent to {{{ thisTask.map(a => Task.successful(a).map(f).appointed(schedule)) }}} but more efficient.
 		 * $notReusableTask */
-		def mapAppointed[B](schedule: Schedule)(f: A => B): Task[B] = new Task[B] {
+		def mapAppointed[B](aSchedule: Schedule)(f: A => B): Task[B] = new Task[B] {
 			override def engage(onComplete: Try[B] => Unit): Unit = {
 				thisTask.engagePortal {
-					case Success(a) => scheduleSequentially(schedule) { () => onComplete(Try(f(a))) }
+					case Success(a) => schedule(aSchedule) { () => onComplete(Try(f(a))) }
 					case fe@Failure(e) => onComplete(fe.asInstanceOf[Failure[B]])	
 				}
 			}
@@ -365,9 +363,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			Task.unit.postponed(duration)
 		}
 
-		def appoint[A](schedule: Schedule)(supplier: () => A): Task[A] = new Task[A] {
+		def appoint[A](aSchedule: Schedule)(supplier: () => A): Task[A] = new Task[A] {
 			override def engage(onComplete: Try[A] => Unit): Unit = {
-				scheduleSequentially(schedule) { () =>
+				schedule(aSchedule) { () =>
 					try onComplete(Success(supplier()))
 					catch {
 						case NonFatal(e) => onComplete(Failure(e))
@@ -413,7 +411,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					case Success(mtA) =>
 						mtA.fold {
 							if (remainingExecutions > 1) {
-								scheduleSequentially(delay) { () => loop(remainingExecutions - 1) }
+								schedule(delay) { () => loop(remainingExecutions - 1) }
 							} else
 								onComplete(Success(Maybe.empty))
 						} {

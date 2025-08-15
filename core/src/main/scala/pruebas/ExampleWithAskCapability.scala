@@ -18,7 +18,7 @@ object ExampleWithAskCapability {
 
 		val matrix = new Matrix("example", DefaultAide)
 
-		matrix.spawns[CalcCmd](RegularRf)(calculatorRelay => {
+		matrix.spawns[CalcCmd](RegularRf, matrix.provideDefaultDoer("calculator"))(calculatorRelay => {
 				case Sum(a, b, replyTo, questionId) =>
 					replyTo.tell(SumResult(a + b, questionId))
 					Continue
@@ -26,7 +26,7 @@ object ExampleWithAskCapability {
 			.flatMap { calculatorReactant =>
 				val calculatorEndpoint = calculatorReactant.endpointProvider.local[CalcCmd]
 
-				matrix.spawns[Started.type | SumResult](RegularRf) { userReactant =>
+				matrix.spawns[Started.type | SumResult](RegularRf, matrix.provideDefaultDoer("user")) { userReactant =>
 					val userEndpoint = userReactant.endpointProvider.local[SumResult]
 
 					behaviors.inquisitiveNest(userReactant)(new Behavior[Started.type] {

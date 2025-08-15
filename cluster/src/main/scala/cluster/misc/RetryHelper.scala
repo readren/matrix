@@ -1,11 +1,11 @@
 package readren.matrix
 package cluster.misc
 
+import cluster.service.ParticipantService.TaskSequencer
+
 import readren.sequencer.SchedulingExtension.MilliDuration
 
-import java.util.function.Consumer
-import scala.util.{Failure, Success, Try}
-
+@deprecated("not used")
 class RetryHelper(sequencer: TaskSequencer, startingDelay: MilliDuration, maxAttempts: Int) {
 	private var attemptsDone: Int = 0
 	
@@ -17,6 +17,6 @@ class RetryHelper(sequencer: TaskSequencer, startingDelay: MilliDuration, maxAtt
 		attemptsDone += 1
 		val retryDelay = startingDelay * attemptsDone * attemptsDone
 		val schedule: sequencer.Schedule = sequencer.newDelaySchedule(retryDelay)
-		sequencer.scheduleSequentially(schedule)(action)
+		sequencer.schedule(schedule)(action)
 	}
 }

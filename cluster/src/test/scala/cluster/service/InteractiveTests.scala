@@ -1,8 +1,7 @@
 package readren.matrix
 package cluster.service
 
-import cluster.misc.TaskSequencer
-import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue}
+import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue, TaskSequencer}
 import cluster.service.Protocol.Instant
 import common.ToStringWithFields.toStringWithFields
 import providers.assistant.{CooperativeWorkersDap, SchedulingDap}
@@ -39,15 +38,10 @@ object InteractiveTests {
 		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
-		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDap.currentAssistant.id}", _))
-		val sequencerA = new TaskSequencer {
-			override type Assistant = SchedulingDap.SchedulingAssistant
-			override val assistant: Assistant = schedulingDap.provide(portA)
-		}
-		val sequencerB = new TaskSequencer {
-			override type Assistant = SchedulingDap.SchedulingAssistant
-			override val assistant: Assistant = schedulingDap.provide(portB)
-		}
+		val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDap.currentDoer.tag}", _))
+		val sequencerA: TaskSequencer = schedulingDap.provide(portA.toString)
+		val sequencerB: TaskSequencer = schedulingDap.provide(portB.toString)
+		
 		val clock = new ParticipantService.Clock {
 			private val startingInstant = System.currentTimeMillis()
 			override def getTime: Instant = System.currentTimeMillis() - startingInstant

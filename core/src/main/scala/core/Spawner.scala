@@ -10,14 +10,18 @@ object Spawner {
 
 }
 
-/** A progenitor of [[Reactant]]s.
- * @param doer the [[MatrixDoer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createsReactant]].
- * If this [[Spawner]] has an owner then the [[MatrixDoer]] referred by this parameter should be the same as the assigned to the `owner`.
- * @param initialReactantSerial child reactants' serial will start at this value. Allows to distribute the load of [[MatrixDoer]] more evenly among siblings.
- * @tparam MD the singleton type of the [[MatrixDoer]] assigned to the `owner`.
+/** A spawner of [[Reactant]]s.
+ * @param owner the [[Procreative]] that owns this [[Spawner]]. A [[Spawner]] is owned by either a [[Reactant]] or a [[Matrix]]. 
+ * The [[Doer]] referred by this parameter should be the same as the assigned to the `owner`.
+ * @param initialReactantSerial child reactants' serial will start at this value.
+ * @tparam D the singleton type of the [[Doer]] assigned to the `owner`.
  * */
-class Spawner[+MD <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MD, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
-	assert(owner.fold(true)(_.doer eq doer))
+class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialReactantSerial: Reactant.SerialNumber) { thisSpawner =>
+
+	/**
+	 * The [[Doer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createsReactant]]
+	 * Is the same [[Doer]] instance as the owner's.
+	 */
 
 	/** Access must be within the [[doer]]. */
 	private var reactantSerialSequencer: Reactant.SerialNumber = initialReactantSerial
@@ -29,12 +33,12 @@ class Spawner[+MD <: MatrixDoer](val owner: Maybe[Reactant[?]], val doer: MD, in
 	 * Access must be within the [[doer]]. */
 	val childrenView: MapView[Long, Reactant[?]] = children.view
 
-	/**Creates a [[Duty]] that creates a new [[Reactant]].
+	/** Creates a [[Duty]] that creates a new [[Reactant]].
 	 * Calls must be within the [[doer]]. */
 	def createsReactant[U](
-		childFactory: ReactantFactory, 
-		childDoer: MatrixDoer, 
-		isSignalTest: IsSignalTest[U], 
+		childFactory: ReactantFactory,
+		childDoer: Doer,
+		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): doer.Duty[ReactantRelay[U]] = {
 		doer.checkWithin()

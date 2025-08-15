@@ -1,12 +1,12 @@
 package readren.matrix
 package providers.descriptor
 
-import core.Matrix
-import core.Matrix.{DoerProvider, DoerProviderDescriptor, DoerProvidersManager}
-import providers.doer.LeastLoadedFixedWorkerDoerProvider
 import common.CompileTime
+import core.Matrix
+import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
+import providers.assistant.{DoerProvider, LeastLoadedFixedWorkerDap}
 
 
-object DefaultLeastLoadedFixedWorkerDpd extends DoerProviderDescriptor[LeastLoadedFixedWorkerDoerProvider.ProvidedDoer](CompileTime.getTypeName[DefaultLeastLoadedFixedWorkerDpd.type]) {
-	override def build(owner: DoerProvidersManager): DoerProvider[LeastLoadedFixedWorkerDoerProvider.ProvidedDoer] = new LeastLoadedFixedWorkerDoerProvider()
+object DefaultLeastLoadedFixedWorkerDpd extends DoerProviderDescriptor[LeastLoadedFixedWorkerDap.ProvidedDoer](CompileTime.getTypeName[DefaultLeastLoadedFixedWorkerDpd.type]) {
+	override def build(owner: DoerProvidersManager): DoerProvider[LeastLoadedFixedWorkerDap.ProvidedDoer] = new LeastLoadedFixedWorkerDap()
 }
