@@ -1,7 +1,9 @@
 package readren.sequencer
 
-import readren.sequencer.Doer
 import SchedulingExtension.MilliDuration
+
+import readren.common.Maybe
+import readren.sequencer.Doer
 
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal

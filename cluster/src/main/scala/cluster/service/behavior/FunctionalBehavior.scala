@@ -6,8 +6,6 @@ import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.behavior.MemberBehavior
 
-import readren.sequencer.Maybe
-
 class FunctionalBehavior(override val host: ParticipantService, startingStateSerial: RingSerial, override val myClusterId: ClusterId) extends MemberBehavior(host, startingStateSerial, myClusterId) {
 	override val membershipStatus: Functional = Functional(myClusterId)
 

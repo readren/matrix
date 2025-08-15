@@ -2,8 +2,8 @@ package readren.matrix
 package core
 
 import core.Matrix.DoerProviderDescriptor
-import providers.assistant.DoerProvider
-import providers.assistant.DoerProvider.Tag
+import providers.DoerProvider
+import providers.DoerProvider.Tag
 
 import readren.sequencer.Doer
 

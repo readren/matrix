@@ -1,9 +1,8 @@
 package readren.matrix
 package cluster.service
 
+import cluster.serialization.ProtocolVersion
 import cluster.service.Protocol.ContactAddress
-
-import readren.matrix.cluster.serialization.ProtocolVersion
 
 import java.net.InetSocketAddress
 

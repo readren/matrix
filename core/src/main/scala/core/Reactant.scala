@@ -1,7 +1,8 @@
 package readren.matrix
 package core
 
-import readren.sequencer.{Doer, Maybe}
+import readren.common.Maybe
+import readren.sequencer.Doer
 
 import java.util
 import scala.annotation.tailrec

@@ -4,8 +4,6 @@ package cluster.channel
 import cluster.channel.Transmitter.{Context, Report}
 import cluster.serialization.{ProtocolVersion, Serializer}
 
-import readren.sequencer.Maybe
-
 import java.lang.invoke.VarHandle
 import java.nio.channels.AsynchronousSocketChannel
 import java.util.concurrent.atomic.AtomicInteger

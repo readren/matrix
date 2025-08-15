@@ -1,10 +1,10 @@
 package readren.matrix
 package cluster.service.behavior
 
-import cluster.service.Protocol.*
 import cluster.service.*
+import cluster.service.Protocol.*
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 class IsolatedBehavior(override val host: ParticipantService, startingStateSerial: RingSerial, override val myClusterId: ClusterId) extends MemberBehavior(host, startingStateSerial, myClusterId) {
 

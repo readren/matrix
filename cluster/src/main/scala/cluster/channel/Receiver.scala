@@ -6,10 +6,10 @@ import cluster.channel.Receiver.*
 import cluster.misc.LoggingTools.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
 import cluster.serialization.{Deserializer, ProtocolVersion}
+import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
 
-import readren.matrix.cluster.service.ChannelId
-import readren.sequencer.Maybe
+import readren.common.Maybe
 import scribe.LogFeature
 
 import java.net.SocketAddress

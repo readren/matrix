@@ -1,10 +1,10 @@
 package readren.matrix
 package cluster.service.behavior
 
-import cluster.service.Protocol.{ClusterId, CommunicationStatus, Conflicted, Instant, Member, MembershipStatus}
 import cluster.service.*
+import cluster.service.Protocol.*
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 import scala.collection.mutable
 

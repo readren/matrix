@@ -1,7 +1,7 @@
 package readren.matrix
-package providers.assistant
+package providers
 
-import providers.assistant.DoerProvider.Tag
+import providers.DoerProvider.Tag
 
 import readren.sequencer.Doer
 

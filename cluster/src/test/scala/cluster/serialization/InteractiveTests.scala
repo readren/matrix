@@ -4,8 +4,8 @@ package cluster.serialization
 import cluster.serialization
 import cluster.serialization.CommonSerializers.given
 import cluster.serialization.DiscriminationCriteria.{Entry, FlatEntry, TreeEntry}
-import cluster.serialization.MacroTools.showCode
 import cluster.serialization.InvariantIterableFactory.given
+import cluster.serialization.MacroTools.showCode
 import cluster.serialization.ProtocolVersion
 
 import java.nio.ByteBuffer

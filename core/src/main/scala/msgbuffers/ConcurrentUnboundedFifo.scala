@@ -3,7 +3,7 @@ package msgbuffers
 
 import core.{Inbox, Reactant, Receiver}
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 import java.net.URI
 import java.util.concurrent.ConcurrentLinkedQueue

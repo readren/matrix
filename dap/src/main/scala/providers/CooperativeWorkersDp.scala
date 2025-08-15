@@ -1,18 +1,18 @@
 package readren.matrix
-package providers.assistant
+package providers
 
-import common.CompileTime
+import providers.CooperativeWorkersDp.*
+import providers.DoerProvider.Tag
 import providers.ShutdownAble
-import providers.assistant.CooperativeWorkersDap.*
-import providers.assistant.DoerProvider.Tag
 
+import readren.common.CompileTime.getTypeName
 import readren.sequencer.{AbstractDoer, Doer}
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object CooperativeWorkersDap {
+object CooperativeWorkersDp {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
@@ -24,15 +24,15 @@ object CooperativeWorkersDap {
 	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
 	private val doerThreadLocal: ThreadLocal[DoerFacade] = new ThreadLocal()
 
-	/** @return the [[CooperativeWorkersDap.Worker]] that owns the current [[Thread]], if any. */
+	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any. */
 	def currentWorker: Runnable | Null = workerThreadLocal.get
 	
 	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
 	def currentDoer: DoerFacade | Null = doerThreadLocal.get
 
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDap]].  */
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].  */
 	abstract class DoerFacade extends AbstractDoer {
-		override type Tag = providers.assistant.DoerProvider.Tag
+		override type Tag = DoerProvider.Tag
 		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
 	}
@@ -50,7 +50,7 @@ object CooperativeWorkersDap {
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class CooperativeWorkersDap(
+class CooperativeWorkersDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
@@ -147,7 +147,7 @@ class CooperativeWorkersDap(
 			sb.append(f"(tag=$tag, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
 
-		override def toString: String = s"${CompileTime.getTypeName[DoerImpl]}(tag=$tag)"
+		override def toString: String = s"${getTypeName[DoerImpl]}(tag=$tag)"
 	}
 
 	/** @return `true` if a worker was awakened.
@@ -373,7 +373,7 @@ class CooperativeWorkersDap(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(common.CompileTime.getTypeName[CooperativeWorkersDap])
+		sb.append(getTypeName[CooperativeWorkersDp])
 		sb.append('\n')
 		sb.append(s"\tstate=${State.fromOrdinal(state.get)}\n")
 		sb.append(s"\trunningWorkersLatch=${runningWorkersLatch.getCount}\n")

@@ -4,10 +4,10 @@ package cluster.service
 import cluster.channel.Receiver
 import cluster.service.Protocol.CommunicationStatus.{CONNECTING, INCOMPATIBLE, UNREACHABLE}
 import cluster.service.Protocol.IncommunicabilityReason.{IS_CONNECTING_AS_CLIENT, IS_INCOMPATIBLE}
-import cluster.service.{ChannelId, Protocol}
 import cluster.service.Protocol.{CommunicationStatus, ContactAddress, IncommunicabilityReason}
+import cluster.service.{ChannelId, Protocol}
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel

@@ -1,5 +1,4 @@
-package readren.matrix
-package common
+package readren.common
 
 import scala.quoted.*
 

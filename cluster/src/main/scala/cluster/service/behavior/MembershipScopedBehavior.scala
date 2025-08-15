@@ -4,7 +4,7 @@ package cluster.service.behavior
 import cluster.service.Protocol.{CommunicationStatus, MembershipStatus}
 import cluster.service.{CommunicableDelegate, NonResponse, ParticipantDelegate, ParticipantService}
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 /** The aspect of a [[ParticipantService]]'s behavior that depends on the membership status.
  * Implementations may have member variables that are needed, or refer to object that exists, only when the [[ParticipantService]] is in the corresponding [[MembershipStatus]]. */

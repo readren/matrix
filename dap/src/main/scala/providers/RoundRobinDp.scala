@@ -1,16 +1,16 @@
 package readren.matrix
-package providers.assistant
+package providers
 
+import providers.DoerProvider.Tag
+import providers.RoundRobinDp.ProvidedDoer
 import providers.ShutdownAble
-import providers.assistant.DoerProvider.Tag
-import providers.assistant.RoundRobinDap.ProvidedDoer
 
 import readren.sequencer.Doer
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object RoundRobinDap {
+object RoundRobinDp {
 	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal
 
 	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
@@ -23,7 +23,7 @@ object RoundRobinDap {
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends Doer { thisDoer =>
 
-		override type Tag = providers.assistant.DoerProvider.Tag
+		override type Tag = DoerProvider.Tag
 		
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
@@ -49,12 +49,12 @@ object RoundRobinDap {
  *		- When a [[Doer]] instance (provided by this provider) starts having pending tasks it is enqueued in a queue.
  * Effective for abundant, short-lived, or evenly-loaded [[Doer]]s.
  */
-class RoundRobinDap(
+class RoundRobinDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerProvider[RoundRobinDap.ProvidedDoer], ShutdownAble { thisProvider =>
+) extends DoerProvider[RoundRobinDp.ProvidedDoer], ShutdownAble { thisProvider =>
 
 	private val switcher = new AtomicInteger(0)
 

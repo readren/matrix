@@ -1,10 +1,9 @@
 package readren.matrix
 package providers
 
-import common.CompileTime.getTypeName
 import core.Matrix.*
-import providers.assistant.DoerProvider
 
+import readren.common.CompileTime.getTypeName
 import readren.sequencer.Doer
 
 import java.util.concurrent.atomic.AtomicBoolean

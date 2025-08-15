@@ -3,9 +3,9 @@ package cluster.service.behavior
 
 import cluster.service.*
 import cluster.service.Protocol.*
-import common.CompileTime.getTypeName
 
-import readren.sequencer.Maybe
+import readren.common.CompileTime.getTypeName
+import readren.common.Maybe
 
 import scala.collection.MapView
 

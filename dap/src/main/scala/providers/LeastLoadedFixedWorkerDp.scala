@@ -1,16 +1,16 @@
 package readren.matrix
-package providers.assistant
+package providers
 
+import providers.DoerProvider.Tag
+import providers.LeastLoadedFixedWorkerDp.ProvidedDoer
 import providers.ShutdownAble
-import providers.assistant.DoerProvider.Tag
-import providers.assistant.LeastLoadedFixedWorkerDap.ProvidedDoer
 
 import readren.sequencer.Doer
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
-object LeastLoadedFixedWorkerDap {
+object LeastLoadedFixedWorkerDp {
 	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal()
 
 	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
@@ -22,7 +22,7 @@ object LeastLoadedFixedWorkerDap {
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends Doer { thisDoer =>
-		override type Tag = providers.assistant.DoerProvider.Tag
+		override type Tag = DoerProvider.Tag
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				doerThreadLocal.set(thisDoer)
@@ -46,12 +46,12 @@ object LeastLoadedFixedWorkerDap {
  * - All tasks submitted to a [[Doer]] are executed by the same thread-worker.
  * Effective for short-living doers that are created when the work is demanded.
  * Not suited for long-living doers. */
-class LeastLoadedFixedWorkerDap(
+class LeastLoadedFixedWorkerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerProvider[LeastLoadedFixedWorkerDap.ProvidedDoer], ShutdownAble {
+) extends DoerProvider[LeastLoadedFixedWorkerDp.ProvidedDoer], ShutdownAble {
 
 	private val doers = Array.tabulate[ProvidedDoer](threadPoolSize)(index => new ProvidedDoer(s"LeastLoadedFixedWorker#$index", failureReporter, threadFactory, queueFactory))
 

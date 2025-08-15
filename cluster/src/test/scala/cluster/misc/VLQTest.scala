@@ -1,7 +1,8 @@
 package readren.matrix
 package cluster.misc
 
-import VLQ.*
+import cluster.misc.VLQ.*
+
 import munit.ScalaCheckSuite
 import org.scalacheck.Prop
 

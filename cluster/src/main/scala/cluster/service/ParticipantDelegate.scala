@@ -3,7 +3,8 @@ package cluster.service
 
 import cluster.service.Protocol.*
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
+
 
 /** A [[ParticipantService]]'s delegate responsible to manage the communication with other instances of [[ParticipantService]].
  * We name "participant" to each instance of [[ParticipantService]] */

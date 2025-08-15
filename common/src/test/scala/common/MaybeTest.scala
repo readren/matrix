@@ -1,4 +1,4 @@
-package readren.sequencer
+package readren.common
 
 import munit.ScalaCheckEffectSuite
 

@@ -1,5 +1,7 @@
 package readren.sequencer
 
+import readren.common.{Maybe, castTo, deriveToString}
+
 import scala.annotation.tailrec
 import scala.collection.IterableFactory
 import scala.concurrent.{ExecutionContext, Future, Promise}

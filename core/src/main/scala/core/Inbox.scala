@@ -1,7 +1,7 @@
 package readren.matrix
 package core
 
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 /**
  * Implementation that are intended for a [[Reactant]] should, whenever this inbox starts to have a pending message, clear the "owner is ready to process" state and immediately after that should also call the [[Reactant.onInboxBecomesNonempty()]] method passing the first pending message.

@@ -1,5 +1,4 @@
-package readren.matrix
-package common
+package readren.common
 
 /** Helper to generate toString with field names. */
 object ToStringWithFields {

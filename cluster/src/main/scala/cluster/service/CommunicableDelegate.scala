@@ -8,9 +8,9 @@ import cluster.service.ParticipantService.DelegateConfig
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.{CONNECTED, HANDSHOOK}
 import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
+import cluster.service.behavior.MembershipScopedBehavior
 
-import readren.matrix.cluster.service.behavior.MembershipScopedBehavior
-import readren.sequencer.Maybe
+import readren.common.Maybe
 import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.net.SocketAddress

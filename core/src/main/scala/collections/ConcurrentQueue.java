@@ -2,9 +2,7 @@ package readren.matrix.collections;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.util.Objects;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class ConcurrentQueue<E extends Node<E>> extends Node<E> {
 

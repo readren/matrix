@@ -2,13 +2,14 @@ package readren.matrix
 package consensus
 
 import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
-import providers.assistant.{CooperativeWorkersDap, DoerProvider, SchedulingDap}
+import providers.{CooperativeWorkersDp, DoerProvider, SchedulingDp}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
+import readren.common.Maybe
 import readren.sequencer.SchedulingExtension.MilliDuration
-import readren.sequencer.{Doer, Maybe, SchedulingExtension}
+import readren.sequencer.{Doer, SchedulingExtension}
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer
@@ -28,9 +29,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	// Test command type
 	private case class TestCommand(value: String)
 
-	private val schedulingDap = new SchedulingDap(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${CooperativeWorkersDap.currentDoer.tag}", _))
+	private val schedulingDap = new SchedulingDp(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${CooperativeWorkersDp.currentDoer.tag}", _))
 
-	private type ScheduSequen = SchedulingDap.SchedulingDoerFacade
+	private type ScheduSequen = SchedulingDp.SchedulingDoerFacade
 
 	private class Net(latency: MilliDuration, timeout: MilliDuration) {
 		val sequencer: ScheduSequen = schedulingDap.provide("net")

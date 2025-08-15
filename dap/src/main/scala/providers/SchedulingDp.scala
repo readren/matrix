@@ -1,11 +1,12 @@
 package readren.matrix
-package providers.assistant
+package providers
 
-import common.CompileTime
-import providers.assistant.CooperativeWorkersDap.*
-import providers.assistant.DoerProvider.Tag
-import providers.assistant.SchedulingDap.*
+import providers.CooperativeWorkersDp.*
+import providers.DoerProvider.Tag
+import providers.SchedulingDp.*
 
+import readren.common.CompileTime.getTypeName
+import readren.common.deriveToString
 import readren.sequencer.SchedulingExtension
 import readren.sequencer.SchedulingExtension.MilliDuration
 
@@ -15,7 +16,7 @@ import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.adhocExtensions
 
-object SchedulingDap {
+object SchedulingDp {
 	/** A time based on the [[System.nanoTime]] method converted to milliseconds. */
 	type MilliTime = Long
 	/** A time based on the [[System.nanoTime]]. */
@@ -23,7 +24,7 @@ object SchedulingDap {
 
 	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
 
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[SchedulingDap]].
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[SchedulingDp]].
 	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. If that causes problems make [[DoerFacade]] be a trait that extends [[Doer]] instead of [[AbstractDoer]]. */
 	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension {
 		override type Schedule <: AbstractSchedule
@@ -65,24 +66,24 @@ object SchedulingDap {
 		/** An instance becomes active when is passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
 		 * An instances becomes inactive when it is passed to the [[SchedulingDoerFacade.cancel]] method or when [[SchedulingDoerFacade.cancelAll]] is called.
 		 *
-		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[SchedulingDap.SchedulingDoerImpl.ScheduleImpl.heapIndex]] to be @volatile. */
+		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[SchedulingDp.SchedulingDoerImpl.ScheduleImpl.heapIndex]] to be @volatile. */
 		def isActive: Boolean
 	}
 
 	inline def readCurrentMilliTime: MilliTime = System.nanoTime() / 1_000_000
 }
 
-/** Adds scheduling features to the [[CooperativeWorkersDap]].
+/** Adds scheduling features to the [[CooperativeWorkersDp]].
  * Scheduling is managed by a dedicated single thread, which operates independently and does not contribute to the thread-pool size.
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class SchedulingDap(
+class SchedulingDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDap, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
+) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
 		new SchedulingDoerImpl(tag)
@@ -183,7 +184,7 @@ class SchedulingDap(
 
 			inline def owner: thisSchedulingDoer.type = thisSchedulingDoer
 
-			override def toString: String = readren.sequencer.deriveToString(this)
+			override def toString: String = deriveToString(this)
 		}
 	}
 
@@ -422,7 +423,7 @@ class SchedulingDap(
 	}
 
 	/**
-	 * Makes this [[SchedulingDap]] to shut down when all the workers are sleeping.
+	 * Makes this [[SchedulingDp]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
@@ -435,7 +436,7 @@ class SchedulingDap(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(CompileTime.getTypeName[SchedulingDap]).append('\n')
+		sb.append(getTypeName[SchedulingDp]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)

@@ -1,15 +1,16 @@
 package readren.matrix
 package consensus
 
+import readren.common.Maybe
 import readren.sequencer.SchedulingExtension.MilliDuration
-import readren.sequencer.{Doer, Maybe, SchedulingExtension}
+import readren.sequencer.{Doer, SchedulingExtension}
 
 import java.util
 import java.util.Comparator
+import scala.collection.IndexedSeq as GenIndexedSeq
 import scala.math.Ordering.Implicits.infixOrderingOps
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
-import scala.collection.IndexedSeq as GenIndexedSeq
 
 
 object Conciliator {

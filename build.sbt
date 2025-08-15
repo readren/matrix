@@ -24,7 +24,7 @@ ThisBuild / scalacOptions ++= Seq(
 	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 )
 
-lazy val sequencerCore = (project in file("sequencer/core"))
+lazy val sequencerCore = (project in file("sequencer/core")).dependsOn(common)
 	.settings(
 		name := "sequencer-core",
 		idePackagePrefix := Some("readren.sequencer"),
@@ -33,7 +33,7 @@ lazy val sequencerCore = (project in file("sequencer/core"))
 
 val AkkaVersion = "2.10.1"
 
-lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration")).dependsOn(sequencerCore)
+lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration")).dependsOn(sequencerCore, common)
 	.settings(
 		name := "sequencer-akka_integration",
 		idePackagePrefix := Some("readren.sequencer.akka"),
@@ -49,9 +49,9 @@ lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration
 
 lazy val common = (project in file("common"))
 	.settings(
-		name := "matrix-common",
-		idePackagePrefix := Some("readren.matrix"),
-		scalacOptions ++= Seq("-source:future")
+		name := "common",
+		idePackagePrefix := Some("readren.common"),
+		scalacOptions ++= Seq("-source:future", "-language:strictEquality")
 	)
 
 lazy val doerAssistantProviders = (project in file("dap")).dependsOn(common, sequencerCore)

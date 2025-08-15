@@ -2,10 +2,9 @@ package readren.sequencer
 
 import DoerTestSync.currentDoer
 
-import org.scalacheck.{Arbitrary, Gen}
 import munit.ScalaCheckEffectSuite
-import org.scalacheck.Prop
 import org.scalacheck.Prop.propBoolean
+import org.scalacheck.{Arbitrary, Gen, Prop}
 
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}

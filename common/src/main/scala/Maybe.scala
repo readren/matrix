@@ -1,6 +1,6 @@
-package readren.sequencer
+package readren.common
 
-import Maybe.empty
+import scala.compiletime.asMatchable
 
 final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 
@@ -35,7 +35,7 @@ final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 	}
 
 	override def equals(other: Any): Boolean = {
-		other match {
+		other.asMatchable match {
 			case omb: Maybe[?] => this.fold(omb.isEmpty)(_.equals(omb.value))
 			case _ => false
 		}

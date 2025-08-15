@@ -2,8 +2,7 @@ package readren.matrix
 package cluster.serialization
 
 import cluster.serialization.Deserializer.Reader
-
-import readren.matrix.cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
+import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 
 import scala.annotation.tailrec
 import scala.deriving.Mirror

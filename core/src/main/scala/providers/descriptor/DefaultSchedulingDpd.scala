@@ -1,12 +1,13 @@
 package readren.matrix
 package providers.descriptor
 
-import common.CompileTime
 import core.Matrix
 import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
-import providers.assistant.{DoerProvider, SchedulingDap}
+import providers.{DoerProvider, SchedulingDp}
+
+import readren.common.CompileTime.getTypeName
 
 
-object DefaultSchedulingDpd extends DoerProviderDescriptor[SchedulingDap.SchedulingDoerFacade](CompileTime.getTypeName[DefaultSchedulingDpd.type]) {
-	override def build(owner: DoerProvidersManager): DoerProvider[SchedulingDap.SchedulingDoerFacade] = new SchedulingDap(false)
+object DefaultSchedulingDpd extends DoerProviderDescriptor[SchedulingDp.SchedulingDoerFacade](getTypeName[DefaultSchedulingDpd.type]) {
+	override def build(owner: DoerProvidersManager): DoerProvider[SchedulingDp.SchedulingDoerFacade] = new SchedulingDp(false)
 }

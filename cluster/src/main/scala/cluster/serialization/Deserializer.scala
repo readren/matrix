@@ -1,8 +1,8 @@
 package readren.matrix
 package cluster.serialization
 
-import Deserializer.Reader
 import cluster.misc.VLQ
+import cluster.serialization.Deserializer.Reader
 
 import java.nio.ByteBuffer
 import scala.deriving.Mirror

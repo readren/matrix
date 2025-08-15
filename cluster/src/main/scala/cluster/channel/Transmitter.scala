@@ -6,10 +6,10 @@ import cluster.misc.LoggingTools.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
 import cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.serialization.{ProtocolVersion, Serializer}
+import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
 
-import readren.matrix.cluster.service.ChannelId
-import readren.sequencer.Maybe
+import readren.common.Maybe
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}

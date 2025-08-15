@@ -1,12 +1,13 @@
 package readren.matrix
 package providers.descriptor
 
-import common.CompileTime
 import core.Matrix
 import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
-import providers.assistant.{DoerProvider, RoundRobinDap}
+import providers.{DoerProvider, RoundRobinDp}
+
+import readren.common.CompileTime.getTypeName
 
 
-object DefaultRoundRobinDpd extends DoerProviderDescriptor[RoundRobinDap.ProvidedDoer](CompileTime.getTypeName[DefaultRoundRobinDpd.type]) {
-	override def build(owner: DoerProvidersManager): DoerProvider[RoundRobinDap.ProvidedDoer] = new RoundRobinDap()
+object DefaultRoundRobinDpd extends DoerProviderDescriptor[RoundRobinDp.ProvidedDoer](getTypeName[DefaultRoundRobinDpd.type]) {
+	override def build(owner: DoerProvidersManager): DoerProvider[RoundRobinDp.ProvidedDoer] = new RoundRobinDp()
 }

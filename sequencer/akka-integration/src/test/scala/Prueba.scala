@@ -1,8 +1,8 @@
 package readren.sequencer.akka
 
+import akka.actor.typed.*
 import akka.actor.typed.scaladsl.AskPattern.*
 import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.*
 import akka.util.Timeout
 
 import java.util.concurrent.TimeUnit

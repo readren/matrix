@@ -4,7 +4,7 @@ package pruebas
 import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
-import providers.assistant.{CooperativeWorkersDap, RoundRobinDap}
+import providers.{CooperativeWorkersDp, RoundRobinDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
@@ -18,7 +18,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = CooperativeWorkersDap
+	private type TestedDoerProvider = CooperativeWorkersDp
 
 	private sealed trait Report
 
@@ -53,15 +53,15 @@ object Prueba {
 
 	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
-	private object roundRobinDpd extends DoerProviderDescriptor[RoundRobinDap.ProvidedDoer]("round-robin") {
-		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDap = new RoundRobinDap()
+	private object roundRobinDpd extends DoerProviderDescriptor[RoundRobinDp.ProvidedDoer]("round-robin") {
+		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDp = new RoundRobinDp()
 	}
 
-	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDap.DoerFacade]("cooperative") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDap = new CooperativeWorkersDap(true)
+	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative") {
+		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp(true)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersDap.DoerFacade]("tested") {
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("tested") {
 		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new TestedDoerProvider(false)
 	}
 

@@ -5,14 +5,14 @@ import DoerTestEffect.currentDoer
 import SchedulingExtension.*
 
 import munit.ScalaCheckEffectSuite
-import org.scalacheck.{Arbitrary, Gen}
 import org.scalacheck.effect.PropF
+import org.scalacheck.{Arbitrary, Gen}
+import readren.common.Maybe
 import readren.sequencer
 
-import java.util.concurrent.{Executors, ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{Executors, ScheduledFuture, TimeUnit}
 import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
 import scala.util.control.NonFatal

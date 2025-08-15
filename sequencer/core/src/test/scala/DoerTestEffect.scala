@@ -6,6 +6,7 @@ import DoerTestEffect.currentDoer
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Arbitrary
 import org.scalacheck.effect.PropF
+import readren.common.Maybe
 
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger

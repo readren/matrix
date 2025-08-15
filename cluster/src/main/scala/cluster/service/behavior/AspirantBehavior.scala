@@ -8,9 +8,9 @@ import cluster.service.ContactCard.*
 import cluster.service.Protocol.*
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK
 import cluster.service.behavior.MembershipScopedBehavior
-import common.CompileTime.getTypeName
 
-import readren.sequencer.Maybe
+import readren.common.CompileTime.getTypeName
+import readren.common.Maybe
 
 class AspirantBehavior(override val host: ParticipantService) extends MembershipScopedBehavior { thisAspirantBehavior =>
 	override type MS = Aspirant.type

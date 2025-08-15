@@ -1,7 +1,7 @@
 package readren.matrix
 package providers.assistant
 
-import providers.ShutdownAble
+import providers.*
 
 import munit.ScalaCheckEffectSuite
 import readren.sequencer.Doer
@@ -40,7 +40,7 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 				val doerData = doersData(doerDataIndex)
 				doerData.doer.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
-					val currentWorker = CooperativeWorkersDap.currentWorker
+					val currentWorker = CooperativeWorkersDp.currentWorker
 					if currentWorker ne doerData.previousTaskWorker then {
 						doerData.workerChangesCounter += 1
 						doerData.previousTaskWorker = currentWorker
@@ -78,18 +78,18 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 
 	test("CooperativeWorkersDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new CooperativeWorkersDap(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+		testVisibility(new CooperativeWorkersDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
 	test("SchedulingDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new SchedulingDap(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+		testVisibility(new SchedulingDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
 	test("LeastLoadedFixedWorkerDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new LeastLoadedFixedWorkerDap, 0)
+		testVisibility(new LeastLoadedFixedWorkerDp, 0)
 	}
 	test("RoundRobinDap: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new RoundRobinDap, 0)
+		testVisibility(new RoundRobinDp, 0)
 	}
 }
