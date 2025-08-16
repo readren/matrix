@@ -5,7 +5,7 @@ import readren.sequencer.Doer
 
 trait ReactantFactory {
 
-	/** Creates a [[Duty]] that creates a new [[Reactant]].
+	/** Creates a [[Duty]] that yields a new [[Reactant]].
 	 * The implementation should be thread-safe, doing its job withing the received [[Doer]].
 	 * @param serial the identifier to be assigned to the created [[Reactant]] to identify it among its siblings.
 	 * @param progenitor the [[Spawner]] that creates the [[Reactant]]. The progenitor of a [[Reactant]] knows the set of its children, and every [[Reactant]] knows its progenitor.           

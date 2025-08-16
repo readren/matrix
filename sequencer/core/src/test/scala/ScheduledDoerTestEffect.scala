@@ -348,17 +348,15 @@ class ScheduledDoerTestEffect extends ScalaCheckEffectSuite {
 			// println(s"Begin: testDelay = $testDelay")
 
 			// Test composition with map
-			def scheduledMapped: Duty[String] = duty.delayed(testDelay).map(f)
-			def mappedScheduled: Duty[String] = duty.map(f).delayed(testDelay)
+			val scheduledMapped: Duty[String] = duty.scheduled(doer.newDelaySchedule(testDelay)).map(f)
+			val mappedScheduled: Duty[String] = duty.map(f).scheduled(doer.newDelaySchedule(testDelay))
 
 			// Test composition with flatMap
-			def scheduledFlatMapped: Duty[String] = duty.scheduled(doer.newDelaySchedule(testDelay)).flatMap(x => Duty.ready(f(x)))
-			def flatMappedScheduled: Duty[String] = duty.flatMap(x => Duty.ready(f(x))).scheduled(doer.newDelaySchedule(testDelay))
+			val scheduledFlatMapped: Duty[String] = duty.scheduled(doer.newDelaySchedule(testDelay)).flatMap(x => Duty.ready(f(x)))
+			val flatMappedScheduled: Duty[String] = duty.flatMap(x => Duty.ready(f(x))).scheduled(doer.newDelaySchedule(testDelay))
 
-			val checks = // TODO solucionar esto que no funca
+			val checks =
 				for {
-					x <- scheduledMapped
-					y <- mappedScheduled
 					_ <- Duty.combine(scheduledMapped, mappedScheduled) { (a, b) =>
 						assert(a == b, "scheduled.map should equal map.scheduled")
 					}

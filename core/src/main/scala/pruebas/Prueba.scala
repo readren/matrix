@@ -4,7 +4,8 @@ package pruebas
 import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
-import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp}
+
+import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp, SchedulingDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
@@ -18,7 +19,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = CooperativeWorkersDp
+	private type TestedDoerProvider = SchedulingDp
 
 	private sealed trait Report
 
@@ -38,6 +39,7 @@ object Prueba {
 	private inline val NUMBER_OF_PRODUCERS = 100
 	private inline val NUMBER_OF_CONSUMERS = 100
 	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
+	private inline val WATCH_DOG_DELAY_MILLIS = 4000
 
 	private inline val haveToCountAndCheck = true
 	private inline val haveToShowFinalPhoto = false
@@ -57,11 +59,11 @@ object Prueba {
 		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDp = new RoundRobinDp()
 	}
 
-	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp(true)
+	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative-fence-off") {
+		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp(false)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("tested") {
+	private object testedDpd extends DoerProviderDescriptor[SchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
 		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new TestedDoerProvider(false)
 	}
 
@@ -126,7 +128,7 @@ object Prueba {
 	}
 
 	private def run[DefaultDoer <: Doer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
-		println(s"\nTest started:  loop=$loopId, factory=${reactantFactory.getClass.getSimpleName}")
+		println(s"\nTest started:  loop=$loopId, descriptor=${testingAide.defaultDoerProviderDescriptor.id}")
 		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: doerProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getSimpleName}")
 
@@ -186,7 +188,7 @@ object Prueba {
 
 		val diagnosticScheduler = new Scheduler
 
-		diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
+		diagnosticScheduler.fixedRate(0, WATCH_DOG_DELAY_MILLIS, TimeUnit.MILLISECONDS) { () =>
 
 			try {
 				val sb = new StringBuilder
@@ -337,7 +339,7 @@ object Prueba {
 			matrix.doer.checkWithin()
 			// println("Parent created")
 
-			diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
+			diagnosticScheduler.fixedRate(0, WATCH_DOG_DELAY_MILLIS, TimeUnit.MILLISECONDS) { () =>
 
 				try {
 					val sb = new StringBuilder
@@ -357,7 +359,7 @@ object Prueba {
 			parent.stopDuty.trigger() { _ =>
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
-				println(s"+++ Factory: ${reactantFactory.getClass.getSimpleName} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
+				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
 				// println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
 
 				result.success(nanoAtEnd - nanoAtStart)
