@@ -5,7 +5,7 @@ import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
 
-import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp, SchedulingDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp, CooperativeWorkersSchedulingDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
@@ -19,7 +19,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = SchedulingDp
+	private type TestedDoerProvider = CooperativeWorkersSchedulingDp
 
 	private sealed trait Report
 
@@ -55,16 +55,16 @@ object Prueba {
 
 	private class Iteration(val accumulated: Durations = new Durations(), val minimum: Durations = new Durations(Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue, Long.MaxValue))
 
-	private object roundRobinDpd extends DoerProviderDescriptor[RoundRobinDp.ProvidedDoer]("round-robin") {
-		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDp = new RoundRobinDp()
+	private object roundRobinDpd extends DoerProviderDescriptor[Doer]("round-robin") {
+		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDp = new RoundRobinDp.Impl()
 	}
 
 	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp(false)
+		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[SchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new TestedDoerProvider(false)
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersSchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
+		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersSchedulingDp.Impl(false)
 	}
 
 	private def roundRobinAide = new SimpleAide(roundRobinDpd)

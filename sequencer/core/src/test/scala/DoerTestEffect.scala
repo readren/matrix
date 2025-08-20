@@ -1,7 +1,8 @@
 package readren.sequencer
 
-import Doer.ExceptionReport
+import Doer.PanicException
 import DoerTestEffect.currentDoer
+import GeneratorsForDoerTests.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Arbitrary
@@ -31,14 +32,14 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 	private val doer: Doer = new Doer { thisDoer =>
 		private val doSiThEx = Executors.newSingleThreadExecutor()
 
-		private val sequencer: AtomicInteger = new AtomicInteger(0)
+		private val idSequencer: AtomicInteger = new AtomicInteger(0)
 
 		override type Tag = String
 
-		override val tag = "testing doer"
+		override val tag = "testing-doer"
 
 		override def executeSequentially(runnable: Runnable): Unit = {
-			val id = sequencer.addAndGet(1)
+			val id = idSequencer.incrementAndGet()
 			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
 			doSiThEx.execute(() => {
 				currentDoer.set(thisDoer)
@@ -65,7 +66,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			// println(s"Reporting failure to munit: ${failure.getMessage}")
 			munitExecutionContext.reportFailure(failure)
 			doSiThEx.execute { () =>
-				val exceptionToReport = if failure.isInstanceOf[ExceptionReport] then failure.getCause else failure
+				val exceptionToReport = if failure.isInstanceOf[PanicException] then failure.getCause else failure
 				reportedExceptions.addOne(exceptionToReport.getMessage)
 			}
 		}
@@ -74,7 +75,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 
 	import doer.*
 
-	private val shared = new DoerTestShared[doer.type](doer)
+	private val shared = new GeneratorsForDoerTests[doer.type](doer)
 	import shared.{*, given}
 
 	////////// DUTY //////////
@@ -369,12 +370,10 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 						if theExceptionWasFoundAmongTheUnhandledOnes then {
 							// println(s"The exception was found among the unhandled or reported exceptions")
 							Maybe.some(Success(true))
-						}
-						else if tries > 99 then {
+						} else if tries > 99 then {
 							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Waiting aborted.")
 							Maybe.some(Success(false))
-						}
-						else {
+						} else {
 							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Wait more time.")
 							Maybe.empty
 						}

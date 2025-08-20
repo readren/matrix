@@ -11,7 +11,9 @@ import scala.util.{Failure, Success, Try}
 
 object Doer {
 
-	class ExceptionReport(message: String, cause: Throwable) extends RuntimeException(message, cause)
+	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
+	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure()]], few [[Doer.Task]] operations, and most [[Commitment]] operations.*/
+	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 }
 
 abstract class AbstractDoer extends Doer
@@ -83,6 +85,8 @@ trait Doer { thisDoer =>
 	}
 
 	/**
+	 * Called by few [[Task]] and most [[Commitment]] operations when an operand function terminates abruptly and the nature of the operation does not allow to propagate the failure to the result.
+	 * Examples of such operations are [[Task.andThen]], [[Task.triggerAndForgetHandlingErrors]], [[Task.wait]], [[Task.alien]], and [[Commitment.completeHere]].
 	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSiThEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Task]].
 	 * The implementation should not throw non-fatal exceptions.
 	 * The implementation should be thread-safe.
@@ -105,15 +109,15 @@ trait Doer { thisDoer =>
 		${ DoerMacros.executeSequentiallyImpl('thisDoer, 'procedure) }
 	}
 
-	inline def reportError(cause: Throwable): Unit =
-		${ DoerMacros.reportFailureImpl('thisDoer, 'cause) }
+	protected inline def reportPanicException(exception: Throwable): Unit =
+		${ DoerMacros.reportPanicExceptionImpl('thisDoer, 'exception) }
 
 	/**
 	 * An [[ExecutionContext]] that uses the $DoSiThEx. See [[Doer.executeSequentially]] */
 	object ownSingleThreadExecutionContext extends ExecutionContext {
 		def execute(runnable: Runnable): Unit = thisDoer.execute(runnable.run())
 
-		def reportFailure(cause: Throwable): Unit = thisDoer.reportError(cause)
+		def reportFailure(cause: Throwable): Unit = thisDoer.reportPanicException(cause)
 	}
 
 	/////////////// DUTY ///////////////
@@ -1007,7 +1011,7 @@ trait Doer { thisDoer =>
 			trigger(isWithinDoSiThEx) {
 				case Failure(e) =>
 					try errorHandler(e) catch {
-						case NonFatal(cause) => reportError(cause)
+						case NonFatal(cause) => reportPanicException(cause)
 					}
 				case _ => ()
 			}
@@ -1143,7 +1147,7 @@ trait Doer { thisDoer =>
 			transform { tryA =>
 				try sideEffect(tryA)
 				catch {
-					case NonFatal(e) => reportError(e)
+					case NonFatal(e) => reportPanicException(e)
 				}
 				tryA
 			}
@@ -2359,7 +2363,7 @@ trait Doer { thisDoer =>
 			} { value =>
 				try onAlreadyCompleted(value)
 				catch {
-					case NonFatal(cause) => reportError(cause)
+					case NonFatal(cause) => reportPanicException(cause)
 				}
 			}
 			thisCommitment

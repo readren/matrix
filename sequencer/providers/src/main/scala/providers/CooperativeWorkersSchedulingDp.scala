@@ -7,7 +7,7 @@ import readren.sequencer.SchedulingExtension
 import SchedulingExtension.MilliDuration
 import providers.CooperativeWorkersDp.*
 import providers.DoerProvider.Tag
-import providers.SchedulingDp.*
+import providers.CooperativeWorkersSchedulingDp.*
 
 import java.util
 import java.util.concurrent.*
@@ -15,7 +15,7 @@ import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.adhocExtensions
 
-object SchedulingDp {
+object CooperativeWorkersSchedulingDp {
 	/** A time based on the [[System.nanoTime]] method converted to milliseconds. */
 	type MilliTime = Long
 	/** A time based on the [[System.nanoTime]]. */
@@ -23,7 +23,7 @@ object SchedulingDp {
 
 	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
 
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[SchedulingDp]].
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersSchedulingDp]].
 	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. If that causes problems make [[DoerFacade]] be a trait that extends [[Doer]] instead of [[AbstractDoer]]. */
 	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension {
 		override type Schedule <: AbstractSchedule
@@ -45,7 +45,7 @@ object SchedulingDp {
 		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
 		 * {{{ (actualTime - scheduledTime) / interval }}}
 		 * Updated before the [[Runnable]] is run.
-		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.
+		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; <s> therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.</s>
 		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
 		def numOfSkippedExecutions: Long
 
@@ -65,11 +65,26 @@ object SchedulingDp {
 		/** An instance becomes active when is passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
 		 * An instances becomes inactive when it is passed to the [[SchedulingDoerFacade.cancel]] method or when [[SchedulingDoerFacade.cancelAll]] is called.
 		 *
-		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[SchedulingDp.SchedulingDoerImpl.ScheduleImpl.heapIndex]] to be @volatile. */
+		 * Implementation note: This var may be replaced with {{{ def isActive = !isEnabled && heapIndex < 0}}} but that would require both [[isEnabled]] and [[CooperativeWorkersSchedulingDp.SchedulingDoerImpl.ScheduleImpl.heapIndex]] to be @volatile. */
 		def isActive: Boolean
 	}
 
-	inline def readCurrentMilliTime: MilliTime = System.nanoTime() / 1_000_000
+	inline def nanosToMillisRoundedUp(nanos: Long): Long = (nanos + 999_999) / 1_000_000
+	inline def nanosToMillisRoundedDown(nanos: Long): Long = nanos / 1_000_000
+
+	class Impl(
+		applyMemoryFence: Boolean = true,
+		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
+	) extends CooperativeWorkersSchedulingDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
+
+		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
+		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
+	}
 }
 
 /** Adds scheduling features to the [[CooperativeWorkersDp]].
@@ -77,16 +92,17 @@ object SchedulingDp {
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class SchedulingDp(
+abstract class CooperativeWorkersSchedulingDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
 		new SchedulingDoerImpl(tag)
 	}
+
+	override def currentDoer: SchedulingDoerFacade | Null = super.currentDoer.asInstanceOf[SchedulingDoerFacade | Null]
 
 	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
 
@@ -107,48 +123,48 @@ class SchedulingDp(
 		 * @param originalRunnable the [[Runnable]] to be run according to the provided [[schedule]].
 		 * The implementation should not throw non-fatal exceptions. */
 		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
-			val currentTime = readCurrentMilliTime
-			assert(!schedule.isActive)
+			schedule.startingTime = nanosToMillisRoundedUp(System.nanoTime)
+			if schedule.isActive then scheduler.cancel(schedule)
 			schedule.isActive = true
 
-			object fixedDelayWrapper extends Runnable {
-				override def run(): Unit = {
-					if schedule.isActive then {
-						originalRunnable.run()
-						// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
-						scheduler.schedule(schedule, readCurrentMilliTime + schedule.interval)
-					}
-				}
-			}
-
-			object fixedRateWrapper extends Runnable {
-				override def run(): Unit = {
-					@tailrec
-					def loop(currentTime: MilliTime): Unit = {
-						if schedule.isActive then {
-							schedule.startingTime = currentTime
-							schedule.numOfSkippedExecutions = (currentTime - schedule.scheduledTime) / schedule.interval
-							originalRunnable.run()
-							// TODO analyze if the following lines must be in a `finally` block whose `try`'s body is `originalRunnable.run()`
-							val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
-							val updatedCurrentTime = readCurrentMilliTime
-							if nextTime <= updatedCurrentTime then {
-								schedule.scheduledTime = nextTime
-								schedule.enabledTime = updatedCurrentTime
-								loop(updatedCurrentTime)
-							} else scheduler.schedule(schedule, nextTime)
-						}
-					}
-
-					loop(readCurrentMilliTime)
-				}
-			}
 			schedule.runnable =
 				if schedule.interval > 0 then {
-					if schedule.isFixedRate then fixedRateWrapper
-					else fixedDelayWrapper
-				} else originalRunnable
-			scheduler.schedule(schedule, currentTime + schedule.initialDelay)
+					if schedule.isFixedRate then new Runnable {
+						override def run(): Unit = {
+							@tailrec
+							def loop(currentNanoTime: Long): Unit = {
+								if schedule.isActive then {
+									schedule.numOfSkippedExecutions = (nanosToMillisRoundedDown(currentNanoTime) - schedule.scheduledTime) / schedule.interval
+									originalRunnable.run()
+									val updatedCurrentNanoTime = System.nanoTime()
+									schedule.startingTime = nanosToMillisRoundedUp(updatedCurrentNanoTime)
+									val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
+									if nextTime <= nanosToMillisRoundedDown(updatedCurrentNanoTime) then {
+										schedule.scheduledTime = nextTime
+										schedule.enabledTime = schedule.startingTime
+										loop(updatedCurrentNanoTime)
+									} else scheduler.schedule(schedule, nextTime)
+								}
+							}
+
+							loop(System.nanoTime())
+						}
+					} else new Runnable {
+						override def run(): Unit = {
+							if schedule.isActive then {
+								originalRunnable.run()
+								val currentMilliTimeRoundedUp = nanosToMillisRoundedUp(System.nanoTime())
+								schedule.startingTime = currentMilliTimeRoundedUp
+								schedule.scheduledTime = currentMilliTimeRoundedUp + schedule.interval
+								scheduler.schedule(schedule, schedule.scheduledTime)
+							}
+						}
+					}
+				} else new Runnable {
+					override def run(): Unit =
+						if schedule.isActive then originalRunnable.run()
+				}
+			scheduler.schedule(schedule, schedule.startingTime + schedule.initialDelay)
 		}
 
 		/**
@@ -160,7 +176,7 @@ class SchedulingDp(
 		/**
 		 * Removes all the scheduled [[Runnable]]s corresponding to this [[Doer]] from the schedule.
 		 * If called near a scheduled time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur.. */
+		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
 		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingDoer)
 
 		/** An instance becomes active when is passed to the [[scheduleSequentially]] method.
@@ -183,7 +199,7 @@ class SchedulingDp(
 
 			inline def owner: thisSchedulingDoer.type = thisSchedulingDoer
 
-			override def toString: String = deriveToString(this)
+			override def toString: String = deriveToString(this) + s" scheduledTime: $scheduledTime, startingTime: $startingTime, enableTime: $enabledTime, numOfSkippedExecutions: $numOfSkippedExecutions" // TODO borrar apendice
 		}
 	}
 
@@ -264,6 +280,7 @@ class SchedulingDp(
 
 		override def run(): Unit = {
 			while isRunning do {
+				// execute all pending commands
 				var command: Runnable | Null = this.synchronized(commandsQueue.poll())
 				while command ne null do {
 					command.run()
@@ -271,7 +288,7 @@ class SchedulingDp(
 				}
 
 				var earlierSchedule = peek
-				val currentTime = readCurrentMilliTime
+				val currentTime = nanosToMillisRoundedDown(System.nanoTime())
 				while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
 					finishPoll(earlierSchedule)
 					earlierSchedule.isEnabled = true
@@ -422,7 +439,7 @@ class SchedulingDp(
 	}
 
 	/**
-	 * Makes this [[SchedulingDp]] to shut down when all the workers are sleeping.
+	 * Makes this [[CooperativeWorkersSchedulingDp]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
@@ -435,7 +452,7 @@ class SchedulingDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[SchedulingDp]).append('\n')
+		sb.append(getTypeName[CooperativeWorkersSchedulingDp]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)

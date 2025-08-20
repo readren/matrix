@@ -12,7 +12,8 @@ import scala.collection.immutable.ArraySeq
 import scala.concurrent.{ExecutionContext, Future, Promise}
 
 
-class DoerProviderTest extends ScalaCheckEffectSuite {
+/** Checks memory visibility (happens-before) is accomplished between the function operands passed to [[Doer]] instances provided by several [[DoerProviders]] */
+class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 
 	private val NUMBER_OF_TASK_ENQUEUED_PER_DOER = 10
 	private val NUMBER_OF_DOERS = 10000
@@ -29,7 +30,7 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 			var failed: Boolean = false
 			val promise: Promise[Int] = Promise()
 			var counter: Counter | Null = null
-			var previousTaskWorker: Runnable | Null = null
+			var previousTaskWorker: Long = 0
 			var workerChangesCounter: Int = 0
 		}
 
@@ -41,8 +42,9 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 				val doerData = doersData(doerDataIndex)
 				doerData.doer.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
-					val currentWorker = CooperativeWorkersDp.currentWorker
-					if currentWorker ne doerData.previousTaskWorker then {
+					val currentWorker: Long = Thread.currentThread().getId
+					if doerData.previousTaskWorker == 0 then doerData.previousTaskWorker = currentWorker
+					else if currentWorker != doerData.previousTaskWorker then {
 						doerData.workerChangesCounter += 1
 						doerData.previousTaskWorker = currentWorker
 					}
@@ -72,25 +74,28 @@ class DoerProviderTest extends ScalaCheckEffectSuite {
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
 			}
-//			.andThen { _ => for index <- doersData.indices do println(s"$index: workerIndexChangesCounter=${doersData(index).workerChangesCounter}") }
-			.andThen { _ => println(s"total worker swaps: ${doersData.map(_.workerChangesCounter).sum}") }
+			.andThen { _ => for index <- doersData.indices do println(s"$index: workerIndexChangesCounter = ${doersData(index).workerChangesCounter}/$NUMBER_OF_TASK_ENQUEUED_PER_DOER") }
+			.andThen { _ => println(s"total worker swaps: ${doersData.map(_.workerChangesCounter).sum}/${NUMBER_OF_DOERS * NUMBER_OF_TASK_ENQUEUED_PER_DOER}") }
 
 	}
 
 	test("CooperativeWorkersDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
-
-		testVisibility(new CooperativeWorkersDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+		testVisibility(new CooperativeWorkersDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
 	test("SchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new SchedulingDp(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+		testVisibility(new CooperativeWorkersSchedulingDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
 	}
 	test("LeastLoadedFixedWorkerDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new LeastLoadedFixedWorkerDp, 0)
+		testVisibility(new LeastLoadedFixedWorkerDp.Impl, 0)
 	}
 	test("RoundRobinDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new RoundRobinDp, 0)
+		testVisibility(new RoundRobinDp.Impl, 0)
+	}
+	test("StandardSchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
+
+		testVisibility(new StandardSchedulingDp.Impl, 0)
 	}
 }

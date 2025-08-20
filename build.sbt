@@ -54,7 +54,7 @@ lazy val common = (project in file("common"))
 		scalacOptions ++= Seq("-source:future", "-language:strictEquality")
 	)
 
-lazy val sequencerProviders = (project in file("sequencer/providers")).dependsOn(common, sequencerCore)
+lazy val sequencerProviders = (project in file("sequencer/providers")).dependsOn(common, sequencerCore % "compile->compile;test->test")
 	.settings(
 		name := "sequencer-providers",
 		idePackagePrefix := Some("readren.sequencer"),

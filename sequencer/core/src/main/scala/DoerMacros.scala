@@ -60,7 +60,7 @@ object DoerMacros {
 		'{ $doerExpr.executeSequentially($runnable) }
 	}
 
-	def reportFailureImpl(doerExpr: Expr[Doer], causeExpr: Expr[Throwable])(using quotes: Quotes): Expr[Unit] = {
+	def reportPanicExceptionImpl(doerExpr: Expr[Doer], panicExceptionExpr: Expr[Throwable])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 		// Capture the source code location.
 		val pos = Position.ofMacroExpansion
@@ -69,6 +69,6 @@ object DoerMacros {
 		// Build exception message.
 		val message = Expr(s"Reported at ${pos.sourceFile.name}:${pos.startLine + 1} => $snippet")
 
-		'{ $doerExpr.reportFailure(new Doer.ExceptionReport($message, $causeExpr)) }
+		'{ $doerExpr.reportFailure(new Doer.PanicException($message, $panicExceptionExpr)) }
 	}
 }

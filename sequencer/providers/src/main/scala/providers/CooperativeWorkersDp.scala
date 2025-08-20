@@ -21,20 +21,26 @@ object CooperativeWorkersDp {
 
 	inline val debugEnabled = false
 
-	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
-	private val doerThreadLocal: ThreadLocal[DoerFacade] = new ThreadLocal()
-
-	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any. */
-	def currentWorker: Runnable | Null = workerThreadLocal.get
-	
-	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
-	def currentDoer: DoerFacade | Null = doerThreadLocal.get
-
 	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].  */
 	abstract class DoerFacade extends AbstractDoer {
 		override type Tag = DoerProvider.Tag
 		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
+	}
+
+
+	class Impl(
+		applyMemoryFence: Boolean = true,
+		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
+	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = failureReporter(doer, exception)
+
+		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
+		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 }
 
@@ -50,10 +56,9 @@ object CooperativeWorkersDp {
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]]. 
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-class CooperativeWorkersDp(
+abstract class CooperativeWorkersDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	failureReporter: Throwable => Unit = _.printStackTrace(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends DoerProvider[DoerFacade], ShutdownAble { thisProvider =>
 
@@ -72,9 +77,19 @@ class CooperativeWorkersDp(
 	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepingWorkersCount.get <= workers.length }}} */
 	private val sleepingWorkersCount = AtomicInteger(0)
 
+	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
+	private val doerThreadLocal: ThreadLocal[DoerFacade | Null] = new ThreadLocal()
+
 	{
 		workers.foreach(_.start())
 	}
+
+	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any.
+	 *  Exposed for testing only. */
+	inline private[providers] def currentWorker: Runnable | Null = workerThreadLocal.get
+
+	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
+	override def currentDoer: DoerFacade | Null = doerThreadLocal.get
 
 	protected class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
@@ -99,7 +114,7 @@ class CooperativeWorkersDp(
 
 		override def current: DoerFacade = currentDoer
 
-		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
+		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
 
 
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
@@ -138,6 +153,7 @@ class CooperativeWorkersDp(
 					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
 					queuedDoers.offer(thisDoer)
 				}
+				// Note that, for efficiency, the `doerThreadLocal` entry corresponding to this worker thread is not cleared here as expected because it will be overwritten before anything that could access it is executed. It is overwritten either in the next call to `executePendingTasks` if there is a Doer with pending tasks, in `tryToSleep` if no Doer has visible pending tasks, or in the unhandled exception catcher.
 			}
 			processedTasksCounter
 		}
@@ -239,19 +255,24 @@ class CooperativeWorkersDp(
 					}
 					catch { // TODO analyze if clarity would suffer too much if [[DoerImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
 						case e: Throwable =>
-							// If neither a thread-local nor a global uncaught exception handler is configured, use the provided failureReporter to expose the error.
-							// This ensures that exceptions are always reported somewhere, but if a handler is configured (either per-thread or globally),
-							// the standard JVM uncaught exception handling mechanism will take precedence. In all cases, the exception is rethrown to ensure
-							// the thread terminates abruptly, as is standard for uncaught exceptions in threads.
-							// This design respects user/system configuration and only uses failureReporter as a fallback.
-							if (thread.getUncaughtExceptionHandler == null) && (Thread.getDefaultUncaughtExceptionHandler == null) then failureReporter(e)
-							// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
-							thisWorker.synchronized {
-								thread = threadFactory.newThread(this)
-								// Memorize the assigned DoerImpl such that the new thread be assigned to the same [[DoerImpl]]. It will continue with the task after the one that threw the exception.
-								queueJumper = assignedDoer
+							doerThreadLocal.remove()
+							try {
+								onUnhandledException(assignedDoer, e)
+								// // If neither a thread-local nor a global uncaught exception handler is configured, use the provided failureReporter to expose the error.
+								// // This ensures that exceptions are always reported somewhere, but if a handler is configured (either per-thread or globally),
+								// // the standard JVM uncaught exception handling mechanism will take precedence. In all cases, the exception is rethrown to ensure
+								// // the thread terminates abruptly, as is standard for uncaught exceptions in threads.
+								// // This design respects user/system configuration and only uses failureReporter as a fallback.
+								// if (thread.getUncaughtExceptionHandler == null) && (Thread.getDefaultUncaughtExceptionHandler == null) then onUnhandledException(assignedDoer, e)
+							} finally {
+								// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
+								thisWorker.synchronized {
+									thread = threadFactory.newThread(this)
+									// Memorize the assigned DoerImpl such that the new thread be assigned to the same [[DoerImpl]]. It will continue with the task after the one that threw the exception.
+									queueJumper = assignedDoer
+								}
+								thread.start()
 							}
-							thread.start()
 							// Terminate the thread abruptly to skip the `runningWorkersLatch` decremental.
 							throw e
 					}
@@ -264,6 +285,7 @@ class CooperativeWorkersDp(
 
 		/** Should be called immediately before the main-loop's exit condition evaluation. */
 		private def tryToSleep(): Unit = {
+			doerThreadLocal.set(null)
 			val sleepingCounter = sleepingWorkersCount.incrementAndGet()
 			// The purpose of this `if` is to avoid all workers go to sleep when maybe there is work to do.
 			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:

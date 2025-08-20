@@ -7,7 +7,7 @@ import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
 import readren.sequencer.SchedulingExtension.MilliDuration
-import readren.sequencer.providers.{CooperativeWorkersDp, SchedulingDp}
+import readren.sequencer.providers.CooperativeWorkersSchedulingDp
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer
@@ -27,9 +27,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	// Test command type
 	private case class TestCommand(value: String)
 
-	private val schedulingDap = new SchedulingDp(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${CooperativeWorkersDp.currentDoer.tag}", _))
+	private val schedulingDap = new CooperativeWorkersSchedulingDp.Impl(failureReporter = (doer, e) => scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${doer.tag}", e))
 
-	private type ScheduSequen = SchedulingDp.SchedulingDoerFacade
+	private type ScheduSequen = CooperativeWorkersSchedulingDp.SchedulingDoerFacade
 
 	private class Net(latency: MilliDuration, timeout: MilliDuration) {
 		val sequencer: ScheduSequen = schedulingDap.provide("net")
@@ -253,50 +253,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		 * Test instance of [[Storage]]
 		 */
 		object storage extends Storage {
-			override def invalidWorkspace(): WS = new TestWorkspace {
-				override def isBrandNew: Boolean = ???
+			override def invalidWorkspace(): WS = InvalidWorkspace
 
-				override def getCurrentParticipants: IndexedSeq[ParticipantId] = ???
-
-				override def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit = ???
-
-				/** The current term according to this participant.
-				 * Zero means "before the first election". */
-				override def getCurrentTerm: Term = ???
-
-				override def setCurrentTerm(term: Term): Unit = ???
-
-				/** The index of the oldest [[Record]] stored in the log buffer. The initial value is 1. */
-				override def logBufferOffset: RecordIndex = ???
-
-				/** The index of the first empty entry in the log. The initial value is 1. */
-				override def firstEmptyRecordIndex: RecordIndex = ???
-
-				/** The index of the last appended record. The initial value is 0, which means that the log is empty. */
-				override def lastAppendedRecord: Record = ???
-
-				override def getRecordAt(index: RecordIndex): Record = ???
-
-				/** Returns the records in the log starting at `from` and up to `until` exclusive.
-				 * // TODO: consider returning an iterator instead of an iterable.
-				 */
-				override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = ???
-
-				/** Appends a record and returns it index. */
-				override def appendRecord(record: Record): Unit = ???
-
-				/** Appends any new record not already in the log starting at the specified index.
-				 * If a conflict is detected (i.e., a stored record and a new record at the same index have different terms), all stored records from that index onward are removed before appending the new records.
-				 * @return The index of the last record appended. */
-				override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = ???
-
-				/** Should be called whenever the commit index changed to allow this [[Workspace]] to release the storage used to memorize already commited records. */
-				override def informCommitIndex(commitIndex: RecordIndex): Unit = ???
-
-				override def release(): Unit = ()
-			}
-
-			private var memory: WS = TestWorkspace()
+			private var memory: WS = ValidWorkspace()
 
 			override val loads: sequencer.Task[WS] = sequencer.Task.successful(memory) // TODO add a delay
 
@@ -311,7 +270,11 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		/**
 		 * Test implementation of [[Workspace]]
 		 */
-		class TestWorkspace extends Workspace {
+		sealed trait TestWorkspace extends Workspace
+
+		object InvalidWorkspace extends InvalidWorkspacePi, TestWorkspace
+
+		class ValidWorkspace extends TestWorkspace {
 			private var currentParticipants: IndexedSeq[ParticipantId] = IndexedSeq.empty
 			private var currentTerm: Term = 0
 			private var _logBufferOffset: RecordIndex = 1

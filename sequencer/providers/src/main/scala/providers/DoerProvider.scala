@@ -27,4 +27,15 @@ trait DoerProvider[+D <: Doer] {
 	 *   Implementations may use the `tag` for purposes such as debugging or tracking, but this is optional and not required for the [[DoerProvider]] functionality.
 	 */
 	def provide(tag: Tag): D
+
+
+	/** @return the [[Doer]] provided by this [[DoerProvider]] that is currently associated to the current [[Thread]]; or `null` if the current thread is associated to a [[Doer]] of another [[DoerProvider]] instance or not associated to any [[Doer]]. */
+	def currentDoer: D | Null
+	
+	/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception.  */
+	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit
+
+	/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
+	protected def onFailureReported(doer: Doer, failure: Throwable): Unit
+	
 }

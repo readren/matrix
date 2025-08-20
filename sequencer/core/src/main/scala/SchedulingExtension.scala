@@ -64,13 +64,15 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/**
 	 * The implementation should remove the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
-	 * The implementation should not execute the [[Runnable]] after this method returns, even if called near its scheduled time.
+	 * The implementation should not execute the [[Runnable]] after this method returns if called within the thread currently assigned to this [[Doer]], even if called near its scheduled time.
+	 * The implementation may execute the [[Runnable]] a single time after this method returns when executed by a thread other than the currently assigned to this [[Doer]], if called near its scheduled time.
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancel(schedule: Schedule): Unit
 
 	/**
 	 * The implementation should remove all the scheduled [[Runnable]]s corresponding to this [[Doer]] instance from the schedule.
-	 * The implementation should not execute the [[Runnable]] after this method returns, even if called near their scheduled time.
+	 * The implementation should not execute the [[Runnable]] after this method returns if called within the thread currently assigned to this [[Doer]], even if called near its scheduled time.
+	 * The implementation may execute the [[Runnable]] a single time after this method returns when executed by a thread other than the currently assigned to this [[Doer]], if called near its scheduled time.
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancelAll(): Unit
 

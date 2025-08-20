@@ -3,6 +3,8 @@ package providers
 
 import java.util.concurrent.TimeUnit
 
+/** A provided interface that regularizes the life-cycle and diagnostic of [[DoerProvider]] implementations.
+ * 	TODO add a `isShutdown` and a `isTerminated` methods. */
 trait ShutdownAble {
 
 	/** Initiates the shutdown of this [[ShutdownAble]].

@@ -12,14 +12,14 @@ import scala.reflect.Typeable
  * This trait is designed to work with Scala's experimental safer exceptions feature, allowing behaviors to explicitly declare which exceptions they can throw and handle them in a type-safe manner.
  *
  * @tparam A The type of messages this behavior can handle
- * @tparam E The type of exception this behavior can throw (must be a subtype of Exception and have a Typeable instance)
+ * @tparam E The type of exception this behavior can throw (must be a subtype of Exception<strike> and have a Typeable instance</strike>)
  *
  * @see [[core.Behavior]] for the base behavior interface
  * @see [[core.HandleResult]] for possible handling results
- * @see [[CheckedBehavior.makeSafe]] for converting to a safe behavior
+ * @see [[CheckedBehavior.recover]] for converting to a safe behavior
  * @see [[CheckedBehavior.factory]] for creating instances from functions
  */
-trait CheckedBehavior[-A, E <: Exception : Typeable] {
+trait CheckedBehavior[-A, E <: Exception /* : Typeable*/] {
 
 	/**
 	 * Handles a message with checked exception handling.
@@ -34,63 +34,60 @@ trait CheckedBehavior[-A, E <: Exception : Typeable] {
 	 */
 	def handleChecked(message: A)(using ctM: CanThrow[E]): CheckedBehavior[A, E] | HandleResult[A]
 
+
+	/**
+	 * Converts a [[CheckedBehavior]] to a regular [[Behavior]] that generates the [[CanThrow]] capabilities with the help of the provided `recovery` function.
+	 *
+	 * This method wraps the checked behavior in a safe behavior that catches exceptions of type `E` and applies the recovery handler to determine the next behavior or result.
+	 *
+	 * Implementation note: The `inline` modifier is necessary to allow the compiler to know the concrete type of `E` at compile-time.
+	 * Otherwise, the `case m: M => ...` part would be unchecked, and we can't use [[TypeTest]] here because the current version of scala (2.6.2) only generates  capabilities for catch clauses of the form `case ex: Ex =>`.
+	 * Additionally, the `safer` method must reside within `makeSafe` to preserve the visibility and proper scoping of `E`.
+	 *
+	 * @param recovery A complete function that converts exceptions of type `E` to an indicator of the behavior with which the host reactant will handle the next message.
+	 * @return A safe behavior that handles exceptions internally
+	 *
+	 * @example
+	 * {{{
+	 *	val matrix = new Matrix("testChecked", SimpleAide(DefaultCooperativeWorkersDpd))
+	 *	matrix.spawns[Cmd](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
+	 *		CheckedBehavior.factory[Cmd, MyException] {
+	 *			case cmd: DoWork =>
+	 *				if (cmd.integer % 5) >= 3 then throw new MyException
+	 *				cmd.replyTo.tell(Response(cmd.integer.toString))
+	 *				Continue
+	 *			case Relax(replyTo) =>
+	 *				replyTo.tell(Response(null))
+	 *				Continue
+	 *		}.recover { (m: MyException) =>
+	 *			println(s"Recovering from $m")
+	 *			Continue
+	 *		}
+	 *	}
+	 * }}} */
+	inline def recover[A1 <: A](inline recovery: E => CheckedBehavior[A1, E] | HandleResult[A1]): Behavior[A1] = {
+		def safer[A2](checkedBehavior: CheckedBehavior[A2, E]): Behavior[A2] =
+			(message: A2) => {
+				val next =
+					try checkedBehavior.handleChecked(message)
+					catch {
+						case m: E => recovery(m)
+					}
+				next match {
+					case hr: HandleResult[A2 @unchecked] => hr
+					case cb: CheckedBehavior[A2 @unchecked, E @unchecked] =>
+						if cb eq checkedBehavior then Continue else ContinueWith(safer(cb))
+				}
+			}
+
+		safer(this)
+	}
 }
 
 /**
  * Companion object providing utility methods for working with [[CheckedBehavior]] instances.
  */
 object CheckedBehavior {
-
-	extension [A, E <: Exception](checkedBehavior: CheckedBehavior[A, E]) {
-		/**
-		 * Converts a [[CheckedBehavior]] to a regular [[Behavior]]
-		 * that generates the [[CanThrow]] capabilities with the help of the provided `recovery` function.
-		 *
-		 * This method wraps the checked behavior in a safe behavior that catches exceptions of type `E` and applies the recovery handler to determine the next behavior or result.
-		 *
-		 * Implementation note: The `inline` modifier is necessary to allow the compiler to know the concrete type of `E` at compile-time.
-		 * Otherwise, the `case m: M => ...` part would be unchecked, and we can't use [[TypeTest]] here because the current version of scala (2.6.2) only generates  capabilities for catch clauses of the form `case ex: Ex =>`.
-		 * Additionally, the `safer` method must reside within `makeSafe` to preserve the visibility and proper scoping of `E`.
-		 *
-		 * @param recovery A complete function that converts exceptions of type `E` to an indicator of the behavior with which the host reactant will handle the next message.
-		 * @return A safe behavior that handles exceptions internally
-		 *
-		 * @example
-		 * {{{
-		 *	val matrix = new Matrix("testChecked", SimpleAide(DefaultCooperativeWorkersDpd))
-		 *	matrix.spawns[Cmd](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
-		 *		CheckedBehavior.factory[Cmd, MyException] {
-		 *			case cmd: DoWork =>
-		 *				if (cmd.integer % 5) >= 3 then throw new MyException
-		 *				cmd.replyTo.tell(Response(cmd.integer.toString))
-		 *				Continue
-		 *			case Relax(replyTo) =>
-		 *				replyTo.tell(Response(null))
-		 *				Continue
-		 *		}.recover { (m: MyException) =>
-		 *			println(s"Recovering from $m")
-		 *			Continue
-		 *		}
-		 *	}
-		 * }}} */
-		inline def recover(recovery: E => CheckedBehavior[A, E] | HandleResult[A]): Behavior[A] = {
-			def safer(checkedBehavior: CheckedBehavior[A, E]): Behavior[A] =
-				(message: A) => {
-					val next =
-						try checkedBehavior.handleChecked(message)
-						catch {
-							case m: E => recovery(m)
-						}
-					next match {
-						case hr: HandleResult[A @unchecked] => hr
-						case cb: CheckedBehavior[A @unchecked, E @unchecked] =>
-							if cb eq checkedBehavior then Continue else ContinueWith(safer(cb))
-					}
-				}
-
-			safer(checkedBehavior)
-		}
-	}
 
 	/**
 	 * Creates a [[CheckedBehavior]] instance from a message handling function.
@@ -115,7 +112,7 @@ object CheckedBehavior {
 	 * }
 	 * }}}
 	 */
-	inline def factory[A, E <: Exception : Typeable](
+	inline def factory[A, E <: Exception /*: Typeable*/](
 		inline msgHandler: A => CheckedBehavior[A, E] | HandleResult[A]
 	): CheckedBehavior[A, E] = {
 		// An object (instead of an anonymous class) was used to avoid the "New anonymous class definition will be duplicated at each inline site" warning. It is intended to create a new anonymous class at each call site instead of eta-expanding the `msgHandler`. 

@@ -2,7 +2,6 @@ package readren.sequencer
 package providers
 
 import providers.DoerProvider.Tag
-import providers.LeastLoadedFixedWorkerDp.ProvidedDoer
 import providers.ShutdownAble
 
 import readren.sequencer.Doer
@@ -10,11 +9,43 @@ import readren.sequencer.Doer
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
+
 object LeastLoadedFixedWorkerDp {
+	class Impl(
+		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+	) extends LeastLoadedFixedWorkerDp(threadPoolSize, threadFactory, queueFactory) {
+		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = ???
+
+		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
+		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
+	}
+}
+
+/** A [[Doer]] provider with a non-dynamic thread-load balancing mechanism.
+ * How it works:
+ * - Manages a fixed number of [[Doer]] instances equal to the thread pool size, each of which owns a thread-worker.
+ * - A call to the [[provide]] method returns the [[Doer]] instance with the shortest task queue at the moment of the call.
+ * - All tasks submitted to a [[Doer]] are executed by the same thread-worker.
+ * Effective for short-living doers that are created when the work is demanded.
+ * Not suited for long-living doers. */
+abstract class LeastLoadedFixedWorkerDp(
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
+) extends DoerProvider[Doer], ShutdownAble {
+
+	private val doers = Array.tabulate[ProvidedDoer](threadPoolSize)(index => new ProvidedDoer(s"LeastLoadedFixedWorker#$index"))
+
+	private val switcher = new AtomicInteger(0)
+
 	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal()
 
 	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
-	inline def currentDoer: ProvidedDoer | Null = doerThreadLocal.get
+	override def currentDoer: ProvidedDoer | Null = doerThreadLocal.get
 
 	class ProvidedDoer(
 		override val tag: Tag,
@@ -37,25 +68,6 @@ object LeastLoadedFixedWorkerDp {
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
-}
-
-/** A [[Doer]] provider with a non-dynamic thread-load balancing mechanism.
- * How it works:
- * - Manages a fixed number of [[Doer]] instances equal to the thread pool size, each of which owns a thread-worker.
- * - A call to the [[provide]] method returns the [[Doer]] instance with the shortest task queue at the moment of the call.
- * - All tasks submitted to a [[Doer]] are executed by the same thread-worker.
- * Effective for short-living doers that are created when the work is demanded.
- * Not suited for long-living doers. */
-class LeastLoadedFixedWorkerDp(
-	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	failureReporter: Throwable => Unit = _.printStackTrace(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerProvider[LeastLoadedFixedWorkerDp.ProvidedDoer], ShutdownAble {
-
-	private val doers = Array.tabulate[ProvidedDoer](threadPoolSize)(index => new ProvidedDoer(s"LeastLoadedFixedWorker#$index", failureReporter, threadFactory, queueFactory))
-
-	private val switcher = new AtomicInteger(0)
 
 	override def provide(tag: Tag): ProvidedDoer = {
 		val doersWithShortestWorkQueue = findExecutorsWithShortestWorkQueue()

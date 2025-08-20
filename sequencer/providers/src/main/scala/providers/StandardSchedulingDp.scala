@@ -1,0 +1,224 @@
+package readren.sequencer
+package providers
+
+import SchedulingExtension.MilliDuration
+import providers.DoerProvider
+import providers.StandardSchedulingDp.ProvidedDoerFacade
+
+import readren.common.CompileTime.getTypeName
+
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
+import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
+import scala.collection.mutable
+
+object StandardSchedulingDp {
+	trait ProvidedDoerFacade extends Doer, SchedulingExtension, ShutdownAble
+
+	class Impl(
+		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+	) extends StandardSchedulingDp {
+		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
+
+		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
+		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
+	}
+}
+
+/** A [[DoerProvider]] that provides [[Doer]] with [[SchedulingExtension]] instances which own a dedicated single-thread-scheduled-executor instance provided by [[Executors.newSingleThreadScheduledExecutor]].
+ * Designed for testing, but can be used in production in scenarios where few instances of [[Doer & SchedulingExtension]] are created.
+ *
+ */
+trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoerFacade], ShutdownAble {
+
+	/** Thread-local storage for the current Doer instance. */
+	private val currentDoerThreadLocal: ThreadLocal[DoerImpl] = new ThreadLocal()
+
+	private val providedDoers: java.util.concurrent.ConcurrentLinkedQueue[DoerImpl] = new ConcurrentLinkedQueue()
+
+	override def provide(tag: DoerProvider.Tag): StandardSchedulingDp.ProvidedDoerFacade = {
+		val doer = new DoerImpl(tag)
+		providedDoers.add(doer)
+		doer
+	}
+
+	override def currentDoer: ProvidedDoerFacade | Null = currentDoerThreadLocal.get
+
+	/** A Doer implementation with embedded testing infrastructure.
+	 *
+	 * This Doer provides the necessary infrastructure for testing while maintaining
+	 * the abstract interface required by Doer and SchedulingExtension.
+	 */
+	class DoerImpl(override val tag: DoerProvider.Tag) extends AbstractDoer, StandardSchedulingDp.ProvidedDoerFacade { thisDoer =>
+
+		override type Tag = DoerProvider.Tag
+
+		/** The single-threaded executor for this Doer. */
+		private[StandardSchedulingDp] val doSiThEx = Executors.newSingleThreadScheduledExecutor()
+
+		/** Sequencer for tracking execution order. */
+		private val sequencer: AtomicInteger = new AtomicInteger(0)
+
+		override def executeSequentially(runnable: Runnable): Unit = {
+			val id = sequencer.incrementAndGet()
+			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
+			doSiThEx.execute(() => {
+				currentDoerThreadLocal.set(thisDoer)
+				// println(s"queuedForSequentialExecution: pre run; id=$id; thread=${Thread.currentThread().getName}")
+				try {
+					runnable.run()
+					// println(s"queuedForSequentialExecution: run completed normally; id=$id; thread=${Thread.currentThread().getName}")
+				}
+				catch {
+					case cause: Throwable =>
+						// println(s"queuedForSequentialExecution: run completed abruptly with: $cause; id=$id; thread=${Thread.currentThread().getName}")
+						onUnhandledException(thisDoer, cause)
+						throw cause
+				} finally {
+					currentDoerThreadLocal.remove()
+					// println(s"queuedForSequentialExecution: finally; id=$id; thread=${Thread.currentThread().getName}")
+				}
+			})
+		}
+
+		override def current: Doer = currentDoerThreadLocal.get
+
+		override def reportFailure(failure: Throwable): Unit = onFailureReported(thisDoer, failure)
+
+		//// SCHEDULING EXTENSION
+
+		sealed abstract class TSchedule {
+			/** This variable's value is changed one time only, from `null` to the [[ScheduledFuture]] reference returned by [[doSiThEx.schedule]] when [[scheduleSequentially]] is called.
+			 * Therefore, there is no need to synchronize access to it from the [[Runnable]] that is created when the value is set.*/
+			private[DoerImpl] var scheduledFuture: ScheduledFuture[?] | Null = null
+			private[DoerImpl] var canceled: Boolean = false
+		}
+
+		class TDelaySchedule(val delay: MilliDuration) extends TSchedule
+
+		class TFixedRateSchedule(val initialDelay: MilliDuration, val interval: MilliDuration) extends TSchedule
+
+		class TFixedDelaySchedule(val initialDelay: MilliDuration, val delay: MilliDuration) extends TSchedule
+
+		/** needed to support [[cancelAll]]. */
+		private val activeSchedules: java.util.concurrent.ConcurrentLinkedQueue[TSchedule] = new java.util.concurrent.ConcurrentLinkedQueue()
+
+		override type Schedule = TSchedule
+
+		override def newDelaySchedule(delay: MilliDuration): TDelaySchedule = TDelaySchedule(delay)
+
+		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): TFixedRateSchedule = TFixedRateSchedule(initialDelay, interval)
+
+		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule = TFixedDelaySchedule(initialDelay, delay)
+
+		override def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit = {
+			schedule.synchronized {
+				if schedule.canceled then return
+				else if schedule.scheduledFuture eq null then {
+					schedule.scheduledFuture = schedule match {
+						case ds: TDelaySchedule =>
+							val wrapper: Runnable = () =>
+								if !schedule.scheduledFuture.isDone then {
+									currentDoerThreadLocal.set(this)
+									try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+									catch {
+										case cause: Throwable =>
+											onUnhandledException(thisDoer, cause)
+											throw cause
+									} finally {
+										currentDoerThreadLocal.remove()
+										activeSchedules.remove(schedule)
+									}
+								}
+							doSiThEx.schedule(wrapper, ds.delay, TimeUnit.MILLISECONDS)
+
+						case frs: TFixedRateSchedule =>
+							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+								try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+								catch {
+									case cause: Throwable =>
+										onUnhandledException(thisDoer, cause)
+										throw cause
+								}
+
+							}
+							doSiThEx.scheduleAtFixedRate(wrapper, frs.initialDelay, frs.interval, TimeUnit.MILLISECONDS)
+
+						case fds: TFixedDelaySchedule =>
+							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+								try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+								catch {
+									case cause: Throwable =>
+										onUnhandledException(thisDoer, cause)
+										throw cause
+								}
+
+							}
+							doSiThEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
+					}
+					activeSchedules.add(schedule)
+				} else throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+			}
+		}
+
+		override def cancel(schedule: Schedule): Unit = {
+			if schedule.synchronized {
+				schedule.canceled = true
+				schedule.scheduledFuture ne null
+			} then {
+				schedule.scheduledFuture.cancel(false)
+				activeSchedules.remove(schedule)
+			}
+		}
+
+		override def cancelAll(): Unit = {
+			activeSchedules.forEach { schedule =>
+				cancel(schedule)
+//				schedule.scheduledFuture.cancel(false)
+			}
+//			activeSchedules.removeIf(_.scheduledFuture.isDone)
+		}
+
+		override def isActive(schedule: Schedule): Boolean =
+			schedule.synchronized {
+				if schedule.scheduledFuture ne null then !schedule.scheduledFuture.isDone
+				else false
+			}
+
+		/** Shutdown the executor and clean up resources. */
+		override def shutdown(): Unit = {
+			doSiThEx.shutdown()
+			providedDoers.remove(thisDoer)
+		}
+
+		override def awaitTermination(timeout: MilliDuration, unit: TimeUnit): Boolean =
+			doSiThEx.awaitTermination(timeout, unit)
+
+		override def diagnose(stringBuilder: StringBuilder): StringBuilder = ??? // TODO
+	}
+
+	override def shutdown(): Unit = {
+		providedDoers.forEach(_.doSiThEx.shutdown())
+		providedDoers.clear()
+	}
+
+	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
+		val timeoutMillis: MilliDuration = unit.toMillis(timeout)
+		val startingTime = System.currentTimeMillis()
+		var lastTerminated = true
+		val iterator = providedDoers.iterator()
+		while lastTerminated && iterator.hasNext do {
+			val executor = iterator.next().doSiThEx
+			if !executor.isTerminated then {
+				val remainingTime = timeoutMillis - (System.currentTimeMillis() - startingTime)
+				lastTerminated =
+					if remainingTime > 0 then executor.awaitTermination(remainingTime, TimeUnit.MILLISECONDS)
+					else false
+			}
+		}
+		lastTerminated
+	}
+
+	override def diagnose(stringBuilder: StringBuilder): StringBuilder = ???
+}

@@ -317,11 +317,45 @@ trait Conciliator { thisConciliator =>
 			if index == 0 then 0
 			else getRecordAt(index).term
 	}
+	
+	class InvalidWorkspaceException extends RuntimeException
+	
+	/** Partial implementation of an invalid [[Workspace]].
+	 * Design note: An invalid [[Workspace]] is required to avoid the use of [[Option]], [[Maybe]] or nullable in the definition of [[ConsensusParticipant.workspace]]. // TODO analyze if this crap is worth. */
+	abstract class InvalidWorkspacePi extends Workspace {
+		override def isBrandNew: Boolean = throw new InvalidWorkspaceException
+
+		override def getCurrentParticipants: IndexedSeq[ParticipantId] = throw new InvalidWorkspaceException
+
+		override def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit = throw new InvalidWorkspaceException
+
+		override def getCurrentTerm: Term = throw new InvalidWorkspaceException
+
+		override def setCurrentTerm(term: Term): Unit = throw new InvalidWorkspaceException
+
+		override def logBufferOffset: RecordIndex = throw new InvalidWorkspaceException
+
+		override def firstEmptyRecordIndex: RecordIndex = throw new InvalidWorkspaceException
+
+		override def lastAppendedRecord: Record = throw new InvalidWorkspaceException
+
+		override def getRecordAt(index: RecordIndex): Record = throw new InvalidWorkspaceException
+
+		override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = throw new InvalidWorkspaceException
+
+		override def appendRecord(record: Record): Unit = throw new InvalidWorkspaceException
+
+		override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = throw new InvalidWorkspaceException
+
+		override def informCommitIndex(commitIndex: RecordIndex): Unit = throw new InvalidWorkspaceException
+
+		override def release(): Unit = ()
+	}
 
 	/** Defines what [[ConsensusParticipant]] requires from the persistence service within the same participant.
 	 * Implementations may assume that all methods of this trait are invoked within the [[sequencer]] thread, enabling optimizations such as avoiding unnecessary creation of new task objects. */
 	trait Storage {
-		/** Creates a new invalid workspace whose methods should terminate abruptly. */
+		/** Creates a new invalid workspace whose methods (except [[Workspace.release]]) should terminate abruptly. */
 		def invalidWorkspace(): WS
 
 		val loads: sequencer.Task[WS]

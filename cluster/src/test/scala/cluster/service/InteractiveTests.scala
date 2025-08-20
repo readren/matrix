@@ -3,9 +3,9 @@ package cluster.service
 
 import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue, TaskSequencer}
 import cluster.service.Protocol.Instant
-import readren.sequencer.providers.{CooperativeWorkersDp, SchedulingDp}
 
 import readren.common.ToStringWithFields.toStringWithFields
+import readren.sequencer.providers.CooperativeWorkersSchedulingDp
 import scribe.*
 
 import java.net.{InetSocketAddress, StandardSocketOptions}
@@ -38,7 +38,7 @@ object InteractiveTests {
 		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
-		val schedulingDap = new SchedulingDp(failureReporter = scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${CooperativeWorkersDp.currentDoer.tag}", _))
+		val schedulingDap = new CooperativeWorkersSchedulingDp.Impl(failureReporter = (doer, e) => scribe.error(s"Unhandled exception in a task executed by the sequencer of the service at port ${doer.tag}", e))
 		val sequencerA: TaskSequencer = schedulingDap.provide(portA.toString)
 		val sequencerB: TaskSequencer = schedulingDap.provide(portB.toString)
 		

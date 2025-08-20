@@ -1,6 +1,7 @@
 package readren.sequencer
 
 import DoerTestSync.currentDoer
+import GeneratorsForDoerTests.{*, given}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop.propBoolean
@@ -45,7 +46,7 @@ class DoerTestSync extends ScalaCheckEffectSuite {
 	import doer.*
 	import Task.*
 
-	private val shared = new DoerTestShared[doer.type](doer, true)
+	private val shared = new GeneratorsForDoerTests[doer.type](doer, true)
 	import shared.{*, given}
 
 	private def checkEquality[A](task1: Task[A], task2: Task[A]): Unit = {
@@ -111,6 +112,7 @@ class DoerTestSync extends ScalaCheckEffectSuite {
 
 	// Combining Tasks: `combine(taskA, taskB)(zip) == own(() => zip(tryA, tryB))`
 	property("A task can be combined") {
+		
 		Prop.forAll(intGen, intGen, Gen.oneOf(true, false), Gen.frequency((3, true), (1, false))) {
 			(intA, intB, zipReturnsSuccess, zipFinishesNormally) =>
 				def buildTryAndImmediateTask(i: Int): (Try[Int], Task[Int]) = {

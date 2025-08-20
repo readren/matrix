@@ -1,6 +1,6 @@
 package readren.sequencer
 
-import DoerTestShared.currentForeignDoer
+import GeneratorsForDoerTests.currentForeignDoer
 
 import org.scalacheck.{Arbitrary, Gen}
 
@@ -8,14 +8,53 @@ import java.util.concurrent.{ExecutorService, Executors}
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success, Try}
 
-object DoerTestShared {
+object GeneratorsForDoerTests {
 	private val currentForeignDoer: ThreadLocal[Doer] = new ThreadLocal()
+
+	given intGen: Gen[Int] = Gen.choose(-10, 10)
+
+	extension (e1: Throwable) {
+		def ====(e2: Throwable): Boolean = (e1.getClass eq e2.getClass) && (e1.getMessage == e2.getMessage)
+	}
+
+	extension [A](try1: Try[A]) {
+		def ====(try2: Try[A]): Boolean = {
+			(try1, try2) match {
+				case (Failure(e1), Failure(e2)) => e1 ==== e2
+				case (Success(v1), Success(v2)) => v1.equals(v2)
+				case _ => false
+			}
+		}
+	}
+
+	//	extension [A](thisTask: Task[A]) {
+	//		def ====(otherTask: Task[A]): Task[Boolean] = {
+	//			Task.combine(thisTask, otherTask)((a, b) => Success(a ==== b))
+	//		}
+	//	}
+
+	given throwableArbitrary: Arbitrary[Throwable] = Arbitrary {
+		for {
+			msg <- Gen.stringOfN(9, Gen.alphaChar)
+			ex <- Gen.oneOf(
+				Gen.const(new RuntimeException(s"Runtime: [$msg]")),
+				Gen.const(new IllegalArgumentException(s"Illegal argument: [$msg]")),
+				Gen.const(new UnsupportedOperationException(s"Unsupported operation: [$msg]")),
+				Gen.const(new Exception(s"General exception: [$msg]", new RuntimeException("Cause exception"))),
+				Gen.const(new InternalError(s"InternalError: [$msg]")),
+				Gen.const(new LinkageError(s"LinkageError: [$msg]")),
+				Gen.const(new Error(s"Error: [$msg]"))
+			)
+		} yield ex
+	}
+	
 }
 
 /** Contains tools used by the suites that test [[Doer]] behavior. */
-class DoerTestShared[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false) {
+class GeneratorsForDoerTests[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false) {
 
 	import doer.*
+	export doer.*
 
 	val foreignDoer: Doer = new Doer {
 		override type Tag = String
@@ -110,40 +149,14 @@ class DoerTestShared[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false)
 		arbA.arbitrary.toDuty
 	}
 
-	given intGen: Gen[Int] = Gen.choose(-10, 10)
 
-	extension (e1: Throwable) {
-		def ====(e2: Throwable): Boolean = (e1.getClass eq e2.getClass) && (e1.getMessage == e2.getMessage)
-	}
-
-	extension [A](try1: Try[A]) {
-		def ====(try2: Try[A]): Boolean = {
-			(try1, try2) match {
-				case (Failure(e1), Failure(e2)) => e1 ==== e2
-				case (Success(v1), Success(v2)) => v1.equals(v2)
-				case _ => false
-			}
-		}
-	}
-
-	//	extension [A](thisTask: Task[A]) {
-	//		def ====(otherTask: Task[A]): Task[Boolean] = {
-	//			Task.combine(thisTask, otherTask)((a, b) => Success(a ==== b))
-	//		}
-	//	}
-
-	given throwableArbitrary: Arbitrary[Throwable] = Arbitrary {
+	def genSchedule[D <: Doer & SchedulingExtension](doer: D, maxDuration: Int = 5): Gen[doer.Schedule] = {
 		for {
-			msg <- Gen.stringOfN(9, Gen.alphaChar)
-			ex <- Gen.oneOf(
-				Gen.const(new RuntimeException(s"Runtime: [$msg]")),
-				Gen.const(new IllegalArgumentException(s"Illegal argument: [$msg]")),
-				Gen.const(new UnsupportedOperationException(s"Unsupported operation: [$msg]")),
-				Gen.const(new Exception(s"General exception: [$msg]", new RuntimeException("Cause exception"))),
-				Gen.const(new InternalError(s"InternalError: [$msg]")),
-				Gen.const(new LinkageError(s"LinkageError: [$msg]")),
-				Gen.const(new Error(s"Error: [$msg]"))
-				)
-		} yield ex
+			delay <- Gen.choose(1,5)
+			interval <- Gen.choose(1, 5)
+			kind <- Gen.oneOf(1, 2, 3)
+		} yield if kind == 1 then doer.newDelaySchedule(delay)
+		else if kind == 2 then doer.newFixedRateSchedule(delay, interval)
+		else doer.newFixedDelaySchedule(delay, interval)
 	}
 }
