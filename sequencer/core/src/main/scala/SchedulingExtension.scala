@@ -34,8 +34,8 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** Represents an execution schedule.
 	 * It is tied to the [[Runnable]] passed along it to the [[schedule]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[schedule]].
-	 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[ScheduingExtesion]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
-	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the runnables that accompany it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
+	 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[SchedulingExtension]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
+	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the [[Runnable]]s that accompany it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
 	type Schedule
 
 	/** Creates a [[Schedule]] for a single time execution after a delay.
@@ -201,19 +201,19 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class TimeLimited[A, B](duty: Duty[A], timeout: Schedule, f: Maybe[A] => B) extends Duty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
-			var hasElapsed = false;
-			var hasCompleted = false;
+			var hasElapsed = false
+			var hasCompleted = false
 			duty.trigger(true) { a =>
 				if (!hasElapsed) {
-					cancel(timeout);
-					hasCompleted = true;
+					cancel(timeout)
+					hasCompleted = true
 					onComplete(f(Maybe.some(a)))
 				}
 			}
 			schedule(timeout) {
 				() =>
 					if (!hasCompleted) {
-						hasElapsed = true;
+						hasElapsed = true
 						onComplete(f(Maybe.empty))
 					}
 			}
@@ -402,7 +402,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			}
 		}
 
-		/** Creates a task that repeatedly executes the given task as long as its result is `Maybe.empty` and the specified `maxNumberOfExecutions` is not exceeded; waiting for the specified `pause` between the end of one execution and the start of the next.
+		/** Creates a task that repeatedly executes the given task as long as its result is [[Maybe.empty]] and the specified `maxNumberOfExecutions` is not exceeded; waiting for the specified `pause` between the end of one execution and the start of the next.
 		 * $notReusableTask */
 		inline def reiterateDelayedWhileEmpty[A](maxNumberOfExecutions: Int, pause: Schedule)(task: Task[Maybe[Try[A]]]): Task[Maybe[A]] =
 			new DelayedLoop[A](maxNumberOfExecutions, pause)(task)
@@ -429,7 +429,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			if (maxNumberOfExecutions <= 0) {
 				onComplete(Success(Maybe.empty))
 			} else {
-				loop(maxNumberOfExecutions);
+				loop(maxNumberOfExecutions)
 			}
 		}
 	}

@@ -1,17 +1,93 @@
 package readren.sequencer
 
-import GeneratorsForDoerTests.currentForeignDoer
+import GeneratorsForDoerTests.*
 
 import org.scalacheck.{Arbitrary, Gen}
 
-import java.util.concurrent.{ExecutorService, Executors}
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import java.util.concurrent.Executors
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 
 object GeneratorsForDoerTests {
+	class FaultyValue[A](val value: A, val failureLabel: String) extends RuntimeException(failureLabel) {
+		override def toString: String = s"FaultyValue($value, $failureLabel)"
+	}
+
 	private val currentForeignDoer: ThreadLocal[Doer] = new ThreadLocal()
 
-	given intGen: Gen[Int] = Gen.choose(-10, 10)
+	given intGen: Gen[Int] = Gen.choose(-9, 9)
+
+	def genTry[A](a: A, failureLabel: String, failureProbability: Int = 20): Gen[Try[A]] = Gen.frequency(
+		(100, Success(a)),
+		(failureProbability, Failure(new FaultyValue(a, s"$failureLabel: $a")))
+	)
+
+	given tryArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Try[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genTry(a, ""))
+	}
+
+
+	def genFutureBuilderFromTry[A](tryA: Try[A], failureLabel: String): Gen[() => Future[A]] = {
+		val immediateGen: Gen[() => Future[A]] = Gen.const(() => Future.fromTry(tryA))
+		val delayedGen: Gen[() => Future[A]] =
+			for delay <- Gen.oneOf(0, 1, 2, 4, 8, 16) yield {
+				() => {
+					Future(Thread.sleep(delay))(using ExecutionContext.global)
+						.transform(_ => tryA)(using ExecutionContext.global)
+				}
+			}
+		Gen.oneOf(immediateGen, delayedGen)
+	}
+
+
+	def genFutureBuilder[A](a: A, failureLabel: String): Gen[() => Future[A]] = {
+		val immediateGen: Gen[() => Future[A]] = genTry(a, s"$failureLabel / FutureBuilder.immediate").map(tryA => () => Future.fromTry(tryA))
+		val delayedGen: Gen[() => Future[A]] =
+			for {
+				tryA <- genTry(a, s"$failureLabel / FutureBuilder.delayed")
+				delay <- Gen.oneOf(0, 1, 2, 4, 8, 16)
+			} yield {
+				() => {
+					Future(Thread.sleep(delay))(using ExecutionContext.global)
+						.transform(_ => tryA)(using ExecutionContext.global)
+				}
+			}
+		Gen.oneOf(immediateGen, delayedGen)
+	}
+
+	def genFutureFromTry[A](tryA: Try[A], failureLabel: String): Gen[Future[A]] = {
+		genFutureBuilderFromTry(tryA, s"$failureLabel / FutureInstance").map(builder => builder())
+	}
+
+	def genFuture[A](a: A, failureLabel: String): Gen[Future[A]] = {
+		genFutureBuilder(a, s"$failureLabel / FutureInstance").map(builder => builder())
+	}
+
+	given futureArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Future[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genFuture(a, "futureArbitrary"))
+	}
+
+	extension [A, B](function1Gen: Gen[A => B]) {
+		/** @return a [[Function1]] generator like this one, but corrupting the generated functions such that, for a subset of inputs based on the specified failureProbabilityPercentage, it throws [[FaultyValue]] with the value that the original function returns. */
+		def faulted(failureProbabilityPercentage: Int = 20): Gen[A => B] = {
+			require(failureProbabilityPercentage >= 0 && failureProbabilityPercentage <= 100, "failureProbabilityPercentage must be between 0 and 100")
+
+			for {
+				f <- function1Gen
+				seed <- Gen.choose(Long.MinValue, Long.MaxValue) // Random seed for determinism
+			} yield { (x: A) =>
+				// Use input's hashCode and seed to create a deterministic random choice
+				val random = new scala.util.Random(seed + x.hashCode().toLong)
+				val shouldFail = random.nextInt(100) < failureProbabilityPercentage
+				if (shouldFail) {
+					val result = f(x)
+					throw FaultyValue(result, "faulted function")
+				} else {
+					f(x)
+				}
+			}
+		}
+	}
 
 	extension (e1: Throwable) {
 		def ====(e2: Throwable): Boolean = (e1.getClass eq e2.getClass) && (e1.getMessage == e2.getMessage)
@@ -47,18 +123,31 @@ object GeneratorsForDoerTests {
 			)
 		} yield ex
 	}
-	
+
+	/** @return a generator of [[doer.Schedule]] instances with delays and intervales between 1 and `maxDuration` milliseconds. */
+	def genSchedule[D <: Doer & SchedulingExtension](doer: D, maxDuration: Int = 5): Gen[doer.Schedule] = {
+		for {
+			delay <- Gen.choose(1, maxDuration)
+			interval <- Gen.choose(1, maxDuration)
+			kind <- Gen.oneOf(1, 2, 3)
+		} yield if kind == 1 then doer.newDelaySchedule(delay)
+		else if kind == 2 then doer.newFixedRateSchedule(delay, interval)
+		else doer.newFixedDelaySchedule(delay, interval)
+	}
 }
 
-/** Contains tools used by the suites that test [[Doer]] behavior. */
-class GeneratorsForDoerTests[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false) {
+/** Offers generators of [[doer.Duty]] and [[doer.Task]] instances.
+ * Useful for suites that test their behavior. */
+class GeneratorsForDoerTests[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
 
 	import doer.*
+
 	export doer.*
 
+	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
 	val foreignDoer: Doer = new Doer {
 		override type Tag = String
-		override val tag = "foreign doer for testing"
+		override val tag = s"foreign-doer-for-testing#$recursionLevel"
 		private val executor = Executors.newSingleThreadExecutor()
 
 		override def executeSequentially(runnable: Runnable): Unit = executor.execute { () =>
@@ -70,93 +159,76 @@ class GeneratorsForDoerTests[TD <: Doer](val doer: TD, synchronousOnly: Boolean 
 		override def current: Doer = currentForeignDoer.get
 
 		override def reportFailure(cause: Throwable): Unit = throw cause
+
+		override def toString: String = tag
 	}
 
-	extension [A](genA: Gen[A]) {
-		def toTry(failureLabel: String): Gen[Try[A]] = Gen.frequency(
-			(5, genA.map(a => Success(a))),
-			(1, genA.map(a => Failure(new RuntimeException(s"$failureLabel: $a"))))
-			)
+	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Task]] instances. */
+	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests(foreignDoer, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
 
-		def toFutureBuilder(failureLabel: String): Gen[() => Future[A]] = {
-			val immediateGen: Gen[() => Future[A]] = genA.toTry(s"$failureLabel / FutureBuilder.immediate").map(tryA => () => Future.fromTry(tryA))
-			val delayedGen: Gen[() => Future[A]] =
-				for {
-					tryA <- genA.toTry(s"$failureLabel / FutureBuilder.delayed")
-					delay <- Gen.oneOf(0, 1, 2, 4, 8, 16)
-				} yield {
-					() => {
-						Future(Thread.sleep(delay))(using ExecutionContext.global)
-							.transform(_ => tryA)(using ExecutionContext.global)
-					}
-				}
-			Gen.oneOf(immediateGen, delayedGen)
-		}
+	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
+	def genDuty[A](a: A): Gen[Duty[A]] = {
+		val readyGen: Gen[Duty[A]] = Duty.ready(a)
 
-		def toFuture(failureLabel: String): Gen[Future[A]] = {
-			genA.toFutureBuilder(s"$failureLabel / FutureInstance").map(builder => builder())
-		}
+		val mineGen: Gen[Duty[A]] = Duty.mine(() => a)
 
-		def toDuty: Gen[Duty[A]] = {
-			val readyGen: Gen[Duty[A]] = genA.map(Duty.ready)
+		val mineFlatGen: Gen[Duty[A]] = Gen.oneOf(readyGen, mineGen).map(da => Duty.mineFlat(() => da))
 
-			val mineGen: Gen[Duty[A]] = genA.map { a => Duty.mine(() => a) }
+		def foreignGen: Gen[Duty[A]] = foreignDoerGenerators().genDuty(a).map(Duty.foreign(foreignDoer)(_))
 
-			val ownFlatGen: Gen[Duty[A]] = Gen.oneOf(readyGen, mineGen).map(da => Duty.mineFlat(() => da))
-
-			val foreignGen: Gen[Duty[A]] = for {a <- genA; delay <- Gen.oneOf(0, 1, 2, 4, 8, 16)} yield
-				Task.alien(() => Future {
-					Thread.sleep(delay);
-					a
-				}(using ExecutionContext.global)).map(_.asInstanceOf[Success[A]].value)
-
-			if synchronousOnly then Gen.oneOf(readyGen, mineGen, ownFlatGen)
-			else Gen.oneOf(readyGen, mineGen, ownFlatGen, foreignGen)
-		}
-
-		def toTask(failureLabel: String): Gen[Task[A]] = {
-
-			val immediateGen: Gen[Task[A]] = genA.toTry(s"$failureLabel / Task.immediate").map(Task.ready)
-
-			val ownGen: Gen[Task[A]] = genA.toTry(s"$failureLabel / Task.own").map { tryA => Task.own(() => tryA) }
-
-			val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task.ownFlat(() => taskA) }
-
-			val waitGen: Gen[Task[A]] = genA.toFuture(s"$failureLabel / Task.wait").map(Task.wait)
-
-			val alienGen: Gen[Task[A]] = genA.toFutureBuilder(s"$failureLabel / Task.alien").map(Task.alien)
-
-			val foreignGen: Gen[Task[A]] = genA.toFutureBuilder(s"$failureLabel / Task.foreign").map {
-				futureBuilder => Task.foreign(foreignDoer)(foreignDoer.Task.alien(futureBuilder))
-			}
-
-			if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
-			else Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
-		}
+		if synchronousOnly || !includeForeign then Gen.oneOf(readyGen, mineGen, mineFlatGen)
+		else Gen.oneOf(readyGen, mineGen, mineFlatGen, foreignGen)
 	}
 
-	given futureArbitrary[A](using arbA: Arbitrary[A]): Arbitrary[Future[A]] = Arbitrary {
-		arbA.arbitrary.toFuture("futureArbitrary")
+	/** Implicitly provide an Arbitrary instance for `doer.Duty` */
+	given dutyArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Duty[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genDuty(a))
 	}
 
 
-	// Implicitly provide an Arbitrary instance for Task
-	given taskArbitrary[A](using arbA: Arbitrary[A]): Arbitrary[Task[A]] = Arbitrary {
-		arbA.arbitrary.toTask("taskArbitrary")
+	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
+	def genTaskFromTry[A](tryA: Try[A], failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
+
+		val immediateGen: Gen[Task[A]] = Task.ready(tryA)
+
+		val ownGen: Gen[Task[A]] = Task.own(() => tryA)
+
+		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task.ownFlat(() => taskA) }
+
+		val waitGen: Gen[Task[A]] = genFutureFromTry(tryA, s"$failureLabel / Task.wait").map(Task.wait)
+
+		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTaskFromTry(tryA, s"failureLabel / Task.foreign").map(Task.foreign(foreignDoer)(_))
+
+		val alienGen: Gen[Task[A]] = genFutureBuilderFromTry(tryA, s"$failureLabel / Task.alien").map(Task.alien)
+
+		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
+		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
+		else Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen)
 	}
 
-	given dutyArbitrary[A](using arbA: Arbitrary[A]): Arbitrary[Duty[A]] = Arbitrary {
-		arbA.arbitrary.toDuty
+	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
+	def genTask[A](a: A, failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
+
+		val immediateGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.immediate", failureProbability).map(Task.ready)
+
+		val ownGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.own", failureProbability).map { tryA => Task.own(() => tryA) }
+
+		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task.ownFlat(() => taskA) }
+
+		val waitGen: Gen[Task[A]] = genFuture(a, s"$failureLabel / Task.wait").map(Task.wait)
+
+		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTask(a, s"failureLabel / Task.foreign").map(Task.foreign(foreignDoer)(_))
+
+		val alienGen: Gen[Task[A]] = genFutureBuilder(a, s"$failureLabel / Task.alien").map(Task.alien)
+
+		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
+		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
+		else Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen)
 	}
 
 
-	def genSchedule[D <: Doer & SchedulingExtension](doer: D, maxDuration: Int = 5): Gen[doer.Schedule] = {
-		for {
-			delay <- Gen.choose(1,5)
-			interval <- Gen.choose(1, 5)
-			kind <- Gen.oneOf(1, 2, 3)
-		} yield if kind == 1 then doer.newDelaySchedule(delay)
-		else if kind == 2 then doer.newFixedRateSchedule(delay, interval)
-		else doer.newFixedDelaySchedule(delay, interval)
+	/** Implicitly provide an Arbitrary instance for `doer.Task` */
+	given taskArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Task[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genTask(a, "taskArbitrary"))
 	}
 }

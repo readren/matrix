@@ -51,7 +51,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 				catch {
 					case cause: Throwable =>
 						// println(s"queuedForSequentialExecution: run completed abruptly with: $cause; id=$id; thread=${Thread.currentThread().getName}")
-						unhandledExceptions.addOne(cause.getMessage);
+						unhandledExceptions.addOne(cause.getMessage)
 						throw cause;
 				} finally {
 					currentDoer.remove()
@@ -205,7 +205,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
 			if NonFatal(e) then {
 				val leftTask = Task.failed[Int](e).recover(f)
-				val rightTask = if f.isDefinedAt(e) then Task.successful(f(e)) else Task.failed(e);
+				val rightTask = if f.isDefinedAt(e) then Task.successful(f(e)) else Task.failed(e)
 				checkEquality(leftTask, rightTask)
 			} else Future.successful(())
 		}
@@ -279,7 +279,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 
 					// The result of only one of the two futures, `fatalWasHandled` and `exceptionWasNotHandled`, is enough to know if the check is passed. So get the result of the one that completes first.
 					Future.firstCompletedOf(List(fatalWasHandled, exceptionWasNotHandled.map { wasNotHandled =>
-						assert(wasNotHandled, "The task handled the fatal exception despite it shouldn't");
+						assert(wasNotHandled, "The task handled the fatal exception despite it shouldn't")
 						true
 					}))
 				}
@@ -295,7 +295,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			// println(s"Begin: task=$task, exception=$exception")
 
 			for {
-				foreachTestResult <- check(_.foreach(_ => throw exception).map(_ => 0))
 				mapTestResult <- check(_.map(f1))
 				flatMapTestResult <- check(_.flatMap(f1))
 				withFilterTestResult <- check(_.withFilter(f1))
@@ -313,8 +312,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 				alienTestResult <- check(_.flatMap(_ => Task.alien(f0)))
 			} yield
 				assert(
-					foreachTestResult
-						&& mapTestResult
+					mapTestResult
 						&& flatMapTestResult
 						&& withFilterTestResult
 						&& transformTestResult
@@ -330,7 +328,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 						&& ownFlatTestResult
 						&& alienTestResult,
 					s"""
-					   |foreach: $foreachTestResult
 					   |map: $mapTestResult
 					   |flatMap: $flatMapTestResult
 					   |withFilter: $withFilterTestResult
@@ -388,11 +385,9 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 
 			for {
 				factoryTestResult <- check(identity)
-				foreachTestResult <- check(_.foreach(_ => ()))
 				mapTestResult <- check(_.map(identity))
 				flatMapTestResult <- check(_.flatMap(_ => task))
 				withFilterTestResult <- check(_.withFilter(_ => randomBool))
-				consumeTestResult <- check(_.consume(_ => ()))
 				andThenTestResult <- check(_.andThen(_ => ()))
 				transformTestResult <- check(_.transform(identity))
 				transformWithTestResult <- check(_.transformWith(_ => task))
@@ -406,11 +401,9 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			} yield
 				assert(
 					factoryTestResult
-						&& foreachTestResult
 						&& mapTestResult
 						&& flatMapTestResult
 						&& withFilterTestResult
-						&& consumeTestResult
 						&& andThenTestResult
 						&& transformTestResult
 						&& transformWithTestResult
@@ -423,11 +416,9 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 						&& repeatedWhileUndefinedTestResult,
 					s"""
 					   |factory: $factoryTestResult
-					   |foreach: $foreachTestResult
 					   |map: $mapTestResult
 					   |flatMap: $flatMapTestResult
 					   |withFilter: $withFilterTestResult
-					   |consume: $consumeTestResult
 					   |andThen: $andThenTestResult
 					   |transform: $transformTestResult
 					   |transformWith: $transformWithTestResult
@@ -480,7 +471,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 
 			for {
 				factoryTestResult <- check(identity)
-				foreachTestResult <- check(_.foreach(_ => ()))
 				mapTestResult <- check(_.map(identity))
 				flatMapTestResult <- check(_.flatMap(_ => duty))
 				andThenTestResult <- check(_.andThen(_ => ()))
@@ -491,7 +481,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 			} yield
 				assert(
 					factoryTestResult
-						&& foreachTestResult
 						&& mapTestResult
 						&& flatMapTestResult
 						&& andThenTestResult
@@ -501,7 +490,6 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 						&& repeatedWhileUndefinedTestResult,
 					s"""
 					   |factory: $factoryTestResult
-					   |foreach: $foreachTestResult
 					   |map: $mapTestResult
 					   |flatMap: $flatMapTestResult
 					   |andThen: $andThenTestResult

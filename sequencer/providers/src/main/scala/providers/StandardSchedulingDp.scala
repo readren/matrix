@@ -6,6 +6,7 @@ import providers.DoerProvider
 import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName
+import readren.common.deriveToString
 
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
@@ -92,14 +93,21 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			/** This variable's value is changed one time only, from `null` to the [[ScheduledFuture]] reference returned by [[doSiThEx.schedule]] when [[scheduleSequentially]] is called.
 			 * Therefore, there is no need to synchronize access to it from the [[Runnable]] that is created when the value is set.*/
 			private[DoerImpl] var scheduledFuture: ScheduledFuture[?] | Null = null
+			/** This variable's value is changed one time only, from `false` to `true`, when [[cancel]] or [[cancelAll]] is called. */
 			private[DoerImpl] var canceled: Boolean = false
 		}
 
-		class TDelaySchedule(val delay: MilliDuration) extends TSchedule
+		class TDelaySchedule(val delay: MilliDuration) extends TSchedule {
+			override def toString: String = deriveToString[TDelaySchedule](this)
+		}
 
-		class TFixedRateSchedule(val initialDelay: MilliDuration, val interval: MilliDuration) extends TSchedule
+		class TFixedRateSchedule(val initialDelay: MilliDuration, val interval: MilliDuration) extends TSchedule {
+			override def toString: String = deriveToString[TFixedRateSchedule](this)
+		}
 
-		class TFixedDelaySchedule(val initialDelay: MilliDuration, val delay: MilliDuration) extends TSchedule
+		class TFixedDelaySchedule(val initialDelay: MilliDuration, val delay: MilliDuration) extends TSchedule {
+			override def toString: String = deriveToString[TFixedDelaySchedule](this)
+		}
 
 		/** needed to support [[cancelAll]]. */
 		private val activeSchedules: java.util.concurrent.ConcurrentLinkedQueue[TSchedule] = new java.util.concurrent.ConcurrentLinkedQueue()
@@ -162,11 +170,10 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			}
 		}
 
+		/** Design assumption: This implementation assumes that [[schedule.scheduledFuture]] is modified a single time only, from `null` to `non-null`. */
 		override def cancel(schedule: Schedule): Unit = {
-			if schedule.synchronized {
-				schedule.canceled = true
-				schedule.scheduledFuture ne null
-			} then {
+			schedule.canceled = true
+			if (schedule.scheduledFuture ne null) || schedule.synchronized(schedule.scheduledFuture ne null) then {
 				schedule.scheduledFuture.cancel(false)
 				activeSchedules.remove(schedule)
 			}
@@ -180,11 +187,12 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 //			activeSchedules.removeIf(_.scheduledFuture.isDone)
 		}
 
+		/** Design assumption: This implementation assumes that [[schedule.scheduledFuture]] is modified a single time only, from `null` to `non-null`. */
 		override def isActive(schedule: Schedule): Boolean =
-			schedule.synchronized {
-				if schedule.scheduledFuture ne null then !schedule.scheduledFuture.isDone
-				else false
-			}
+			if schedule.scheduledFuture ne null then !schedule.scheduledFuture.isDone
+			else if schedule.synchronized(schedule.scheduledFuture ne null) then !schedule.scheduledFuture.isDone
+			else false
+
 
 		/** Shutdown the executor and clean up resources. */
 		override def shutdown(): Unit = {
