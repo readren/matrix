@@ -660,7 +660,7 @@ trait Doer { thisDoer =>
 	}
 
 	final class DelegateTo[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => execute(onComplete(a)))
+		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => thisDoer.execute(onComplete(a)))
 
 		override def toString: String = deriveToString[DelegateTo[A]](this)
 	}

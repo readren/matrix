@@ -24,13 +24,13 @@ object CooperativeWorkersSchedulingDp {
 	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
 
 	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersSchedulingDp]].
-	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. If that causes problems make [[DoerFacade]] be a trait that extends [[Doer]] instead of [[AbstractDoer]]. */
+	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. See [[DoerFacade]] to see why. */
 	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension {
-		override type Schedule <: AbstractSchedule
+		override type Schedule <: ScheduleFacade
 	}
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-	trait AbstractSchedule {
+	trait ScheduleFacade {
 		def initialDelay: MilliDuration
 
 		def interval: MilliDuration
@@ -59,7 +59,7 @@ object CooperativeWorkersSchedulingDp {
 		 * An instance becomes disabled after the [[Runnable]] execution finishes and the */
 		def isEnabled: Boolean
 
-		/** Exposes the time when the [[Runnable]] task, scheduled by this [[AbstractSchedule]], was last enqueued into the task queue for execution (calling [[SchedulingDoerFacade.executeSequentially]]). */
+		/** Exposes the time when the [[Runnable]] task, scheduled by this [[ScheduleFacade]], was last enqueued into the task queue for execution (calling [[SchedulingDoerFacade.executeSequentially]]). */
 		def enabledTime: MilliTime
 
 		/** An instance becomes active when is passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
@@ -185,7 +185,7 @@ abstract class CooperativeWorkersSchedulingDp(
 
 
 		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends AbstractSchedule {
+		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ScheduleFacade {
 			/** The [[Runnable]] that this [[SchedulingExtension.Schedule]] schedules. */
 			var runnable: Runnable | Null = null
 			var scheduledTime: MilliTime = 0L
@@ -203,11 +203,40 @@ abstract class CooperativeWorkersSchedulingDp(
 		}
 	}
 
+
+	/**
+	 * The `scheduler` object is responsible for managing the scheduling and execution of delayed and periodic tasks  for all [[SchedulingDoerFacade]] instances provided by this [[CooperativeWorkersSchedulingDp]].
+	 *
+	 * == Responsibilities ==
+	 *   - Maintains a min-heap priority queue of scheduled tasks, ordered by their next scheduled execution time.
+	 *   - Handles scheduling, cancellation, and rescheduling of tasks, including fixed-rate and fixed-delay periodic executions.
+	 *   - Ensures that scheduled tasks are executed at (or as close as possible to) their intended times, using a dedicated thread.
+	 *   - Supports cancellation of individual schedules or all schedules belonging to a specific [[SchedulingDoerImpl]].
+	 *   - Tracks enabled (i.e., currently executing or about to execute) schedules separately from the heap for efficient cancellation.
+	 *   - Provides diagnostic information about the scheduler's state.
+	 *
+	 * == Threading ==
+	 *   - The scheduler runs on a dedicated thread, created via the provided [[threadFactory]].
+	 *   - All modifications to the scheduling queue and enabled schedules are performed on this thread, with external requests (such as schedule, cancel, or cancelAll) being enqueued as commands via a synchronized queue.
+	 *   - This design ensures thread safety and avoids race conditions between scheduling operations and task execution.
+	 *
+	 * == Heap Management ==
+	 *   - The scheduler uses an array-based binary min-heap to efficiently manage the next task to execute.
+	 *   - The heap is dynamically resized as needed.
+	 *   - Each scheduled task (a [[ScheduleImpl]]) tracks its index in the heap for O(1) removal.
+	 *
+	 * == Lifecycle ==
+	 *   - The scheduler thread is started upon construction and runs until [[shutdown]] is called.
+	 *   - On shutdown, all scheduled and enabled tasks are deactivated, and resources are released.
+	 *
+	 * == Usage ==
+	 *   - Not intended for direct use; all interactions should go through the [[SchedulingDoerFacade]] API.
+	 */
 	private object scheduler extends Runnable {
 		private val commandsQueue = new util.ArrayDeque[Runnable]()
 		private var heap: Array[SchedulingDoerImpl#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var heapSize: Int = 0
-		/** Know the instances of [[SchedulingDoerImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[SchedulingDoerFacade.cancelAll()]] method because enabled instances are not in the [[heap]]. */
+		/** Know the instances of [[SchedulingDoerImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[cancelAllBelongingTo]] method because enabled instances are not in the [[heap]]. */
 		private var enabledSchedulesByDoer: util.HashMap[SchedulingDoerImpl, mutable.HashSet[SchedulingDoerImpl#ScheduleImpl]] = new util.HashMap()
 
 		private var isRunning = true
@@ -311,9 +340,10 @@ abstract class CooperativeWorkersSchedulingDp(
 					}
 				}
 			}
-			this.synchronized(commandsQueue.clear()) // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			// Reached when stopped.
+			this.synchronized(commandsQueue.clear()) // do not keep unnecessary references after stopped to avoid unnecessary memory retention
 			for i <- 0 until heapSize do heap(i).isActive = false
-			heap = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			heap = null // do not keep unnecessary references after stopped to avoid unnecessary memory retention
 			enabledSchedulesByDoer.forEach { (_, enabledSchedules) =>
 				enabledSchedules.foreach { schedule =>
 					schedule.isActive = false
@@ -369,7 +399,7 @@ abstract class CooperativeWorkersSchedulingDp(
 			true
 		}
 
-		private inline def indexOf(task: SchedulingDoerImpl#ScheduleImpl): Int = task.heapIndex
+		private inline def indexOf(element: SchedulingDoerImpl#ScheduleImpl): Int = element.heapIndex
 
 		/**
 		 * Replaces the element at position `holeIndex` of the heap-based array with the `providedElement` and rearranges it and its parents as necessary to ensure that all parents are less than or equal to their children.

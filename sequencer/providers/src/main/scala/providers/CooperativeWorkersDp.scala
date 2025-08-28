@@ -21,7 +21,11 @@ object CooperativeWorkersDp {
 
 	inline val debugEnabled = false
 
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].  */
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].
+	 *
+	 * Design note: to reduce class-metadata of extending classes, this facade was defined as an abstract class that extends [[AbstractDoer]] instead of a trait that extends [[Doer]].
+	 * If this design causes type-hierarchy problems, define it as a trait that extends [[Doer]] instead of [[AbstractDoer]].
+	 * */
 	abstract class DoerFacade extends AbstractDoer {
 		override type Tag = DoerProvider.Tag
 		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */

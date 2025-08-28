@@ -56,26 +56,25 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule
 
 	/** Programs the execution of the provided [[Runnable]] according to the provided [[Schedule]].
-	 * The implementation must ensure mutual sequentiality of the execution of [[Runnable]]s passed to [[executeSequentially]].
+	 * The implementation must ensure mutual sequentiality of the execution of [[Runnable]]s passed to both, this method and [[executeSequentially]].
 	 * @param schedule determines when the provided [[runnable]] will be run.
 	 * @param runnable the [[Runnable]] to be run according to the provided [[schedule]].
 	 * The implementation should not throw non-fatal exceptions. */
 	def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit
 
 	/**
-	 * The implementation should remove the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
-	 * The implementation should not execute the [[Runnable]] after this method returns if called within the thread currently assigned to this [[Doer]], even if called near its scheduled time.
-	 * The implementation may execute the [[Runnable]] a single time after this method returns when executed by a thread other than the currently assigned to this [[Doer]], if called near its scheduled time.
+	 * The implementation should stop the [[Schedule]] from triggering any executions. Even if it was not activated jet.
+	 * When this method is called within the thread currently assigned to this [[Doer]], the [[SchedulingExtension]] implementation should ensure that the [[Schedule]] will not trigger any execution after this method is called.
+	 * If, on the contrary, this method is executed by a thread other than the one currently assigned to this [[Doer]], the [[SchedulingExtension]] implementation should strive to prevent the [[Schedule]] from triggering any execution except possibly a single one if this method is called close to its scheduled time.
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancel(schedule: Schedule): Unit
 
 	/**
-	 * The implementation should remove all the scheduled [[Runnable]]s corresponding to this [[Doer]] instance from the schedule.
-	 * The implementation should not execute the [[Runnable]] after this method returns if called within the thread currently assigned to this [[Doer]], even if called near its scheduled time.
-	 * The implementation may execute the [[Runnable]] a single time after this method returns when executed by a thread other than the currently assigned to this [[Doer]], if called near its scheduled time.
+	 * The implementation should [[cancel]] all the active instances of [[Schedule]] of this [[Doer]]. See [[isActive]].
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancelAll(): Unit
 
+	/** @return true if the [[Schedule]] was used in a call to [[scheduleSequentially]] and is not cancelled nor elapsed (only instances returned by [[newDelaySchedule]] can elapse). */
 	def isActive(schedule: Schedule): Boolean
 
 	inline def schedule(schedule: Schedule)(runnable: Runnable): Unit =

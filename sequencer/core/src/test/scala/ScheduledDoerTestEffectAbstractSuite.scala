@@ -96,7 +96,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				foreignDuty <- foreignDoerGenerators(true).genDuty(dutyResult)
 			} yield (dutyResult, foreignDuty)
 		} { case (dutyResult, foreignDuty) =>
-			println(s"Begin: foreignDuty: $foreignDuty")
+			// println(s"Begin: foreignDuty: $foreignDuty")
 
 			doer.Duty.foreign(foreignDoer)(foreignDuty)
 				.map { int => int == dutyResult && doer.isInSequence && !foreignDoer.isInSequence }
@@ -115,7 +115,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				foreignTask <- foreignDoerGenerators(true).genTask(taskResult, s"foreignTask.arbitrary")
 			} yield (taskResult, foreignTask)
 		} { case (taskResult, foreignTask) =>
-			println(s"Begin: taskResult: $taskResult, foreignTask: $foreignTask")
+			// println(s"Begin: taskResult: $taskResult, foreignTask: $foreignTask")
 
 			doer.Task.foreign(foreignDoer)(foreignTask)
 				.transform { tryInt =>
@@ -182,7 +182,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 		val tryF1AtNat = Try(f1(nat))
 		val tryF1AtNegNat = Try(f1(-nat))
-		println(s"\nBegin: nat: $nat, expectedOutcome: $expectedOutcome, Try(f1(nat)): $tryF1AtNat, Try(f1(-nat)): $tryF1AtNegNat")
+		// println(s"\nBegin: nat: $nat, expectedOutcome: $expectedOutcome, Try(f1(nat)): $tryF1AtNat, Try(f1(-nat)): $tryF1AtNegNat")
 
 
 		var completeWasNotCalled = true
@@ -237,7 +237,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		val generators = GeneratorsForDoerTests(getDoer)
 		import generators.{*, given}
 		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
-			println(s"Begin: int: $int, f1(int): ${f1(int)}")
+			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]
 			val testedCovenant = doer.Covenant[Int]
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
@@ -257,7 +257,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			Gen.function1[Int, Int](intGen),
 			Gen.function1[Int, Duty[Int]](dutyArbitrary[Int].arbitrary)
 		) { case ((int, duty), f1, f2) =>
-			println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
+			// println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]
 			val testedCovenant = doer.Covenant[Int]
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
@@ -297,115 +297,6 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 		checks.triggerAndForget()
 	}
-
-	test("Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		val maxDelay = 5
-		PropF.forAllNoShrinkF(
-			dutyArbitrary[Int].arbitrary,
-			Gen.choose(1, maxDelay),
-			Gen.nonEmptyListOf(Gen.choose(1, maxDelay))
-		) { (upChain: Duty[Int], cancelDelay: Int, delays: List[Int]) =>
-			println(s"Begin: upChain: $upChain, delays: $delays")
-
-			val commitment = doer.Commitment[Unit]()
-			@volatile var allWereCancelled = false
-
-			// Create many duties that check if they complete after `cancelAll` was called, and schedule them to execute with a fixed rate of 1 millisecond but after different delays.
-			var startNanoTime: Long = 0
-			@volatile var cancelNanoTime: Long = 0
-			val duties: List[doer.Duty[Int]] =
-				for delayMillis <- delays yield {
-					val schedule = doer.newFixedRateSchedule(delayMillis, 1)
-					var executionsCounter = 0
-					upChain.andThen(_ => startNanoTime = System.nanoTime())
-						.scheduled(schedule)
-						.andThen { _ =>
-							val expectedExecutionNanoTime = startNanoTime + delayMillis * 1_000_000
-							if allWereCancelled && (executionsCounter > 0 || math.abs(cancelNanoTime - expectedExecutionNanoTime) > 2_000) then {
-								val distanceMicros = (cancelNanoTime - expectedExecutionNanoTime) / 1000
-								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceMicros: $distanceMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.isActive(schedule)}"
-								println(s"-----> $message")
-								commitment.break(new AssertionError(message))()
-							}
-							executionsCounter += 1
-						}
-				}
-			doer.Duty.sequenceToArray(duties).triggerAndForget()
-
-			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
-			val otherDoer = buildDoer
-			val cancelsAllAfterADelayAndThenWaitsEnough = for {
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
-					doer.cancelAll()
-					cancelNanoTime = System.nanoTime()
-					allWereCancelled = true
-				}
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDelay + 1)) { () =>
-					commitment.fulfill(())()
-				}
-			} yield ()
-			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForgetHandlingErrors { e =>
-				scribe.error(s"Unexpected failure: ", e)
-				commitment.break(e)()
-			}
-			commitment.toFuture()
-		}
-	}
-
-
-	test("Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		val maxDuration = 5
-		val prop = PropF.forAllNoShrinkF(
-			dutyArbitrary[Int].arbitrary,
-			Gen.choose(1, maxDuration),
-			Gen.nonEmptyListOf(genSchedule(doer, maxDuration))
-		) { (upChain: Duty[Int], cancelDelay: Int, schedules: List[doer.Schedule]) =>
-			// println(s"Begin: duty: $duty, schedules: $schedules")
-
-			val commitment = doer.Commitment[Unit]()
-			var cancelAllWasCalled = false
-
-			// Create many duties that check if they complete after `cancelAll` was called, and schedule them with different schedules.
-			val duties: List[doer.Duty[Int]] =
-				for schedule <- schedules yield {
-					val scheduledDuty = upChain.scheduled(schedule)
-					scheduledDuty.andThen { _ =>
-						if cancelAllWasCalled then {
-							val message = s"A duty completed despite all were cancelled: completed duty's schedule: $schedule, isActive=${doer.isActive(schedule)}, upChain: $upChain, schedules: $schedules"
-							println(message)
-							commitment.break(new AssertionError(message))()
-						}
-					}
-				}
-			doer.Duty.sequenceToArray(duties).triggerAndForget()
-
-			// With another Doer instance, create a task that calls `cancelAll` within the duties's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
-			val otherDoer = buildDoer
-			val waits = for {
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
-					doer.execute {
-						doer.cancelAll()
-						cancelAllWasCalled = true
-					}
-				}
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDuration)) { () =>
-					commitment.fulfill(())()
-				}
-			} yield ()
-			waits.triggerAndForgetHandlingErrors { e =>
-				scribe.error(s"Unexpected failure: ", e)
-				commitment.break(e)()
-			}
-
-			commitment.toFuture()
-		}
-		prop.check(Parameters.default.withMinSuccessfulTests(1000))
-	}
-
 
 	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
 	test("Duty: left identity") {
@@ -679,6 +570,126 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			assert(intercept[IllegalStateException] {
 				doer.schedule(fixedDelaySchedule)(() => ())
 			}.getMessage.contains(fixedDelaySchedule.toString))
+		}
+	}
+
+
+	test("Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
+		val generators = GeneratorsForDoerTests(getDoer)
+		import generators.{*, given}
+		val maxDuration = 5
+		PropF.forAllNoShrinkF(
+			Gen.nonEmptyListOf(for {
+				int <- intGen
+				upChain <- genDuty(int)
+				schedule <- genSchedule(doer, maxDuration)
+			} yield (int, upChain, schedule)),
+			Gen.choose(1, maxDuration)
+		) { (samples: List[(int: Int, duty: Duty[Int], schedule: doer.Schedule)], cancelDelay: Int) =>
+			// println(s"Begin: cancelDelay: $cancelDelay, samples: $samples")
+
+			val promise = Promise[Unit]()
+
+			def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
+
+			var cancelAllWasCalled = false
+			// Create many duties that, when completed, check if they complete after `cancelAll` was called; and schedule them with different schedules.
+			val duties: List[doer.Duty[Int]] =
+				for sample <- samples yield {
+					var cancelledBeforeActivation = false
+					val scheduledDuty = sample.duty
+						.andThen(_ => cancelledBeforeActivation = cancelAllWasCalled)
+						.scheduled(sample.schedule)
+					scheduledDuty.andThen { r =>
+						if cancelAllWasCalled && !cancelledBeforeActivation then {
+							val message = s"A duty completed despite all were cancelled: duty: ${sample.duty}, schedule: ${sample.schedule}, isActive=${doer.isActive(sample.schedule)}"
+							println(s"---> $message")
+							break(message)
+						} else if r != sample.int then break(s"The duty completed with an unexpected result: $r instead of ${sample.int}")
+					}
+				}
+			doer.Duty.sequenceToArray(duties).triggerAndForget()
+
+			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
+			val otherDoer = buildDoer
+			val waits = for {
+				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+					doer.execute {
+						doer.cancelAll()
+						cancelAllWasCalled = true
+					}
+				}
+				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDuration)) { () =>
+					promise.trySuccess(())
+				}
+			} yield ()
+			waits.triggerAndForgetHandlingErrors { e =>
+				scribe.error(s"Unexpected failure: ", e)
+				break(s"Unexpected failure: $e")
+			}
+
+			promise.future
+		}
+	}
+
+	test("Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
+		val generators = GeneratorsForDoerTests(getDoer)
+		import generators.{*, given}
+		val maxDelay = 5
+		PropF.forAllNoShrinkF(
+			dutyArbitrary[Int].arbitrary,
+			Gen.choose(1, maxDelay),
+			Gen.nonEmptyListOf(Gen.choose(1, maxDelay))
+		) { (upChain: Duty[Int], cancelDelay: Int, delays: List[Int]) =>
+			// println(s"Begin: upChain: $upChain, delays: $delays")
+
+			val promise = Promise[Unit]
+
+			def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
+
+			@volatile var cancelAllWasCalled = false
+
+			// Create many duties that check if they complete after `cancelAll` was called, and schedule them to execute with a fixed rate of 1 millisecond but after different delays.
+			var startNanoTime: Long = 0
+			@volatile var cancelNanoTime: Long = 0
+			val duties: List[doer.Duty[Int]] =
+				for delayMillis <- delays yield {
+					val schedule = doer.newFixedRateSchedule(delayMillis, 1)
+					var executionsCounter = 0
+					upChain.andThen { _ => startNanoTime = System.nanoTime() }
+						.scheduled(schedule)
+						.andThen { _ =>
+							val expectedExecutionNanoTime = startNanoTime + delayMillis * 1_000_000
+							// cancelAll was called, the schedule was activated before the cancel (plus an error margin), and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
+							if cancelAllWasCalled && (cancelNanoTime > startNanoTime + 200_000) && (executionsCounter > 0 || math.abs(cancelNanoTime - expectedExecutionNanoTime) > 2_000) then {
+								val distanceBetweenCancellationAndExpectedExecutionMicros = (cancelNanoTime - expectedExecutionNanoTime) / 1000
+								val distanceBetweenCancellationAndActivationMicros = (cancelNanoTime - startNanoTime) / 1000
+								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceBetweenCancellationAndExpectedExecutionInMicros: $distanceBetweenCancellationAndExpectedExecutionMicros, distanceBetweenCancellationAndActivationMicros: $distanceBetweenCancellationAndActivationMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.isActive(schedule)}"
+								println(s"-----> $message")
+								break(message)
+							}
+							executionsCounter += 1
+						}
+				}
+			doer.Duty.sequenceToArray(duties).triggerAndForget()
+
+			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
+			val otherDoer = buildDoer
+			val cancelsAllAfterADelayAndThenWaitsEnough = for {
+				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+					doer.cancelAll()
+					cancelNanoTime = System.nanoTime()
+					cancelAllWasCalled = true
+				}
+				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDelay + 1)) { () =>
+					promise.trySuccess(())
+				}
+			} yield ()
+			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForgetHandlingErrors { e =>
+				scribe.error(s"Unexpected failure: ", e)
+				break(s"Unexpected exception: $e")
+			}
+			promise.future
 		}
 	}
 

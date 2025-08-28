@@ -123,7 +123,8 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		override def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit = {
 			schedule.synchronized {
 				if schedule.canceled then return
-				else if schedule.scheduledFuture eq null then {
+				else if schedule.scheduledFuture ne null then throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+				else {
 					schedule.scheduledFuture = schedule match {
 						case ds: TDelaySchedule =>
 							val wrapper: Runnable = () =>
@@ -166,7 +167,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 							doSiThEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
 					}
 					activeSchedules.add(schedule)
-				} else throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+				}
 			}
 		}
 
