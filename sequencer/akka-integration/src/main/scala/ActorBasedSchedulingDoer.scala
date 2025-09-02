@@ -4,16 +4,21 @@ import ActorBasedDoer.Procedure
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{Behavior, Scheduler}
+import readren.common.CompileTime.getTypeName
 import readren.sequencer.SchedulingExtension
 import readren.sequencer.SchedulingExtension.MilliDuration
 
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.concurrent.duration.FiniteDuration
 import scala.reflect.Typeable
 
 object ActorBasedSchedulingDoer {
 
-	sealed trait Plan
+	abstract class Plan {
+		private[ActorBasedSchedulingDoer] val wasActivated: AtomicBoolean = new AtomicBoolean(false)
+		@volatile private[ActorBasedSchedulingDoer] var isCanceled: Boolean = false
+	}
 
 	case class SingleTime(delay: MilliDuration) extends Plan
 
@@ -30,21 +35,21 @@ object ActorBasedSchedulingDoer {
 	}
 
 	private def buildActorBasedSchedulingDoer[A >: Procedure](ctx: ActorContext[A], timerScheduler: TimerScheduler[A]): ActorBasedSchedulingDoer = {
-		val aide = ActorBasedDoer.buildDoer(ctx)
+		val actorBasedDoer = ActorBasedDoer.buildDoer(ctx)
 		new ActorBasedSchedulingDoer {
 			override val tag: Tag = ctx.self.path
 			
 			override def executeSequentially(runnable: Runnable): Unit =
-				aide.executeSequentially(runnable)
+				actorBasedDoer.executeSequentially(runnable)
 
 			override def current: ActorBasedDoer =
 				ActorBasedDoer.currentDoerThreadLocal.get
 
 			override def reportFailure(cause: Throwable): Unit =
-				aide.reportFailure(cause)
+				actorBasedDoer.reportFailurePortal(cause)
 
 			override def akkaScheduler: Scheduler =
-				aide.akkaScheduler
+				actorBasedDoer.akkaScheduler
 
 			override type Schedule = Plan
 
@@ -55,21 +60,32 @@ object ActorBasedSchedulingDoer {
 			override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): FixedDelay = FixedDelay(initialDelay, delay)
 
 			override def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit = {
-				schedule match {
-					case SingleTime(delay) => timerScheduler.startSingleTimer(schedule, Procedure(runnable), FiniteDuration(delay, TimeUnit.MILLISECONDS))
-					case FixedRate(initialDelay, interval) => timerScheduler.startTimerAtFixedRate(schedule, Procedure(runnable), FiniteDuration(initialDelay, TimeUnit.MILLISECONDS), FiniteDuration(interval, TimeUnit.MILLISECONDS))
-					case FixedDelay(initialDelay, delay) => timerScheduler.startTimerWithFixedDelay(schedule, Procedure(runnable), FiniteDuration(initialDelay, TimeUnit.MILLISECONDS), FiniteDuration(delay, TimeUnit.MILLISECONDS))
+				if schedule.wasActivated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+				else if !schedule.isCanceled then {
+					schedule match {
+						case SingleTime(delay) => timerScheduler.startSingleTimer(schedule, Procedure(runnable), FiniteDuration(delay, TimeUnit.MILLISECONDS))
+						case FixedRate(initialDelay, interval) => timerScheduler.startTimerAtFixedRate(schedule, Procedure(runnable), FiniteDuration(initialDelay, TimeUnit.MILLISECONDS), FiniteDuration(interval, TimeUnit.MILLISECONDS))
+						case FixedDelay(initialDelay, delay) => timerScheduler.startTimerWithFixedDelay(schedule, Procedure(runnable), FiniteDuration(initialDelay, TimeUnit.MILLISECONDS), FiniteDuration(delay, TimeUnit.MILLISECONDS))
+					}
 				}
 			}
 
-			override def cancel(schedule: Schedule): Unit =
+			override def cancel(schedule: Schedule): Unit = {
+				schedule.isCanceled = true
 				timerScheduler.cancel(schedule)
+			}
 
-			override def cancelAll(): Unit =
+			override def cancelAll(): Unit = {
 				timerScheduler.cancelAll()
+			}
 
-			override def isActive(schedule: Schedule): Boolean =
-				timerScheduler.isTimerActive(schedule)
+			override def wasActivated(schedule: Schedule): Boolean =
+				schedule.wasActivated.get
+
+			override def isCanceled(schedule: Schedule): Boolean = {
+				schedule.isCanceled || schedule.wasActivated.get && !timerScheduler.isTimerActive(schedule)
+			}
+
 		}
 	}
 }

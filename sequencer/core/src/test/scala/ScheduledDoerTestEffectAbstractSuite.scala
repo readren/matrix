@@ -3,16 +3,18 @@ package readren.sequencer
 import GeneratorsForDoerTests.{*, given}
 
 import munit.ScalaCheckEffectSuite
-import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import org.scalacheck.{Arbitrary, Gen, Prop}
-import readren.common.Maybe
+import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer
 
-import scala.collection.mutable
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+import scala.annotation.tailrec
 import scala.compiletime.uninitialized
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, Promise}
+import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -24,53 +26,387 @@ import scala.util.{Failure, Success, Try}
  *
  * @tparam D The type of Doer being tested, must extend both [[Doer]] and [[SchedulingExtension]].
  */
-abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension] extends ScalaCheckEffectSuite {
+abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension : ClassTag] extends ScalaCheckEffectSuite {
 
-	/** Remembers the exceptions that were unhandled in the DoSiThEx's thread.
-	 * CAUTION: this variable should be accessed within the DoSiThEx thread only. */
-	private val unhandledExceptions: mutable.Set[String] = mutable.Set.empty
-
-	/** Remembers the exceptions that were reported through reportFailure. */
-	private val reportedExceptions: mutable.Set[String] = mutable.Set.empty
-
-
-	/** The implementation should return an instance of [[D]]. */
-	protected def buildDoer: D
-
-	/** The extending class should call this method whenever the routine passed to [[Doer.executeSequentially]] or [[SchedulingExtension.scheduleSequentially]] terminates abruptly, passing the unhandled exception. */
-	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = {
-		if doer eq fixture() then {
-			doer.execute {
-				unhandledExceptions.addOne(exception.getMessage)
-			}
-		}
-		scribe.error(s"Unhandled exception:", exception)
-	}
-
-	/** The extending class should call this method whenever [[Doer.reportFailure]] is called, passing the received exception. */
-	protected def onFailureReported(doer: Doer, failure: Throwable): Unit = {
-		// println(s"Reporting failure to munit: ${failure.getMessage}")
-		// Note: In a real test environment, this would report to munitExecutionContext
-		// For now, we just log it to our reportedExceptions set
-		if doer eq fixture() then {
-			doer.execute {
-				val exceptionToReport = if failure.isInstanceOf[Doer.PanicException] then failure.getCause else failure
-				reportedExceptions.addOne(exceptionToReport.getMessage)
-			}
-		}
-	}
+	@volatile private var unhandledExceptionObserver: Null | ((Doer, Throwable) => Unit) = null
+	@volatile private var reportedFailuresObserver: Null | ((Doer, Throwable) => Unit) = null
 
 	private var fixture: Fixture[D] = uninitialized
 
-	private def getDoer: D = fixture()
+	@volatile private var observingSession: Int = 0
+
+	/** The implementation should return an instance of [[D]]. */
+	protected def buildDoer(tag: String): D
+
+	/** TODO: make the fixture give the DoerProvider instead of a Doer. */
+	private def getMainDoer: D = fixture()
 
 	override def munitFixtures: Seq[Fixture[?]] = {
-		val doerUnderTest = buildDoer
+		ScribeConfig.init(deleteLogFilesOnLaunch = true)
+
+		val mainDoer = buildDoer("main")
 		fixture = new Fixture[D]("infrastructure") {
-			override def apply(): D = doerUnderTest
+			override def apply(): D = mainDoer
 		}
 		List(fixture)
 	}
+
+	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever the routine passed to [[Doer.executeSequentially]] or [[SchedulingExtension.scheduleSequentially]] terminates abruptly, passing the unhandled exception. */
+	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = {
+		if doer.isInSequence then {
+			if unhandledExceptionObserver ne null then unhandledExceptionObserver(doer, exception)
+			// scribe.debug(s"#$observingSession: unhandled exception logged: $exception")
+
+			// scribe.error(s"Unhandled exception:", exception)
+		} else {
+			val trace = new Exception(exception)
+			scribe.error(s"TEST FAILED - DO NOT IGNORE: `onUnhandledException` was called outside the provided doer's thread.", trace)
+		}
+	}
+
+	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever [[Doer.reportFailure]] is called, passing the received exception. */
+	protected def onFailureReported(doer: Doer, failure: Throwable): Unit = {
+		if doer.isInSequence then {
+			if reportedFailuresObserver ne null then reportedFailuresObserver(doer, failure)
+			// scribe.debug(s"#$observingSession: failure reported at #$observingSession: ${failure.getMessage}")
+		} else {
+			val trace = new Exception(failure)
+			scribe.error(s"TEST FAILED - DO NOT IGNORE: `onFailureReported` was called outside the provided doer's thread.", trace)
+		}
+	}
+
+	//// UTILITIES ////
+
+	/** Breaks the `promise` if it wasn't already completed. */
+	protected def break[P](message: String)(using promise: Promise[P]): Unit =
+		promise.tryFailure(new AssertionError(message))
+
+	/** Waits the promise to complete or the specified duration, what happens first. In the second case the promise is broken with the specified message. */
+	protected def breakAfterWaiting[P](duration: Int, message: String)(using promise: Promise[P]): Future[P] = {
+		val latch = CountDownLatch(1)
+		promise.future.andThen(_ => latch.countDown())
+		latch.await(duration, TimeUnit.MILLISECONDS)
+		break(message)
+		promise.future
+	}
+
+	protected def observingUnhandledAndReportedExceptionsDo[R, P](supplier: () => R)(onUnhandledException: (Doer, Throwable) => Unit)(onFailureReported: (Doer, Throwable) => Unit)(using promise: Promise[P]): R = {
+		if (unhandledExceptionObserver ne null) || (reportedFailuresObserver ne null) then break("Nesting `observingUnhandledAndReportedExceptionsDo` is not supported")
+		observingSession += 1
+		unhandledExceptionObserver = onUnhandledException
+		reportedFailuresObserver = onFailureReported
+		// scribe.debug(s"Session #$observingSession opened")
+		val r = supplier()
+		// scribe.debug(s"Session #$observingSession closed")
+		reportedFailuresObserver = null
+		unhandledExceptionObserver = null
+		r
+	}
+
+
+	////////// DOER INFRASTRUCTURE ////////
+
+	test("Doer should execute tasks sequentially") {
+		val doer = getMainDoer
+		val results = new AtomicInteger(0)
+		val executionOrder = new AtomicInteger(0)
+		val latch = new CountDownLatch(3)
+
+		// Submit three tasks that should execute in order
+		doer.executeSequentially { () =>
+			results.set(1)
+			executionOrder.set(1)
+			latch.countDown()
+		}
+
+		doer.executeSequentially { () =>
+			results.set(2)
+			executionOrder.set(2)
+			latch.countDown()
+		}
+
+		doer.executeSequentially { () =>
+			results.set(3)
+			executionOrder.set(3)
+			latch.countDown()
+		}
+
+		// Wait for all tasks to complete
+		assert(latch.await(50, TimeUnit.MILLISECONDS), "All tasks should complete within timeout")
+		assert(results.get == 3, "Last task should set result to 3")
+		assert(executionOrder.get == 3, "Last task should set execution order to 3")
+	}
+
+	//// CONCURRENCY TESTS ////
+
+	test("Multiple doers should execute tasks concurrently") {
+		val doer1 = buildDoer("doer-1")
+		val doer2 = buildDoer("doer-2")
+		val doer3 = buildDoer("doer-3")
+
+		val latch = new CountDownLatch(3)
+		val startTime = System.currentTimeMillis()
+		val executionTimes = new AtomicInteger(0)
+
+		// Submit tasks to different doers simultaneously
+		doer1.executeSequentially { () =>
+			Thread.sleep(100)
+			executionTimes.incrementAndGet()
+			latch.countDown()
+		}
+
+		doer2.executeSequentially { () =>
+			Thread.sleep(100)
+			executionTimes.incrementAndGet()
+			latch.countDown()
+		}
+
+		doer3.executeSequentially { () =>
+			Thread.sleep(100)
+			executionTimes.incrementAndGet()
+			latch.countDown()
+		}
+
+		assert(latch.await(2, TimeUnit.SECONDS), "All tasks should complete")
+		val endTime = System.currentTimeMillis()
+		val totalTime = endTime - startTime
+
+		// If tasks were truly concurrent, total time should be close to 100ms, not 300ms
+		assert(totalTime < 250, s"Tasks should execute concurrently, total time: ${totalTime}ms")
+		assert(executionTimes.get == 3, "All tasks should have executed")
+	}
+
+	test("Tasks should see memory updates from previous tasks in the same doer") {
+		val doer = getMainDoer
+		var sharedCounter = 0
+		val latch = new CountDownLatch(5)
+
+		// Submit multiple tasks that increment the shared counter
+		for i <- 0 until 5 do {
+			doer.executeSequentially { () =>
+				val currentValue = sharedCounter
+				sharedCounter = currentValue + 1
+				latch.countDown()
+			}
+		}
+
+		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+		assert(sharedCounter == 5, "Counter should be incremented 5 times")
+	}
+
+	test("Worker threads should be reused efficiently") {
+		val latch = new CountDownLatch(10)
+		val threadIds = new java.util.concurrent.ConcurrentLinkedQueue[Long]()
+
+		// Submit multiple tasks in different doers and collect thread IDs
+		val doers = Array.tabulate[Doer](16)(i => buildDoer(s"$i"))
+		for doer <- doers do {
+			doer.executeSequentially { () =>
+				threadIds.add(Thread.currentThread().threadId)
+				latch.countDown()
+			}
+		}
+
+		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+
+		// Should have used multiple threads (concurrent execution)
+		val uniqueThreads = threadIds.toArray.toSet.size
+		assert(uniqueThreads > 1, s"Should use multiple threads, used: $uniqueThreads")
+	}
+
+	//// EXCEPTION HANDLING TESTS ////
+
+	test("Doer should handle exceptions in tasks gracefully") {
+		val doer = getMainDoer
+		val latch = new CountDownLatch(2)
+		val exceptionCaught = new AtomicBoolean(false)
+
+		// Submit a task that throws an exception
+		doer.executeSequentially { () =>
+			throw new RuntimeException("Test exception")
+		}
+
+		// Submit a task that should still execute after the exception
+		doer.executeSequentially { () =>
+			exceptionCaught.set(true)
+			latch.countDown()
+		}
+
+		// Submit another normal task
+		doer.executeSequentially { () =>
+			latch.countDown()
+		}
+
+		assert(latch.await(5, TimeUnit.SECONDS), "Tasks after exception should still execute")
+		assert(exceptionCaught.get, "Task after exception should have executed")
+	}
+
+	test("Doer should call onFailureReported when the operand passed to `Task.andThen` fails") {
+		val mainDoer = getMainDoer
+
+		PropF.forAllF { (throwable: Throwable) =>
+			val promise = Promise[Unit]()
+
+			given Promise[Unit] = promise
+
+			observingUnhandledAndReportedExceptionsDo { () =>
+				// Submit a task that uses Task.andThen which will cause a failure report
+				mainDoer.Task.unit.andThen(_ => throw throwable).trigger() { _ =>
+					if NonFatal(throwable) then break(s"The failure report should be done before the task that produced it completes.")
+					else break("The operation completed despite the operand thew a fatal exception")
+				}
+
+				breakAfterWaiting(9, "No notification of the exception until 9 milliseconds after applying the operation. Waiting aborted.")
+			} {
+				(doer, exception) =>
+					if NonFatal(exception) then break(s"A non fatal exception was uncaught despite it should: $exception")
+					else promise.trySuccess(())
+			} { (doer, failure) =>
+				if failure.getCause ne throwable then break(s"An unexpected failure was reported: $failure")
+				else if doer ne mainDoer then break(s"An unexpected doer was associated to the failure report: ${doer.tag}")
+				else promise.trySuccess(())
+			}
+		}
+	}
+
+	test("Doer should call onUnhandledException when task throws uncaught exception") {
+		val mainDoer = getMainDoer
+
+		PropF.forAllF { (exception: Throwable) =>
+			val promise = Promise[Unit]()
+
+			given Promise[Unit] = promise
+
+			observingUnhandledAndReportedExceptionsDo { () =>
+				// Submit a task that throws an uncaught exception
+				mainDoer.executeSequentially { () =>
+					throw exception
+				}
+				breakAfterWaiting(999, "No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
+
+			} { (doer, e) =>
+				if e ne exception then break(s"The thrown exception should be captured: $e")
+				else if doer ne mainDoer then break(s"Correct doer should be captured: ${doer.tag}")
+				else promise.trySuccess(())
+			} { (doer, failure) =>
+				break(s"Unexpected failure report: $failure")
+			}
+		}
+	}
+
+	test("Doer should handle uncaught exceptions gracefully") {
+		val mainDoer = getMainDoer
+
+		PropF.forAllNoShrinkF { (exception: Throwable) =>
+
+			val promise = Promise[Unit]()
+			var wasCaught = false
+
+			given Promise[Unit] = promise
+
+			observingUnhandledAndReportedExceptionsDo { () =>
+				mainDoer.executeSequentially(() => throw exception)
+				mainDoer.executeSequentially { () =>
+					if wasCaught then promise.trySuccess(()) else break("The uncaught exception was not notified")
+				}
+
+				breakAfterWaiting(999, "No notification of the exception until 990 milliseconds after applying the operation. Waiting aborted.")
+
+			} { (d, t) =>
+				if t eq exception then wasCaught = true else break(s"an unexpected exception was uncaught $t")
+			} { (d, t) =>
+				break(s"an unexpected exception was reported")
+			}
+		}
+	}
+
+
+	//// STRESS TESTS ////
+
+	test("Provider should handle high task load") {
+		val doer = getMainDoer
+		val taskCount = 100
+		val latch = new CountDownLatch(taskCount)
+		val results = new AtomicInteger(0)
+
+		// Submit many tasks
+		for _ <- 1 to taskCount do {
+			doer.executeSequentially { () =>
+				results.incrementAndGet()
+				latch.countDown()
+			}
+		}
+
+		assert(latch.await(10, TimeUnit.SECONDS), "All tasks should complete")
+		assert(results.get == taskCount, s"All $taskCount tasks should have executed")
+	}
+
+	test("Provider should handle multiple doers with high load") {
+		val doerCount = 10
+		val tasksPerDoer = 20
+		val latch = new CountDownLatch(doerCount * tasksPerDoer)
+		val results = new AtomicInteger(0)
+
+		// Create multiple doers and submit tasks to each
+		for doerIndex <- 1 to doerCount do {
+			val doer = buildDoer(s"stress-doer-$doerIndex")
+			for _ <- 1 to tasksPerDoer do {
+				doer.executeSequentially { () =>
+					results.incrementAndGet()
+					latch.countDown()
+				}
+			}
+		}
+
+		assert(latch.await(15, TimeUnit.SECONDS), "All tasks should complete")
+		assert(results.get == doerCount * tasksPerDoer, s"All ${doerCount * tasksPerDoer} tasks should have executed")
+	}
+
+	//// EDGE CASE TESTS ////
+
+	test("Provider should handle rapid task submission") {
+		val doer = getMainDoer
+		val latch = new CountDownLatch(50)
+		val results = new AtomicInteger(0)
+
+		// Submit tasks rapidly without waiting
+		for _ <- 1 to 50 do {
+			doer.executeSequentially { () =>
+				results.incrementAndGet()
+				latch.countDown()
+			}
+		}
+
+		assert(latch.await(5, TimeUnit.SECONDS), "All rapid tasks should complete")
+		assert(results.get == 50, "All 50 rapid tasks should have executed")
+	}
+
+	test("Provider should maintain task ordering under concurrent submission") {
+		val doer = getMainDoer
+		val taskCount = 20
+		val latch = new CountDownLatch(taskCount)
+		val executionOrder = new java.util.concurrent.ConcurrentLinkedQueue[Int]()
+
+		// Submit tasks from multiple threads
+		val futures = for i <- 1 to taskCount yield {
+			Future {
+				doer.executeSequentially { () =>
+					executionOrder.add(i)
+					latch.countDown()
+				}
+			}
+		}
+
+		// Wait for all tasks to complete
+		Future.sequence(futures)
+		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+
+		// Verify that tasks were executed in some order (not necessarily submission order due to concurrency)
+		val orderList = executionOrder.toArray.toList
+		assert(orderList.size == taskCount, s"All $taskCount tasks should have been executed")
+		assert(orderList.toSet.size == taskCount, "All task IDs should be unique")
+	}
+
 
 	////////// DUTY //////////
 
@@ -86,9 +422,71 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
+	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
+	test("Duty: left identity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
+			val left: doer.Duty[Int] = Duty.ready(x).flatMap(f)
+			val right: doer.Duty[Int] = f(x)
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	// Monadic right identity law: m.flatMap(Duty.ready) == m
+	test("Duty: right identity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+		PropF.forAllF { (m: Duty[Int]) =>
+			val left = m.flatMap(Duty.ready)
+			val right = m
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
+	test("Duty: associativity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (m: Duty[Int], f: Int => Duty[Int], g: Int => Duty[Int]) =>
+			val leftAssoc = m.flatMap(f).flatMap(g)
+			val rightAssoc = m.flatMap(x => f(x).flatMap(g))
+			checkEquality(doer)(leftAssoc, rightAssoc)
+		}
+	}
+
+	// Functor: `m.map(f) == m.flatMap(a => ready(f(a)))`
+	test("Duty: can be transformed with map") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (m: Duty[Int], f: Int => String) =>
+			val left = m.map(f)
+			val right = m.flatMap(a => Duty.ready(f(a)))
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	test("Duty: any pair of duties can be combined") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (dutyA: Duty[Int], dutyB: Duty[Int], f: (Int, Int) => Int) =>
+			val combinedDuty = Duty.combine(dutyA, dutyB)(f)
+
+			for {
+				combinedResult <- combinedDuty.toFutureHardy()
+				dutyAResult <- dutyA.toFutureHardy()
+				dutyBResult <- dutyB.toFutureHardy()
+			} yield {
+				assert(combinedResult == f(dutyAResult, dutyBResult))
+			}
+		}
+	}
 
 	test("Duty: `doer.Duty.foreign(foreignDoer)(foreignDuty)` should complete in the `doer`'s thread") {
-		val generators = GeneratorsForDoerTests(getDoer)
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		PropF.forAllNoShrinkF {
 			for {
@@ -106,8 +504,167 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
+	test("`Duty.engage` should not catch exceptions thrown by `onComplete`") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (duty: Duty[Int], exception: Throwable, randomInt: Int) =>
+			val smallNonNegativeInt = math.abs(randomInt % 10)
+			// scribe.debug(s"Begin: duty=$duty, exception=${exception.getMessage}, randomInt=$randomInt, smallNonNegativeInt=$smallNonNegativeInt")
+
+			var tick = false
+
+			/** Do the test for a single operation */
+			def check[R](opName: String, operatedDuty: Duty[R]): Future[Unit] = {
+				// scribe.debug(s"checking operation: $opName")
+				// Apply the operation to the random duty and trigger the execution passing a faulty on-complete callback.
+				val promise = Promise[Unit]()
+
+				given Promise[Unit] = promise
+
+				observingUnhandledAndReportedExceptionsDo { () =>
+					operatedDuty.trigger() { r =>
+						// scribe.debug(s"#$observingSession: about to throw the exception --- $isInSequence")
+						Thread.sleep(1)
+						throw exception
+						//promise.trySuccess(null)
+					}
+
+					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
+
+				} { (d, t) =>
+					if (d eq doer) && (t eq exception) then promise.trySuccess(()) else break(s"$opName: An unexpected exception was throw: $t")
+				} { (d, t) =>
+					/* if (d eq doer) && ((t eq exception) || (t.getCause eq exception)) then */ break(s"$opName: An exception was caught and reported despite the operation should not catch nor report them")
+				}(using promise)
+			}
+
+			for {
+				_ <- check("factory", duty)
+				_ <- check("map", duty.map(identity))
+				_ <- check("flatMap", duty.flatMap(_ => duty))
+				_ <- check("andThen", duty.andThen(_ => ()))
+				_ <- check("repeatedUntilSome", duty.repeatedUntilSome() { (n, i) =>
+					if n > smallNonNegativeInt then Maybe.some(randomInt) else {
+						tick = true
+						println(s"tick $n/$smallNonNegativeInt")
+						Maybe.empty
+					}
+				})
+				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
+				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0)) { (n, tryInt) =>
+					if n > smallNonNegativeInt then Maybe.some(randomInt) else {
+						tick = true
+						println(s"tick $n/$smallNonNegativeInt")
+						Maybe.empty
+					}
+				})
+				_ <- check("repeatedWhileUndefined", duty.repeatedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
+			} yield ()
+		}
+	}
+
+	////////// TASK /////////////
+
+	// Custom equality for Task based on the result of attempt
+	private def checkEquality[A](doer: Doer)(task1: doer.Task[A], task2: doer.Task[A]): Future[Unit] = {
+		val futureEquality = for {
+			try1 <- task1.toFutureHardy()
+			try2 <- task2.toFutureHardy()
+		} yield {
+			// println(s"$try1 ==== $try2")
+			try1 ==== try2
+		}
+		futureEquality.map(assert(_))
+	}
+
+	//	private def evalNow[A](task: Task[A]): Try[A] = {
+	//		Await.result(task.toFutureHardy(), new FiniteDuration(1, TimeUnit.MINUTES))
+	//	}
+
+
+	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
+	test("Task: left identity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
+			val sx = Task.successful(x)
+			val left = Task.successful(x).flatMap(f)
+			val right = f(x)
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	// Monadic right identity law: m.flatMap(Task.successful) == m
+	test("Task: right identity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (m: Task[Int]) =>
+			val left = m.flatMap(Task.successful)
+			val right = m
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
+	test("Task: associativity") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
+			val leftAssoc = m.flatMap(f).flatMap(g)
+			val rightAssoc = m.flatMap(x => f(x).flatMap(g))
+			checkEquality(doer)(leftAssoc, rightAssoc)
+		}
+	}
+
+	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
+	test("Task: can be transformed with map") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (m: Task[Int], f: Int => String) =>
+			val left = m.map(f)
+			val right = m.flatMap(a => Task.successful(f(a)))
+			checkEquality(doer)(left, right)
+		}
+	}
+
+	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
+	test("Task: can be recovered from failure") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
+			if NonFatal(e) then {
+				val leftTask = Task.failed[Int](e).recover(f)
+				val rightTask = if f.isDefinedAt(e) then Task.successful(f(e)) else Task.failed(e)
+				checkEquality(doer)(leftTask, rightTask)
+			} else Future.successful(())
+		}
+	}
+
+	test("Task: any can be combined") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
+			val combinedTask = Task.combine(taskA, taskB)(f)
+
+			for {
+				combinedResult <- combinedTask.toFutureHardy()
+				taskAResult <- taskA.toFutureHardy()
+				taskBResult <- taskB.toFutureHardy()
+			} yield {
+				assert(combinedResult ==== f(taskAResult, taskBResult))
+			}
+		}
+	}
+
 	test("Task: `doer.Task.foreign(foreignDoer)(foreignTask)` should complete in the `doer`'s thread") {
-		val generators = GeneratorsForDoerTests(getDoer)
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		PropF.forAllNoShrinkF {
 			for {
@@ -127,8 +684,210 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Task: `commitment.complete(a)` should trigger the execution of all the down-chains and subscriptions it has, passing `a`") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("if a function operand passed to a Task's operation throws an exception, the task should complete with that exception if it is non-fatal, or never complete if it is fatal.") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF(
+			for {i <- intGen; task <- genTask(i, "")} yield task,
+			throwableArbitrary.arbitrary
+		) { case (anyTask: Task[Int], exception: Throwable) =>
+			println(s"Begin: anyTask: $anyTask, exception: $exception")
+
+			/** Do the test for a single operation */
+			def check[R](opName: String, operatedTask: Task[R], shouldCatchAndReportNonFatalExceptions: Boolean = false): Future[Unit] = {
+				// Apply the operation to the random duty and trigger the execution passing a faulty on-complete callback.
+				val promise = Promise[Unit]()
+
+				given Promise[Unit] = promise
+
+				observingUnhandledAndReportedExceptionsDo { () =>
+					// Apply the operation to the random task.
+					operatedTask.trigger() { operationResult =>
+						// If the task completed then the result should be a Failure containing the exception, and the exception should be non-fatal.
+						if !NonFatal(exception) then break(s"$opName: Completed despite a fatal exception was thrown")
+						else if operationResult.fold(e => (e ne exception) && (e.getCause ne exception), _ => true) then break(s"$opName: Completed with an unexpected result: $operationResult")
+						else promise.trySuccess(())
+					}
+
+					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
+
+				} { (d, t) =>
+					// For the exception to be uncaught it should be fatal.
+					if t ne exception then break(s"$opName: An unexpected exception was uncaught.")
+					else if NonFatal(exception) then break(s"$opName: An exception was not handled despite it is non-fatal")
+					else promise.trySuccess(())
+
+				} { (d, t) =>
+					// For the exception to be reported, it should be fatal and the operation of the kind that catches and report them.
+					if (t ne exception) && (t.getCause ne exception) then break(s"$opName: An unexpected exception was caught and reported.")
+					else if !NonFatal(exception) then break(s"$opName: An exception was reported despite it is fatal")
+					else if shouldCatchAndReportNonFatalExceptions then promise.trySuccess(())
+					else break(s"$opName: A fatal exception was caught and reported despite this operation should not catch nor report them.")
+				}(using promise)
+			}
+
+
+			val successfulTask = anyTask.recover { case cause => exception.getMessage.hashCode }
+			val failingTask = anyTask.map { x => throw new FaultyValue(x, "for recover") }
+
+			def f0[A](): A = throw exception
+
+			def f1[A, B](a: A): B = throw exception
+
+			def f2[A, B, C](a: A, b: B): C = throw exception
+
+			for {
+				_ <- check("own", Task.own(f0))
+				//				_ <- check("ownFlat", Task.ownFlat(f0))
+				//				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.own(f0)))
+				//				_ <- check("alien", Task.alien(f0))
+				//				_ <- check("combine", Task.combine(anyTask, anyTask)(f2))
+				//				_ <- check("map", successfulTask.map(f1))
+				//				_ <- check("andThen", anyTask.andThen(f1), true)
+				//				_ <- check("flatMap", successfulTask.flatMap(f1))
+				//				_ <- check("withFilter", successfulTask.withFilter(f1))
+				//				_ <- check("transform", anyTask.transform(f1))
+				//				_ <- check("transformWith", anyTask.transformWith(f1))
+				//				_ <- check("recover", failingTask.recover { case x => f1(x) }) // the `map` is to ensure that the upstream task completes abruptly to avoid the tested operation be skipped.
+				//				_ <- check("recoverWith", failingTask.recoverWith { case x => f1(x) })
+				//				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome()(f2))
+				//				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome()(f2))
+				//				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
+				//				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0))(f2))
+				//				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
+			} yield ()
+		}
+	}
+
+	test("`Task.engage` should not catch exceptions thrown by the `onComplete` operand") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+
+		PropF.forAllF { (task1: Task[Int], task2: Task[Int], exception: Throwable, future: Future[Int]) =>
+
+
+			def check[R](opName: String, operatedTask: Task[R]): Future[Unit] = {
+				val promise = Promise[Unit]()
+
+				given Promise[Unit] = promise
+
+				observingUnhandledAndReportedExceptionsDo { () =>
+					// Trigger the execution passing a faulty on-complete callback.
+					operatedTask.trigger()(tryR => throw exception)
+
+					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
+
+				} { (d, t) =>
+					// For the exception to be unhandled, it should be fatal and the operation of the kind that does not handle them.
+					if (d eq doer) && (t eq exception) then promise.trySuccess(())
+				} { (d, t) =>
+					// For the exception to be reported, it should be fatal and the operation of the kind that catches and report them.
+					if (d eq doer) && ((t eq exception) || (t.getCause eq exception)) then break(s"$opName: A fatal exception was caught and reported despite $opName should not catch nor report them.")
+
+				}(using promise)
+			}
+
+			val randomInt = exception.getMessage.hashCode()
+			val smallNonNegativeInt = randomInt % 9
+			val randomBool = (randomInt % 2) == 0
+			val randomTryInt = if randomBool then Success(randomInt) else Failure(exception)
+			// println(s"Begin: task=$task, exception=$exception, randomInt=$randomInt, randomBool=$randomBool")
+
+			for {
+				_ <- check("factory", task1)
+				_ <- check("ownFlat", Task.ownFlat(() => task1))
+				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.mine(() => randomInt)))
+				_ <- check("alien", Task.alien(() => future))
+				_ <- check("map", task1.map(identity))
+				_ <- check("flatMap", task1.flatMap(_ => task2))
+				_ <- check("withFilter", task1.withFilter(_ => randomBool))
+				_ <- check("andThen", task1.andThen(_ => ()))
+				_ <- check("transform", task1.transform(identity))
+				_ <- check("transformWith", task1.transformWith(_ => task2))
+				_ <- check("recover", task1.recover { case x if randomBool => randomInt })
+				_ <- check("recoverWith", task1.recoverWith { case x if randomBool => task2 })
+				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome() { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedHardyUntilDefined", task1.reiteratedHardyUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
+				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedWhileUndefined", task1.reiteratedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
+			} yield ()
+		}
+	}
+
+
+	//// COVENANT ////
+
+	test("Covenant: `covenant.fulfill(int)` should trigger the execution of all the down-chains and subscriptions it has passing `int`") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
+			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
+			val promise = Promise[Unit]
+			val testedCovenant = doer.Covenant[Int]
+			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
+			testedCovenant.fulfill(int)()
+			promise.future
+		}
+	}
+
+	test("Covenant: `covenant.fulfillWith(duty)` should tigger the execution of all the down-chains and subscriptions it has passing what `duty` shields") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		import generators.{*, given}
+		PropF.forAllF(
+			for {
+				int <- intGen
+				duty <- genDuty(int)
+			} yield (int, duty),
+			Gen.function1[Int, Int](intGen),
+			Gen.function1[Int, Duty[Int]](dutyArbitrary[Int].arbitrary)
+		) { case ((int, duty), f1, f2) =>
+			// println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
+			val promise = Promise[Unit]
+			val testedCovenant = doer.Covenant[Int]
+			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
+			testedCovenant.fulfillWith(duty)()
+			promise.future
+		}
+	}
+
+	private def checkCovenant[DD <: Doer](doer: DD, testedCovenant: doer.Covenant[Int], promise: Promise[Unit], anInt: Int, f1: Int => Int, f2: Int => doer.Duty[Int]): Unit = {
+		given Promise[Unit] = promise
+
+		import doer.*
+		val subscriptionAwareCovenant = doer.Covenant[Int]
+		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)()
+		val checks = for {
+			_ <- Duty.mine { () =>
+				if testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
+				testedCovenant.subscribe(subscriptionOnCompleteCallBack)
+				if !testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) && testedCovenant.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
+				if !testedCovenant.isPending then break("`isPending` returned false despite no fulfillment was done")
+				if testedCovenant.isCompleted then break("`isCompleted` returned true despite no fulfillment was done")
+			}
+			_ <- testedCovenant.andThen { x =>
+				if x != anInt then break("the covenant completed with a different value than the fulfillment")
+				if testedCovenant.isPending then break("`isPending` returned true despite the fulfillment was done")
+				if !testedCovenant.isCompleted then break("`isCompleted` returned false despite the fulfillment was done")
+			}
+			rSubscription <- subscriptionAwareCovenant
+			rMap <- testedCovenant.map(f1)
+			rFlatMap <- testedCovenant.flatMap(f2)
+			f2Result <- f2(anInt)
+		} yield {
+			if rSubscription != anInt then break("the chained subscription received a different value than the fulfillment")
+			else if rMap != f1(anInt) then break("the chained map yielded a different value than the expected one")
+			else if rFlatMap != f2Result then break("the chained flatMap yielded a different value than the expected one")
+			else promise.trySuccess(())
+		}
+		checks.triggerAndForget()
+	}
+
+	//// COMMITMENT ////
+
+	test("Commitment: `commitment.complete(a)` should trigger the execution of all the down-chains and subscriptions it has, passing `a`") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		PropF.forAllNoShrinkF(
 			for {
@@ -147,8 +906,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Task: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Commitment: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		PropF.forAllNoShrinkF(
 			for {
@@ -171,8 +930,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	private def checksCommitment[DD <: Doer & SchedulingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
 		import doer.*
 
-		/** Breaks the `promise` that this test will succeed. */
-		def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
+		given Promise[Unit] = promise
 
 		extension (task: Task[Int]) {
 			/** @return a [[Task]] like this one but mapping failures containing a [[FaultyValue]] exception to the value contained in that exception.
@@ -233,136 +991,36 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Duty: `covenant.fulfill(int)` should trigger the execution of all the down-chains and subscriptions it has passing `int`") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
-			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
-			val promise = Promise[Unit]
-			val testedCovenant = doer.Covenant[Int]
-			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
-			testedCovenant.fulfill(int)()
-			promise.future
-		}
-	}
+	//// SCHEDULING ////
 
-	test("Duty: `covenant.fulfillWith(duty)` should tigger the execution of all the down-chains and subscriptions it has passing what `duty` shields") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		PropF.forAllF(
-			for {
-				int <- intGen
-				duty <- genDuty(int)
-			} yield (int, duty),
-			Gen.function1[Int, Int](intGen),
-			Gen.function1[Int, Duty[Int]](dutyArbitrary[Int].arbitrary)
-		) { case ((int, duty), f1, f2) =>
-			// println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
-			val promise = Promise[Unit]
-			val testedCovenant = doer.Covenant[Int]
-			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
-			testedCovenant.fulfillWith(duty)()
-			promise.future
-		}
-	}
-
-	private def checkCovenant[DD <: Doer](doer: DD, testedCovenant: doer.Covenant[Int], promise: Promise[Unit], anInt: Int, f1: Int => Int, f2: Int => doer.Duty[Int]): Unit = {
-		def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
-
-		import doer.*
-		val subscriptionAwareCovenant = doer.Covenant[Int]
-		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)()
-		val checks = for {
-			_ <- Duty.mine { () =>
-				if testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
-				testedCovenant.subscribe(subscriptionOnCompleteCallBack)
-				if !testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) && testedCovenant.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
-				if !testedCovenant.isPending then break("`isPending` returned false despite no fulfillment was done")
-				if testedCovenant.isCompleted then break("`isCompleted` returned true despite no fulfillment was done")
-			}
-			_ <- testedCovenant.andThen { x =>
-				if x != anInt then break("the covenant completed with a different value than the fulfillment")
-				if testedCovenant.isPending then break("`isPending` returned true despite the fulfillment was done")
-				if !testedCovenant.isCompleted then break("`isCompleted` returned false despite the fulfillment was done")
-			}
-			rSubscription <- subscriptionAwareCovenant
-			rMap <- testedCovenant.map(f1)
-			rFlatMap <- testedCovenant.flatMap(f2)
-			f2Result <- f2(anInt)
-		} yield {
-			if rSubscription != anInt then break("the chained subscription received a different value than the fulfillment")
-			else if rMap != f1(anInt) then break("the chained map yielded a different value than the expected one")
-			else if rFlatMap != f2Result then break("the chained flatMap yielded a different value than the expected one")
-			else promise.trySuccess(())
-		}
-		checks.triggerAndForget()
-	}
-
-	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
-	test("Duty: left identity") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
-			val left: doer.Duty[Int] = Duty.ready(x).flatMap(f)
-			val right: doer.Duty[Int] = f(x)
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	// Monadic right identity law: m.flatMap(Duty.ready) == m
-	test("Duty: right identity") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		PropF.forAllF { (m: Duty[Int]) =>
-			val left = m.flatMap(Duty.ready)
-			val right = m
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
-	test("Duty: associativity") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling: SchedulingExtension.schedule: should fail if called with the same `Schedule` instance twice") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
-		PropF.forAllF { (m: Duty[Int], f: Int => Duty[Int], g: Int => Duty[Int]) =>
-			val leftAssoc = m.flatMap(f).flatMap(g)
-			val rightAssoc = m.flatMap(x => f(x).flatMap(g))
-			checkEquality(doer)(leftAssoc, rightAssoc)
+		Prop.forAllNoShrink(Gen.choose(1, 5), Gen.choose(1, 5)) { (delay: Int, interval: Int) =>
+			val delaySchedule = doer.newDelaySchedule(delay)
+			val fixedRateSchedule = doer.newFixedRateSchedule(delay, interval)
+			val fixedDelaySchedule = doer.newFixedRateSchedule(delay, interval)
+			doer.schedule(delaySchedule)(() => ())
+			doer.schedule(fixedRateSchedule)(() => ())
+			doer.schedule(fixedDelaySchedule)(() => ())
+			assert(
+				intercept[IllegalStateException] {
+					doer.schedule(delaySchedule)(() => ())
+				}.getMessage.contains("twice"),
+				"No exception thrown despite the same delay schedule was used twice"
+			)
+			assert(intercept[IllegalStateException] {
+				doer.schedule(fixedRateSchedule)(() => ())
+			}.getMessage.contains("twice"), "No exception thrown despite the same fixed rate schedule was used twice")
+			assert(intercept[IllegalStateException] {
+				doer.schedule(fixedDelaySchedule)(() => ())
+			}.getMessage.contains("twice"), "No exception thrown despite the same fixed delay schedule was used twice")
 		}
 	}
 
-	// Functor: `m.map(f) == m.flatMap(a => ready(f(a)))`
-	test("Duty: can be transformed with map") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (m: Duty[Int], f: Int => String) =>
-			val left = m.map(f)
-			val right = m.flatMap(a => Duty.ready(f(a)))
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	test("Duty: any pair of duties can be combined") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (dutyA: Duty[Int], dutyB: Duty[Int], f: (Int, Int) => Int) =>
-			val combinedDuty = Duty.combine(dutyA, dutyB)(f)
-
-			for {
-				combinedResult <- combinedDuty.toFutureHardy()
-				dutyAResult <- dutyA.toFutureHardy()
-				dutyBResult <- dutyB.toFutureHardy()
-			} yield {
-				assert(combinedResult == f(dutyAResult, dutyBResult))
-			}
-		}
-	}
-
-	test("Duty: Duty.schedule(newDelaySchedule(delay))(supplier) executes the supplier after the delay") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: Duty.schedule(newDelaySchedule(delay))(supplier) executes the supplier after the delay") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
@@ -379,41 +1037,42 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Duty: `Duty.schedule(newFixedRateSchedule)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: `Duty.schedule(newFixedRateSchedule)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 10), Gen.choose(1, 10)) { (initialDelay: Int, interval: Int) =>
 			val repetitions = 10 - interval
 			// println(s"\nBegin: initialDelay = $initialDelay, interval = $interval, repetitions = $repetitions")
 			val schedule = doer.newFixedRateSchedule(initialDelay, interval)
-			val covenant = Covenant[Int]()
+			val promise = Promise[Int]()
 			val startMilli = System.currentTimeMillis()
 			var counter: Int = 0
 			val duty = Duty.schedule[Int](schedule)(() => counter)
 				.andThen { supplierResult =>
 					// println(s"supplierResult = $supplierResult/$repetitions")
+					if !doer.wasActivated(schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
 					if supplierResult == repetitions then {
 						doer.cancel(schedule)
-						covenant.fulfill(supplierResult)()
+						promise.trySuccess(supplierResult)
+					} else if supplierResult > repetitions then {
+						promise.tryFailure(new AssertionError("The supplier was execute despite the schedule was canceled in the previous supplier's execution."))
 					} else counter += 1
 				}
 			duty.triggerAndForget()
-			covenant
-				.map { sr =>
-					val actualDelay = System.currentTimeMillis() - startMilli
-					val expectedDelay = interval * repetitions + initialDelay
-					// println(s"counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
-					assertEquals(sr, repetitions)
-					assert(actualDelay >= expectedDelay)
-					assert(!doer.isActive(schedule))
-				}
-				.toFutureHardy()
+			promise.future.map { supplyResult =>
+				val actualDelay = System.currentTimeMillis() - startMilli
+				val expectedDelay = interval * repetitions + initialDelay
+				// println(s"counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
+				assertEquals(supplyResult, repetitions)
+				assert(actualDelay >= expectedDelay)
+				assert(doer.isCanceled(schedule))
+			}
 		}
 	}
 
-	test("Duty: `duty.scheduled(newDelaySchedule(delay))` should preserve the original duty's result and postpone its execution the specified `delay`") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: `duty.scheduled(newDelaySchedule(delay))` should preserve the original duty's result and postpone its execution the specified `delay`") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 10)) { (duty: Duty[Int], testDelay: Int) =>
@@ -430,8 +1089,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Duty: `duty.scheduled(newFixedDelaySchedule)` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: `duty.scheduled(newFixedDelaySchedule)` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(
@@ -464,11 +1123,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Duty: `duty.scheduled(schedule)` should be cancellable when the schedule is active.") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable after the schedule was activated.") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
-		val prop = PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
+		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
 			// println(s"Begin: delay: $delay, duty: $duty")
 			val schedule = doer.newDelaySchedule(delay)
 			val scheduledDuty = duty.scheduled(schedule)
@@ -478,17 +1137,17 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			scheduledDuty.trigger() { _ =>
 				hasCompleted = true
 				if wasCanceled then {
-					commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.isActive(schedule)}"))()
+					commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}"))()
 				}
 				// println(s"-----> wasCanceled: $wasCanceled, schedule: $schedule")
 			}
 			val cancelsAndWaits = for {
 				_ <- Task.mine[Unit] { () =>
-					assert(doer.isActive(schedule) || hasCompleted, "The schedule got canceled before canceling it")
+					assert(!doer.isCanceled(schedule) || hasCompleted, "The schedule got canceled before canceling it")
 					//					if !doer.isActive(schedule) && !hasCompleted then commitment.break(new AssertionError("The schedule got canceled before canceling it"))()
 					doer.cancel(schedule)
 					wasCanceled = true
-					assert(!doer.isActive(schedule))
+					assert(doer.isCanceled(schedule))
 				}
 				_ <- Task.sleeps(delay)
 
@@ -496,12 +1155,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			commitment.completeWith(cancelsAndWaits)(x => println("was already completed with x"))
 			commitment.toFuture()
 		}
-		prop.check(Parameters.default.withMinSuccessfulTests(100))
 	}
 
 
-	test("Duty: `duty.scheduled(schedule)` should be cancellable before the schedule is active.") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable before the schedule is activated.") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
@@ -510,17 +1168,17 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			val commitment = Commitment[Unit]()
 			doer.cancel(schedule)
 			scheduledDuty.trigger() { _ =>
-				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.isActive(schedule)}"))()
+				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}"))()
 			}
-			assert(!doer.isActive(schedule))
+			assert(doer.isCanceled(schedule))
 			commitment.completeWith(Task.sleeps(delay + 1))()
 			commitment.toFuture()
 		}
 	}
 
 
-	test("Duty.scheduled: should compose correctly with other Duty operations") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty.scheduled: should compose correctly with other Duty operations") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF { (duty: Duty[Int], delay: Int, f: Int => String) =>
@@ -550,32 +1208,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("SchedulingExtension.schedule: should fail if called with the same `Schedule` instance twice") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		Prop.forAllNoShrink(Gen.choose(1, 5), Gen.choose(1, 5)) { (delay: Int, interval: Int) =>
-			val delaySchedule = doer.newDelaySchedule(delay)
-			val fixedRateSchedule = doer.newFixedRateSchedule(delay, interval)
-			val fixedDelaySchedule = doer.newFixedRateSchedule(delay, interval)
-			doer.schedule(delaySchedule)(() => ())
-			doer.schedule(fixedRateSchedule)(() => ())
-			doer.schedule(fixedDelaySchedule)(() => ())
-			assert(intercept[IllegalStateException] {
-				doer.schedule(delaySchedule)(() => ())
-			}.getMessage.contains(delaySchedule.toString))
-			assert(intercept[IllegalStateException] {
-				doer.schedule(fixedRateSchedule)(() => ())
-			}.getMessage.contains(fixedRateSchedule.toString))
-			assert(intercept[IllegalStateException] {
-				doer.schedule(fixedDelaySchedule)(() => ())
-			}.getMessage.contains(fixedDelaySchedule.toString))
-		}
-	}
-
-
-	test("Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		val maxDuration = 5
 		PropF.forAllNoShrinkF(
@@ -590,7 +1224,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 			val promise = Promise[Unit]()
 
-			def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
+			given Promise[Unit] = promise
 
 			var cancelAllWasCalled = false
 			// Create many duties that, when completed, check if they complete after `cancelAll` was called; and schedule them with different schedules.
@@ -602,7 +1236,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 						.scheduled(sample.schedule)
 					scheduledDuty.andThen { r =>
 						if cancelAllWasCalled && !cancelledBeforeActivation then {
-							val message = s"A duty completed despite all were cancelled: duty: ${sample.duty}, schedule: ${sample.schedule}, isActive=${doer.isActive(sample.schedule)}"
+							val message = s"A duty completed despite all were cancelled: duty: ${sample.duty}, schedule: ${sample.schedule}, isActive=${doer.wasActivated(sample.schedule)}"
 							println(s"---> $message")
 							break(message)
 						} else if r != sample.int then break(s"The duty completed with an unexpected result: $r instead of ${sample.int}")
@@ -611,7 +1245,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			doer.Duty.sequenceToArray(duties).triggerAndForget()
 
 			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
-			val otherDoer = buildDoer
+			val otherDoer = buildDoer("other")
 			val waits = for {
 				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
 					doer.execute {
@@ -624,7 +1258,6 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				}
 			} yield ()
 			waits.triggerAndForgetHandlingErrors { e =>
-				scribe.error(s"Unexpected failure: ", e)
 				break(s"Unexpected failure: $e")
 			}
 
@@ -632,8 +1265,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getDoer)
+	test("Scheduling Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
+		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
 		import generators.{*, given}
 		val maxDelay = 5
 		PropF.forAllNoShrinkF(
@@ -645,7 +1278,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 			val promise = Promise[Unit]
 
-			def break(message: String): Unit = promise.tryFailure(new AssertionError(message))
+			given Promise[Unit] = promise
 
 			@volatile var cancelAllWasCalled = false
 
@@ -660,11 +1293,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 						.scheduled(schedule)
 						.andThen { _ =>
 							val expectedExecutionNanoTime = startNanoTime + delayMillis * 1_000_000
-							// cancelAll was called, the schedule was activated before the cancel (plus an error margin), and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
+							// cancelAll was called, the schedule was activated before the cancel (plus measure error), and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
 							if cancelAllWasCalled && (cancelNanoTime > startNanoTime + 200_000) && (executionsCounter > 0 || math.abs(cancelNanoTime - expectedExecutionNanoTime) > 2_000) then {
 								val distanceBetweenCancellationAndExpectedExecutionMicros = (cancelNanoTime - expectedExecutionNanoTime) / 1000
 								val distanceBetweenCancellationAndActivationMicros = (cancelNanoTime - startNanoTime) / 1000
-								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceBetweenCancellationAndExpectedExecutionInMicros: $distanceBetweenCancellationAndExpectedExecutionMicros, distanceBetweenCancellationAndActivationMicros: $distanceBetweenCancellationAndActivationMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.isActive(schedule)}"
+								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceBetweenCancellationAndExpectedExecutionInMicros: $distanceBetweenCancellationAndExpectedExecutionMicros, distanceBetweenCancellationAndActivationMicros: $distanceBetweenCancellationAndActivationMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
 								println(s"-----> $message")
 								break(message)
 							}
@@ -674,7 +1307,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			doer.Duty.sequenceToArray(duties).triggerAndForget()
 
 			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
-			val otherDoer = buildDoer
+			val otherDoer = buildDoer("other")
 			val cancelsAllAfterADelayAndThenWaitsEnough = for {
 				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
 					doer.cancelAll()
@@ -686,407 +1319,9 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				}
 			} yield ()
 			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForgetHandlingErrors { e =>
-				scribe.error(s"Unexpected failure: ", e)
 				break(s"Unexpected exception: $e")
 			}
 			promise.future
-		}
-	}
-
-
-	////////// TASK /////////////
-
-	// Custom equality for Task based on the result of attempt
-	private def checkEquality[A](doer: Doer)(task1: doer.Task[A], task2: doer.Task[A]): Future[Unit] = {
-		val futureEquality = for {
-			try1 <- task1.toFutureHardy()
-			try2 <- task2.toFutureHardy()
-		} yield {
-			// println(s"$try1 ==== $try2")
-			try1 ==== try2
-		}
-		futureEquality.map(assert(_))
-	}
-
-	//	private def evalNow[A](task: Task[A]): Try[A] = {
-	//		Await.result(task.toFutureHardy(), new FiniteDuration(1, TimeUnit.MINUTES))
-	//	}
-
-
-	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
-	test("Task: left identity") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
-			val sx = Task.successful(x)
-			val left = Task.successful(x).flatMap(f)
-			val right = f(x)
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	// Monadic right identity law: m.flatMap(Task.successful) == m
-	test("Task: right identity") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (m: Task[Int]) =>
-			val left = m.flatMap(Task.successful)
-			val right = m
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
-	test("Task: associativity") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
-			val leftAssoc = m.flatMap(f).flatMap(g)
-			val rightAssoc = m.flatMap(x => f(x).flatMap(g))
-			checkEquality(doer)(leftAssoc, rightAssoc)
-		}
-	}
-
-	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
-	test("Task: can be transformed with map") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (m: Task[Int], f: Int => String) =>
-			val left = m.map(f)
-			val right = m.flatMap(a => Task.successful(f(a)))
-			checkEquality(doer)(left, right)
-		}
-	}
-
-	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
-	test("Task: can be recovered from failure") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
-			if NonFatal(e) then {
-				val leftTask = Task.failed[Int](e).recover(f)
-				val rightTask = if f.isDefinedAt(e) then Task.successful(f(e)) else Task.failed(e)
-				checkEquality(doer)(leftTask, rightTask)
-			} else Future.successful(())
-		}
-	}
-
-	test("Task: any can be combined") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-
-		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
-			val combinedTask = Task.combine(taskA, taskB)(f)
-
-			for {
-				combinedResult <- combinedTask.toFutureHardy()
-				taskAResult <- taskA.toFutureHardy()
-				taskBResult <- taskB.toFutureHardy()
-			} yield {
-				assert(combinedResult ==== f(taskAResult, taskBResult))
-			}
-		}
-	}
-
-
-	test("if a Task's transformation throws an exception the task should complete with that exception if it is non-fatal, or never complete if it is fatal.") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		def sleep1ms: Task[Unit] = doer.Task.alien { () =>
-			Future {
-				Thread.sleep(1)
-			}(using global)
-		}
-
-		PropF.forAllF { (task: Task[Int], exception: Throwable) =>
-
-			/** Do the test for a single operation */
-			def check(operation: Task[Int] => Task[Int]): Future[Boolean] = {
-				// Apply the operation to the random task. The `recover` is to ensure that the random task completes successfully in order for the operation to always be evaluated.
-				val operationResult = operation {
-					task.recover { case cause => exception.getMessage.hashCode }
-				}.toFutureHardy()
-
-				// Build a task that completes with `true` as soon as the `exception` is found among the unhandled exceptions logged in the `unhandledExceptions` set; or `false` if it isn't found after 99 milliseconds.
-				val exceptionWasNotHandled: Future[Boolean] = sleep1ms
-					// Check if the thread of DoSiThEx was terminated abruptly due to an unhandled exception
-					.flatMap { _ =>
-						Task.mine { () => unhandledExceptions.remove(exception.getMessage) }
-					}
-					// repeat the previous until the exception is found among the unhandled exceptions but no more than 99 times.
-					.reiteratedUntilSome() { (tries, theExceptionWasFoundAmongTheUnhandledOnes) =>
-						if theExceptionWasFoundAmongTheUnhandledOnes then Maybe.some(Success(true))
-						else if tries > 99 then Maybe.some(Success(false))
-						else Maybe.empty
-					}.toFuture()
-
-				// Depending on the kind of exception, fatal or not, the check is very different.
-				if NonFatal(exception) then {
-					// When the exception is non-fatal the task should complete with a Failure containing the exception thrown by the transformation.
-					val nonFatalWasHandled: Future[Boolean] = operationResult.map {
-						case Failure(e) if e.equals(exception) => true
-						case Failure(wrapper) if wrapper.getCause eq exception => true
-						case result =>
-							throw new AssertionError(s"The task completed but with an unexpected result. Expected: ${Failure(exception)}, Actual: $result")
-					}
-					Future.firstCompletedOf(List(nonFatalWasHandled, exceptionWasNotHandled.map { wasNotHandled =>
-						assert(!wasNotHandled, "A non fatal was not handled despite is should.")
-						false
-					}))
-				} else {
-					// When the exception is fatal it should remain unhandled, causing the doSiThEx thread to terminate. Consequently, the exception will be logged in the unhandledExceptions set, and the task and associated Future will never complete.
-					// The following future will complete with `false` if the fatal exception was handled. Otherwise, it will never complete.
-					val fatalWasHandled = operationResult.map { result =>
-						// println(s"Was handled somehow: result=$result")
-						throw new AssertionError(s"The task completed despite it shouldn't. Result=$result")
-					}
-
-
-					// The result of only one of the two futures, `fatalWasHandled` and `exceptionWasNotHandled`, is enough to know if the check is passed. So get the result of the one that completes first.
-					Future.firstCompletedOf(List(fatalWasHandled, exceptionWasNotHandled.map { wasNotHandled =>
-						assert(wasNotHandled, "The task handled the fatal exception despite it shouldn't")
-						true
-					}))
-				}
-
-			}
-
-			def f0[A](): A = throw exception
-
-			def f1[A, B](a: A): B = throw exception
-
-			def f2[A, B, C](a: A, b: B): C = throw exception
-
-			// println(s"Begin: task=$task, exception=$exception")
-
-			for {
-				mapTestResult <- check(_.map(f1))
-				flatMapTestResult <- check(_.flatMap(f1))
-				withFilterTestResult <- check(_.withFilter(f1))
-				transformTestResult <- check(_.transform(f1))
-				transformWithTestResult <- check(_.transformWith(f1))
-				recoverTestResult <- check(_.transform { _ => Failure(new Exception("for recover")) }.recover { case x => f1(x) })
-				recoverWithTestResult <- check(_.transform { _ => Failure(new Exception("for recoverWith")) }.recoverWith { case x => f1(x) })
-				repeatedHardyUntilSomeTestResult <- check(_.reiteratedHardyUntilSome()(f2))
-				repeatedUntilSomeTestResult <- check(_.reiteratedUntilSome()(f2))
-				repeatedUntilDefinedTestResult <- check(_.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
-				repeatedWhileNoneTestResult <- check(_.reiteratedWhileEmpty(Success(0))(f2))
-				repeatedWhileUndefinedTestResult <- check(_.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
-				ownTestResult <- check(_.flatMap(_ => Task.own(f0)))
-				ownFlatTestResult <- check(_.flatMap(_ => Task.ownFlat(f0)))
-				alienTestResult <- check(_.flatMap(_ => Task.alien(f0)))
-			} yield
-				assert(
-					mapTestResult
-						&& flatMapTestResult
-						&& withFilterTestResult
-						&& transformTestResult
-						&& transformWithTestResult
-						&& recoverTestResult
-						&& recoverWithTestResult
-						&& repeatedHardyUntilSomeTestResult
-						&& repeatedUntilSomeTestResult
-						&& repeatedUntilDefinedTestResult
-						&& repeatedWhileNoneTestResult
-						&& repeatedWhileUndefinedTestResult
-						&& ownTestResult
-						&& ownFlatTestResult
-						&& alienTestResult,
-					s"""
-					   |map: $mapTestResult
-					   |flatMap: $flatMapTestResult
-					   |withFilter: $withFilterTestResult
-					   |transform: $transformTestResult
-					   |transformWith: $transformWithTestResult
-					   |recover: $recoverTestResult
-					   |recoverWith: $recoverWithTestResult
-					   |repeatedHardyUntilSome: $repeatedHardyUntilSomeTestResult
-					   |repeatedUntilSome: $repeatedUntilSomeTestResult
-					   |repeatedUntilDefined: $repeatedUntilDefinedTestResult
-					   |repeatedWhileNone: $repeatedWhileNoneTestResult
-					   |repeatedWhileUndefined: $repeatedWhileUndefinedTestResult
-					   |own: $ownTestResult
-					   |ownFlat: $ownFlatTestResult
-					   |alien: $alienTestResult""".stripMargin
-				)
-			// TODO add a test to check if Task.andThen effect-full function is guarded.
-		}
-	}
-
-	test("`Task.engage` should either report or not catch exceptions thrown by `onComplete`") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		def sleep1ms: Task[Unit] = doer.Task.alien { () =>
-			Future {
-				Thread.sleep(1)
-			}(using global)
-		}
-
-		PropF.forAllF { (task: Task[Int], exception: Throwable) =>
-
-			/** Do the test for a single operation */
-			def check[R](operation: Task[Int] => Task[R]): Future[Boolean] = {
-				// Apply the operation to the random task and trigger the execution passing a faulty on-complete callback.
-				operation(task).trigger()(tryR => throw exception)
-
-				// Build and execute a task that completes with `true` as soon as the `exception` is found among the unhandled exceptions logged in the `unhandledExceptions` set; or `false` if it isn't found after 99 milliseconds.
-				sleep1ms
-					// Check if the exception was reported or unhandled
-					.flatMap { _ =>
-						Task.mine { () => unhandledExceptions.remove(exception.getMessage) || reportedExceptions.remove(exception.getMessage) }
-					}
-					// repeat the previous until the exception is found among the unhandled exceptions but no more than 99 times.
-					.reiteratedUntilSome() { (tries, theExceptionWasFoundAmongTheUnhandledOnes) =>
-						if theExceptionWasFoundAmongTheUnhandledOnes then {
-							// println(s"The exception was found among the unhandled or reported exceptions")
-							Maybe.some(Success(true))
-						}
-						else if tries > 99 then {
-							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Waiting aborted.")
-							Maybe.some(Success(false))
-						}
-						else {
-							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Wait more time.")
-							Maybe.empty
-						}
-					}.toFuture()
-			}
-
-			val randomInt = exception.getMessage.hashCode()
-			val smallNonNegativeInt = randomInt % 9
-			val randomBool = (randomInt % 2) == 0
-			val randomTryInt = if randomBool then Success(randomInt) else Failure(exception)
-			// println(s"Begin: task=$task, exception=$exception, randomInt=$randomInt, randomBool=$randomBool")
-
-			for {
-				factoryTestResult <- check(identity)
-				mapTestResult <- check(_.map(identity))
-				flatMapTestResult <- check(_.flatMap(_ => task))
-				withFilterTestResult <- check(_.withFilter(_ => randomBool))
-				andThenTestResult <- check(_.andThen(_ => ()))
-				transformTestResult <- check(_.transform(identity))
-				transformWithTestResult <- check(_.transformWith(_ => task))
-				recoverTestResult <- check(_.recover { case x if randomBool => randomInt })
-				recoverWithTestResult <- check(_.recoverWith { case x if randomBool => task })
-				repeatedHardyUntilSomeTestResult <- check(_.reiteratedHardyUntilSome() { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				repeatedUntilSomeTestResult <- check(_.reiteratedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				repeatedUntilDefinedTestResult <- check(_.reiteratedHardyUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				repeatedWhileNoneTestResult <- check(_.reiteratedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				repeatedWhileUndefinedTestResult <- check(_.reiteratedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
-			} yield
-				assert(
-					factoryTestResult
-						&& mapTestResult
-						&& flatMapTestResult
-						&& withFilterTestResult
-						&& andThenTestResult
-						&& transformTestResult
-						&& transformWithTestResult
-						&& recoverTestResult
-						&& recoverWithTestResult
-						&& repeatedHardyUntilSomeTestResult
-						&& repeatedUntilSomeTestResult
-						&& repeatedUntilDefinedTestResult
-						&& repeatedWhileNoneTestResult
-						&& repeatedWhileUndefinedTestResult,
-					s"""
-					   |factory: $factoryTestResult
-					   |map: $mapTestResult
-					   |flatMap: $flatMapTestResult
-					   |withFilter: $withFilterTestResult
-					   |andThen: $andThenTestResult
-					   |transform: $transformTestResult
-					   |transformWith: $transformWithTestResult
-					   |recover: $recoverTestResult
-					   |recoverWith: $recoverWithTestResult
-					   |repeatedHardyUntilSome: $repeatedHardyUntilSomeTestResult
-					   |repeatedUntilSome: $repeatedUntilSomeTestResult
-					   |repeatedUntilDefined: $repeatedUntilDefinedTestResult
-					   |repeatedWhileNone: $repeatedWhileNoneTestResult
-					   |repeatedWhileUndefined: $repeatedWhileUndefinedTestResult
-				""".stripMargin
-				)
-		}
-	}
-
-	test("`Duty.engage` should either report or not catch exceptions thrown by `onComplete`") {
-		val generators = GeneratorsForDoerTests(getDoer)
-		import generators.{*, given}
-		def sleep1ms: Task[Unit] = doer.Task.alien { () =>
-			Future {
-				Thread.sleep(1)
-			}(using global)
-		}
-
-		PropF.forAllF { (duty: Duty[Int], exception: Throwable) =>
-
-			/** Do the test for a single operation */
-			def check[R](operation: Duty[Int] => Duty[R]): Future[Boolean] = {
-				// Apply the operation to the random duty and trigger the execution passing a faulty on-complete callback.
-				operation(duty).trigger()(r => throw exception)
-
-				// Build and execute a duty that completes with `true` as soon as the `exception` is found among the unhandled exceptions logged in the `unhandledExceptions` set; or `false` if it isn't found after 99 milliseconds.
-				sleep1ms
-					// Check if the exception was reported or unhandled
-					.flatMap { _ =>
-						Task.mine { () => unhandledExceptions.remove(exception.getMessage) || reportedExceptions.remove(exception.getMessage) }
-					}
-					// repeat the previous until the exception is found among the unhandled exceptions but no more than 99 times.
-					.reiteratedUntilSome() { (tries, theExceptionWasFoundAmongTheUnhandledOnes) =>
-						if theExceptionWasFoundAmongTheUnhandledOnes then {
-							// println(s"The exception was found among the unhandled or reported exceptions")
-							Maybe.some(Success(true))
-						}
-						else if tries > 99 then {
-							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Waiting aborted.")
-							Maybe.some(Success(false))
-						}
-						else {
-							// println(s"The exception was NOT found among the unhandled/reported exceptions after $tries retries. Wait more time.")
-							Maybe.empty
-						}
-					}.toFuture()
-			}
-
-			val randomInt = exception.getMessage.hashCode()
-			val smallNonNegativeInt = randomInt % 9
-			// println(s"Begin: duty=$duty, exception=$exception")
-
-			for {
-				factoryTestResult <- check(identity)
-				mapTestResult <- check(_.map(identity))
-				flatMapTestResult <- check(_.flatMap(_ => duty))
-				andThenTestResult <- check(_.andThen(_ => ()))
-				repeatedUntilSomeTestResult <- check(_.repeatedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
-				repeatedUntilDefinedTestResult <- check(_.repeatedUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				repeatedWhileNoneTestResult <- check(_.repeatedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
-				repeatedWhileUndefinedTestResult <- check(_.repeatedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
-			} yield
-				assert(
-					factoryTestResult
-						&& mapTestResult
-						&& flatMapTestResult
-						&& andThenTestResult
-						&& repeatedUntilSomeTestResult
-						&& repeatedUntilDefinedTestResult
-						&& repeatedWhileNoneTestResult
-						&& repeatedWhileUndefinedTestResult,
-					s"""
-					   |factory: $factoryTestResult
-					   |map: $mapTestResult
-					   |flatMap: $flatMapTestResult
-					   |andThen: $andThenTestResult
-					   |repeatedUntilSome: $repeatedUntilSomeTestResult
-					   |repeatedUntilDefined: $repeatedUntilDefinedTestResult
-					   |repeatedWhileNone: $repeatedWhileNoneTestResult
-					   |repeatedWhileUndefined: $repeatedWhileUndefinedTestResult
-					   |""".stripMargin
-				)
 		}
 	}
 }

@@ -29,7 +29,7 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 	private val reportedExceptions = mutable.Set.empty[String]
 
 
-	private val doer: Doer = new Doer { thisDoer =>
+	private def buildDoer(): Doer = new Doer { thisDoer =>
 		private val doSiThEx = Executors.newSingleThreadExecutor()
 
 		private val idSequencer: AtomicInteger = new AtomicInteger(0)
@@ -73,9 +73,11 @@ class DoerTestEffect extends ScalaCheckEffectSuite {
 
 	}
 
+	private val doer = buildDoer()
+
 	import doer.*
 
-	private val shared = new GeneratorsForDoerTests[doer.type](doer)
+	private val shared = new GeneratorsForDoerTests[doer.type](doer, buildDoer)
 	import shared.{*, given}
 
 	////////// DUTY //////////

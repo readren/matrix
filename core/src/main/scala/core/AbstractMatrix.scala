@@ -3,9 +3,8 @@ package core
 
 import core.Matrix.DoerProviderDescriptor
 
-import readren.sequencer.Doer
-import readren.sequencer.providers.DoerProvider
-import readren.sequencer.providers.DoerProvider.Tag
+import readren.sequencer.{Doer, DoerProvider}
+import DoerProvider.Tag
 
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong

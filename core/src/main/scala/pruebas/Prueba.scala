@@ -42,7 +42,7 @@ object Prueba {
 	private inline val WATCH_DOG_DELAY_MILLIS = 4000
 
 	private inline val haveToCountAndCheck = true
-	private inline val haveToShowFinalPhoto = false
+	private inline val haveToShowFinalPhoto = true
 	private inline val haveToShowPhotoEveryTime = false
 	private inline val haveToRecordPhoto = haveToCountAndCheck || haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = false
@@ -128,7 +128,7 @@ object Prueba {
 	}
 
 	private def run[DefaultDoer <: Doer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
-		println(s"\nTest started:  loop=$loopId, descriptor=${testingAide.defaultDoerProviderDescriptor.id}")
+		println(s"\nTest started:  loop=$loopId, descriptor=${testingAide.defaultDoerProviderDescriptor.id}, factory=$reactantFactory")
 		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: doerProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getSimpleName}")
 

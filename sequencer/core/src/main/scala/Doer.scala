@@ -13,7 +13,7 @@ import scala.util.{Failure, Success, Try}
 object Doer {
 
 	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
-	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure()]], few [[Doer.Task]] operations, and most [[Commitment]] operations.*/
+	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure]], few [[Doer.Task]] operations like [[Doer.Task.andThen]] that can't propagate failures, and most [[Commitment]] operations. */
 	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 }
 
@@ -77,7 +77,7 @@ trait Doer { thisDoer =>
 	def current: Doer | Null
 
 	/**
-	 * @return true if the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] to execute the [[Runnable]]s passed to this instance's [[executeSequentially]] or [[execute]] methods, which are used to execute all the [[Duty]], [[Task]], and [[Flow]] operations. */
+	 * @return true if the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]]. Calling this method within the thread with which the [[Runnable]]s passed to this instance's [[executeSequentially]] or [[execute]] methods is executed, always returns `true`. */
 	inline def isInSequence: Boolean = this eq current
 
 	/** Asserts that the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] instance for sequential execution of its operations. */
@@ -90,9 +90,11 @@ trait Doer { thisDoer =>
 	 * Examples of such operations are [[Task.andThen]], [[Task.triggerAndForgetHandlingErrors]], [[Task.wait]], [[Task.alien]], and [[Commitment.completeHere]].
 	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSiThEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Task]].
 	 * The implementation should not throw non-fatal exceptions.
-	 * The implementation should be thread-safe.
+	 * This method is called within the thread assigned to this [[Doer]].
 	 * */
-	def reportFailure(cause: Throwable): Unit
+	protected def reportFailure(cause: Throwable): Unit
+
+	private[sequencer] inline def reportFailurePortal(cause: Throwable): Unit = reportFailure(cause)
 
 	/**
 	 * Queues the execution of the specified procedure in the task-queue of this $DoSiThEx. See [[Doer.executeSequentially]]
@@ -114,11 +116,14 @@ trait Doer { thisDoer =>
 		${ DoerMacros.reportPanicExceptionImpl('thisDoer, 'exception) }
 
 	/**
-	 * An [[ExecutionContext]] that uses the $DoSiThEx. See [[Doer.executeSequentially]] */
+	 * An [[ExecutionContext]] that executes in sequence with this [[Doer]]. See [[Doer.executeSequentially]] */
 	object ownSingleThreadExecutionContext extends ExecutionContext {
-		def execute(runnable: Runnable): Unit = thisDoer.execute(runnable.run())
+		def execute(runnable: Runnable): Unit = thisDoer.executeSequentially(runnable)
 
-		def reportFailure(cause: Throwable): Unit = thisDoer.reportPanicException(cause)
+		def reportFailure(cause: Throwable): Unit = {
+			if isInSequence then thisDoer.reportPanicException(cause)
+			else executeSequentially(() => thisDoer.reportPanicException(cause))
+		}
 	}
 
 	/////////////// DUTY ///////////////
@@ -1046,15 +1051,20 @@ trait Doer { thisDoer =>
 		 * Triggers this [[Task]] and, once it is completed, processes its result for its side effects.
 		 * @param consumer called with this task result when it completes, if it ever does.
 		 */
-		inline def consume(consumer: Try[A] => Unit): Unit =
-			trigger(isInSequence)(consumer)
+		inline def consume(inline consumer: Try[A] => Unit): Unit =
+			trigger(isInSequence) { tryA =>
+				try consumer(tryA)
+				catch {
+					case NonFatal(e) => thisDoer.reportPanicException(e)
+				}
+			}
 
 		/** Triggers this [[Task]] and once it is completed successfully processes its result for its side effects.
 		 * WARNING: `consumer` won't be called if this task completes with a failure.
 		 *
 		 * @param consumer called with this task result when it completes successfully, if it ever does.
 		 * */
-		inline def foreach(consumer: A => Unit): Unit =
+		inline def foreach(inline consumer: A => Unit): Unit =
 			consume {
 				case Success(a) => consumer(a)
 				case _ => ()
@@ -1798,8 +1808,12 @@ trait Doer { thisDoer =>
 	 * @param future the future to wait for.
 	 */
 	final class Wait[+A](future: Future[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit =
-			future.onComplete(onComplete)(using ownSingleThreadExecutionContext)
+		override def engage(onComplete: Try[A] => Unit): Unit = {
+			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
+			future.onComplete { tryA =>
+				thisDoer.execute(onComplete(tryA))
+			}(using ownSingleThreadExecutionContext)
+		}
 
 		override def toString: String = deriveToString[Wait[A]](this)
 	}
@@ -1818,7 +1832,10 @@ trait Doer { thisDoer =>
 				catch {
 					case NonFatal(e) => Future.failed(e)
 				}
-			future.onComplete(onComplete)(using ownSingleThreadExecutionContext)
+			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
+			future.onComplete { tryA =>
+				thisDoer.execute(onComplete(tryA))
+			}(using ownSingleThreadExecutionContext)
 		}
 
 		override def toString: String = deriveToString[Alien[A]](this)

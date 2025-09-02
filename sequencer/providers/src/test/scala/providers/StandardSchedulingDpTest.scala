@@ -14,7 +14,7 @@ class StandardSchedulingDpTest extends ScheduledDoerTestEffectAbstractSuite[Stan
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = thisSuite.onFailureReported(doer, failure)
 	}
 
-	override protected def buildDoer: StandardSchedulingDp.ProvidedDoerFacade =
+	override protected def buildDoer(tag: String): StandardSchedulingDp.ProvidedDoerFacade =
 		doerProvider.provide("test-doer")
 
 	/** Clean up resources after tests. */

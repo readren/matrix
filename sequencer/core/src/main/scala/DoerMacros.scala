@@ -9,7 +9,7 @@ object DoerMacros {
 		import quotes.reflect.*
 
 		def runnable: Expr[Runnable] = {
-			val pos: Position = onCompleteExpr.asTerm.pos;
+			val pos: Position = onCompleteExpr.asTerm.pos
 			val sourceInfo: Expr[String] = Expr(s".engage(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
 
 			'{
@@ -44,7 +44,7 @@ object DoerMacros {
 		import quotes.reflect.*
 
 		// Capture the source code location
-		val pos: Position = procedureExpr.asTerm.pos;
+		val pos: Position = procedureExpr.asTerm.pos
 		// Build source info text.
 		val sourceInfo = Expr(s"{ ${procedureExpr.asTerm.show} } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
 		//		val sourceInfo = Expr(s"{ ${pos.sourceCode.getOrElse("not available")} } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
@@ -69,6 +69,6 @@ object DoerMacros {
 		// Build exception message.
 		val message = Expr(s"Reported at ${pos.sourceFile.name}:${pos.startLine + 1} => $snippet")
 
-		'{ $doerExpr.reportFailure(new Doer.PanicException($message, $panicExceptionExpr)) }
+		'{ $doerExpr.reportFailurePortal(new Doer.PanicException($message, $panicExceptionExpr)) }
 	}
 }

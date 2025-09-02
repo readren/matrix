@@ -1,8 +1,8 @@
 package readren.sequencer
 package providers
 
+import DoerProvider.Tag
 import providers.CooperativeWorkersDp.*
-import providers.DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
@@ -41,7 +41,7 @@ object CooperativeWorkersDp {
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
-		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = failureReporter(doer, exception)
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
 		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
@@ -122,37 +122,47 @@ abstract class CooperativeWorkersDp(
 
 
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
+		 * Assumes that [[taskQueueSize]] is greater than zero because, for this method to be called, this [[DoerImpl]] should have been added to the [[queuedDoers]], which happens when the [[taskQueueSize]] transitions from zero to one.
 		 *
 		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
 		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same doer being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerImpl]] instance simultaneously.
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerImpl]] is enqueued into the [[queuedDoers]] queue to be assigned to a worker at a later time.
 		 */
-		final def executePendingTasks(): Int = {
+		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Int = {
 			doerThreadLocal.set(thisDoer)
 			if debugEnabled then assert(taskQueueSize.get > 0)
 			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
-			var aDecrementIsPending = false
 			if applyMemoryFence then VarHandle.loadLoadFence()
 			try {
 				var task = firstTaskInQueue
 				firstTaskInQueue = null
 				if task == null then task = taskQueue.poll()
-				while (task != null) && taskQueueSizeIsPositive do {
-					aDecrementIsPending = true
+				while task != null do {
 					task.run()
 					processedTasksCounter += 1
-					aDecrementIsPending = false
 					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this doer into `queuedDoers` allowing the worst problem to occur: two workers assigned to the same [[DoerImpl]].
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-					if taskQueueSizeIsPositive then task = taskQueue.poll()
+					task = if taskQueueSizeIsPositive then taskQueue.poll() else null
 				}
+			} catch {
+				case uncaught: Throwable =>
+					// Do the taskQueueSize update skipped in the while loop due to the exception.
+					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
+					try {
+						// Notify the user about the uncaught exception, protected from exceptions.
+						onUnhandledException(thisDoer, uncaught)
+					} finally {
+						doerThreadLocal.remove()
+						// Notify the worker about the uncaught exception.
+						worker.onUncaughtException()
+					}
+					// Rethrow the uncaught exception to terminate the thread abruptly skipping the `runningWorkersLatch` decremental.
+					throw uncaught
 			} finally {
 				if applyMemoryFence then VarHandle.storeStoreFence()
-				// If a task throws an exception and control jumps to this finally block, the necessary update to `taskQueueSizeIsPositive` would have been skipped. So do it here.
-				if aDecrementIsPending then taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks. 
+				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks.
 				if taskQueueSizeIsPositive then {
 					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
 					queuedDoers.offer(thisDoer)
@@ -253,38 +263,20 @@ abstract class CooperativeWorkersDp(
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
 					assignedDoer.lastTimeWorkerIndex = this.index
-					try {
-						processedTasksCounter += assignedDoer.executePendingTasks()
-						completedMainLoopsCounter += 1
-					}
-					catch { // TODO analyze if clarity would suffer too much if [[DoerImpl.executePendingTasks]] accepted a partial function with this catch removing the necessity of this try-catch.
-						case e: Throwable =>
-							doerThreadLocal.remove()
-							try {
-								onUnhandledException(assignedDoer, e)
-								// // If neither a thread-local nor a global uncaught exception handler is configured, use the provided failureReporter to expose the error.
-								// // This ensures that exceptions are always reported somewhere, but if a handler is configured (either per-thread or globally),
-								// // the standard JVM uncaught exception handling mechanism will take precedence. In all cases, the exception is rethrown to ensure
-								// // the thread terminates abruptly, as is standard for uncaught exceptions in threads.
-								// // This design respects user/system configuration and only uses failureReporter as a fallback.
-								// if (thread.getUncaughtExceptionHandler == null) && (Thread.getDefaultUncaughtExceptionHandler == null) then onUnhandledException(assignedDoer, e)
-							} finally {
-								// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
-								thisWorker.synchronized {
-									thread = threadFactory.newThread(this)
-									// Memorize the assigned DoerImpl such that the new thread be assigned to the same [[DoerImpl]]. It will continue with the task after the one that threw the exception.
-									queueJumper = assignedDoer
-								}
-								thread.start()
-							}
-							// Terminate the thread abruptly to skip the `runningWorkersLatch` decremental.
-							throw e
-					}
+					processedTasksCounter += assignedDoer.executePendingTasks(thisWorker)
+					completedMainLoopsCounter += 1
 				}
 			}
 			// Note that only decrements when the worker terminates gracefully.
 			runningWorkersLatch.countDown()
 			isStopped = true
+		}
+
+		def onUncaughtException(): Unit = {
+			// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
+			val newThread = threadFactory.newThread(this)
+			thread = newThread
+			thread.start()
 		}
 
 		/** Should be called immediately before the main-loop's exit condition evaluation. */

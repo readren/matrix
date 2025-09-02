@@ -4,6 +4,7 @@ package cluster.service
 import cluster.service.ParticipantService.{ContactAddressFilter, DelegateConfig, EventListener, SocketOptionValue, TaskSequencer}
 import cluster.service.Protocol.Instant
 
+import readren.common.ScribeConfig
 import readren.common.ToStringWithFields.toStringWithFields
 import readren.sequencer.providers.CooperativeWorkersSchedulingDp
 import scribe.*
@@ -13,7 +14,7 @@ import scala.language.implicitConversions
 
 object InteractiveTests {
 
-	ScribeTestConfig.init(true)
+	ScribeConfig.init(deleteLogFilesOnLaunch = true)
 
 	object csAEventListener extends EventListener {
 		override def handle(event: ParticipantServiceEvent): Unit = {

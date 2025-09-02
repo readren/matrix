@@ -4,8 +4,8 @@ package providers
 import core.Matrix.*
 
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.Doer
-import readren.sequencer.providers.{DoerProvider, ShutdownAble}
+import readren.sequencer.{Doer, DoerProvider}
+import readren.sequencer.providers.ShutdownAble
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}

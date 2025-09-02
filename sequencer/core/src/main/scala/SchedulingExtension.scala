@@ -70,12 +70,16 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	def cancel(schedule: Schedule): Unit
 
 	/**
-	 * The implementation should [[cancel]] all the active instances of [[Schedule]] of this [[Doer]]. See [[isActive]].
+	 * The implementation should [[cancel]] all the [[Schedule]] instances of this [[Doer]] that were activated. See [[wasActivated]].
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancelAll(): Unit
 
-	/** @return true if the [[Schedule]] was used in a call to [[scheduleSequentially]] and is not cancelled nor elapsed (only instances returned by [[newDelaySchedule]] can elapse). */
-	def isActive(schedule: Schedule): Boolean
+	/** @return true if the [[Schedule]] was used in a call to [[scheduleSequentially]], even if it is cancelled. */
+	def wasActivated(schedule: Schedule): Boolean
+
+	/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
+	 * An [[Schedule]] instance becomes canceled when either, it is passed to the [[cancel]] method, or the [[cancelAll]] method is called after it [[wasActivated]]. */
+	def isCanceled(schedule: Schedule): Boolean
 
 	inline def schedule(schedule: Schedule)(runnable: Runnable): Unit =
 		scheduleSequentially(schedule, runnable)

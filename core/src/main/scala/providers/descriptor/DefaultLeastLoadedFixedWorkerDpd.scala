@@ -3,9 +3,9 @@ package providers.descriptor
 
 import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
 
-import readren.sequencer.providers.{DoerProvider, LeastLoadedFixedWorkerDp}
+import readren.sequencer.providers.LeastLoadedFixedWorkerDp
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.Doer
+import readren.sequencer.{Doer, DoerProvider}
 
 
 object DefaultLeastLoadedFixedWorkerDpd extends DoerProviderDescriptor[Doer](getTypeName[DefaultLeastLoadedFixedWorkerDpd.type]) {

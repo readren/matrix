@@ -90,7 +90,7 @@ object GeneratorsForDoerTests {
 	}
 
 	extension (e1: Throwable) {
-		def ====(e2: Throwable): Boolean = (e1.getClass eq e2.getClass) && (e1.getMessage == e2.getMessage)
+		def ====(e2: Throwable): Boolean = (e1 eq e2) || (e1 ne null) && (e2 ne null) && (e1.getClass eq e2.getClass) && (e1.getMessage == e2.getMessage)
 	}
 
 	extension [A](try1: Try[A]) {
@@ -138,33 +138,17 @@ object GeneratorsForDoerTests {
 
 /** Offers generators of [[doer.Duty]] and [[doer.Task]] instances.
  * Useful for suites that test their behavior. */
-class GeneratorsForDoerTests[TD <: Doer](val doer: TD, synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
+class GeneratorsForDoerTests[TD <: Doer](val doer: TD, doerBuilder: () => Doer, synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
 
 	import doer.*
 
 	export doer.*
 
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
-	val foreignDoer: Doer = new Doer {
-		override type Tag = String
-		override val tag = s"foreign-doer-for-testing#$recursionLevel"
-		private val executor = Executors.newSingleThreadExecutor()
-
-		override def executeSequentially(runnable: Runnable): Unit = executor.execute { () =>
-			currentForeignDoer.set(this)
-			try runnable.run()
-			finally currentForeignDoer.remove()
-		}
-
-		override def current: Doer = currentForeignDoer.get
-
-		override def reportFailure(cause: Throwable): Unit = throw cause
-
-		override def toString: String = tag
-	}
+	val foreignDoer: Doer = doerBuilder()
 
 	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Task]] instances. */
-	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests(foreignDoer, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
+	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests(foreignDoer, doerBuilder, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
 
 	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
 	def genDuty[A](a: A): Gen[Duty[A]] = {

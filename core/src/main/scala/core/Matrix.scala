@@ -2,10 +2,9 @@ package readren.matrix
 package core
 
 import core.Matrix.DoerProviderDescriptor
-import readren.sequencer.providers.DoerProvider
 
 import readren.common.Maybe
-import readren.sequencer.Doer
+import readren.sequencer.{Doer, DoerProvider}
 
 import java.net.{InetAddress, URI}
 import scala.compiletime.asMatchable

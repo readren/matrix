@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.DoerProvider.Tag
+import DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.sequencer.Doer

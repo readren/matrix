@@ -23,15 +23,15 @@ class DoerTestSync extends ScalaCheckEffectSuite {
 	private var oDoerThreadId: Option[Long] = None
 
 
-	private val doer: Doer = new Doer { thisDoer =>
+	private def buildDoer(): Doer = new Doer { thisDoer =>
 		override type Tag = String
 		
 		override val tag = "testing doer"
 		
 		override def executeSequentially(runnable: Runnable): Unit = {
 			oDoerThreadId match {
-				case None => oDoerThreadId = Some(Thread.currentThread().getId)
-				case Some(doerThreadId) => assert(doerThreadId == Thread.currentThread().getId)
+				case None => oDoerThreadId = Some(Thread.currentThread().threadId)
+				case Some(doerThreadId) => assert(doerThreadId == Thread.currentThread().threadId)
 			}
 			currentDoer.set(thisDoer)
 			try runnable.run()
@@ -43,10 +43,12 @@ class DoerTestSync extends ScalaCheckEffectSuite {
 		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 
+	private val doer: Doer = buildDoer()
+
 	import doer.*
 	import Task.*
 
-	private val shared = new GeneratorsForDoerTests[doer.type](doer, true)
+	private val shared = new GeneratorsForDoerTests[doer.type](doer, buildDoer, true)
 	import shared.{*, given}
 
 	private def checkEquality[A](task1: Task[A], task2: Task[A]): Unit = {
