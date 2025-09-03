@@ -1,8 +1,9 @@
 package readren.sequencer
 
 import readren.common.{Maybe, castTo, deriveToString}
+import readren.sequencer.Doer.successUnit
 
-import scala.annotation.tailrec
+import scala.annotation.{tailrec, threadUnsafe}
 import scala.collection.IterableFactory
 import scala.compiletime.erasedValue
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -15,6 +16,8 @@ object Doer {
 	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
 	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure]], few [[Doer.Task]] operations like [[Doer.Task.andThen]] that can't propagate failures, and most [[Commitment]] operations. */
 	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
+
+	val successUnit: Success[Unit] = Success(())
 }
 
 abstract class AbstractDoer extends Doer
@@ -388,15 +391,16 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		/** A [[Duty]] that yields [[Unit]]. */
-		val unit: Duty[Unit] = ready(())
+		/** A [[Duty]] that yields [[Unit]].
+		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+		@threadUnsafe lazy val unit: Duty[Unit] = ready(())
 
 		/** Creates a [[Duty]] whose execution never ends.
 		 * $threadSafe
 		 *
 		 * @return a [[Duty]] whose execution never ends.
 		 * */
-		val never: Duty[Nothing] = NotEver
+		@threadUnsafe lazy val never: Duty[Nothing] = NotEver()
 
 		/** Creates a [[Duty]] whose result is calculated at the call site even before the duty is constructed.
 		 * $threadSafe
@@ -638,7 +642,7 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[ToTask[A]](this)
 	}
 
-	object NotEver extends AbstractDuty[Nothing] {
+	class NotEver extends AbstractDuty[Nothing] {
 		override def engage(onComplete: Nothing => Unit): Unit = ()
 
 		override def toString: String = "NotEver"
@@ -1359,11 +1363,12 @@ trait Doer { thisDoer =>
 
 	object Task {
 
-		/** A [[Task]] yields [[Unit]]. */
-		val unit: Task[Unit] = successful(())
+		/** A [[Task]] yields [[Unit]].
+		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+		@threadUnsafe lazy val unit: Task[Unit] = Immediate(successUnit)
 
 		/** A [[Task]] whose execution never ends. */
-		val never: Task[Nothing] = Never
+		@threadUnsafe lazy val never: Task[Nothing] = Never()
 
 		/** Creates a [[Task]] whose result is calculated at the call site even before the task is constructed. The result of its execution is always the provided value.
 		 *
@@ -1724,7 +1729,7 @@ trait Doer { thisDoer =>
 	 *
 	 * $onCompleteExecutedByDoSiThEx
 	 * */
-	object Never extends AbstractTask[Nothing] {
+	final class Never extends AbstractTask[Nothing] {
 		override def engage(onComplete: Try[Nothing] => Unit): Unit = ()
 	}
 
@@ -1861,7 +1866,10 @@ trait Doer { thisDoer =>
 		override def engage(onComplete: Try[Unit] => Unit): Unit = {
 			taskA.engagePortal { tryA =>
 				val tryConsumerResult =
-					try Success(consumer(tryA))
+					try {
+						consumer(tryA)
+						successUnit
+					}
 					catch {
 						case NonFatal(cause) => Failure(cause)
 					}

@@ -7,19 +7,19 @@ import readren.sequencer.ScheduledDoerTestEffectAbstractSuite
  */
 class StandardSchedulingDpTest extends ScheduledDoerTestEffectAbstractSuite[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
 
-	/** The [[DoerProvider]] whose provided [[Doer]] instances are tested. */
-	private val doerProvider = new StandardSchedulingDp() {
+	override type DP = StandardSchedulingDp
+
+	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
+	override protected def buildDoerProvider: DP = new StandardSchedulingDp() {
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
 
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = thisSuite.onFailureReported(doer, failure)
 	}
 
-	override protected def buildDoer(tag: String): StandardSchedulingDp.ProvidedDoerFacade =
-		doerProvider.provide("test-doer")
-
-	/** Clean up resources after tests. */
-	override def afterAll(): Unit = {
-		println("Shutting down...")
+	/** The implementation should release the specified [[DoerProvider]].
+	 * The implementation may assume that the provided instance was created calling [[buildDoerProvider]]. */
+	override protected def releaseDoerProvider(doerProvider: DP): Unit = {
+		// TODO correct this class' type parameter to avoid this instanceOf
 		doerProvider.shutdown()
 	}
 }

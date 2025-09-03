@@ -8,9 +8,8 @@ import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer
 
-import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
-import scala.annotation.tailrec
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.compiletime.uninitialized
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.{Future, Promise}
@@ -28,30 +27,26 @@ import scala.util.{Failure, Success, Try}
  */
 abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension : ClassTag] extends ScalaCheckEffectSuite {
 
+	type DP <: DoerProvider[D]
+
 	@volatile private var unhandledExceptionObserver: Null | ((Doer, Throwable) => Unit) = null
 	@volatile private var reportedFailuresObserver: Null | ((Doer, Throwable) => Unit) = null
 
-	private var fixture: Fixture[D] = uninitialized
+	private var sharedDoerProviderFixture: Fixture[DP] = uninitialized
+	private var sharedDoerFixture: Fixture[D] = uninitialized
+	private var sharedGeneratorsFixture: Fixture[GeneratorsForDoerTests[D]] = uninitialized
 
 	@volatile private var observingSession: Int = 0
 
-	/** The implementation should return an instance of [[D]]. */
-	protected def buildDoer(tag: String): D
+	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
+	protected def buildDoerProvider: DP
 
-	/** TODO: make the fixture give the DoerProvider instead of a Doer. */
-	private def getMainDoer: D = fixture()
+	/** The implementation should release the specified [[DoerProvider]].
+	 * The implementation may assume that the provided instance was created calling [[buildDoerProvider]]. */
+	protected def releaseDoerProvider(doerProvider: DP): Unit
 
-	override def munitFixtures: Seq[Fixture[?]] = {
-		ScribeConfig.init(deleteLogFilesOnLaunch = true)
-
-		val mainDoer = buildDoer("main")
-		fixture = new Fixture[D]("infrastructure") {
-			override def apply(): D = mainDoer
-		}
-		List(fixture)
-	}
-
-	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever the routine passed to [[Doer.executeSequentially]] or [[SchedulingExtension.scheduleSequentially]] terminates abruptly, passing the unhandled exception. */
+	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever the routine passed to [[Doer.executeSequentially]] or [[SchedulingExtension.scheduleSequentially]] terminates abruptly, passing the unhandled exception.
+	 * In other words, whenever the [[DoerProvider.onUnhandledException]] method of a [[DoerProvider]] instance returned by [[buildDoerProvider]] is called. */
 	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = {
 		if doer.isInSequence then {
 			if unhandledExceptionObserver ne null then unhandledExceptionObserver(doer, exception)
@@ -64,7 +59,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever [[Doer.reportFailure]] is called, passing the received exception. */
+	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever [[Doer.reportFailure]] is called, passing the received exception.
+	 * In other words, wheneer the [[DoerProvider.onFailureReported]] method of a [[DoerProvider]] instance returned by [[buildDoerProvider]] is called. */
 	protected def onFailureReported(doer: Doer, failure: Throwable): Unit = {
 		if doer.isInSequence then {
 			if reportedFailuresObserver ne null then reportedFailuresObserver(doer, failure)
@@ -75,13 +71,59 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
+
+	//// Suite lifecycle ////
+
+	/**
+	 * Creates instances of the classes under test that can be re-used by many test.
+	 * Specifically, creates the instance of [[DoerProvider]] that [[getSharedDoerProvider]] returns, and the instance of [[Doer]] that [[getSharedDoer]] returns. */
+	override def munitFixtures: Seq[Fixture[?]] = {
+		ScribeConfig.init(deleteLogFilesOnLaunch = true)
+
+		val sharedDoerProvider = buildDoerProvider
+		sharedDoerProviderFixture = new Fixture[DP]("shared-doer-provider") {
+			override def apply(): DP = sharedDoerProvider
+		}
+		val sharedDoer = sharedDoerProvider.provide("main-doer")
+		sharedDoerFixture = new Fixture[D]("main-doer") {
+			override def apply(): D = sharedDoer
+		}
+		val sharedGenerators = GeneratorsForDoerTests(sharedDoer, sharedDoerProvider)
+		sharedGeneratorsFixture = new Fixture[GeneratorsForDoerTests[D]]("generators") {
+			override def apply(): GeneratorsForDoerTests[D] = sharedGenerators
+		}
+		List(sharedDoerProviderFixture, sharedDoerFixture)
+	}
+
+	/** Clean up resources after tests. */
+	override def afterAll(): Unit = {
+		println("Shutting down...")
+		releaseDoerProvider(getSharedDoerProvider)
+	}
+
+
+	//// Shared instance's getters ////
+
+	/** Gets the shared instance of the [[DoerProvider]] implementation under test. */
+	protected def getSharedDoerProvider: DP = sharedDoerProviderFixture()
+
+	/** Builds an instance of [[Doer]] using the shared [[DoerProvider]]. */
+	protected def buildDoer(tag: String): D = sharedDoerProviderFixture().provide(tag)
+
+	/** Gets the shared instance of [[Doer]] provided by the shared doer provider. */
+	protected def getSharedDoer: D = sharedDoerFixture()
+
+	/** Get the shared instance of [[GeneratorsForDoerTests]] built using the [[DoerProvider]] and [[Doer]] instances returned by [[getSharedDoerProvider]] and [[getSharedDoer]] respectively. */
+	protected def getGenerators: GeneratorsForDoerTests[D] = sharedGeneratorsFixture()
+
 	//// UTILITIES ////
 
 	/** Breaks the `promise` if it wasn't already completed. */
 	protected def break[P](message: String)(using promise: Promise[P]): Unit =
 		promise.tryFailure(new AssertionError(message))
 
-	/** Waits the promise to complete or the specified duration, what happens first. In the second case the promise is broken with the specified message. */
+	/** Waits the promise to complete or the specified duration, what happens first. In the second case the promise is broken with the specified message.
+	 * @return the [[Future]] view of the provided [[Promise]]. */
 	protected def breakAfterWaiting[P](duration: Int, message: String)(using promise: Promise[P]): Future[P] = {
 		val latch = CountDownLatch(1)
 		promise.future.andThen(_ => latch.countDown())
@@ -90,6 +132,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		promise.future
 	}
 
+	/** Executes the provided `supplier` observing the calls to the [[onUnhandledException]] and [[onFailureReported]] methods during its execution. */
 	protected def observingUnhandledAndReportedExceptionsDo[R, P](supplier: () => R)(onUnhandledException: (Doer, Throwable) => Unit)(onFailureReported: (Doer, Throwable) => Unit)(using promise: Promise[P]): R = {
 		if (unhandledExceptionObserver ne null) || (reportedFailuresObserver ne null) then break("Nesting `observingUnhandledAndReportedExceptionsDo` is not supported")
 		observingSession += 1
@@ -107,7 +150,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	////////// DOER INFRASTRUCTURE ////////
 
 	test("Doer should execute tasks sequentially") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		val results = new AtomicInteger(0)
 		val executionOrder = new AtomicInteger(0)
 		val latch = new CountDownLatch(3)
@@ -177,7 +220,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Tasks should see memory updates from previous tasks in the same doer") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		var sharedCounter = 0
 		val latch = new CountDownLatch(5)
 
@@ -217,7 +260,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// EXCEPTION HANDLING TESTS ////
 
 	test("Doer should handle exceptions in tasks gracefully") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		val latch = new CountDownLatch(2)
 		val exceptionCaught = new AtomicBoolean(false)
 
@@ -242,7 +285,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Doer should call onFailureReported when the operand passed to `Task.andThen` fails") {
-		val mainDoer = getMainDoer
+		val mainDoer = getSharedDoer
 
 		PropF.forAllF { (throwable: Throwable) =>
 			val promise = Promise[Unit]()
@@ -270,7 +313,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Doer should call onUnhandledException when task throws uncaught exception") {
-		val mainDoer = getMainDoer
+		val mainDoer = getSharedDoer
 
 		PropF.forAllF { (exception: Throwable) =>
 			val promise = Promise[Unit]()
@@ -295,7 +338,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Doer should handle uncaught exceptions gracefully") {
-		val mainDoer = getMainDoer
+		val mainDoer = getSharedDoer
 
 		PropF.forAllNoShrinkF { (exception: Throwable) =>
 
@@ -324,7 +367,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// STRESS TESTS ////
 
 	test("Provider should handle high task load") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		val taskCount = 100
 		val latch = new CountDownLatch(taskCount)
 		val results = new AtomicInteger(0)
@@ -365,7 +408,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// EDGE CASE TESTS ////
 
 	test("Provider should handle rapid task submission") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		val latch = new CountDownLatch(50)
 		val results = new AtomicInteger(0)
 
@@ -382,7 +425,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Provider should maintain task ordering under concurrent submission") {
-		val doer = getMainDoer
+		val doer = getSharedDoer
 		val taskCount = 20
 		val latch = new CountDownLatch(taskCount)
 		val executionOrder = new java.util.concurrent.ConcurrentLinkedQueue[Int]()
@@ -424,7 +467,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
 	test("Duty: left identity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
 			val left: doer.Duty[Int] = Duty.ready(x).flatMap(f)
@@ -435,7 +478,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic right identity law: m.flatMap(Duty.ready) == m
 	test("Duty: right identity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF { (m: Duty[Int]) =>
 			val left = m.flatMap(Duty.ready)
@@ -446,7 +489,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
 	test("Duty: associativity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Duty[Int], f: Int => Duty[Int], g: Int => Duty[Int]) =>
@@ -458,7 +501,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Functor: `m.map(f) == m.flatMap(a => ready(f(a)))`
 	test("Duty: can be transformed with map") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Duty[Int], f: Int => String) =>
@@ -469,7 +512,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Duty: any pair of duties can be combined") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (dutyA: Duty[Int], dutyB: Duty[Int], f: (Int, Int) => Int) =>
@@ -486,7 +529,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Duty: `doer.Duty.foreign(foreignDoer)(foreignDuty)` should complete in the `doer`'s thread") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllNoShrinkF {
 			for {
@@ -505,14 +548,12 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("`Duty.engage` should not catch exceptions thrown by `onComplete`") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF { (duty: Duty[Int], exception: Throwable, randomInt: Int) =>
 			val smallNonNegativeInt = math.abs(randomInt % 10)
 			// scribe.debug(s"Begin: duty=$duty, exception=${exception.getMessage}, randomInt=$randomInt, smallNonNegativeInt=$smallNonNegativeInt")
-
-			var tick = false
 
 			/** Do the test for a single operation */
 			def check[R](opName: String, operatedDuty: Duty[R]): Future[Unit] = {
@@ -544,21 +585,10 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				_ <- check("map", duty.map(identity))
 				_ <- check("flatMap", duty.flatMap(_ => duty))
 				_ <- check("andThen", duty.andThen(_ => ()))
-				_ <- check("repeatedUntilSome", duty.repeatedUntilSome() { (n, i) =>
-					if n > smallNonNegativeInt then Maybe.some(randomInt) else {
-						tick = true
-						println(s"tick $n/$smallNonNegativeInt")
-						Maybe.empty
-					}
-				})
+				_ <- check("toTask", duty.toTask)
+				_ <- check("repeatedUntilSome", duty.repeatedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
 				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0)) { (n, tryInt) =>
-					if n > smallNonNegativeInt then Maybe.some(randomInt) else {
-						tick = true
-						println(s"tick $n/$smallNonNegativeInt")
-						Maybe.empty
-					}
-				})
+				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
 				_ <- check("repeatedWhileUndefined", duty.repeatedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
 			} yield ()
 		}
@@ -585,7 +615,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
 	test("Task: left identity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
@@ -598,7 +628,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic right identity law: m.flatMap(Task.successful) == m
 	test("Task: right identity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Task[Int]) =>
@@ -610,7 +640,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
 	test("Task: associativity") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
@@ -622,7 +652,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
 	test("Task: can be transformed with map") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Task[Int], f: Int => String) =>
@@ -634,7 +664,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
 	test("Task: can be recovered from failure") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
@@ -647,7 +677,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Task: any can be combined") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
@@ -664,7 +694,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Task: `doer.Task.foreign(foreignDoer)(foreignTask)` should complete in the `doer`'s thread") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllNoShrinkF {
 			for {
@@ -684,15 +714,15 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("if a function operand passed to a Task's operation throws an exception, the task should complete with that exception if it is non-fatal, or never complete if it is fatal.") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+	test("Task: if a function operand passed to a Task's operation throws an exception then, if the exception isn't fatal, the task should complete with a [[Failure]] containing that exception; and if it is fatal, the task should not complete and instead the `DoerProvider.onUnhandledException` method should be called passing the exception.") {
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(
 			for {i <- intGen; task <- genTask(i, "")} yield task,
 			throwableArbitrary.arbitrary
 		) { case (anyTask: Task[Int], exception: Throwable) =>
-			println(s"Begin: anyTask: $anyTask, exception: $exception")
+			// println(s"Begin: anyTask: $anyTask, exception: $exception")
 
 			/** Do the test for a single operation */
 			def check[R](opName: String, operatedTask: Task[R], shouldCatchAndReportNonFatalExceptions: Boolean = false): Future[Unit] = {
@@ -739,29 +769,29 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 			for {
 				_ <- check("own", Task.own(f0))
-				//				_ <- check("ownFlat", Task.ownFlat(f0))
-				//				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.own(f0)))
-				//				_ <- check("alien", Task.alien(f0))
-				//				_ <- check("combine", Task.combine(anyTask, anyTask)(f2))
-				//				_ <- check("map", successfulTask.map(f1))
-				//				_ <- check("andThen", anyTask.andThen(f1), true)
-				//				_ <- check("flatMap", successfulTask.flatMap(f1))
-				//				_ <- check("withFilter", successfulTask.withFilter(f1))
-				//				_ <- check("transform", anyTask.transform(f1))
-				//				_ <- check("transformWith", anyTask.transformWith(f1))
-				//				_ <- check("recover", failingTask.recover { case x => f1(x) }) // the `map` is to ensure that the upstream task completes abruptly to avoid the tested operation be skipped.
-				//				_ <- check("recoverWith", failingTask.recoverWith { case x => f1(x) })
-				//				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome()(f2))
-				//				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome()(f2))
-				//				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
-				//				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0))(f2))
-				//				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
+				_ <- check("ownFlat", Task.ownFlat(f0))
+				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.own(f0)))
+				_ <- check("alien", Task.alien(f0))
+				_ <- check("combine", Task.combine(anyTask, anyTask)(f2))
+				_ <- check("map", successfulTask.map(f1))
+				_ <- check("andThen", anyTask.andThen(f1), true)
+				_ <- check("flatMap", successfulTask.flatMap(f1))
+				_ <- check("withFilter", successfulTask.withFilter(f1))
+				_ <- check("transform", anyTask.transform(f1))
+				_ <- check("transformWith", anyTask.transformWith(f1))
+				_ <- check("recover", failingTask.recover { case x => f1(x) }) // the `map` is to ensure that the upstream task completes abruptly to avoid the tested operation be skipped.
+				_ <- check("recoverWith", failingTask.recoverWith { case x => f1(x) })
+				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome()(f2))
+				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome()(f2))
+				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
+				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0))(f2))
+				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
 			} yield ()
 		}
 	}
 
 	test("`Task.engage` should not catch exceptions thrown by the `onComplete` operand") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllF { (task1: Task[Int], task2: Task[Int], exception: Throwable, future: Future[Int]) =>
@@ -820,7 +850,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// COVENANT ////
 
 	test("Covenant: `covenant.fulfill(int)` should trigger the execution of all the down-chains and subscriptions it has passing `int`") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
 			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
@@ -833,7 +863,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Covenant: `covenant.fulfillWith(duty)` should tigger the execution of all the down-chains and subscriptions it has passing what `duty` shields") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF(
 			for {
@@ -887,7 +917,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// COMMITMENT ////
 
 	test("Commitment: `commitment.complete(a)` should trigger the execution of all the down-chains and subscriptions it has, passing `a`") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllNoShrinkF(
 			for {
@@ -907,7 +937,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Commitment: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllNoShrinkF(
 			for {
@@ -994,7 +1024,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	//// SCHEDULING ////
 
 	test("Scheduling: SchedulingExtension.schedule: should fail if called with the same `Schedule` instance twice") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		Prop.forAllNoShrink(Gen.choose(1, 5), Gen.choose(1, 5)) { (delay: Int, interval: Int) =>
@@ -1020,7 +1050,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: Duty.schedule(newDelaySchedule(delay))(supplier) executes the supplier after the delay") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
@@ -1038,7 +1068,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: `Duty.schedule(newFixedRateSchedule)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 10), Gen.choose(1, 10)) { (initialDelay: Int, interval: Int) =>
@@ -1072,7 +1102,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: `duty.scheduled(newDelaySchedule(delay))` should preserve the original duty's result and postpone its execution the specified `delay`") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 10)) { (duty: Duty[Int], testDelay: Int) =>
@@ -1090,7 +1120,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: `duty.scheduled(newFixedDelaySchedule)` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(
@@ -1124,7 +1154,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable after the schedule was activated.") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
@@ -1159,7 +1189,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 
 	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable before the schedule is activated.") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
@@ -1178,7 +1208,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 
 	test("Scheduling Duty.scheduled: should compose correctly with other Duty operations") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 
 		PropF.forAllNoShrinkF { (duty: Duty[Int], delay: Int, f: Int => String) =>
@@ -1209,7 +1239,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		val maxDuration = 5
 		PropF.forAllNoShrinkF(
@@ -1266,7 +1296,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	}
 
 	test("Scheduling Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
-		val generators = GeneratorsForDoerTests(getMainDoer, () => buildDoer("foreign-0"))
+		val generators = getGenerators
 		import generators.{*, given}
 		val maxDelay = 5
 		PropF.forAllNoShrinkF(

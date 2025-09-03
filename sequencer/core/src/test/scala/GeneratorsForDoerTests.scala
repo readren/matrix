@@ -138,17 +138,17 @@ object GeneratorsForDoerTests {
 
 /** Offers generators of [[doer.Duty]] and [[doer.Task]] instances.
  * Useful for suites that test their behavior. */
-class GeneratorsForDoerTests[TD <: Doer](val doer: TD, doerBuilder: () => Doer, synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
+class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[Doer], synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
 
 	import doer.*
 
 	export doer.*
 
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
-	val foreignDoer: Doer = doerBuilder()
+	val foreignDoer: Doer = doerProvider.provide(s"foreign-doer-$recursionLevel")
 
 	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Task]] instances. */
-	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests(foreignDoer, doerBuilder, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
+	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests[foreignDoer.type](foreignDoer, doerProvider, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
 
 	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
 	def genDuty[A](a: A): Gen[Duty[A]] = {
