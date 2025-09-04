@@ -59,11 +59,11 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 		extension (inquirerId: Id) {
 			def accessNode(id: Id): sequencer.Task[Node] = {
-				sequencer.Task.ownFlat { () =>
+				sequencer.Task_ownFlat { () =>
 					getNode(id).fold {
-						sequencer.Task.failed(new RuntimeException(s"$inquirerId: no response from $id")).appointed(sequencer.newDelaySchedule(timeout))
+						sequencer.Task_failed(new RuntimeException(s"$inquirerId: no response from $id")).appointed(sequencer.newDelaySchedule(timeout))
 					} { node =>
-						sequencer.Task.successful(node).appointed(sequencer.newDelaySchedule(latency))
+						sequencer.Task_successful(node).appointed(sequencer.newDelaySchedule(latency))
 					}
 				}
 			}
@@ -87,23 +87,23 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		 * @param isFallback Whether the command is a fallback command.
 		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
 		def sendsCommand(command: String, isFallback: Boolean = false, retriesCounter: Int = 0): net.sequencer.Task[Boolean] = {
-			if net.size == 0 then net.sequencer.Task.successful(false)
+			if net.size == 0 then net.sequencer.Task_successful(false)
 			if receiverIndex < 0 then receiverIndex = net.size - 1
 			val receiverNode = net.getNode(receiverIndex)
 
 			def retry(): receiverNode.sequencer.Task[Boolean] = {
 				receiverIndex -= 1
-				if retriesCounter > net.size then receiverNode.sequencer.Task.successful(false)
+				if retriesCounter > net.size then receiverNode.sequencer.Task_successful(false)
 				else sendsCommand(command, true, retriesCounter + 1).onBehalfOf(receiverNode.sequencer)
 			}
 
-			receiverNode.sequencer.Task.ownFlat { () =>
+			receiverNode.sequencer.Task_ownFlat { () =>
 				val receiverBehavior = receiverNode.participant.getBehaviorOrdinal
 				receiverNode.cluster.messagesListener.onCommandFromClient(TestCommand(command), isFallback)
 					.transformWith[Boolean] {
 						case Success(receiverNode.Processed(index, content)) =>
 							scribe.info(s"Client: command `$command` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
-							receiverNode.sequencer.Task.successful(true)
+							receiverNode.sequencer.Task_successful(true)
 						case Success(receiverNode.RedirectTo(leaderId)) =>
 							scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$command` to the leader $leaderId.")
 							receiverIndex = net.indexOf(leaderId)
@@ -146,7 +146,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		/** Initializes this node, adding it to the `net` and creating the associated [[ConsensusParticipant]] instance. */
 		def initializes(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
 			net.addNode(myId, thisNode)
-			sequencer.Duty.mine { () =>
+			sequencer.Duty_mine { () =>
 				_participant = ConsensusParticipant(cluster, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
 			}
 		}
@@ -155,7 +155,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		/** Initializes this node and waits it's associated [[ConsensusParticipant]] instance to be started. */
 		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
 			net.addNode(myId, thisNode)
-			sequencer.Duty.mineFlat { () =>
+			sequencer.Duty_mineFlat { () =>
 				val startedCovenant = sequencer.Covenant[Unit]
 				val startedListener = new DefaultNotificationListener() {
 					override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = if !isRestart then startedCovenant.fulfill(())(_ => ())
@@ -169,7 +169,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 		object machine extends StateMachine {
 			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {
-				sequencer.Task.successful(command.value) // TODO add delay
+				sequencer.Task_successful(command.value) // TODO add delay
 			}
 		}
 
@@ -195,7 +195,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 					val result =
 						for {
 							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
-							si <- replier.sequencer.Task.mine { () =>
+							si <- replier.sequencer.Task_mine { () =>
 								replier.cluster.messagesListener.onHowAreYou(hostId, inquirerTerm)
 							}.onBehalfOf(sequencer)
 						} yield StateInfo(si.currentTerm, si.ordinal, si.lastRecordTerm, si.lastRecordIndex)
@@ -209,7 +209,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 					val result =
 						for {
 							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
-							v <- replier.sequencer.Task.ownFlat { () =>
+							v <- replier.sequencer.Task_ownFlat { () =>
 								replier.cluster.messagesListener
 									.onChooseALeader(destinationId, replier.StateInfo(inquirerInfo.currentTerm, inquirerInfo.ordinal, inquirerInfo.lastRecordTerm, inquirerInfo.lastRecordIndex))
 							}.onBehalfOf(sequencer)
@@ -237,7 +237,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 					val result =
 						for {
 							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
-							ar <- replier.sequencer.Task.ownFlat { () =>
+							ar <- replier.sequencer.Task_ownFlat { () =>
 								replier.cluster.messagesListener
 									.onAppendRecords(hostId, inquirerTerm, prevLogIndex, prevLogTerm, migrateRecordsTo(replier), leaderCommit)
 							}.onBehalfOf(sequencer)
@@ -257,11 +257,11 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 			private var memory: WS = ValidWorkspace()
 
-			override val loads: sequencer.Task[WS] = sequencer.Task.successful(memory) // TODO add a delay
+			override val loads: sequencer.Task[WS] = sequencer.Task_successful(memory) // TODO add a delay
 
 			override def saves(workspace: WS): sequencer.Task[Unit] = {
 				memory = workspace
-				sequencer.Task.successful(()) // TODO add a delay
+				sequencer.Task_successful(()) // TODO add a delay
 			}
 		}
 
@@ -382,7 +382,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				notificationsListenersHolder = nl :: notificationsListenersHolder
 				node.initializes(initialNotificationListener = nl).onBehalfOf(net.sequencer)
 			}
-		net.sequencer.Duty.sequenceToArray(nodeInitializerByIndex)
+		net.sequencer.Duty_sequenceToArray(nodeInitializerByIndex)
 	}
 
 
@@ -414,8 +414,8 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				inline val MAX_RETRIES = 9
 
 				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.sequencer.Task[Unit] = {
-					if commandIndex >= 10 || atMostOneLeaderCommitment.isCompleted then net.sequencer.Task.unit
-					else if retriesCounter > MAX_RETRIES then net.sequencer.Task.failed(new AssertionError("The cluster got stuck unable to progress"))
+					if commandIndex >= 10 || atMostOneLeaderCommitment.isCompleted then net.sequencer.Task_unit
+					else if retriesCounter > MAX_RETRIES then net.sequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
 					else for {
 						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
 						_ <- {
@@ -461,8 +461,8 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				inline val MAX_RETRIES = 9
 
 				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.sequencer.Task[Unit] = {
-					if commandIndex >= 10 || leaderNeverOverwritesCommitment.isCompleted then net.sequencer.Task.unit
-					else if retriesCounter > MAX_RETRIES then net.sequencer.Task.failed(new AssertionError("The cluster got stuck unable to progress"))
+					if commandIndex >= 10 || leaderNeverOverwritesCommitment.isCompleted then net.sequencer.Task_unit
+					else if retriesCounter > MAX_RETRIES then net.sequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
 					else for {
 						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
 						_ <- {

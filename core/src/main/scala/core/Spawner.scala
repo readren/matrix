@@ -55,8 +55,8 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialReactantSer
 	/** Calls must be within the [[doer]]. */
 	def stopsChildren(): doer.Duty[Array[Unit]] = {
 		doer.checkWithin()
-		val stopDuties = childrenView.values.map(child => doer.Duty.foreign(child.doer)(child.stop()))
-		doer.Duty.sequenceToArray(stopDuties)
+		val stopDuties = childrenView.values.map(child => doer.Duty_foreign(child.doer)(child.stop()))
+		doer.Duty_sequenceToArray(stopDuties)
 	}
 
 	/** Calls must be within the [[doer]]. */

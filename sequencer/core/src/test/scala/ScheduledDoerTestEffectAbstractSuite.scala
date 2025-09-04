@@ -294,7 +294,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 			observingUnhandledAndReportedExceptionsDo { () =>
 				// Submit a task that uses Task.andThen which will cause a failure report
-				mainDoer.Task.unit.andThen(_ => throw throwable).trigger() { _ =>
+				mainDoer.Task_unit.andThen(_ => throw throwable).trigger() { _ =>
 					if NonFatal(throwable) then break(s"The failure report should be done before the task that produced it completes.")
 					else break("The operation completed despite the operand thew a fatal exception")
 				}
@@ -470,7 +470,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
-			val left: doer.Duty[Int] = Duty.ready(x).flatMap(f)
+			val left: doer.Duty[Int] = Duty_ready(x).flatMap(f)
 			val right: doer.Duty[Int] = f(x)
 			checkEquality(doer)(left, right)
 		}
@@ -481,7 +481,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		val generators = getGenerators
 		import generators.{*, given}
 		PropF.forAllF { (m: Duty[Int]) =>
-			val left = m.flatMap(Duty.ready)
+			val left = m.flatMap(Duty_ready)
 			val right = m
 			checkEquality(doer)(left, right)
 		}
@@ -506,7 +506,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 		PropF.forAllF { (m: Duty[Int], f: Int => String) =>
 			val left = m.map(f)
-			val right = m.flatMap(a => Duty.ready(f(a)))
+			val right = m.flatMap(a => Duty_ready(f(a)))
 			checkEquality(doer)(left, right)
 		}
 	}
@@ -516,7 +516,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		import generators.{*, given}
 
 		PropF.forAllF { (dutyA: Duty[Int], dutyB: Duty[Int], f: (Int, Int) => Int) =>
-			val combinedDuty = Duty.combine(dutyA, dutyB)(f)
+			val combinedDuty = Duty_combine(dutyA, dutyB)(f)
 
 			for {
 				combinedResult <- combinedDuty.toFutureHardy()
@@ -539,7 +539,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		} { case (dutyResult, foreignDuty) =>
 			// println(s"Begin: foreignDuty: $foreignDuty")
 
-			doer.Duty.foreign(foreignDoer)(foreignDuty)
+			doer.Duty_foreign(foreignDoer)(foreignDuty)
 				.map { int => int == dutyResult && doer.isInSequence && !foreignDoer.isInSequence }
 				.toTask
 				.map(assert(_))
@@ -586,10 +586,10 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				_ <- check("flatMap", duty.flatMap(_ => duty))
 				_ <- check("andThen", duty.andThen(_ => ()))
 				_ <- check("toTask", duty.toTask)
-				_ <- check("repeatedUntilSome", duty.repeatedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
-				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
-				_ <- check("repeatedWhileUndefined", duty.repeatedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
+				_ <- check("repeatedUntilSome", duty.repeatedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
+				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
+				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty))
+				_ <- check("repeatedWhileUndefined", duty.repeatedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
 			} yield ()
 		}
 	}
@@ -619,8 +619,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		import generators.{*, given}
 
 		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
-			val sx = Task.successful(x)
-			val left = Task.successful(x).flatMap(f)
+			val sx = Task_successful(x)
+			val left = Task_successful(x).flatMap(f)
 			val right = f(x)
 			checkEquality(doer)(left, right)
 		}
@@ -632,7 +632,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		import generators.{*, given}
 
 		PropF.forAllF { (m: Task[Int]) =>
-			val left = m.flatMap(Task.successful)
+			val left = m.flatMap(Task_successful)
 			val right = m
 			checkEquality(doer)(left, right)
 		}
@@ -657,7 +657,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 		PropF.forAllF { (m: Task[Int], f: Int => String) =>
 			val left = m.map(f)
-			val right = m.flatMap(a => Task.successful(f(a)))
+			val right = m.flatMap(a => Task_successful(f(a)))
 			checkEquality(doer)(left, right)
 		}
 	}
@@ -669,8 +669,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
 			if NonFatal(e) then {
-				val leftTask = Task.failed[Int](e).recover(f)
-				val rightTask = if f.isDefinedAt(e) then Task.successful(f(e)) else Task.failed(e)
+				val leftTask = Task_failed[Int](e).recover(f)
+				val rightTask = if f.isDefinedAt(e) then Task_successful(f(e)) else Task_failed(e)
 				checkEquality(doer)(leftTask, rightTask)
 			} else Future.successful(())
 		}
@@ -681,7 +681,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		import generators.{*, given}
 
 		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
-			val combinedTask = Task.combine(taskA, taskB)(f)
+			val combinedTask = Task_combine(taskA, taskB)(f)
 
 			for {
 				combinedResult <- combinedTask.toFutureHardy()
@@ -704,7 +704,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		} { case (taskResult, foreignTask) =>
 			// println(s"Begin: taskResult: $taskResult, foreignTask: $foreignTask")
 
-			doer.Task.foreign(foreignDoer)(foreignTask)
+			doer.Task_foreign(foreignDoer)(foreignTask)
 				.transform { tryInt =>
 					assert(tryInt.fold[Boolean](_.getMessage.contains(taskResult.toString), _ == taskResult))
 					assert(doer.isInSequence)
@@ -768,11 +768,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			def f2[A, B, C](a: A, b: B): C = throw exception
 
 			for {
-				_ <- check("own", Task.own(f0))
-				_ <- check("ownFlat", Task.ownFlat(f0))
-				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.own(f0)))
-				_ <- check("alien", Task.alien(f0))
-				_ <- check("combine", Task.combine(anyTask, anyTask)(f2))
+				_ <- check("own", Task_own(f0))
+				_ <- check("ownFlat", Task_ownFlat(f0))
+				_ <- check("foreign", Task_foreign(foreignDoer)(foreignDoer.Task_own(f0)))
+				_ <- check("alien", Task_alien(f0))
+				_ <- check("combine", Task_combine(anyTask, anyTask)(f2))
 				_ <- check("map", successfulTask.map(f1))
 				_ <- check("andThen", anyTask.andThen(f1), true)
 				_ <- check("flatMap", successfulTask.flatMap(f1))
@@ -781,11 +781,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				_ <- check("transformWith", anyTask.transformWith(f1))
 				_ <- check("recover", failingTask.recover { case x => f1(x) }) // the `map` is to ensure that the upstream task completes abruptly to avoid the tested operation be skipped.
 				_ <- check("recoverWith", failingTask.recoverWith { case x => f1(x) })
-				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome()(f2))
-				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome()(f2))
-				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined() { case (a, b) => f2(a, b) })
-				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0))(f2))
-				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0)) { case (a, b) => f2(a, b) })
+				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome(f2))
+				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome(f2))
+				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined { case (a, b) => f2(a, b) })
+				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0), f2))
+				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0), { case (a, b) => f2(a, b) }))
 			} yield ()
 		}
 	}
@@ -826,9 +826,9 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 			for {
 				_ <- check("factory", task1)
-				_ <- check("ownFlat", Task.ownFlat(() => task1))
-				_ <- check("foreign", Task.foreign(foreignDoer)(foreignDoer.Task.mine(() => randomInt)))
-				_ <- check("alien", Task.alien(() => future))
+				_ <- check("ownFlat", Task_ownFlat(() => task1))
+				_ <- check("foreign", Task_foreign(foreignDoer)(foreignDoer.Task_mine(() => randomInt)))
+				_ <- check("alien", Task_alien(() => future))
 				_ <- check("map", task1.map(identity))
 				_ <- check("flatMap", task1.flatMap(_ => task2))
 				_ <- check("withFilter", task1.withFilter(_ => randomBool))
@@ -837,11 +837,11 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				_ <- check("transformWith", task1.transformWith(_ => task2))
 				_ <- check("recover", task1.recover { case x if randomBool => randomInt })
 				_ <- check("recoverWith", task1.recoverWith { case x if randomBool => task2 })
-				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome() { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome() { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedHardyUntilDefined", task1.reiteratedHardyUntilDefined() { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0)) { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedWhileUndefined", task1.reiteratedWhileUndefined(Success(0)) { case (n, tryInt) if n > smallNonNegativeInt => randomInt })
+				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedHardyUntilDefined", task1.reiteratedHardyUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
+				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty))
+				_ <- check("reiteratedWhileUndefined", task1.reiteratedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
 			} yield ()
 		}
 	}
@@ -889,7 +889,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		val subscriptionAwareCovenant = doer.Covenant[Int]
 		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)()
 		val checks = for {
-			_ <- Duty.mine { () =>
+			_ <- Duty_mine { () =>
 				if testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 				testedCovenant.subscribe(subscriptionOnCompleteCallBack)
 				if !testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) && testedCovenant.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
@@ -981,8 +981,8 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 		// The task that checks what this test verifies.
 		val checks: doer.Task[Unit] = {
-			Task.ownFlat(() => f2(nat)).transformWith { f2AtNatResult =>
-				Task.ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
+			Task_ownFlat(() => f2(nat)).transformWith { f2AtNatResult =>
+				Task_ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
 					if testedCommitment.isAlreadySubscribed(completionObserver) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 					testedCommitment.subscribe(completionObserver)
 					if !testedCommitment.isAlreadySubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
@@ -1056,7 +1056,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
 			val startNano = System.nanoTime()
-			val duty = Duty.schedule(schedule)(() => delay * 2)
+			val duty = doer.Duty_schedule(schedule)(() => delay * 2)
 				.map { x =>
 					val actualDelay = System.nanoTime - startNano
 					// println(s"-------> actual delay: ${actualDelay/1000} micros, expected: $delay millis, error: ${actualDelay/1000_000-delay} schedule: $schedule")
@@ -1078,7 +1078,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			val promise = Promise[Int]()
 			val startMilli = System.currentTimeMillis()
 			var counter: Int = 0
-			val duty = Duty.schedule[Int](schedule)(() => counter)
+			val duty = doer.Duty_schedule[Int](schedule)(() => counter)
 				.andThen { supplierResult =>
 					// println(s"supplierResult = $supplierResult/$repetitions")
 					if !doer.wasActivated(schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
@@ -1172,14 +1172,14 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				// println(s"-----> wasCanceled: $wasCanceled, schedule: $schedule")
 			}
 			val cancelsAndWaits = for {
-				_ <- Task.mine[Unit] { () =>
+				_ <- Task_mine[Unit] { () =>
 					assert(!doer.isCanceled(schedule) || hasCompleted, "The schedule got canceled before canceling it")
 					//					if !doer.isActive(schedule) && !hasCompleted then commitment.break(new AssertionError("The schedule got canceled before canceling it"))()
 					doer.cancel(schedule)
 					wasCanceled = true
 					assert(doer.isCanceled(schedule))
 				}
-				_ <- Task.sleeps(delay)
+				_ <- doer.Task_sleeps(delay)
 
 			} yield () // println("cancelsAndWaits completed successfully")
 			commitment.completeWith(cancelsAndWaits)(x => println("was already completed with x"))
@@ -1201,7 +1201,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}"))()
 			}
 			assert(doer.isCanceled(schedule))
-			commitment.completeWith(Task.sleeps(delay + 1))()
+			commitment.completeWith(doer.Task_sleeps(delay + 1))()
 			commitment.toFuture()
 		}
 	}
@@ -1222,15 +1222,15 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			val mappedScheduled: Duty[String] = duty.map(f).scheduled(doer.newDelaySchedule(testDelay))
 
 			// Test composition with flatMap
-			val scheduledFlatMapped: Duty[String] = duty.scheduled(doer.newDelaySchedule(testDelay)).flatMap(x => Duty.ready(f(x)))
-			val flatMappedScheduled: Duty[String] = duty.flatMap(x => Duty.ready(f(x))).scheduled(doer.newDelaySchedule(testDelay))
+			val scheduledFlatMapped: Duty[String] = duty.scheduled(doer.newDelaySchedule(testDelay)).flatMap(x => Duty_ready(f(x)))
+			val flatMappedScheduled: Duty[String] = duty.flatMap(x => Duty_ready(f(x))).scheduled(doer.newDelaySchedule(testDelay))
 
 			val checks =
 				for {
-					_ <- Duty.combine(scheduledMapped, mappedScheduled) { (a, b) =>
+					_ <- Duty_combine(scheduledMapped, mappedScheduled) { (a, b) =>
 						assert(a == b, "scheduled.map should equal map.scheduled")
 					}
-					_ <- Duty.combine(scheduledFlatMapped, flatMappedScheduled) { (scheduledFlat, flatMapped) =>
+					_ <- Duty_combine(scheduledFlatMapped, flatMappedScheduled) { (scheduledFlat, flatMapped) =>
 						assert(scheduledFlat == flatMapped, "scheduled.flatMap should equal flatMap.scheduled")
 					}
 				} yield ()
@@ -1272,18 +1272,18 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 						} else if r != sample.int then break(s"The duty completed with an unexpected result: $r instead of ${sample.int}")
 					}
 				}
-			doer.Duty.sequenceToArray(duties).triggerAndForget()
+			doer.Duty_sequenceToArray(duties).triggerAndForget()
 
 			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val waits = for {
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
 					doer.execute {
 						doer.cancelAll()
 						cancelAllWasCalled = true
 					}
 				}
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDuration)) { () =>
+				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(maxDuration)) { () =>
 					promise.trySuccess(())
 				}
 			} yield ()
@@ -1334,17 +1334,17 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 							executionsCounter += 1
 						}
 				}
-			doer.Duty.sequenceToArray(duties).triggerAndForget()
+			doer.Duty_sequenceToArray(duties).triggerAndForget()
 
 			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val cancelsAllAfterADelayAndThenWaitsEnough = for {
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
 					doer.cancelAll()
 					cancelNanoTime = System.nanoTime()
 					cancelAllWasCalled = true
 				}
-				_ <- otherDoer.Task.appoint(otherDoer.newDelaySchedule(maxDelay + 1)) { () =>
+				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(maxDelay + 1)) { () =>
 					promise.trySuccess(())
 				}
 			} yield ()

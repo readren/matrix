@@ -42,7 +42,7 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 	)(
 		using isSignalTest: IsSignalTest[U]
 	): doer.Duty[ReactantRelay[U]] = {
-		doer.Duty.mineFlat { () =>
+		doer.Duty_mineFlat { () =>
 			spawner.createsReactant[U](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}

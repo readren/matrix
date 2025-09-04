@@ -112,7 +112,7 @@ abstract class Reactant[U](
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
-				doer.Duty.unit
+				doer.Duty_unit
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart[U @unchecked] =>
@@ -163,11 +163,11 @@ abstract class Reactant[U](
 					// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one. The signal handler is NOT called again.
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
-							oSpawner.fold(doer.Duty.unit) { spawner =>
+							oSpawner.fold(doer.Duty_unit) { spawner =>
 								spawner.stopsChildren()
 							}
 						}
-						else doer.Duty.unit
+						else doer.Duty_unit
 					stopsChildrenIfInstructed.flatMap(_ => selfStarts(true, tr.restartBehaviorBuilder))
 			}
 		}
@@ -374,7 +374,7 @@ abstract class Reactant[U](
 
 
 	override def diagnoses: doer.Duty[ReactantDiagnostic] =
-		doer.Duty.mine { () =>
+		doer.Duty_mine { () =>
 			val childrenDiagnostic = children.map(_._2.staleDiagnose).toArray
 			ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.size, inbox.iterator, childrenDiagnostic)
 		}

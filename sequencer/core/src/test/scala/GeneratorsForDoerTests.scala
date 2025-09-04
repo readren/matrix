@@ -152,13 +152,13 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 
 	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
 	def genDuty[A](a: A): Gen[Duty[A]] = {
-		val readyGen: Gen[Duty[A]] = Duty.ready(a)
+		val readyGen: Gen[Duty[A]] = Duty_ready(a)
 
-		val mineGen: Gen[Duty[A]] = Duty.mine(() => a)
+		val mineGen: Gen[Duty[A]] = Duty_mine(() => a)
 
-		val mineFlatGen: Gen[Duty[A]] = Gen.oneOf(readyGen, mineGen).map(da => Duty.mineFlat(() => da))
+		val mineFlatGen: Gen[Duty[A]] = Gen.oneOf(readyGen, mineGen).map(da => Duty_mineFlat(() => da))
 
-		def foreignGen: Gen[Duty[A]] = foreignDoerGenerators().genDuty(a).map(Duty.foreign(foreignDoer)(_))
+		def foreignGen: Gen[Duty[A]] = foreignDoerGenerators().genDuty(a).map(Duty_foreign(foreignDoer)(_))
 
 		if synchronousOnly || !includeForeign then Gen.oneOf(readyGen, mineGen, mineFlatGen)
 		else Gen.oneOf(readyGen, mineGen, mineFlatGen, foreignGen)
@@ -173,17 +173,17 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
 	def genTaskFromTry[A](tryA: Try[A], failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
 
-		val immediateGen: Gen[Task[A]] = Task.ready(tryA)
+		val immediateGen: Gen[Task[A]] = Task_ready(tryA)
 
-		val ownGen: Gen[Task[A]] = Task.own(() => tryA)
+		val ownGen: Gen[Task[A]] = Task_own(() => tryA)
 
-		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task.ownFlat(() => taskA) }
+		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task_ownFlat(() => taskA) }
 
-		val waitGen: Gen[Task[A]] = genFutureFromTry(tryA, s"$failureLabel / Task.wait").map(Task.wait)
+		val waitGen: Gen[Task[A]] = genFutureFromTry(tryA, s"$failureLabel / Task.wait").map(Task_wait)
 
-		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTaskFromTry(tryA, s"failureLabel / Task.foreign").map(Task.foreign(foreignDoer)(_))
+		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTaskFromTry(tryA, s"failureLabel / Task.foreign").map(Task_foreign(foreignDoer)(_))
 
-		val alienGen: Gen[Task[A]] = genFutureBuilderFromTry(tryA, s"$failureLabel / Task.alien").map(Task.alien)
+		val alienGen: Gen[Task[A]] = genFutureBuilderFromTry(tryA, s"$failureLabel / Task.alien").map(Task_alien)
 
 		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
 		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
@@ -193,17 +193,17 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
 	def genTask[A](a: A, failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
 
-		val immediateGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.immediate", failureProbability).map(Task.ready)
+		val immediateGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.immediate", failureProbability).map(Task_ready)
 
-		val ownGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.own", failureProbability).map { tryA => Task.own(() => tryA) }
+		val ownGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.own", failureProbability).map { tryA => Task_own(() => tryA) }
 
-		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task.ownFlat(() => taskA) }
+		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task_ownFlat(() => taskA) }
 
-		val waitGen: Gen[Task[A]] = genFuture(a, s"$failureLabel / Task.wait").map(Task.wait)
+		val waitGen: Gen[Task[A]] = genFuture(a, s"$failureLabel / Task.wait").map(Task_wait)
 
-		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTask(a, s"failureLabel / Task.foreign").map(Task.foreign(foreignDoer)(_))
+		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTask(a, s"failureLabel / Task.foreign").map(Task_foreign(foreignDoer)(_))
 
-		val alienGen: Gen[Task[A]] = genFutureBuilder(a, s"$failureLabel / Task.alien").map(Task.alien)
+		val alienGen: Gen[Task[A]] = genFutureBuilder(a, s"$failureLabel / Task.alien").map(Task_alien)
 
 		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
 		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)

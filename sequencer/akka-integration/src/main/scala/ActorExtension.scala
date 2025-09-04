@@ -16,12 +16,12 @@ trait ActorExtension { thisActorExtension: Doer =>
 
 	extension [A](target: ActorRef[A]) {
 		/** Creates a [[Task]] that sends the provided message to the `target`. */
-		def says(message: A): Task[Unit] = Task.mine(() => target ! message)
+		def says(message: A): Task[Unit] = Task_mine(() => target ! message)
 
 		/** Note: The type parameter is required for the compiler to know the type parameter of the resulting [[Task]]. */
 		def queries[B](messageBuilder: ActorRef[B] => A)(using timeout: Timeout): Task[B] = {
 			import akka.actor.typed.scaladsl.AskPattern.*
-			Task.wait(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
+			Task_wait(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
 		}
 	}
 

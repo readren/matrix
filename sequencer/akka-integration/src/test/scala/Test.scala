@@ -23,7 +23,7 @@ object Test {
 				Behaviors.setup { actorContext =>
 					ActorBasedDoer.setup(actorContext) { taskContext =>
 						Behaviors.receiveMessage { pregunta =>
-							taskContext.Task.successful(Respuesta(actorContext.self, "Hola")).triggerAndSend(pregunta.replyTo, true)
+							taskContext.Task_successful(Respuesta(actorContext.self, "Hola")).triggerAndSend(pregunta.replyTo, true)
 
 							Behaviors.same
 						}

@@ -571,7 +571,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	 */
 	def appendEntry(command: Any): sequencer.Task[ClientResponse] = {
 		if role == Role.Leader then {
-			sequencer.Task.ownFlat { () =>
+			sequencer.Task_ownFlat { () =>
 				val entry = LogEntry(currentTerm, log.length + 1, command)
 				log = log :+ entry
 
@@ -589,7 +589,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 						leaderCommit = commitIndex
 					))
 				}
-				sequencer.Task.sequenceToArray(appendEntriesTasks).map { _ => 
+				sequencer.Task_sequenceToArray(appendEntriesTasks).map { _ =>
 					ClientResponse.Success(entry.index)
 				}
 			}
@@ -605,7 +605,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 					scribe.info(s"${clusterService.context.showContext}: no leader known, responding with NoLeaderKnown")
 					ClientResponse.NoLeaderKnown
 			}
-			sequencer.Task.successful(response)
+			sequencer.Task_successful(response)
 		}
 	}
 

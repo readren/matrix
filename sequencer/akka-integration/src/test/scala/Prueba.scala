@@ -132,7 +132,7 @@ object Prueba {
 			ActorBasedDoer.setup[Pregunta](ctx) { doer =>
 				import doer.*
 
-				val flow = Flow.wrap[ActorRef[Respuesta], Try[Unit]] { replyTo1 =>
+				val flow = Flow_wrap[ActorRef[Respuesta], Try[Unit]] { replyTo1 =>
 					for {
 						case Pregunta(replyTo2, "¿Qué tal?") <- replyTo1.queries[Pregunta](ref => Respuesta(ref, "Hola también"))
 						_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
@@ -156,7 +156,7 @@ object Prueba {
 				val paso2 = Behaviors.receiveMessage[Pregunta] {
 					case Pregunta(replyTo2, "¿Qué tal?") =>
 						val task = for {
-							_ <- Task.mine(() => ctx.log.info("sigue funcionando"))
+							_ <- Task_mine(() => ctx.log.info("sigue funcionando"))
 							_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
 						} yield ()
 						task.trigger(true)(rf => ctx.log.info(s"resultado final: $rf"))

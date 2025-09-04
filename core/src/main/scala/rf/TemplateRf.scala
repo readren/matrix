@@ -21,7 +21,7 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
 	): reactantDoer.Duty[Reactant[U]] = {
-		reactantDoer.Duty.mineFlat { () =>
+		reactantDoer.Duty_mineFlat { () =>
 			new Reactant[U](serial, reactantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)

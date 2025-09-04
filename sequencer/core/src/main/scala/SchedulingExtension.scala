@@ -109,7 +109,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * Note that what is scheduled is the start of the function application, not the execution of `thisDuty`. The schedule's delay occurs after the execution of `thisDuty` and before the application of `f` to its result.
 		 * If the provided `schedule` is a fixed rate then triggering the returned duty causes the function application be executed periodically until the `schedule` is canceled.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty.ready(a).map(f).scheduled(schedule)) }}} but more efficient.
-		 * $notReusableDuty*/
+		 * $notReusableDuty */
 		def mapScheduled[B](aSchedule: Schedule)(f: A => B): Duty[B] = new Duty[B] {
 			override def engage(onComplete: B => Unit): Unit = {
 				thisDuty.engagePortal { a => schedule(aSchedule) { () => onComplete(f(a)) } }
@@ -119,7 +119,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		/** Like [[Duty.map]] but the function application is delayed.
 		 * Note that what is delayed is the start of function application, not the start of the execution of `thisDuty`. The delay occurs after the execution of `thisDuty` and before the application of `f` to its result.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty.ready(a).map(f).delayed(delay)) }}} but more efficient.
-		 * $notReusableDuty*/
+		 * $notReusableDuty */
 		inline def mapDelayed[B](delay: MilliDuration)(f: A => B): Duty[B] =
 			mapScheduled(newDelaySchedule(delay))(f)
 
@@ -135,7 +135,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * Note that what is scheduled is the function application, not the execution of `thisDuty`. The schedule's delay occurs after the execution of `thisDuty` and before the application of `f` to its result.
 		 * If the provided `schedule` is a fixed rate then triggering the returned duty causes the function application be executed periodically until the `schedule` is canceled.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty.ready(a).flatMap(f).scheduled(schedule)) }}} but more efficient.
-		 * $notReusableDuty*/
+		 * $notReusableDuty */
 		def flatMapScheduled[B](aSchedule: Schedule)(f: A => Duty[B]): Duty[B] = new Duty[B] {
 			override def engage(onComplete: B => Unit): Unit = {
 				thisDuty.engagePortal { a => schedule(aSchedule) { () => f(a).engagePortal(onComplete) } }
@@ -186,12 +186,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return           a [[Task]] that produces [[Maybe[A]]] indicating the result of the task execution, or [[Maybe.empty]] if it fails to complete within the allowed retries.
 		 */
 		def retriedWhileTimeout(timeout: Schedule, maxRetries: Int): Duty[Maybe[A]] = {
-			thisDuty.timeLimited(timeout).repeatedUntilSome(Integer.MAX_VALUE) { (retries, result) =>
-				result.fold {
-					if retries < maxRetries then Maybe.empty
-					else Maybe.some(Maybe.empty)
-				}(a => Maybe.some(Maybe.some(a)))
-			}
+			thisDuty.timeLimited(timeout).repeatedUntilSome(
+				(retries, result) =>
+					result.fold {
+						if retries < maxRetries then Maybe.empty
+						else Maybe.some(Maybe.empty)
+					}(a => Maybe.some(Maybe.some(a))),
+				Integer.MAX_VALUE
+			)
 		}
 	}
 
@@ -223,29 +225,27 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		}
 	}
 
-	extension (companion: Duty.type) {
-		/** Creates a [[Duty]] that does nothing for the specified `duration`.
-		 * Is equivalent to both {{{delay(duration)(()=>()) }}} and {{{Duty.unit.delayed(duration)}}}
-		 * $notReusableDuty */
-		inline def waits(duration: MilliDuration): Duty[Unit] =
-			delay(duration)(()=>())
-		
-		/** @return a [[Duty]] that executes a supplier and yields its result according to a [[Schedule]] since it is triggered.
-		 * If the schedule is a fixed rate/delay then the supplier and down-chained operations are executed repeatedly until the schedule is canceled.
-		 * $notReusableDuty */
-		inline def schedule[A](schedule: Schedule)(supplier: () => A): Duty[A] =
-			new Book(schedule, supplier)
+	/** Creates a [[Duty]] that does nothing for the specified `duration`.
+	 * Is equivalent to both {{{delay(duration)(()=>()) }}} and {{{Duty.unit.delayed(duration)}}}
+	 * $notReusableDuty */
+	inline def Duty_waits(duration: MilliDuration): Duty[Unit] =
+		Duty_delay(duration)(() => ())
 
-		/** $notReusableDuty
-		 *  @return a [[Duty]] that executes a supplier and yields its result after a delay since it is triggered. */
-		inline def delay[A](duration: MilliDuration)(supplier: () => A): Duty[A] =
-			new Book(newDelaySchedule(duration), supplier)
+	/** @return a [[Duty]] that executes a supplier and yields its result according to a [[Schedule]] since it is triggered.
+	 * If the schedule is a fixed rate/delay then the supplier and down-chained operations are executed repeatedly until the schedule is canceled.
+	 * $notReusableDuty */
+	inline def Duty_schedule[A](schedule: Schedule)(supplier: () => A): Duty[A] =
+		new Book(schedule, supplier)
 
-		/** $notReusableDuty
-		 *  @return a [[Duty]] that executes a supplier and yields its result after a delay since it is triggered. */
-		inline def delay[A](duration: FiniteDuration)(supplier: () => A): Duty[A] =
-			delay(duration.toMillis)(supplier)
-	}
+	/** $notReusableDuty
+	 *  @return a [[Duty]] that executes a supplier and yields its result after a delay since it is triggered. */
+	inline def Duty_delay[A](duration: MilliDuration)(supplier: () => A): Duty[A] =
+		new Book(newDelaySchedule(duration), supplier)
+
+	/** $notReusableDuty
+	 *  @return a [[Duty]] that executes a supplier and yields its result after a delay since it is triggered. */
+	inline def Duty_delay[A](duration: FiniteDuration)(supplier: () => A): Duty[A] =
+		Duty_delay(duration.toMillis)(supplier)
 
 	final class Book[A](aSchedule: Schedule, supplier: () => A) extends Duty[A] {
 		override def engage(onComplete: A => Unit): Unit =
@@ -282,7 +282,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			override def engage(onComplete: Try[B] => Unit): Unit = {
 				thisTask.engagePortal {
 					case Success(a) => schedule(aSchedule) { () => onComplete(Try(f(a))) }
-					case fe@Failure(e) => onComplete(fe.asInstanceOf[Failure[B]])	
+					case fe@Failure(e) => onComplete(fe.asInstanceOf[Failure[B]])
 				}
 			}
 		}
@@ -341,77 +341,76 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return a [[Task]] that produces [[Maybe[A]]] indicating the result of the task execution, or [[Maybe.empty]] if it fails to complete within the allowed retries
 		 */
 		def reiteratedWhileTimeout(timeout: FiniteDuration, maxRetries: Int): Task[Maybe[A]] = {
-			thisTask.timeBounded(newDelaySchedule(timeout.toMillis)).reiteratedHardyUntilSome[Maybe[A]](Integer.MAX_VALUE) { (retries, result) =>
-				result match {
-					case Success(mA) =>
-						mA.fold {
-							if retries < maxRetries then Maybe.empty
-							else Maybe.some(Success(Maybe.empty))
-						}(a => Maybe.some(Success(Maybe.some(a))))
-					case Failure(cause) =>
-						Maybe.some(Failure(cause))
+			thisTask.timeBounded(newDelaySchedule(timeout.toMillis)).reiteratedHardyUntilSome[Maybe[A]](
+				(retries, result) =>
+					result match {
+						case Success(mA) =>
+							mA.fold {
+								if retries < maxRetries then Maybe.empty
+								else Maybe.some(Success(Maybe.empty))
+							}(a => Maybe.some(Success(Maybe.some(a))))
+						case Failure(cause) =>
+							Maybe.some(Failure(cause))
+					},
+				Integer.MAX_VALUE
+			)
+		}
+	}
+
+
+	/** Creates a [[Task]] that does nothing for the specified `duration`.
+	 * $notReusableTask */
+	inline def Task_sleeps(duration: MilliDuration): Task[Unit] = {
+		Task_unit.postponed(duration)
+	}
+
+	/** Creates a [[Task]] that does nothing for the specified `duration`.
+	 * $notReusableTask */
+	inline def Task_sleeps(duration: FiniteDuration): Task[Unit] = {
+		Task_unit.postponed(duration)
+	}
+
+	def Task_appoint[A](aSchedule: Schedule)(supplier: () => A): Task[A] = new Task[A] {
+		override def engage(onComplete: Try[A] => Unit): Unit = {
+			schedule(aSchedule) { () =>
+				try onComplete(Success(supplier()))
+				catch {
+					case NonFatal(e) => onComplete(Failure(e))
 				}
 			}
 		}
 	}
 
-	/** Truco para agregar operaciones al objeto [[AmigoFutures.Task]]. Para que funcione se requiere que esta clase esté importada. */
-	extension (companion: Task.type) {
-
-		/** Creates a [[Task]] that does nothing for the specified `duration`.
-		 * $notReusableTask*/
-		inline def sleeps(duration: MilliDuration): Task[Unit] = {
-			Task.unit.postponed(duration)
-		}
-		
-		/** Creates a [[Task]] that does nothing for the specified `duration`.
-		 * $notReusableTask */
-		inline def sleeps(duration: FiniteDuration): Task[Unit] = {
-			Task.unit.postponed(duration)
-		}
-
-		def appoint[A](aSchedule: Schedule)(supplier: () => A): Task[A] = new Task[A] {
-			override def engage(onComplete: Try[A] => Unit): Unit = {
-				schedule(aSchedule) { () =>
-					try onComplete(Success(supplier()))
-					catch {
-						case NonFatal(e) => onComplete(Failure(e))
+	/** Creates a task, let's call it "loop", which when executed builds a task using `taskBuilder` and triggers it. If it takes more time than the given `timeout` to complete, triggers it again.
+	 * This cycle repeats until the execution time of the task does not exceed the `timeout`, or the retries are exhausted.
+	 * The execution of the loop task will complete when:
+	 * - the time taken by the task to complete is within the `timeout`, in which case the result of the loop task will be `Some(taskResult)`,
+	 * - the retries are exhausted, in which case the result of the loop task will be `None`.
+	 * $notReusableTask */
+	def Task_retryWhileTimeout[A](maxRetries: Int, timeout: FiniteDuration, taskBuilder: Int => Task[Try[A]]): Task[Maybe[A]] = {
+		Task_attemptUntilRight[Unit, A](maxRetries, (attemptsAlreadyMade: Int) =>
+			val task: Task[Try[A]] = taskBuilder(attemptsAlreadyMade)
+			task.timeBounded(timeout).transform {
+				case Success(mtA) =>
+					mtA.fold(Success(Left(()))) {
+						case Success(a) => Success(Right(a))
+						case Failure(falla) => Failure(falla)
 					}
-				}
+
+				case Failure(falla) => Failure(falla);
 			}
+		).map {
+			case Right(a) => Maybe.some(a);
+			case Left(_) => Maybe.empty
 		}
-
-		/** Creates a task, let's call it "loop", which when executed builds a task using `taskBuilder` and triggers it. If it takes more time than the given `timeout` to complete, triggers it again.
-		 * This cycle repeats until the execution time of the task does not exceed the `timeout`, or the retries are exhausted.
-		 * The execution of the loop task will complete when:
-		 * - the time taken by the task to complete is within the `timeout`, in which case the result of the loop task will be `Some(taskResult)`,
-		 * - the retries are exhausted, in which case the result of the loop task will be `None`.
-		 * $notReusableTask */
-		def retryWhileTimeout[A](maxRetries: Int, timeout: FiniteDuration)(taskBuilder: Int => Task[Try[A]]): Task[Maybe[A]] = {
-			companion.attemptUntilRight[Unit, A](maxRetries) { attemptsAlreadyMade =>
-				val task: Task[Try[A]] = taskBuilder(attemptsAlreadyMade)
-				task.timeBounded(timeout).transform {
-					case Success(mtA) =>
-						mtA.fold(Success(Left(()))) {
-							case Success(a) => Success(Right(a))
-							case Failure(falla) => Failure(falla)
-						}
-
-					case Failure(falla) => Failure(falla);
-				}
-			}.map {
-				case Right(a) => Maybe.some(a);
-				case Left(_) => Maybe.empty
-			}
-		}
-
-		/** Creates a task that repeatedly executes the given task as long as its result is [[Maybe.empty]] and the specified `maxNumberOfExecutions` is not exceeded; waiting for the specified `pause` between the end of one execution and the start of the next.
-		 * $notReusableTask */
-		inline def reiterateDelayedWhileEmpty[A](maxNumberOfExecutions: Int, pause: Schedule)(task: Task[Maybe[Try[A]]]): Task[Maybe[A]] =
-			new DelayedLoop[A](maxNumberOfExecutions, pause)(task)
 	}
 
-	final class DelayedLoop[A](maxNumberOfExecutions: Int, delay: Schedule)(task: Task[Maybe[Try[A]]]) extends Task[Maybe[A]] {
+	/** Creates a task that repeatedly executes the given task as long as its result is [[Maybe.empty]] and the specified `maxNumberOfExecutions` is not exceeded; waiting for the specified `pause` between the end of one execution and the start of the next.
+	 * $notReusableTask */
+	inline def Task_reiterateDelayedWhileEmpty[A](maxNumberOfExecutions: Int, pause: Schedule)(task: Task[Maybe[Try[A]]]): Task[Maybe[A]] =
+		new Task_DelayedLoop[A](maxNumberOfExecutions, pause)(task)
+
+	final class Task_DelayedLoop[A](maxNumberOfExecutions: Int, delay: Schedule)(task: Task[Maybe[Try[A]]]) extends Task[Maybe[A]] {
 		override def engage(onComplete: Try[Maybe[A]] => Unit): Unit = {
 			def loop(remainingExecutions: Int): Unit = {
 				task.trigger(true) {

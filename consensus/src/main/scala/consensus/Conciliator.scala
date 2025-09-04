@@ -582,7 +582,7 @@ trait Conciliator { thisConciliator =>
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote] = {
 				assert(isInSequence)
-				if ordinal <= STARTING then sequencer.Task.successful(Vote(0, hostId, 0, ordinal))
+				if ordinal <= STARTING then sequencer.Task_successful(Vote(0, hostId, 0, ordinal))
 				else decidesMyVote(inquirerId, inquirerInfo).andThen {
 					case Success(vote) =>
 						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidateCount < smallestMajority && ordinal >= CANDIDATE) then {
@@ -598,9 +598,9 @@ trait Conciliator { thisConciliator =>
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
 				assert(isInSequence)
-				if ordinal < ISOLATED then sequencer.Task.successful(AppendResult(0, false, ordinal))
-				else if inquirerTerm < currentTerm then sequencer.Task.successful(AppendResult(currentTerm, false, ordinal))
-				else if workspace.getRecordTermAt(prevRecordIndex) != prevRecordTerm then sequencer.Task.successful(AppendResult(currentTerm, false, ordinal))
+				if ordinal < ISOLATED then sequencer.Task_successful(AppendResult(0, false, ordinal))
+				else if inquirerTerm < currentTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
+				else if workspace.getRecordTermAt(prevRecordIndex) != prevRecordTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
 				else {
 					if inquirerTerm > currentTerm || ordinal <= CANDIDATE then {
 						currentTerm = inquirerTerm
@@ -639,15 +639,15 @@ trait Conciliator { thisConciliator =>
 									if retriesCounter < applyCommandRetries then {
 										retriesCounter += 1
 										task
-									} else sequencer.Task.failed(e)
+									} else sequencer.Task_failed(e)
 							}
-						} else sequencer.Task.successful(())
+						} else sequencer.Task_successful(())
 					}
 
 					for {
 						_ <- applyRecordLoop(commitIndex + 1)
 						result <- {
-							if currentBehavior.ordinal <= STARTING then sequencer.Task.successful(AppendResult(0, false, ordinal))
+							if currentBehavior.ordinal <= STARTING then sequencer.Task_successful(AppendResult(0, false, ordinal))
 							else {
 								commitIndex = newCommitIndex
 								workspace.informCommitIndex(newCommitIndex)
@@ -690,7 +690,7 @@ trait Conciliator { thisConciliator =>
 					val myStateInfo = buildMyStateInfo
 					val inquires = for replierId <- otherParticipants yield replierId.askToChooseForLeader(hostId, myStateInfo)
 					for {
-						replies <- sequencer.Task.sequenceHardyToArray(inquires)
+						replies <- sequencer.Task_sequenceHardyToArray(inquires)
 						saveResult <- {
 							var myVoteIsValid = true
 							var votesCount = 1 // my vote
@@ -732,7 +732,7 @@ trait Conciliator { thisConciliator =>
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
-				sequencer.Task.successful(Unable(ordinal, otherParticipants))
+				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
 		}
 
@@ -769,7 +769,7 @@ trait Conciliator { thisConciliator =>
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
-				sequencer.Task.successful(Unable(ordinal, otherParticipants))
+				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
 		}
 
@@ -804,7 +804,7 @@ trait Conciliator { thisConciliator =>
 					result <- {
 						val currentBehaviorOrdinal = currentBehavior.ordinal
 						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
-						else sequencer.Task.successful(Unable(currentBehaviorOrdinal, otherParticipants))
+						else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
 					}
 				} yield result
 			}
@@ -853,7 +853,7 @@ trait Conciliator { thisConciliator =>
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
 				if isFallback then Isolated.onCommandFromClient(command, isFallback)
-				else sequencer.Task.successful(RedirectTo(leaderId))
+				else sequencer.Task_successful(RedirectTo(leaderId))
 			}
 		}
 
@@ -933,7 +933,7 @@ trait Conciliator { thisConciliator =>
 						appendsRecordsToFollower(followerIndex, until)
 					}
 				// Execute the tasks in parallel.
-				for appendResults <- sequencer.Task.sequenceHardyToArray(asksToAppendUncommitedRecords_byFollowerIndex) yield {
+				for appendResults <- sequencer.Task_sequenceHardyToArray(asksToAppendUncommitedRecords_byFollowerIndex) yield {
 					// If the behavior hasn't changed, then the leader is still the same, and we can continue.
 					if currentBehavior eq this then {
 						// Update the commitIndex if a majority of the followers have replicated the uncommited records.
@@ -958,18 +958,18 @@ trait Conciliator { thisConciliator =>
 											previousTryResults(followerIndex) match {
 												case Success(_) =>
 													assert(highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) >= commitIndex)
-													sequencer.Task.successful(())
+													sequencer.Task_successful(())
 
 												case Failure(e) =>
 													if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) >= commitIndex then {
-														sequencer.Task.successful(())
+														sequencer.Task_successful(())
 													} else {
 														scribe.info(s"$hostId: Retrying to replicate commited records to $followerId because of:", e)
 														appendsRecordsToFollower(followerIndex, workspace.firstEmptyRecordIndex) // TODO Is `firstEmptyRecordIndex` the right index to retry until? Or should it be the `commitIndex`?
 													}
 											}
 										}
-									sequencer.Task.sequenceHardyToArray(retryTasks).map(loop).triggerAndForget(true)
+									sequencer.Task_sequenceHardyToArray(retryTasks).map(loop).triggerAndForget(true)
 								}
 							}
 						}
@@ -989,7 +989,7 @@ trait Conciliator { thisConciliator =>
 			private def appendsRecordsToFollower(followerIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
 				val followerId = otherParticipants(followerIndex)
 				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(followerIndex)
-				if until <= indexOfNextRecordToSend then sequencer.Task.successful(Maybe.empty)
+				if until <= indexOfNextRecordToSend then sequencer.Task_successful(Maybe.empty)
 				else {
 					val recordsToSend = workspace.getRecordsBetween(indexOfNextRecordToSend, until)
 					val previousRecordIndex = indexOfNextRecordToSend - 1
@@ -998,7 +998,7 @@ trait Conciliator { thisConciliator =>
 						AppendResult(followerTerm, success, ordinal) <- followerId.asksToAppendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
 						result <- {
 							// If the behavior haven't changed, then the leader is still the same, and we can continue.
-							if currentBehavior ne this then sequencer.Task.successful(())
+							if currentBehavior ne this then sequencer.Task_successful(())
 							else {
 								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(followerIndex)
 								if followerTerm > currentTerm then {
@@ -1006,19 +1006,19 @@ trait Conciliator { thisConciliator =>
 									currentTerm = followerTerm
 									updatesState.triggerExposingFailures()
 									// Yield a successful result to avoid the retry loop.
-									sequencer.Task.successful(())
+									sequencer.Task_successful(())
 								} else if success then {
 									// If the follower has successfully appended the records, then update the index of the next record to send and the highest record index known to be replicated.
 									indexOfNextRecordToSend_ByParticipantIndex(followerIndex) += recordsToSend.size
 									highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) = indexOfNextRecordToSend + recordsToSend.size
-									sequencer.Task.successful(())
+									sequencer.Task_successful(())
 								} else if indexOfNextRecordToSend > workspace.logBufferOffset then {
 									// If the follower has not successfully appended the records because his the previous record is not the same as the previous record in my log, then try again at the previous record.
 									indexOfNextRecordToSend_ByParticipantIndex(followerIndex) = indexOfNextRecordToSend - 1
 									appendsRecordsToFollower(followerIndex, until)
 								} else {
 									scribe.error(s"$hostId: Unable to replicate uncommited records to $followerId because its log has inconsitencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
-									sequencer.Task.successful(())
+									sequencer.Task_successful(())
 								}
 							}
 						}
@@ -1040,10 +1040,10 @@ trait Conciliator { thisConciliator =>
 		private def decidesMyVote(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Task[Vote] = {
 			val areYouThereQuestions: IndexedSeq[sequencer.Task[StateInfo]] =
 				for replierId <- otherParticipants yield
-					if replierId == inquirerId then sequencer.Task.successful(inquirerInfo)
+					if replierId == inquirerId then sequencer.Task_successful(inquirerInfo)
 					else replierId.asksHowAreYou(this.currentTerm, false)
 
-			for replies <- sequencer.Task.sequenceHardyToArray(areYouThereQuestions) yield {
+			for replies <- sequencer.Task_sequenceHardyToArray(areYouThereQuestions) yield {
 				var laterCurrentTerm = this.currentTerm
 				var chosenCandidate = CandidateInfo(hostId, this.currentBehavior.buildMyStateInfo)
 				var reachableCandidatesCounter = 1 // myself

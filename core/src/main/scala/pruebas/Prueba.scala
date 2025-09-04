@@ -42,7 +42,7 @@ object Prueba {
 	private inline val WATCH_DOG_DELAY_MILLIS = 4000
 
 	private inline val haveToCountAndCheck = true
-	private inline val haveToShowFinalPhoto = true
+	private inline val haveToShowFinalPhoto = false
 	private inline val haveToShowPhotoEveryTime = false
 	private inline val haveToRecordPhoto = haveToCountAndCheck || haveToShowFinalPhoto || haveToShowPhotoEveryTime
 	private inline val usePercentages = false
@@ -77,7 +77,7 @@ object Prueba {
 		given ExecutionContext = ExecutionContext.global
 
 		val numberOfWarmUpRepetitions = 4
-		val numberOfMeasuredOfRepetitions = 6
+		val numberOfMeasuredOfRepetitions = 16
 		var totalFuture = Future.successful[Iteration](Iteration())
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
 			totalFuture = totalFuture.flatMap { iteration =>
@@ -211,7 +211,7 @@ object Prueba {
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
-			parent.doer.Duty.sequenceToArray(
+			parent.doer.Duty_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					parent.spawns[Consumable](reactantFactory, matrix.provideDefaultDoer("consumer")) { consumer =>
 						consumer.doer.checkWithin()
