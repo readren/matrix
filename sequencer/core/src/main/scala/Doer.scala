@@ -221,7 +221,7 @@ trait Doer { thisDoer =>
 		 *
 		 * $notGuarded
 		 */
-		inline final def map[B](f: A => B): Duty[B] = new Map(thisDuty, f)
+		inline final def map[B](f: A => B): Duty[B] = new Duty.Map(thisDuty, f)
 
 		/**
 		 * Composes this [[Duty]] with a second one that is built from the result of this one.
@@ -238,7 +238,7 @@ trait Doer { thisDoer =>
 		 *
 		 * $notGuarded
 		 */
-		inline final def flatMap[B](f: A => Duty[B]): Duty[B] = new FlatMap(thisDuty, f)
+		inline final def flatMap[B](f: A => Duty[B]): Duty[B] = new Duty.FlatMap(thisDuty, f)
 
 		/** Applies the side-effecting function to the result of this duty without affecting the propagated value.
 		 * The result of the provided function is always ignored and therefore not propagated in any way.
@@ -254,14 +254,14 @@ trait Doer { thisDoer =>
 		 *
 		 * @param sideEffect a side-effecting function. The call to this function is wrapped in a try-catch block; however, unlike most other operators, unhandled non-fatal exceptions are not propagated to the result of the returned task. $isExecutedByDoSiThEx
 		 */
-		def andThen(sideEffect: A => Any): Duty[A] = new AndThen[A](thisDuty, sideEffect)
+		def andThen(sideEffect: A => Any): Duty[A] = new Duty.AndThen[A](thisDuty, sideEffect)
 
 		/** Wraps this [[Duty]] into a [[Task]].
 		 * Together with [[Task.toDuty]] this method allow to mix duties and task in the same chain.
 		 * ===Detailed behavior===
 		 * Creates a [[Task]] that, when executed, triggers the execution of this [[Duty]] and completes with its result, which will always be successful.
 		 * @return a [[Task]] whose result is the result of this task wrapped inside a [[Success]]. */
-		inline final def toTask: Task[A] = new ToTask(thisDuty)
+		inline final def toTask: Task[A] = new Duty.ToTask(thisDuty)
 
 		/**
 		 * Triggers the execution of this [[Task]] and returns a [[Future]] containing its result wrapped inside a [[Success]].
@@ -298,7 +298,7 @@ trait Doer { thisDoer =>
 		 * @return a new [[Duty]] that, when executed, repeatedly executes this duty and applies the `condition` to the duty's result until the function's result is [[Maybe.some]]. The result of this duty is the contents of said [[Maybe]].
 		 */
 		final inline def repeatedUntilSome[B](maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, A) => Maybe[B]): Duty[B] =
-			new RepeatUntilSome(thisDuty, maxRecursionDepthPerExecutor)(condition)
+			new Duty.RepeatUntilSome(thisDuty, maxRecursionDepthPerExecutor)(condition)
 
 		/**
 		 * Like [[repeatedUntilSome]] but the condition is a [[PartialFunction]] instead of a function that returns [[Maybe]].
@@ -324,7 +324,7 @@ trait Doer { thisDoer =>
 		 * @tparam B the type of the result of this duty.
 		 */
 		final inline def repeatedWhileEmpty[S >: A, B](s0: S, maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, S) => Maybe[B]): Duty[B] =
-			new RepeatWhileEmpty[S, B](thisDuty, s0, maxRecursionDepthPerExecutor)(condition)
+			new Duty.RepeatWhileEmpty[S, B](thisDuty, s0, maxRecursionDepthPerExecutor)(condition)
 
 		/**
 		 * Returns a duty that, when executed, repeatedly executes this [[Duty]] while a [[PartialFunction]] is undefined.
@@ -465,7 +465,7 @@ trait Doer { thisDoer =>
 		 * @return the task described in the method description.
 		 */
 		inline def combine[A, B, C](dutyA: Duty[A], dutyB: Duty[B])(f: (A, B) => C): Duty[C] =
-			new ForkJoin(dutyA, dutyB, f)
+			new Combined(dutyA, dutyB, f)
 
 		/**
 		 * Creates a [[Duty]] that, when executed, simultaneously triggers the execution of all the [[Duty]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
@@ -521,7 +521,7 @@ trait Doer { thisDoer =>
 		}
 
 		/** Like [[sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-		inline def sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]): Duty[Array[A]] = new SequenceDuty[A, C](duties)
+		inline def sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]): Duty[Array[A]] = new Sequence[A, C](duties)
 
 		/** Creates a new [[Duty]] that, when executed, repeatedly constructs a duty and executes it while a condition returns [[Right]].
 		 * ==Detailed behavior:==
@@ -611,287 +611,288 @@ trait Doer { thisDoer =>
 			}
 		}
 
-	}
 
-	final class Map[A, B](val cA: Duty[A], val f: A => B) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit =
-			cA.engagePortal { a => onComplete(f(a)) }
+		final class Map[A, B](val cA: Duty[A], val f: A => B) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit =
+				cA.engagePortal { a => onComplete(f(a)) }
 
-		override def toString: String = deriveToString[Map[A, B]](this)
-	}
-
-	final class FlatMap[A, B](cA: Duty[A], f: A => Duty[B]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = cA.engagePortal { a => f(a).engagePortal(onComplete) }
-
-		override def toString: String = deriveToString[FlatMap[A, B]](this)
-	}
-
-	final class AndThen[A](dutyA: Duty[A], sideEffect: A => Any) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit =
-			dutyA.engagePortal { a =>
-				sideEffect(a)
-				onComplete(a)
-			}
-
-		override def toString: String = deriveToString[AndThen[A]](this)
-	}
-
-	final class ToTask[A](cA: Duty[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = cA.engagePortal(onComplete.compose(Success.apply))
-
-		override def toString: String = deriveToString[ToTask[A]](this)
-	}
-
-	class NotEver extends AbstractDuty[Nothing] {
-		override def engage(onComplete: Nothing => Unit): Unit = ()
-
-		override def toString: String = "NotEver"
-	}
-
-	final class Ready[A](a: A) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = onComplete(a)
-
-		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
-
-		override def toString: String = deriveToString[Ready[A]](this)
-	}
-
-	final class Mine[A](supplier: () => A) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = onComplete(supplier())
-
-		override def toString: String = deriveToString[Mine[A]](this)
-	}
-
-	final class MineFlat[A](supplier: () => Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = supplier().engagePortal(onComplete)
-
-		override def toString: String = deriveToString[MineFlat[A]](this)
-	}
-
-	final class DelegateTo[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => thisDoer.execute(onComplete(a)))
-
-		override def toString: String = deriveToString[DelegateTo[A]](this)
-	}
-
-	/** A [[Duty]] that, when executed:
-	 *		- triggers the execution of both: `taskA` and `taskB`;
-	 *		- when both are completed, completes with the result of applying the function `f` to their results.
-	 *
-	 * $threadSafe
-	 * $onCompleteExecutedByDoSiThEx
-	 */
-	final class ForkJoin[+A, +B, +C](dutyA: Duty[A], dutyB: Duty[B], f: (A, B) => C) extends AbstractDuty[C] {
-		override def engage(onComplete: C => Unit): Unit = {
-			var ma: Maybe[A] = Maybe.empty
-			var mb: Maybe[B] = Maybe.empty
-			dutyA.engagePortal { a =>
-				mb.fold {
-					ma = Maybe.some(a)
-				} { b => onComplete(f(a, b)) }
-			}
-			dutyB.engagePortal { b =>
-				ma.fold {
-					mb = Maybe.some(b)
-				} { a => onComplete(f(a, b)) }
-			}
+			override def toString: String = deriveToString[Map[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[ForkJoin[A, B, C]](this)
-	}
+		final class FlatMap[A, B](cA: Duty[A], f: A => Duty[B]) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = cA.engagePortal { a => f(a).engagePortal(onComplete) }
 
-	/** @see [[Duty.sequenceToArray]] */
-	class SequenceDuty[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]) extends AbstractDuty[Array[A]] {
-		override def engage(onComplete: Array[A] => Unit): Unit = {
-			val size = duties.size
-			val array = Array.ofDim[A](size)
-			if size == 0 then onComplete(array)
-			else {
-				val dutyIterator = duties.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				while index < size do {
-					val duty = dutyIterator.next
-					val dutyIndex = index
-					duty.engagePortal { a =>
-						array(dutyIndex) = a
-						completedCounter += 1
-						if completedCounter == size then onComplete(array)
-					}
-					index += 1
-				}
-			}
+			override def toString: String = deriveToString[FlatMap[A, B]](this)
 		}
-	}
 
-
-	/**
-	 * A [[Duty]] that executes the received duty until applying the received function yields [[Maybe.some]].
-	 * ===Detailed description===
-	 * A [[Duty]] that, when executed, it will:
-	 *		- execute the `dutyA` producing the result `a`
-	 *		- apply `condition` to `(completedCycles, a)`. If the evaluation finishes with:
-	 *			- `some(b)`, completes with `b`
-	 *			- `empty`, goes back to the first step.
-	 *
-	 * @param dutyA the duty to be repeated.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param condition function that decides if the loop continues or not based on:
-	 *		- the number of already completed cycles,
-	 *		- and the result of the last execution of the `dutyA`.
-	 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
-	 */
-	final class RepeatUntilSome[+A, +B](dutyA: Duty[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, A) => Maybe[B]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
+		final class AndThen[A](dutyA: Duty[A], sideEffect: A => Any) extends AbstractDuty[A] {
+			override def engage(onComplete: A => Unit): Unit =
 				dutyA.engagePortal { a =>
-					condition(completedCycles, a).fold {
-						if (recursionDepth < maxRecursionDepthPerExecutor) {
-							loop(completedCycles + 1, recursionDepth + 1)
-						} else {
-							execute(loop(completedCycles + 1, 0))
-						}
-					}(onComplete)
+					sideEffect(a)
+					onComplete(a)
+				}
+
+			override def toString: String = deriveToString[AndThen[A]](this)
+		}
+
+		final class ToTask[A](cA: Duty[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = cA.engagePortal(onComplete.compose(Success.apply))
+
+			override def toString: String = deriveToString[ToTask[A]](this)
+		}
+
+		class NotEver extends AbstractDuty[Nothing] {
+			override def engage(onComplete: Nothing => Unit): Unit = ()
+
+			override def toString: String = "NotEver"
+		}
+
+		final class Ready[A](a: A) extends AbstractDuty[A] {
+			override def engage(onComplete: A => Unit): Unit = onComplete(a)
+
+			override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
+
+			override def toString: String = deriveToString[Ready[A]](this)
+		}
+
+		final class Mine[A](supplier: () => A) extends AbstractDuty[A] {
+			override def engage(onComplete: A => Unit): Unit = onComplete(supplier())
+
+			override def toString: String = deriveToString[Mine[A]](this)
+		}
+
+		final class MineFlat[A](supplier: () => Duty[A]) extends AbstractDuty[A] {
+			override def engage(onComplete: A => Unit): Unit = supplier().engagePortal(onComplete)
+
+			override def toString: String = deriveToString[MineFlat[A]](this)
+		}
+
+		final class DelegateTo[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
+			override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => thisDoer.execute(onComplete(a)))
+
+			override def toString: String = deriveToString[DelegateTo[A]](this)
+		}
+
+		/** A [[Duty]] that, when executed:
+		 *		- triggers the execution of both: `taskA` and `taskB`;
+		 *		- when both are completed, completes with the result of applying the function `f` to their results.
+		 *
+		 * $threadSafe
+		 * $onCompleteExecutedByDoSiThEx
+		 */
+		final class Combined[+A, +B, +C](dutyA: Duty[A], dutyB: Duty[B], f: (A, B) => C) extends AbstractDuty[C] {
+			override def engage(onComplete: C => Unit): Unit = {
+				var ma: Maybe[A] = Maybe.empty
+				var mb: Maybe[B] = Maybe.empty
+				dutyA.engagePortal { a =>
+					mb.fold {
+						ma = Maybe.some(a)
+					} { b => onComplete(f(a, b)) }
+				}
+				dutyB.engagePortal { b =>
+					ma.fold {
+						mb = Maybe.some(b)
+					} { a => onComplete(f(a, b)) }
 				}
 			}
 
-			loop(0, 0)
+			override def toString: String = deriveToString[Combined[A, B, C]](this)
 		}
 
-		override def toString: String = deriveToString[RepeatUntilSome[A, B]](this)
-	}
-
-	/**
-	 * Duty that, when executed, repeatedly executes a duty while a condition returns [[Maybe.empty]].
-	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
-	 *  - Apply the `condition` function to `(n, a0)` where `n` is the number of already completed evaluations.
-	 *  - If the evaluation returns:
-	 *  	- `some(b)`, completes with `b`.
-	 *  	- `empty`, executes the `dutyA` and repeats the condition.
-	 *
-	 * @param dutyA the task to be repeated
-	 * @param a0 the value passed as the second parameter to `condition` the first time it is evaluated.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param condition determines if a new cycle should be performed based on the number of already completed cycles and the last result of `dutyA` or `a0` if no cycle has been completed.
-	 */
-	final class RepeatWhileEmpty[+A, +B](dutyA: Duty[A], a0: A, maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, A) => Maybe[B]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				condition(completedCycles, lastDutyResult).fold {
-					dutyA.engagePortal { newA =>
-						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-						else execute(loop(completedCycles + 1, newA, 0))
+		/** @see [[Duty.sequenceToArray]] */
+		class Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]) extends AbstractDuty[Array[A]] {
+			override def engage(onComplete: Array[A] => Unit): Unit = {
+				val size = duties.size
+				val array = Array.ofDim[A](size)
+				if size == 0 then onComplete(array)
+				else {
+					val dutyIterator = duties.iterator
+					var completedCounter: Int = 0
+					var index = 0
+					while index < size do {
+						val duty = dutyIterator.next
+						val dutyIndex = index
+						duty.engagePortal { a =>
+							array(dutyIndex) = a
+							completedCounter += 1
+							if completedCounter == size then onComplete(array)
+						}
+						index += 1
 					}
-				}(onComplete)
+				}
+			}
+		}
+
+
+		/**
+		 * A [[Duty]] that executes the received duty until applying the received function yields [[Maybe.some]].
+		 * ===Detailed description===
+		 * A [[Duty]] that, when executed, it will:
+		 *		- execute the `dutyA` producing the result `a`
+		 *		- apply `condition` to `(completedCycles, a)`. If the evaluation finishes with:
+		 *			- `some(b)`, completes with `b`
+		 *			- `empty`, goes back to the first step.
+		 *
+		 * @param dutyA the duty to be repeated.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param condition function that decides if the loop continues or not based on:
+		 *		- the number of already completed cycles,
+		 *		- and the result of the last execution of the `dutyA`.
+		 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
+		 */
+		final class RepeatUntilSome[+A, +B](dutyA: Duty[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, A) => Maybe[B]) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = {
+				def loop(completedCycles: Int, recursionDepth: Int): Unit = {
+					dutyA.engagePortal { a =>
+						condition(completedCycles, a).fold {
+							if (recursionDepth < maxRecursionDepthPerExecutor) {
+								loop(completedCycles + 1, recursionDepth + 1)
+							} else {
+								execute(loop(completedCycles + 1, 0))
+							}
+						}(onComplete)
+					}
+				}
+
+				loop(0, 0)
 			}
 
-			loop(0, a0, 0)
+			override def toString: String = deriveToString[RepeatUntilSome[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[RepeatWhileEmpty[A, B]](this)
-	}
-
-	/**
-	 * Duty that, when executed, repeatedly constructs and executes duties as long as the `condition` is met.
-	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
-	 *  - Apply the function `checkAndBuild` to `(n, a0)` where `n` is the number of completed cycles.
-	 *  	- If it returns a `Left(b)`, completes with `b`.
-	 *  	- If it returns `Right(dutyA)`, executes `dutyA` and repeats the cycle replacing `a0` with the result.
-	 *
-	 * @param a0 the initial value used in the first call to `checkAndBuild`.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param checkAndBuild function that takes completed cycles count and last duty result, returning an `Either[B, Duty[A]]`.
-	 */
-	final class WhileRightRepeat[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(checkAndBuild: (Int, A) => Either[B, Duty[A]]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				checkAndBuild(completedCycles, lastDutyResult) match {
-					case Left(b) => onComplete(b)
-					case Right(dutyA) =>
+		/**
+		 * Duty that, when executed, repeatedly executes a duty while a condition returns [[Maybe.empty]].
+		 * ===Detailed behavior:===
+		 * When this [[Duty]] is executed, it will:
+		 *  - Apply the `condition` function to `(n, a0)` where `n` is the number of already completed evaluations.
+		 *  - If the evaluation returns:
+		 *  	- `some(b)`, completes with `b`.
+		 *  	- `empty`, executes the `dutyA` and repeats the condition.
+		 *
+		 * @param dutyA the task to be repeated
+		 * @param a0 the value passed as the second parameter to `condition` the first time it is evaluated.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param condition determines if a new cycle should be performed based on the number of already completed cycles and the last result of `dutyA` or `a0` if no cycle has been completed.
+		 */
+		final class RepeatWhileEmpty[+A, +B](dutyA: Duty[A], a0: A, maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, A) => Maybe[B]) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = {
+				def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
+					condition(completedCycles, lastDutyResult).fold {
 						dutyA.engagePortal { newA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
 							else execute(loop(completedCycles + 1, newA, 0))
 						}
+					}(onComplete)
 				}
+
+				loop(0, a0, 0)
 			}
 
-			loop(0, a0, 0)
+			override def toString: String = deriveToString[RepeatWhileEmpty[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[WhileRightRepeat[A, B]](this)
-	}
-
-	/**
-	 * Duty that, when executed, repeatedly constructs and executes duties until the result is [[Left]] or a failure occurs.
-	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
-	 *  - Apply the function `buildAndCheck` to `(n, a0)` where `n` ìs the number of completed cycles. Then executes the built duty and, if the result is:
-	 *  	- `Left(b)`, completes with `b`.
-	 *  	- `Right(a1)`, repeats the cycle replacing `a0` with `a1`.
-	 *
-	 * @param a0 the initial value used in the first call to `buildAndCheck`.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param buildAndCheck function that takes completed cycles count and last duty result, and returns a new duty that yields an `Either[B, A]`.
-	 */
-	final class RepeatUntilLeft[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(buildAndCheck: (Int, A) => Duty[Either[B, A]]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(executionsCounter: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				val duty = buildAndCheck(executionsCounter, lastDutyResult)
-				duty.engagePortal {
-					case Left(b) => onComplete(b)
-					case Right(a) =>
-						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
-						else execute(loop(executionsCounter + 1, a, 0))
+		/**
+		 * Duty that, when executed, repeatedly constructs and executes duties as long as the `condition` is met.
+		 * ===Detailed behavior:===
+		 * When this [[Duty]] is executed, it will:
+		 *  - Apply the function `checkAndBuild` to `(n, a0)` where `n` is the number of completed cycles.
+		 *  	- If it returns a `Left(b)`, completes with `b`.
+		 *  	- If it returns `Right(dutyA)`, executes `dutyA` and repeats the cycle replacing `a0` with the result.
+		 *
+		 * @param a0 the initial value used in the first call to `checkAndBuild`.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param checkAndBuild function that takes completed cycles count and last duty result, returning an `Either[B, Duty[A]]`.
+		 */
+		final class WhileRightRepeat[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(checkAndBuild: (Int, A) => Either[B, Duty[A]]) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = {
+				def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
+					checkAndBuild(completedCycles, lastDutyResult) match {
+						case Left(b) => onComplete(b)
+						case Right(dutyA) =>
+							dutyA.engagePortal { newA =>
+								if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
+								else execute(loop(completedCycles + 1, newA, 0))
+							}
+					}
 				}
+
+				loop(0, a0, 0)
 			}
 
-			loop(0, a0, 0)
+			override def toString: String = deriveToString[WhileRightRepeat[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[RepeatUntilLeft[A, B]](this)
-	}
-
-	/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Right]] or the `maxRetries` is reached.
-	 * ===Detailed behavior:===
-	 * When it is executed, it will:
-	 *  - Apply the function `taskBuilder` to the number of tries that were already done. If the evaluation completes:
-	 *  	- Abruptly, completes with the cause.
-	 *  		- Normally, executes the returned task and if the result is:
-	 *  			- `Failure(cause)`, completes with `Failure(cause)`.
-	 *  			- `Success(Right(b))`, completes with `Success(b)`.
-	 *  			- `Success(Left(a))`, compares the retries counter against `maxRetries` and if:
-	 *  				- `retriesCounter >= maxRetries`, completes with `Left(a)`
-	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
-	 */
-	final class RetryUntilRight[+A, +B](maxRetries: Int, maxRecursionDepthPerExecutor: Int = 9)(taskBuilder: Int => Duty[Either[A, B]]) extends AbstractDuty[Either[A, B]] {
-		override def engage(onComplete: Either[A, B] => Unit): Unit = {
-			/**
-			 * @param attemptsAlreadyMade the number attempts already made.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
-			def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
-				val task: Duty[Either[A, B]] = taskBuilder(attemptsAlreadyMade)
-
-				task.engagePortal {
-					case rb@(_: Right[A, B]) =>
-						onComplete(rb)
-					case la@Left(a) =>
-						if (attemptsAlreadyMade >= maxRetries) {
-							onComplete(la)
-						} else if (recursionDepth < maxRecursionDepthPerExecutor) {
-							loop(attemptsAlreadyMade + 1, recursionDepth + 1)
-						} else {
-							execute(loop(attemptsAlreadyMade + 1, 0))
-						}
+		/**
+		 * Duty that, when executed, repeatedly constructs and executes duties until the result is [[Left]] or a failure occurs.
+		 * ===Detailed behavior:===
+		 * When this [[Duty]] is executed, it will:
+		 *  - Apply the function `buildAndCheck` to `(n, a0)` where `n` ìs the number of completed cycles. Then executes the built duty and, if the result is:
+		 *  	- `Left(b)`, completes with `b`.
+		 *  	- `Right(a1)`, repeats the cycle replacing `a0` with `a1`.
+		 *
+		 * @param a0 the initial value used in the first call to `buildAndCheck`.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param buildAndCheck function that takes completed cycles count and last duty result, and returns a new duty that yields an `Either[B, A]`.
+		 */
+		final class RepeatUntilLeft[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(buildAndCheck: (Int, A) => Duty[Either[B, A]]) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = {
+				def loop(executionsCounter: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
+					val duty = buildAndCheck(executionsCounter, lastDutyResult)
+					duty.engagePortal {
+						case Left(b) => onComplete(b)
+						case Right(a) =>
+							if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
+							else execute(loop(executionsCounter + 1, a, 0))
+					}
 				}
+
+				loop(0, a0, 0)
 			}
 
-			loop(0, 0)
+			override def toString: String = deriveToString[RepeatUntilLeft[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[RetryUntilRight[A, B]](this)
+		/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Right]] or the `maxRetries` is reached.
+		 * ===Detailed behavior:===
+		 * When it is executed, it will:
+		 *  - Apply the function `taskBuilder` to the number of tries that were already done. If the evaluation completes:
+		 *  	- Abruptly, completes with the cause.
+		 *  		- Normally, executes the returned task and if the result is:
+		 *  			- `Failure(cause)`, completes with `Failure(cause)`.
+		 *  			- `Success(Right(b))`, completes with `Success(b)`.
+		 *  			- `Success(Left(a))`, compares the retries counter against `maxRetries` and if:
+		 *  				- `retriesCounter >= maxRetries`, completes with `Left(a)`
+		 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
+		 */
+		final class RetryUntilRight[+A, +B](maxRetries: Int, maxRecursionDepthPerExecutor: Int = 9)(taskBuilder: Int => Duty[Either[A, B]]) extends AbstractDuty[Either[A, B]] {
+			override def engage(onComplete: Either[A, B] => Unit): Unit = {
+				/**
+				 * @param attemptsAlreadyMade the number attempts already made.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
+				def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
+					val task: Duty[Either[A, B]] = taskBuilder(attemptsAlreadyMade)
+
+					task.engagePortal {
+						case rb@(_: Right[A, B]) =>
+							onComplete(rb)
+						case la@Left(a) =>
+							if (attemptsAlreadyMade >= maxRetries) {
+								onComplete(la)
+							} else if (recursionDepth < maxRecursionDepthPerExecutor) {
+								loop(attemptsAlreadyMade + 1, recursionDepth + 1)
+							} else {
+								execute(loop(attemptsAlreadyMade + 1, 0))
+							}
+					}
+				}
+
+				loop(0, 0)
+			}
+
+			override def toString: String = deriveToString[RetryUntilRight[A, B]](this)
+		}
 	}
+
 
 	////////////// COVENANT ///////////////
 
@@ -1089,7 +1090,7 @@ trait Doer { thisDoer =>
 		 *
 		 * $unhandledErrorsArePropagatedToTaskResult
 		 */
-		inline final def transform[B](resultTransformer: Try[A] => Try[B]): Task[B] = new Transform(thisTask, resultTransformer)
+		inline final def transform[B](resultTransformer: Try[A] => Try[B]): Task[B] = new Task.Transform(thisTask, resultTransformer)
 
 
 		/**
@@ -1105,7 +1106,7 @@ trait Doer { thisDoer =>
 		 * @param taskBBuilder a function that receives the result of `taskA` and builds the task to be executed next. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
 		 */
 		inline final def transformWith[B](taskBBuilder: Try[A] => Task[B]): Task[B] =
-			new Compose(thisTask, taskBBuilder)
+			new Task.Compose(thisTask, taskBBuilder)
 
 
 		/**
@@ -1156,7 +1157,7 @@ trait Doer { thisDoer =>
 		 *
 		 * @param predicate a predicate that determines which values are propagated to the following for-bindings.
 		 * */
-		inline final def withFilter(predicate: A => Boolean): Task[A] = new WithFilter(thisTask, predicate)
+		inline final def withFilter(predicate: A => Boolean): Task[A] = new Task.WithFilter(thisTask, predicate)
 
 		/** Applies the side-effecting function to the result of this task without affecting the propagated value.
 		 * The result of the provided function is always ignored and therefore not propagated in any way.
@@ -1189,7 +1190,7 @@ trait Doer { thisDoer =>
 		 * Together with [[Duty.toTask]] this method allow to mix duties and task in the same chain.
 		 *
 		 * @param exceptionHandler the complete function to apply to the result of this task if it is a [[Failure]]. $isExecutedByDoSiThEx */
-		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] = new ToDuty[A, B](thisTask, exceptionHandler)
+		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] = new Task.ToDuty[A, B](thisTask, exceptionHandler)
 
 		/** Transforms this task applying the given partial function to failure results. This is like map but for the throwable; and like [[toDuty]] but with a partial function. Analogous to [[Future.recover]].
 		 * ===detailed description===
@@ -1222,8 +1223,8 @@ trait Doer { thisDoer =>
 		 */
 		final def recoverWith[B >: A](pf: PartialFunction[Throwable, Task[B]]): Task[B] = {
 			transformWith[B] {
-				case Failure(t) => pf.applyOrElse(t, (e: Throwable) => new Immediate(Failure(e)));
-				case sa@Success(_) => new Immediate(sa);
+				case Failure(t) => pf.applyOrElse(t, (e: Throwable) => new Task.Ready(Failure(e)));
+				case sa@Success(_) => new Task.Ready(sa);
 			}
 		}
 
@@ -1249,7 +1250,7 @@ trait Doer { thisDoer =>
 		 * @return a new [[Task]] that, when executed, repeatedly executes this task and applies the `condition` to the task's result until the function's result is [[Maybe.some]]. The result of this task is the contents of said [[Maybe]] unless any execution of the `taskA` or `condition` terminates abruptly in which case this task result is the cause.
 		 * */
 		inline final def reiteratedHardyUntilSome[B](maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[A]) => Maybe[Try[B]]): Task[B] =
-			new ReiterateHardyUntilSome(thisTask, maxRecursionDepthPerExecutor)(condition)
+			new Task.ReiterateHardyUntilSome(thisTask, maxRecursionDepthPerExecutor)(condition)
 
 		/**
 		 * Creates a new [[Task]] that is executed repeatedly until either it fails or applying a condition to: its result and the number of already completed cycles, yields [[Maybe.some]].
@@ -1305,7 +1306,7 @@ trait Doer { thisDoer =>
 		 * @tparam B the type of the result of this task.
 		 */
 		inline final def reiteratedWhileEmpty[S >: A, B](ts0: Try[S], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[S]) => Maybe[B]): Task[B] =
-			new ReiterateHardyWhileEmpty[S, B](thisTask, ts0, maxRecursionDepthPerExecutor: Int)(condition)
+			new Task.ReiterateHardyWhileEmpty[S, B](thisTask, ts0, maxRecursionDepthPerExecutor: Int)(condition)
 
 		/**
 		 * Returns a task that, when executed, repeatedly executes this [[Task]] while a [[PartialFunction]] is undefined.
@@ -1365,7 +1366,7 @@ trait Doer { thisDoer =>
 
 		/** A [[Task]] yields [[Unit]].
 		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-		@threadUnsafe lazy val unit: Task[Unit] = Immediate(successUnit)
+		@threadUnsafe lazy val unit: Task[Unit] = Ready(successUnit)
 
 		/** A [[Task]] whose execution never ends. */
 		@threadUnsafe lazy val never: Task[Nothing] = Never()
@@ -1377,7 +1378,7 @@ trait Doer { thisDoer =>
 		 * @param tryA the value that the returned task will give as result every time it is executed.
 		 * @return the task described in the method description.
 		 */
-		inline final def ready[A](tryA: Try[A]): Task[A] = new Immediate(tryA)
+		inline final def ready[A](tryA: Try[A]): Task[A] = new Ready(tryA)
 
 		/** Creates a [[Task]] that always succeeds with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Success]] with the provided value.
 		 *
@@ -1386,7 +1387,7 @@ trait Doer { thisDoer =>
 		 * @param a the value contained in the [[Success]] that the returned task will give as result every time it is executed.
 		 * @return the task described in the method description.
 		 */
-		inline final def successful[A](a: A): Task[A] = new Immediate(Success(a))
+		inline final def successful[A](a: A): Task[A] = new Ready(Success(a))
 
 		/** Creates a [[Task]] that always fails with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Failure]] with the provided [[Throwable]]
 		 *
@@ -1395,7 +1396,7 @@ trait Doer { thisDoer =>
 		 * @param throwable the exception contained in the [[Failure]] that the returned task will give as result every time it is executed.
 		 * @return the task described in the method description.
 		 */
-		inline final def failed[A](throwable: Throwable): Task[A] = new Immediate(Failure(throwable))
+		inline final def failed[A](throwable: Throwable): Task[A] = new Ready(Failure(throwable))
 
 		/**
 		 * Creates a task whose result is the result of the provided supplier.
@@ -1494,7 +1495,7 @@ trait Doer { thisDoer =>
 		 * @return the task described in the method description.
 		 */
 		inline final def combine[A, B, C](taskA: Task[A], taskB: Task[B])(f: (Try[A], Try[B]) => Try[C]): Task[C] =
-			new CombinedTask(taskA, taskB, f)
+			new Combined(taskA, taskB, f)
 
 		/**
 		 * Creates a task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results in the same order.
@@ -1555,7 +1556,7 @@ trait Doer { thisDoer =>
 		}
 
 		/** Like [[sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-		inline def sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Task[Array[A]] = new SequenceTask[A, C](tasks)
+		inline def sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Task[Array[A]] = new Sequence[A, C](tasks)
 
 
 		/**
@@ -1723,585 +1724,585 @@ trait Doer { thisDoer =>
 				}
 			}
 		}
-	}
 
-	/** A [[Task]] that never completes.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 * */
-	final class Never extends AbstractTask[Nothing] {
-		override def engage(onComplete: Try[Nothing] => Unit): Unit = ()
-	}
-
-	/**
-	 * @param taskA the [[Task]] from where this duty takes its result.
-	 * @param exceptionHandler converts the faulty results of the `taskA` to instances of `B`.
-	 *
-	 * $notGuarded */
-	final class ToDuty[A, B >: A](taskA: Task[A], exceptionHandler: Throwable => B) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				val b = tryA match {
-					case Success(a) => a
-					case Failure(exception) => exceptionHandler(exception)
-				}
-				onComplete(b)
-			}
+		/** A [[Task]] that never completes.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 * */
+		final class Never extends AbstractTask[Nothing] {
+			override def engage(onComplete: Try[Nothing] => Unit): Unit = ()
 		}
 
-		override def toString: String = deriveToString[ToDuty[A, B]](this)
-	}
-
-
-	/** A [[Task]] whose result is calculated at the call site even before the task is constructed. The result of its execution is always the provided value.
-	 *
-	 * $threadSafe
-	 *
-	 * @param tryA the value that the returned task will give as result every time it is executed.
-	 * @return the task described in the method description.
-	 * $onCompleteExecutedByDoSiThEx
-	 */
-	final class Immediate[+A](tryA: Try[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit =
-			onComplete(tryA)
-
-		override def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[A] =
-			Future.fromTry(tryA)
-
-		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[Try[A]] =
-			Future.successful(tryA)
-
-		override def toString: String = deriveToString[Immediate[A]](this)
-	}
-
-	/** A [[Task]] that, when executed, calls the `supplier` within the $DoSiThEx and if it finishes:
-	 *  - abruptly, completes with the cause.
-	 *  - normally, completes with the result.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param supplier builds the result of this [[Task]]. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 */
-	final class Own[+A](supplier: () => Try[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			val result =
-				try supplier()
-				catch {
-					case NonFatal(e) => Failure(e)
-				}
-			onComplete(result)
-		}
-
-		override def toString: String = deriveToString[Own[A]](this)
-	}
-
-	final class OwnFlat[+A](supplier: () => Task[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			val taskA =
-				try supplier()
-				catch {
-					case NonFatal(e) => Task.failed(e)
-				}
-			taskA.engagePortal(onComplete)
-		}
-	}
-
-	/** A [[Task]] that just waits the completion of the specified [[Future]]. The result of the task, when executed, is the result of the received [[Future]].
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param future the future to wait for.
-	 */
-	final class Wait[+A](future: Future[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
-			future.onComplete { tryA =>
-				thisDoer.execute(onComplete(tryA))
-			}(using ownSingleThreadExecutionContext)
-		}
-
-		override def toString: String = deriveToString[Wait[A]](this)
-	}
-
-	/** A [[Task]] that, when executed, triggers the execution of a process in an alien executor and waits its result, successful or not.
-	 * The process executor may be the $DoSiThEx but if that is the intention [[Own]] would be more appropriate.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param builder a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 * */
-	final class Alien[+A](builder: () => Future[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			val future =
-				try builder()
-				catch {
-					case NonFatal(e) => Future.failed(e)
-				}
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
-			future.onComplete { tryA =>
-				thisDoer.execute(onComplete(tryA))
-			}(using ownSingleThreadExecutionContext)
-		}
-
-		override def toString: String = deriveToString[Alien[A]](this)
-	}
-
-	final class Foreign[+A](foreignDoer: Doer)(foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			foreignTask.trigger() { tryA => execute(onComplete(tryA)) }
-		}
-
-		override def toString: String = deriveToString[Foreign[A]](this)
-	}
-
-	/**
-	 * A [[Task]] that consumes the results of the received task for its side effects.
-	 * ===Detailed behavior===
-	 * A [[Task]] that, when executed, it will:
-	 *		- trigger the execution of `taskA` and tries to apply the `consumer` to its result. If the evaluation finishes:
-	 *			- abruptly, completes with a [[Failure]] containing the cause.
-	 *			- normally, completes with `Success(())`.
-	 */
-	final class Consume[A](taskA: Task[A], consumer: Try[A] => Unit) extends AbstractTask[Unit] {
-		override def engage(onComplete: Try[Unit] => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				val tryConsumerResult =
-					try {
-						consumer(tryA)
-						successUnit
+		/**
+		 * @param taskA the [[Task]] from where this duty takes its result.
+		 * @param exceptionHandler converts the faulty results of the `taskA` to instances of `B`.
+		 *
+		 * $notGuarded */
+		final class ToDuty[A, B >: A](taskA: Task[A], exceptionHandler: Throwable => B) extends AbstractDuty[B] {
+			override def engage(onComplete: B => Unit): Unit = {
+				taskA.engagePortal { tryA =>
+					val b = tryA match {
+						case Success(a) => a
+						case Failure(exception) => exceptionHandler(exception)
 					}
+					onComplete(b)
+				}
+			}
+
+			override def toString: String = deriveToString[ToDuty[A, B]](this)
+		}
+
+
+		/** A [[Task]] whose result is calculated at the call site even before the task is constructed. The result of its execution is always the provided value.
+		 *
+		 * $threadSafe
+		 *
+		 * @param tryA the value that the returned task will give as result every time it is executed.
+		 * @return the task described in the method description.
+		 * $onCompleteExecutedByDoSiThEx
+		 */
+		final class Ready[+A](tryA: Try[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit =
+				onComplete(tryA)
+
+			override def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[A] =
+				Future.fromTry(tryA)
+
+			override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[Try[A]] =
+				Future.successful(tryA)
+
+			override def toString: String = deriveToString[Ready[A]](this)
+		}
+
+		/** A [[Task]] that, when executed, calls the `supplier` within the $DoSiThEx and if it finishes:
+		 *  - abruptly, completes with the cause.
+		 *  - normally, completes with the result.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param supplier builds the result of this [[Task]]. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 */
+		final class Own[+A](supplier: () => Try[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				val result =
+					try supplier()
 					catch {
-						case NonFatal(cause) => Failure(cause)
+						case NonFatal(e) => Failure(e)
 					}
-				onComplete(tryConsumerResult)
+				onComplete(result)
 			}
+
+			override def toString: String = deriveToString[Own[A]](this)
 		}
 
-		override def toString: String = deriveToString[Consume[A]](this)
-	}
-
-	/**
-	 * A [[Task]] that transforms the received task by converting successful results to `Failure(new NoSuchElementException())` if it does not satisfy the received `predicate`.
-	 * Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.
-	 * ===Detailed behavior===
-	 * A [[Task]] that, when executed, it will:
-	 *		- trigger the execution of `taskA` and, if the result is a:
-	 *			- [[Failure]], completes with that failure.
-	 *			- [[Success]], tries to apply the `predicate` to its content. If the evaluation finishes:
-	 *				- abruptly, completes with the cause.
-	 *				- normally with a `false`, completes with a [[Failure]] containing a [[NoSuchElementException]].
-	 *				- normally with a `true`, completes with the result of this task.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * */
-	final class WithFilter[A](taskA: Task[A], predicate: A => Boolean) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			taskA.engagePortal {
-				case sa@Success(a) =>
-					val predicateResult =
-						try {
-							if predicate(a) then sa
-							else Failure(new NoSuchElementException(s"Task filter predicate is not satisfied for $a"))
-						} catch {
-							case NonFatal(cause) =>
-								Failure(cause)
-						}
-					onComplete(predicateResult)
-
-				case f@Failure(_) =>
-					onComplete(f)
-			}
-		}
-
-		override def toString: String = deriveToString[WithFilter[A]](this)
-	}
-
-
-	/**
-	 * A [[Task]] that transform the result of another task.
-	 * ===Detailed description===
-	 * A [[Task]] that, when executed, triggers the execution of the `originalTask` and applies the received `resultTransformer` to its results. If the evaluation finishes:
-	 *		- abruptly, completes with the cause.
-	 *		- normally, completes with the result of the evaluation.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param resultTransformer applied to the result of the `originalTask` to obtain the result of this task.
-	 *
-	 * $isExecutedByDoSiThEx
-	 *
-	 * $unhandledErrorsArePropagatedToTaskResult
-	 */
-	final class Transform[+A, +B](originalTask: Task[A], resultTransformer: Try[A] => Try[B]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			originalTask.engagePortal { tryA =>
-				val tryB =
-					try resultTransformer(tryA)
-					catch {
-						case NonFatal(e) => Failure(e);
-					}
-				onComplete(tryB)
-			}
-		}
-
-		override def toString: String = deriveToString[Transform[A, B]](this)
-	}
-
-	/**
-	 * A [[Task]] that composes two [[Task]]s where the second is build from the result of the first.
-	 * ===Detailed behavior===
-	 * A [[Task]] which, when executed, it will:
-	 *		- Trigger the execution of `taskA` and apply the `taskBBuilder` function to its result. If the evaluation finishes:
-	 *			- abruptly, completes with the cause.
-	 *			- normally with `taskB`, triggers the execution of `taskB` and completes with its result.
-	 *
-	 * $threadSafe
-	 *
-	 * @param taskA the task that is executed first.
-	 * @param taskBBuilder a function that receives the result of the execution of `taskA` and builds the task to be executed next. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 */
-	final class Compose[+A, +B](taskA: Task[A], taskBBuilder: Try[A] => Task[B]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				val taskB =
-					try taskBBuilder(tryA)
+		final class OwnFlat[+A](supplier: () => Task[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				val taskA =
+					try supplier()
 					catch {
 						case NonFatal(e) => Task.failed(e)
 					}
-				taskB.engagePortal(onComplete)
+				taskA.engagePortal(onComplete)
 			}
 		}
 
-		override def toString: String = deriveToString[Compose[A, B]](this)
-	}
+		/** A [[Task]] that just waits the completion of the specified [[Future]]. The result of the task, when executed, is the result of the received [[Future]].
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param future the future to wait for.
+		 */
+		final class Wait[+A](future: Future[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
+				future.onComplete { tryA =>
+					thisDoer.execute(onComplete(tryA))
+				}(using ownSingleThreadExecutionContext)
+			}
 
+			override def toString: String = deriveToString[Wait[A]](this)
+		}
 
-	/** A [[Task]] that, when executed:
-	 *		- triggers the execution of both: `taskA` and `taskB`;
-	 *		- when both are completed, whether normal or abruptly, the function `f` is applied to their results and if the evaluation finishes:
-	 *			- abruptly, completes with the cause.
-	 *			- normally, completes with the result.
-	 *
-	 * $threadSafe
-	 * $onCompleteExecutedByDoSiThEx
-	 */
-	final class CombinedTask[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractTask[C] {
-		override def engage(onComplete: Try[C] => Unit): Unit = {
-			var ota: Maybe[Try[A]] = Maybe.empty
-			var otb: Maybe[Try[B]] = Maybe.empty
-			taskA.engagePortal { tryA =>
-				otb.fold {
-					ota = Maybe.some(tryA)
-				} { tryB =>
-					val tryC =
-						try f(tryA, tryB)
-						catch {
-							case NonFatal(e) => Failure(e)
+		/** A [[Task]] that, when executed, triggers the execution of a process in an alien executor and waits its result, successful or not.
+		 * The process executor may be the $DoSiThEx but if that is the intention [[Own]] would be more appropriate.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param builder a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * */
+		final class Alien[+A](builder: () => Future[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				val future =
+					try builder()
+					catch {
+						case NonFatal(e) => Future.failed(e)
+					}
+				// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".    
+				future.onComplete { tryA =>
+					thisDoer.execute(onComplete(tryA))
+				}(using ownSingleThreadExecutionContext)
+			}
+
+			override def toString: String = deriveToString[Alien[A]](this)
+		}
+
+		final class Foreign[+A](foreignDoer: Doer)(foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				foreignTask.trigger() { tryA => execute(onComplete(tryA)) }
+			}
+
+			override def toString: String = deriveToString[Foreign[A]](this)
+		}
+
+		/**
+		 * A [[Task]] that consumes the results of the received task for its side effects.
+		 * ===Detailed behavior===
+		 * A [[Task]] that, when executed, it will:
+		 *		- trigger the execution of `taskA` and tries to apply the `consumer` to its result. If the evaluation finishes:
+		 *			- abruptly, completes with a [[Failure]] containing the cause.
+		 *			- normally, completes with `Success(())`.
+		 */
+		final class Consume[A](taskA: Task[A], consumer: Try[A] => Unit) extends AbstractTask[Unit] {
+			override def engage(onComplete: Try[Unit] => Unit): Unit = {
+				taskA.engagePortal { tryA =>
+					val tryConsumerResult =
+						try {
+							consumer(tryA)
+							successUnit
 						}
-					onComplete(tryC)
+						catch {
+							case NonFatal(cause) => Failure(cause)
+						}
+					onComplete(tryConsumerResult)
 				}
 			}
-			taskB.engagePortal { tryB =>
-				ota.fold {
-					otb = Maybe.some(tryB)
-				} { tryA =>
-					val tryC =
-						try f(tryA, tryB)
+
+			override def toString: String = deriveToString[Consume[A]](this)
+		}
+
+		/**
+		 * A [[Task]] that transforms the received task by converting successful results to `Failure(new NoSuchElementException())` if it does not satisfy the received `predicate`.
+		 * Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.
+		 * ===Detailed behavior===
+		 * A [[Task]] that, when executed, it will:
+		 *		- trigger the execution of `taskA` and, if the result is a:
+		 *			- [[Failure]], completes with that failure.
+		 *			- [[Success]], tries to apply the `predicate` to its content. If the evaluation finishes:
+		 *				- abruptly, completes with the cause.
+		 *				- normally with a `false`, completes with a [[Failure]] containing a [[NoSuchElementException]].
+		 *				- normally with a `true`, completes with the result of this task.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * */
+		final class WithFilter[A](taskA: Task[A], predicate: A => Boolean) extends AbstractTask[A] {
+			override def engage(onComplete: Try[A] => Unit): Unit = {
+				taskA.engagePortal {
+					case sa@Success(a) =>
+						val predicateResult =
+							try {
+								if predicate(a) then sa
+								else Failure(new NoSuchElementException(s"Task filter predicate is not satisfied for $a"))
+							} catch {
+								case NonFatal(cause) =>
+									Failure(cause)
+							}
+						onComplete(predicateResult)
+
+					case f@Failure(_) =>
+						onComplete(f)
+				}
+			}
+
+			override def toString: String = deriveToString[WithFilter[A]](this)
+		}
+
+
+		/**
+		 * A [[Task]] that transform the result of another task.
+		 * ===Detailed description===
+		 * A [[Task]] that, when executed, triggers the execution of the `originalTask` and applies the received `resultTransformer` to its results. If the evaluation finishes:
+		 *		- abruptly, completes with the cause.
+		 *		- normally, completes with the result of the evaluation.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param resultTransformer applied to the result of the `originalTask` to obtain the result of this task.
+		 *
+		 * $isExecutedByDoSiThEx
+		 *
+		 * $unhandledErrorsArePropagatedToTaskResult
+		 */
+		final class Transform[+A, +B](originalTask: Task[A], resultTransformer: Try[A] => Try[B]) extends AbstractTask[B] {
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				originalTask.engagePortal { tryA =>
+					val tryB =
+						try resultTransformer(tryA)
 						catch {
-							case NonFatal(e) => Failure(e)
+							case NonFatal(e) => Failure(e);
 						}
-					onComplete(tryC)
+					onComplete(tryB)
+				}
+			}
+
+			override def toString: String = deriveToString[Transform[A, B]](this)
+		}
+
+		/**
+		 * A [[Task]] that composes two [[Task]]s where the second is build from the result of the first.
+		 * ===Detailed behavior===
+		 * A [[Task]] which, when executed, it will:
+		 *		- Trigger the execution of `taskA` and apply the `taskBBuilder` function to its result. If the evaluation finishes:
+		 *			- abruptly, completes with the cause.
+		 *			- normally with `taskB`, triggers the execution of `taskB` and completes with its result.
+		 *
+		 * $threadSafe
+		 *
+		 * @param taskA the task that is executed first.
+		 * @param taskBBuilder a function that receives the result of the execution of `taskA` and builds the task to be executed next. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 */
+		final class Compose[+A, +B](taskA: Task[A], taskBBuilder: Try[A] => Task[B]) extends AbstractTask[B] {
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				taskA.engagePortal { tryA =>
+					val taskB =
+						try taskBBuilder(tryA)
+						catch {
+							case NonFatal(e) => Task.failed(e)
+						}
+					taskB.engagePortal(onComplete)
+				}
+			}
+
+			override def toString: String = deriveToString[Compose[A, B]](this)
+		}
+
+
+		/** A [[Task]] that, when executed:
+		 *		- triggers the execution of both: `taskA` and `taskB`;
+		 *		- when both are completed, whether normal or abruptly, the function `f` is applied to their results and if the evaluation finishes:
+		 *			- abruptly, completes with the cause.
+		 *			- normally, completes with the result.
+		 *
+		 * $threadSafe
+		 * $onCompleteExecutedByDoSiThEx
+		 */
+		final class Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractTask[C] {
+			override def engage(onComplete: Try[C] => Unit): Unit = {
+				var ota: Maybe[Try[A]] = Maybe.empty
+				var otb: Maybe[Try[B]] = Maybe.empty
+				taskA.engagePortal { tryA =>
+					otb.fold {
+						ota = Maybe.some(tryA)
+					} { tryB =>
+						val tryC =
+							try f(tryA, tryB)
+							catch {
+								case NonFatal(e) => Failure(e)
+							}
+						onComplete(tryC)
+					}
+				}
+				taskB.engagePortal { tryB =>
+					ota.fold {
+						otb = Maybe.some(tryB)
+					} { tryA =>
+						val tryC =
+							try f(tryA, tryB)
+							catch {
+								case NonFatal(e) => Failure(e)
+							}
+						onComplete(tryC)
+					}
+				}
+			}
+
+			override def toString: String = deriveToString[Combined[A, B, C]](this)
+		}
+
+		/** @see [[Task.sequenceToArray]] */
+		final class Sequence[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[A]] {
+			override def engage(onComplete: Try[Array[A]] => Unit): Unit = {
+				val size = tasks.size
+				val array = Array.ofDim[A](size)
+				if size == 0 then onComplete(Success(array))
+				else {
+					val taskIterator = tasks.iterator
+					var completedCounter: Int = 0
+					var index = 0
+					while index < size do {
+						val task = taskIterator.next
+						val taskIndex = index
+						task.engagePortal {
+							case Success(a) =>
+								array(taskIndex) = a
+								completedCounter += 1
+								if completedCounter == size then onComplete(Success(array))
+
+							case failure: Failure[A] =>
+								onComplete(failure.asInstanceOf[Failure[Array[A]]])
+						}
+						index += 1
+					}
 				}
 			}
 		}
 
-		override def toString: String = deriveToString[CombinedTask[A, B, C]](this)
-	}
-
-	/** @see [[Task.sequenceToArray]] */
-	final class SequenceTask[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[A]] {
-		override def engage(onComplete: Try[Array[A]] => Unit): Unit = {
-			val size = tasks.size
-			val array = Array.ofDim[A](size)
-			if size == 0 then onComplete(Success(array))
-			else {
-				val taskIterator = tasks.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				while index < size do {
-					val task = taskIterator.next
-					val taskIndex = index
-					task.engagePortal {
-						case Success(a) =>
-							array(taskIndex) = a
+		final class SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[Try[A]]] {
+			override def engage(onComplete: Try[Array[Try[A]]] => Unit): Unit = {
+				val size = tasks.size
+				val array = Array.ofDim[Try[A]](size)
+				if size == 0 then onComplete(Success(array))
+				else {
+					val taskIterator = tasks.iterator
+					var completedCounter: Int = 0
+					var index = 0
+					while index < size do {
+						val task = taskIterator.next
+						val taskIndex = index
+						task.engagePortal { tryA =>
+							array(taskIndex) = tryA
 							completedCounter += 1
 							if completedCounter == size then onComplete(Success(array))
-
-						case failure: Failure[A] =>
-							onComplete(failure.asInstanceOf[Failure[Array[A]]])
+						}
+						index += 1
 					}
-					index += 1
 				}
 			}
 		}
-	}
 
-	final class SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[Try[A]]] {
-		override def engage(onComplete: Try[Array[Try[A]]] => Unit): Unit = {
-			val size = tasks.size
-			val array = Array.ofDim[Try[A]](size)
-			if size == 0 then onComplete(Success(array))
-			else {
-				val taskIterator = tasks.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				while index < size do {
-					val task = taskIterator.next
-					val taskIndex = index
-					task.engagePortal { tryA =>
-						array(taskIndex) = tryA
-						completedCounter += 1
-						if completedCounter == size then onComplete(Success(array))
+		/**
+		 * A [[Task]] that executes the received task until applying the received function yields [[Maybe.some]].
+		 * ===Detailed description===
+		 * A [[Task]] that, when executed, it will:
+		 *		- execute the `taskA` producing the result `tryA`
+		 *		- apply `condition` to `(completedCycles, tryA)`. If the evaluation finishes:
+		 *			- abruptly, completes with the cause.
+		 *			- normally with `some(tryB)`, completes with `tryB`
+		 *			- normally with `empty`, goes back to the first step.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param taskA the task to be repeated.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param condition function that decides if the loop continues or not based on:
+		 *		- the number of already completed cycles,
+		 *		- and the result of the last execution of the `taskA`.
+		 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
+		 *
+		 * $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * */
+		final class ReiterateHardyUntilSome[+A, +B](taskA: Task[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[A]) => Maybe[Try[B]]) extends AbstractTask[B] {
+
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				/**
+				 * @param completedCycles number of already completed cycles.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
+				def loop(completedCycles: Int, recursionDepth: Int): Unit = {
+					taskA.engagePortal { tryA =>
+						val conditionResult: Maybe[Try[B]] =
+							try condition(completedCycles, tryA)
+							catch {
+								case NonFatal(cause) => Maybe.some(Failure(cause))
+							}
+						conditionResult.fold {
+							if (recursionDepth < maxRecursionDepthPerExecutor) {
+								loop(completedCycles + 1, recursionDepth + 1)
+							} else {
+								execute(loop(completedCycles + 1, 0))
+							}
+						}(onComplete)
 					}
-					index += 1
 				}
+
+				loop(0, 0)
 			}
+
+			override def toString: String = deriveToString[ReiterateHardyUntilSome[A, B]](this)
 		}
-	}
 
-	/**
-	 * A [[Task]] that executes the received task until applying the received function yields [[Maybe.some]].
-	 * ===Detailed description===
-	 * A [[Task]] that, when executed, it will:
-	 *		- execute the `taskA` producing the result `tryA`
-	 *		- apply `condition` to `(completedCycles, tryA)`. If the evaluation finishes:
-	 *			- abruptly, completes with the cause.
-	 *			- normally with `some(tryB)`, completes with `tryB`
-	 *			- normally with `empty`, goes back to the first step.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param taskA the task to be repeated.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param condition function that decides if the loop continues or not based on:
-	 *		- the number of already completed cycles,
-	 *		- and the result of the last execution of the `taskA`.
-	 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
-	 *
-	 * $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 * */
-	final class ReiterateHardyUntilSome[+A, +B](taskA: Task[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[A]) => Maybe[Try[B]]) extends AbstractTask[B] {
-
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			/**
-			 * @param completedCycles number of already completed cycles.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
-			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
-				taskA.engagePortal { tryA =>
+		/**
+		 * Task that, when executed, repeatedly executes a task while a condition return [[Maybe.empty]].
+		 * ===Detailed behavior:===
+		 * When this [[Task]] is executed, it will:
+		 *  - Try to apply the `condition` function to `(n, ta0)` where `n` is the number of already completed evaluations of it.
+		 *  - If the evaluation completes:
+		 *  	- Abruptly, completes with the cause.
+		 *  	- Normally, returning `some(b)`, completes with `b`.
+		 *  	- Normally, returning `empty`, executes the `taskA` and goes back to the first step replacing `ta0` with the result.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param taskA the task to be repeated
+		 * @param ta0 the value passed as second parameter `condition` the first time it is evaluated.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * @tparam A the type of the result of the repeated task `taskA`.
+		 * @tparam B the type of the result of this task.
+		 */
+		final class ReiterateHardyWhileEmpty[+A, +B](taskA: Task[A], ta0: Try[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[A]) => Maybe[B]) extends AbstractTask[B] {
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				/**
+				 * @param completedCycles number of already completed cycles.
+				 * @param lastTaskResult the result of the last task execution.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
+				def loop(completedCycles: Int, lastTaskResult: Try[A], recursionDepth: Int): Unit = {
 					val conditionResult: Maybe[Try[B]] =
-						try condition(completedCycles, tryA)
+						try {
+							condition(completedCycles, lastTaskResult)
+								.fold(Maybe.empty)(b => Maybe.some(Success(b)))
+						}
 						catch {
 							case NonFatal(cause) => Maybe.some(Failure(cause))
 						}
+
 					conditionResult.fold {
-						if (recursionDepth < maxRecursionDepthPerExecutor) {
-							loop(completedCycles + 1, recursionDepth + 1)
-						} else {
-							execute(loop(completedCycles + 1, 0))
+						taskA.engagePortal { newTryA =>
+							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
+							else execute(loop(completedCycles + 1, newTryA, 0))
 						}
 					}(onComplete)
 				}
+
+				loop(0, ta0, 0)
 			}
 
-			loop(0, 0)
+			override def toString: String = deriveToString[ReiterateHardyWhileEmpty[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[ReiterateHardyUntilSome[A, B]](this)
-	}
 
-	/**
-	 * Task that, when executed, repeatedly executes a task while a condition return [[Maybe.empty]].
-	 * ===Detailed behavior:===
-	 * When this [[Task]] is executed, it will:
-	 *  - Try to apply the `condition` function to `(n, ta0)` where `n` is the number of already completed evaluations of it.
-	 *  - If the evaluation completes:
-	 *  	- Abruptly, completes with the cause.
-	 *  	- Normally, returning `some(b)`, completes with `b`.
-	 *  	- Normally, returning `empty`, executes the `taskA` and goes back to the first step replacing `ta0` with the result.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param taskA the task to be repeated
-	 * @param ta0 the value passed as second parameter `condition` the first time it is evaluated.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 * @tparam A the type of the result of the repeated task `taskA`.
-	 * @tparam B the type of the result of this task.
-	 */
-	final class ReiterateHardyWhileEmpty[+A, +B](taskA: Task[A], ta0: Try[A], maxRecursionDepthPerExecutor: Int = 9)(condition: (Int, Try[A]) => Maybe[B]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			/**
-			 * @param completedCycles number of already completed cycles.
-			 * @param lastTaskResult the result of the last task execution.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
-			def loop(completedCycles: Int, lastTaskResult: Try[A], recursionDepth: Int): Unit = {
-				val conditionResult: Maybe[Try[B]] =
-					try {
-						condition(completedCycles, lastTaskResult)
-							.fold(Maybe.empty)(b => Maybe.some(Success(b)))
-					}
-					catch {
-						case NonFatal(cause) => Maybe.some(Failure(cause))
-					}
-
-				conditionResult.fold {
-					taskA.engagePortal { newTryA =>
-						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
-						else execute(loop(completedCycles + 1, newTryA, 0))
-					}
-				}(onComplete)
-			}
-
-			loop(0, ta0, 0)
-		}
-
-		override def toString: String = deriveToString[ReiterateHardyWhileEmpty[A, B]](this)
-	}
-
-
-	/** Task that, when executed, repeatedly constructs and executes tasks as long as the `condition` is met.
-	 * ===Detailed behavior:===
-	 * When this [[Task]] is executed, it will:
-	 *  - Try to apply the function `checkAndBuild` to `(n, tryA0)` where `n` is the number of already completed cycles, and if it completes:
-	 *  	- Abruptly, completes with the cause.
-	 *		- Normally, returning a `Left(tryB)`, completes with `tryB`.
-	 *  	- Normally, returning a `Right(taskA)`, executes the `taskA` and goes back to the first step replacing `tryA0` with the result.
-	 *
-	 * @param tryA0 the initial value wrapped in a `Try`, used in the first call to `checkAndBuild`.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param checkAndBuild a function that takes the number of already completed cycles and the last task result wrapped in a `Try`, returning an `Either[Try[B], Task[A]]` indicating the next action to perform.	$isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult *
-	 */
-	final class WhileRightReiterateHardy[+A, +B](tryA0: Try[A], maxRecursionDepthPerExecutor: Int = 9)(checkAndBuild: (Int, Try[A]) => Either[Try[B], Task[A]]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			/**
-			 * @param completedCycles number of already completed cycles, which consist of a task creation and its execution.
-			 * @param lastTaskResult the result of the last task execution.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
-			def loop(completedCycles: Int, lastTaskResult: Try[A], recursionDepth: Int): Unit = {
-				val tryBOrTaskA =
-					try checkAndBuild(completedCycles, lastTaskResult)
-					catch {
-						case NonFatal(cause) => Left(Failure(cause));
-					}
-				tryBOrTaskA match {
-					case Left(tryB) =>
-						onComplete(tryB);
-					case Right(taskA) =>
-						taskA.engagePortal { newTryA =>
-							if (recursionDepth < maxRecursionDepthPerExecutor) loop(completedCycles + 1, newTryA, recursionDepth + 1)
-							else execute(loop(completedCycles + 1, newTryA, 0));
+		/** Task that, when executed, repeatedly constructs and executes tasks as long as the `condition` is met.
+		 * ===Detailed behavior:===
+		 * When this [[Task]] is executed, it will:
+		 *  - Try to apply the function `checkAndBuild` to `(n, tryA0)` where `n` is the number of already completed cycles, and if it completes:
+		 *  	- Abruptly, completes with the cause.
+		 *		- Normally, returning a `Left(tryB)`, completes with `tryB`.
+		 *  	- Normally, returning a `Right(taskA)`, executes the `taskA` and goes back to the first step replacing `tryA0` with the result.
+		 *
+		 * @param tryA0 the initial value wrapped in a `Try`, used in the first call to `checkAndBuild`.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param checkAndBuild a function that takes the number of already completed cycles and the last task result wrapped in a `Try`, returning an `Either[Try[B], Task[A]]` indicating the next action to perform.	$isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult *
+		 */
+		final class WhileRightReiterateHardy[+A, +B](tryA0: Try[A], maxRecursionDepthPerExecutor: Int = 9)(checkAndBuild: (Int, Try[A]) => Either[Try[B], Task[A]]) extends AbstractTask[B] {
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				/**
+				 * @param completedCycles number of already completed cycles, which consist of a task creation and its execution.
+				 * @param lastTaskResult the result of the last task execution.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
+				def loop(completedCycles: Int, lastTaskResult: Try[A], recursionDepth: Int): Unit = {
+					val tryBOrTaskA =
+						try checkAndBuild(completedCycles, lastTaskResult)
+						catch {
+							case NonFatal(cause) => Left(Failure(cause));
 						}
+					tryBOrTaskA match {
+						case Left(tryB) =>
+							onComplete(tryB);
+						case Right(taskA) =>
+							taskA.engagePortal { newTryA =>
+								if (recursionDepth < maxRecursionDepthPerExecutor) loop(completedCycles + 1, newTryA, recursionDepth + 1)
+								else execute(loop(completedCycles + 1, newTryA, 0));
+							}
+					}
 				}
+
+				loop(0, tryA0, 0)
 			}
 
-			loop(0, tryA0, 0)
+			override def toString: String = deriveToString[WhileRightReiterateHardy[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[WhileRightReiterateHardy[A, B]](this)
-	}
-
-	/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Left]] or failed.
-	 * ===Detailed behavior:===
-	 * When this [[Task]] is executed, it will:
-	 *  - Try to apply the function `buildAndCheck` to `(n, a0)` where n is the number of already completed cycles. If the evaluation completes:
-	 *  	- Abruptly, completes with the cause.
-	 *  		- Normally, returning a `task`, executes the `task` and if its result is:
-	 *  			- `Failure(cause)`, completes with that `Failure(cause)`.
-	 *  			- `Success(Left(tryB))`, completes with `tryB`.
-	 *  			- `Success(Right(a1))`, goes back to the first step replacing `a0` with `a1`.
-	 *
-	 * $onCompleteExecutedByDoSiThEx
-	 *
-	 * @param a0 the initial value used in the first call to `buildAndCheck`.
-	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
-	 * @param buildAndCheck a function that takes the number of already completed cycles and the last task result, returning a new task that yields an `Either[Try[B], A]` indicating the next action to perform. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
-	 */
-	final class ReiterateUntilLeft[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(buildAndCheck: (Int, A) => Task[Either[Try[B], A]]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			/**
-			 * @param executionsCounter number of already completed cycles, which consist of a task creation and its execution.
-			 * @param lastTaskResult the result of the last task execution.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
-			def loop(executionsCounter: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
-				val task: Task[Either[Try[B], A]] =
-					try buildAndCheck(executionsCounter, lastTaskResult)
-					catch {
-						case NonFatal(e) => Task.successful(Left(Failure(e)))
+		/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Left]] or failed.
+		 * ===Detailed behavior:===
+		 * When this [[Task]] is executed, it will:
+		 *  - Try to apply the function `buildAndCheck` to `(n, a0)` where n is the number of already completed cycles. If the evaluation completes:
+		 *  	- Abruptly, completes with the cause.
+		 *  		- Normally, returning a `task`, executes the `task` and if its result is:
+		 *  			- `Failure(cause)`, completes with that `Failure(cause)`.
+		 *  			- `Success(Left(tryB))`, completes with `tryB`.
+		 *  			- `Success(Right(a1))`, goes back to the first step replacing `a0` with `a1`.
+		 *
+		 * $onCompleteExecutedByDoSiThEx
+		 *
+		 * @param a0 the initial value used in the first call to `buildAndCheck`.
+		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
+		 * @param buildAndCheck a function that takes the number of already completed cycles and the last task result, returning a new task that yields an `Either[Try[B], A]` indicating the next action to perform. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 */
+		final class ReiterateUntilLeft[+A, +B](a0: A, maxRecursionDepthPerExecutor: Int = 9)(buildAndCheck: (Int, A) => Task[Either[Try[B], A]]) extends AbstractTask[B] {
+			override def engage(onComplete: Try[B] => Unit): Unit = {
+				/**
+				 * @param executionsCounter number of already completed cycles, which consist of a task creation and its execution.
+				 * @param lastTaskResult the result of the last task execution.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
+				def loop(executionsCounter: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
+					val task: Task[Either[Try[B], A]] =
+						try buildAndCheck(executionsCounter, lastTaskResult)
+						catch {
+							case NonFatal(e) => Task.successful(Left(Failure(e)))
+						}
+					task.engagePortal {
+						case Success(Right(a)) =>
+							if (recursionDepth < maxRecursionDepthPerExecutor) loop(executionsCounter + 1, a, recursionDepth + 1)
+							else execute(loop(executionsCounter + 1, a, 0));
+						case Success(Left(tryB)) =>
+							onComplete(tryB)
+						case Failure(e) =>
+							onComplete(Failure(e))
 					}
-				task.engagePortal {
-					case Success(Right(a)) =>
-						if (recursionDepth < maxRecursionDepthPerExecutor) loop(executionsCounter + 1, a, recursionDepth + 1)
-						else execute(loop(executionsCounter + 1, a, 0));
-					case Success(Left(tryB)) =>
-						onComplete(tryB)
-					case Failure(e) =>
-						onComplete(Failure(e))
 				}
+
+				loop(0, a0, 0)
 			}
 
-			loop(0, a0, 0)
+			override def toString: String = deriveToString[ReiterateUntilLeft[A, B]](this)
 		}
 
-		override def toString: String = deriveToString[ReiterateUntilLeft[A, B]](this)
-	}
-
-	/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Right]] or the `maxRetries` is reached.
-	 * ===Detailed behavior:===
-	 * When it is executed, it will:
-	 *  - Try to apply the function `taskBuilder` to the number of tries that were already done. If the evaluation completes:
-	 *  	- Abruptly, completes with the cause.
-	 *  		- Normally, executes the returned task and if the result is:
-	 *  			- `Failure(cause)`, completes with `Failure(cause)`.
-	 *  			- `Success(Right(b))`, completes with `Success(b)`.
-	 *  			- `Success(Left(a))`, compares the retries counter against `maxRetries` and if:
-	 *  				- `retriesCounter >= maxRetries`, completes with `Left(a)`
-	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
-	 */
-	final class AttemptUntilRight[+A, +B](maxRetries: Int, maxRecursionDepthPerExecutor: Int = 9)(taskBuilder: Int => Task[Either[A, B]]) extends AbstractTask[Either[A, B]] {
-		override def engage(onComplete: Try[Either[A, B]] => Unit): Unit = {
-			/**
-			 * @param attemptsAlreadyMade the number attempts already made.
-			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
-			def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
-				val task: Task[Either[A, B]] =
-					try taskBuilder(attemptsAlreadyMade)
-					catch {
-						case NonFatal(cause) => Task.failed(cause)
-					}
-				task.engagePortal {
-					case success@Success(aOrB) =>
-						aOrB match {
-							case _: Right[A, B] =>
-								onComplete(success)
-							case Left(a) =>
-								if (attemptsAlreadyMade >= maxRetries) {
+		/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Right]] or the `maxRetries` is reached.
+		 * ===Detailed behavior:===
+		 * When it is executed, it will:
+		 *  - Try to apply the function `taskBuilder` to the number of tries that were already done. If the evaluation completes:
+		 *  	- Abruptly, completes with the cause.
+		 *  		- Normally, executes the returned task and if the result is:
+		 *  			- `Failure(cause)`, completes with `Failure(cause)`.
+		 *  			- `Success(Right(b))`, completes with `Success(b)`.
+		 *  			- `Success(Left(a))`, compares the retries counter against `maxRetries` and if:
+		 *  				- `retriesCounter >= maxRetries`, completes with `Left(a)`
+		 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
+		 */
+		final class AttemptUntilRight[+A, +B](maxRetries: Int, maxRecursionDepthPerExecutor: Int = 9)(taskBuilder: Int => Task[Either[A, B]]) extends AbstractTask[Either[A, B]] {
+			override def engage(onComplete: Try[Either[A, B]] => Unit): Unit = {
+				/**
+				 * @param attemptsAlreadyMade the number attempts already made.
+				 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
+				def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
+					val task: Task[Either[A, B]] =
+						try taskBuilder(attemptsAlreadyMade)
+						catch {
+							case NonFatal(cause) => Task.failed(cause)
+						}
+					task.engagePortal {
+						case success@Success(aOrB) =>
+							aOrB match {
+								case _: Right[A, B] =>
 									onComplete(success)
-								} else if (recursionDepth < maxRecursionDepthPerExecutor) {
-									loop(attemptsAlreadyMade + 1, recursionDepth + 1)
-								} else {
-									execute(loop(attemptsAlreadyMade + 1, 0))
-								}
-						}
-					case failure: Failure[Either[A, B]] =>
-						onComplete(failure);
+								case Left(a) =>
+									if (attemptsAlreadyMade >= maxRetries) {
+										onComplete(success)
+									} else if (recursionDepth < maxRecursionDepthPerExecutor) {
+										loop(attemptsAlreadyMade + 1, recursionDepth + 1)
+									} else {
+										execute(loop(attemptsAlreadyMade + 1, 0))
+									}
+							}
+						case failure: Failure[Either[A, B]] =>
+							onComplete(failure);
+					}
 				}
+
+				loop(0, 0)
 			}
 
-			loop(0, 0)
+			override def toString: String = deriveToString[AttemptUntilRight[A, B]](this)
 		}
-
-		override def toString: String = deriveToString[AttemptUntilRight[A, B]](this)
 	}
 
 	////////////// COMMITMENT ///////////////
