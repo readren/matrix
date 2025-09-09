@@ -61,9 +61,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 			def accessNode(id: Id): sequencer.Task[Node] = {
 				sequencer.Task_ownFlat { () =>
 					getNode(id).fold {
-						sequencer.Task_failed(new RuntimeException(s"$inquirerId: no response from $id")).appointed(sequencer.newDelaySchedule(timeout))
+						sequencer.Task_failed(new RuntimeException(s"$inquirerId: no response from $id")).scheduled(sequencer.newDelaySchedule(timeout))
 					} { node =>
-						sequencer.Task_successful(node).appointed(sequencer.newDelaySchedule(latency))
+						sequencer.Task_successful(node).scheduled(sequencer.newDelaySchedule(latency))
 					}
 				}
 			}

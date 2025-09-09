@@ -27,7 +27,7 @@ object CooperativeWorkersSchedulingDp {
 
 	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersSchedulingDp]].
 	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. See [[DoerFacade]] to see why. */
-	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension {
+	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension, LoopingExtension {
 		override type Schedule <: ScheduleFacade
 	}
 
@@ -254,6 +254,7 @@ abstract class CooperativeWorkersSchedulingDp(
 			accum
 		}
 
+		/** // TODO is the second parameter needed. Consider removing it. */
 		def schedule(schedule: SchedulingDoerImpl#ScheduleImpl, scheduleTime: MilliTime): Unit = {
 			signal { () =>
 				if schedule.isEnabled then {
@@ -304,6 +305,7 @@ abstract class CooperativeWorkersSchedulingDp(
 			)
 		}
 
+		/** TODO this design is inefficient because requires the creation of a [[Runnable]] instance every call. Consider an improvement. */ 
 		private def signal(command: Runnable): Unit = {
 			this.synchronized {
 				commandsQueue.offer(command)

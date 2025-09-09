@@ -793,7 +793,7 @@ trait Conciliator { thisConciliator =>
 					val schedule = sequencer.newDelaySchedule(isolatedMainLoopInterval)
 					currentSchedule = Maybe.some(schedule)
 					// schedule the state-updater process
-					updatesState.appointed(schedule).triggerExposingFailures()
+					updatesState.scheduled(schedule).triggerExposingFailures()
 				}
 			}
 
@@ -826,7 +826,7 @@ trait Conciliator { thisConciliator =>
 					val schedule = sequencer.newDelaySchedule(candidateMainLoopInterval)
 					currentSchedule = Maybe.some(schedule)
 					// schedule the state-update process
-					updatesState.appointed(schedule).triggerExposingFailures()
+					updatesState.scheduled(schedule).triggerExposingFailures()
 				}
 			}
 

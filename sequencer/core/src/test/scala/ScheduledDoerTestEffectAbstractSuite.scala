@@ -21,11 +21,11 @@ import scala.util.{Failure, Success, Try}
 /** Abstract test suite for testing [[DoerProvider]]s that provide [[Doer]] instances extended with [[SchedulingExtension]].
  *
  * This suite provides comprehensive testing of the [[Doer]] with [[SchedulingExtension]] functionality without being tied to a specific infrastructure ([[DoerProvider]]) implementation.
- * The idea is that the test suites of [[DoerProvider]] extend this testing class to verify that the [[Doer & SchedulingExtension]] instances that the [[DoerProvider]] provides satisfy all the invariants checked here by this testing class.
+ * The idea is that the test suites of [[DoerProvider]] extend this testing class to verify that the [[Doer]] & [[SchedulingExtension]] & [[LoopingExtension]] instances that the [[DoerProvider]] provides satisfy all the invariants checked here by this testing class.
  *
  * @tparam D The type of Doer being tested, must extend both [[Doer]] and [[SchedulingExtension]].
  */
-abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension : ClassTag] extends ScalaCheckEffectSuite {
+abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension & LoopingExtension: ClassTag] extends ScalaCheckEffectSuite {
 
 	type DP <: DoerProvider[D]
 
@@ -957,7 +957,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	private def checksCommitment[DD <: Doer & SchedulingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
+	private def checksCommitment[DD <: Doer & SchedulingExtension & LoopingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
 		import doer.*
 
 		given Promise[Unit] = promise
@@ -1056,7 +1056,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
 			val startNano = System.nanoTime()
-			val duty = doer.Duty_schedule(schedule)(() => delay * 2)
+			val duty = doer.Duty_schedules(schedule)(() => delay * 2)
 				.map { x =>
 					val actualDelay = System.nanoTime - startNano
 					// println(s"-------> actual delay: ${actualDelay/1000} micros, expected: $delay millis, error: ${actualDelay/1000_000-delay} schedule: $schedule")
@@ -1078,7 +1078,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			val promise = Promise[Int]()
 			val startMilli = System.currentTimeMillis()
 			var counter: Int = 0
-			val duty = doer.Duty_schedule[Int](schedule)(() => counter)
+			val duty = doer.Duty_schedules[Int](schedule)(() => counter)
 				.andThen { supplierResult =>
 					// println(s"supplierResult = $supplierResult/$repetitions")
 					if !doer.wasActivated(schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
@@ -1277,19 +1277,17 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val waits = for {
-				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+				_ <- otherDoer.Duty_delays(cancelDelay) { () =>
 					doer.execute {
 						doer.cancelAll()
 						cancelAllWasCalled = true
 					}
 				}
-				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(maxDuration)) { () =>
+				_ <- otherDoer.Duty_delays(maxDuration) { () =>
 					promise.trySuccess(())
 				}
 			} yield ()
-			waits.triggerAndForgetHandlingErrors { e =>
-				break(s"Unexpected failure: $e")
-			}
+			waits.triggerAndForget()
 
 			promise.future
 		}
@@ -1339,18 +1337,16 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val cancelsAllAfterADelayAndThenWaitsEnough = for {
-				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(cancelDelay)) { () =>
+				_ <- otherDoer.Duty_delays(cancelDelay) { () =>
 					doer.cancelAll()
 					cancelNanoTime = System.nanoTime()
 					cancelAllWasCalled = true
 				}
-				_ <- otherDoer.Task_appoint(otherDoer.newDelaySchedule(maxDelay + 1)) { () =>
+				_ <- otherDoer.Duty_delays(maxDelay + 1) { () =>
 					promise.trySuccess(())
 				}
 			} yield ()
-			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForgetHandlingErrors { e =>
-				break(s"Unexpected exception: $e")
-			}
+			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForget()
 			promise.future
 		}
 	}

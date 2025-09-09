@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
 
 object StandardSchedulingDp {
-	trait ProvidedDoerFacade extends Doer, SchedulingExtension, ShutdownAble {
+	trait ProvidedDoerFacade extends Doer, SchedulingExtension, LoopingExtension, ShutdownAble {
 		/** @return true if the provided [[Schedule]] was activated and still not fully cancelled. */
 		def isActive(schedule: Schedule): Boolean
 	}
