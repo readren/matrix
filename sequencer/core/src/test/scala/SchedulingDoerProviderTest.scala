@@ -18,14 +18,14 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 
-/** Abstract test suite for testing [[DoerProvider]]s that provide [[Doer]] instances extended with [[SchedulingExtension]].
+/** Abstract test suite for testing [[DoerProvider]] implementations that provide [[Doer]] instances extended with [[SchedulingExtension]] and [[LoopingExtension]].
  *
- * This suite provides comprehensive testing of the [[Doer]] with [[SchedulingExtension]] functionality without being tied to a specific infrastructure ([[DoerProvider]]) implementation.
- * The idea is that the test suites of [[DoerProvider]] extend this testing class to verify that the [[Doer]] & [[SchedulingExtension]] & [[LoopingExtension]] instances that the [[DoerProvider]] provides satisfy all the invariants checked here by this testing class.
+ * This suite checks if the instances provided by a [[DoerProvider]] implementation respect the contract of [[Doer]] with [[SchedulingExtension]] and [[LoopingExtension]], without being tied to a specific implementation.
+ * The idea is that the test suites of [[DoerProvider]] extend this abstract class to verify that the [[Doer]] & [[SchedulingExtension]] & [[LoopingExtension]] instances that the [[DoerProvider]] provides satisfy all the invariants checked here by this testing class.
  *
- * @tparam D The type of Doer being tested, must extend both [[Doer]] and [[SchedulingExtension]].
+ * @tparam D The type of Doer being tested, must extend both [[Doer]] with [[SchedulingExtension]] and [[LoopingExtension]].
  */
-abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtension & LoopingExtension: ClassTag] extends ScalaCheckEffectSuite {
+abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
 
 	type DP <: DoerProvider[D]
 
@@ -42,11 +42,13 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 	protected def buildDoerProvider: DP
 
 	/** The implementation should release the specified [[DoerProvider]].
-	 * The implementation may assume that the provided instance was created calling [[buildDoerProvider]]. */
+	 * The implementation may assume that the provided instance was obtained calling [[buildDoerProvider]]. */
 	protected def releaseDoerProvider(doerProvider: DP): Unit
 
-	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever the routine passed to [[Doer.executeSequentially]] or [[SchedulingExtension.scheduleSequentially]] terminates abruptly, passing the unhandled exception.
-	 * In other words, whenever the [[DoerProvider.onUnhandledException]] method of a [[DoerProvider]] instance returned by [[buildDoerProvider]] is called. */
+	/**
+	 * This method should be invoked by the [[DoerProvider]] instances returned by [[buildDoerProvider]] whenever their [[DoerProvider.onUnhandledException]] callback is triggered.
+	 * The extending class is responsible for ensuring this linkage.
+	 */
 	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = {
 		if doer.isInSequence then {
 			if unhandledExceptionObserver ne null then unhandledExceptionObserver(doer, exception)
@@ -59,8 +61,10 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	/** The extending class should call this method, within the thread assigned to the provided `doer`, whenever [[Doer.reportFailure]] is called, passing the received exception.
-	 * In other words, wheneer the [[DoerProvider.onFailureReported]] method of a [[DoerProvider]] instance returned by [[buildDoerProvider]] is called. */
+	/**
+	 * This method should be invoked by the [[DoerProvider]] instances returned by [[buildDoerProvider]] whenever their [[DoerProvider.onFailureReported]] callback is triggered.
+	 * The extending class is responsible for ensuring this linkage.
+	 */
 	protected def onFailureReported(doer: Doer, failure: Throwable): Unit = {
 		if doer.isInSequence then {
 			if reportedFailuresObserver ne null then reportedFailuresObserver(doer, failure)
@@ -210,7 +214,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 			latch.countDown()
 		}
 
-		assert(latch.await(2, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(400, TimeUnit.MILLISECONDS), "All tasks should complete")
 		val endTime = System.currentTimeMillis()
 		val totalTime = endTime - startTime
 
@@ -1023,7 +1027,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 
 	//// SCHEDULING ////
 
-	test("Scheduling: SchedulingExtension.schedule: should fail if called with the same `Schedule` instance twice") {
+	test("Scheduling: `SchedulingExtension.schedule` should fail if called with the same `Schedule` instance twice") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1049,7 +1053,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Scheduling Duty: Duty.schedule(newDelaySchedule(delay))(supplier) executes the supplier after the delay") {
+	test("Scheduling Duty: `Duty.schedule(newDelaySchedule(delay))(supplier)` should execute the supplier after the delay") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1119,7 +1123,7 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 		}
 	}
 
-	test("Scheduling Duty: `duty.scheduled(newFixedDelaySchedule)` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
+	test("Scheduling Duty: `duty.scheduled(newFixedDelaySchedule(initialDelay, period))` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1326,7 +1330,6 @@ abstract class ScheduledDoerTestEffectAbstractSuite[D <: Doer & SchedulingExtens
 								val distanceBetweenCancellationAndExpectedExecutionMicros = (cancelNanoTime - expectedExecutionNanoTime) / 1000
 								val distanceBetweenCancellationAndActivationMicros = (cancelNanoTime - startNanoTime) / 1000
 								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceBetweenCancellationAndExpectedExecutionInMicros: $distanceBetweenCancellationAndExpectedExecutionMicros, distanceBetweenCancellationAndActivationMicros: $distanceBetweenCancellationAndActivationMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
-								println(s"-----> $message")
 								break(message)
 							}
 							executionsCounter += 1

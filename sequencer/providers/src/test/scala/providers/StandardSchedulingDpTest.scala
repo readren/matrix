@@ -1,11 +1,11 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.ScheduledDoerTestEffectAbstractSuite
+import readren.sequencer.SchedulingDoerProviderTest
 
 /** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[StandardSchedulingDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
  */
-class StandardSchedulingDpTest extends ScheduledDoerTestEffectAbstractSuite[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
+class StandardSchedulingDpTest extends SchedulingDoerProviderTest[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
 
 	override type DP = StandardSchedulingDp
 

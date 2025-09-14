@@ -6,7 +6,6 @@ import readren.common.{Maybe, castTo}
 import readren.sequencer.Doer
 
 import scala.annotation.targetName
-import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -87,23 +86,20 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	inline def schedule(schedule: Schedule)(runnable: Runnable): Unit =
 		scheduleSequentially(schedule, runnable)
 
+	//// DUTY ////
+
 	//// Duty instance operations  ////
 
 	extension [A](thisDuty: Duty[A]) {
 
 		/** Returns a [[Duty]] that triggers the up-chain [[Duty]] according to a [[Schedule]].
 		 * The [[Schedule]] is activated when the returned [[Duty]] is executed.
-		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the up-chain [[Duty]] will be executed multiple times according to the [[Schedule]] until it is canceled.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Duty]] is executed repeatedly, yielding each result, until the schedule is canceled.
 		 *
 		 * $notReusableDuty */
 		@targetName("scheduledDuty")
 		inline def scheduled(schedule: Schedule): Duty[A] =
 			new ScheduledDuty(thisDuty, schedule)
-
-		inline def borrame(schedule: Schedule): Duty[A] = {
-			new ScheduledSupplierDuty[A](thisDuty.engageEta, schedule)
-		}
-
 
 		/** Returns a [[Duty]] that triggers the up-chain [[Duty]] after a delay measured from the moment the returned [[Duty]] is executed. */
 		@targetName("delayedDuty")
@@ -112,7 +108,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Duty.map]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Duty]]. The provided [[Schedule]] is activated only after the up-chain duty has completed.
-		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the function application will be executed multiple times according to the [[Schedule]] until it is canceled.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Duty]] is executed repeatedly, yielding each result, until the schedule is canceled.
 		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_schedules(schedule)(() => f(a)) }}} but more efficient.
 		 *
 		 * $notReusableDuty */
@@ -330,11 +326,6 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			}
 	}
 
-	final class ScheduledSupplierDuty[A](duty: (A => Unit) => Unit, aSchedule: Schedule) extends AbstractDuty[A] {
-		override protected def engage(onComplete: A => Unit): Unit =
-			schedule(aSchedule) { () => duty(onComplete) }
-	}
-
 	/**
 	 * Caution: This [[Duty]] is reusable only when limit2 is null.
 	 */
@@ -389,7 +380,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		}
 	}
 
-	//// Task factory methods  ////
+	//// TASK ////
+
+	//// Task instance operations ////
 
 	extension [A](thisTask: Task[A]) {
 
@@ -407,7 +400,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Task.transform]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
-		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the function application will be executed multiple times according to the [[Schedule]] until it is canceled.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
 		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedule(schedule)(() => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
 		def scheduledTransform[B](schedule: Schedule)(f: Try[A] => Try[B]): Task[B] =
@@ -422,7 +415,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Task.transformWith]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
-		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the function application will be executed multiple times according to the [[Schedule]] until it is canceled.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
 		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_flatSchedule(schedule)(() => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
 		inline def scheduledTransformWith[B](schedule: Schedule)(f: Try[A] => Task[B]): Task[B] =
