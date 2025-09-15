@@ -257,7 +257,7 @@ class CommunicableDelegate(
 					val timeoutSchedule = sequencer.newDelaySchedule(requestExchange.responseTimeout)
 					requestExchange.oTimeoutSchedule = Maybe.some(timeoutSchedule)
 					requestExchangeByRequestId.put(requestId, requestExchange)
-					sequencer.schedule(timeoutSchedule) { () =>
+					sequencer.schedule(timeoutSchedule) { _ =>
 						requestExchangeByRequestId.remove(requestId).foreach { removedExchange =>
 							assert(removedExchange eq requestExchange)
 							if isAssociated then exposingChangesDo(false) { () => requestExchange.onTimeout(request) }
@@ -292,7 +292,7 @@ class CommunicableDelegate(
 			if isFirstTry then {
 				isFirstTry = false
 				val schedule: sequencer.Schedule = sequencer.newDelaySchedule(retryDelay)
-				sequencer.schedule(schedule) { () => askPeer(this) }
+				sequencer.schedule(schedule) { _ => askPeer(this) }
 			}
 			else restartChannel(s"Non-response timeout: request ${oRequest.get} was sent twice (initial attempt got no response within response timeout), but no response was received.")
 		}
@@ -320,7 +320,7 @@ class CommunicableDelegate(
 			owner.getMembershipScopedBehavior.onPeerCommunicabilityChange(myReplacement, this.communicationStatus)
 
 			// Close the channel after a delay to allow the peer to close the channel first.
-			sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+			sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { _ =>
 				completeChannelClosing()
 			}
 			

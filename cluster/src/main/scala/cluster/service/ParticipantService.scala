@@ -368,7 +368,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 					channel = null
 					val retryDelay = config.connectionRetryMinDelay * attemptNumber * attemptNumber
 					val schedule: sequencer.Schedule = sequencer.newDelaySchedule(math.max(config.connectionRetryMaxDelay, retryDelay))
-					sequencer.schedule(schedule) { () =>
+					sequencer.schedule(schedule) { _ =>
 						connect(attemptNumber + 1)
 					}
 				} else onComplete(Failure(exc))
@@ -444,7 +444,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				discardedChannel.close()
 			case Transmitter.Delivered =>
 				discardedChannel.shutdownOutput()
-				sequencer.schedule(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { () => discardedChannel.close() }
+				sequencer.schedule(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { _ => discardedChannel.close() }
 		}
 	}
 

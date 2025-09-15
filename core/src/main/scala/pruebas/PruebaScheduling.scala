@@ -26,7 +26,7 @@ object PruebaScheduling {
 
 			var counter = 0
 			val schedule = schedulingDoer.newFixedRateSchedule(1_000, 1_000)
-			schedulingDoer.schedule(schedule) { () =>
+			schedulingDoer.schedule(schedule) { _ =>
 				assert(!inside)
 				inside = true
 				counter += 1
@@ -52,7 +52,7 @@ object PruebaScheduling {
 						} else {
 							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule(counter % 10, 10)
 							var repetitions = 0
-							schedulingDoer.schedule(schedule) { () =>
+							schedulingDoer.schedule(schedule) { _ =>
 								println(f"counter=$counter%4d, repetitions=$repetitions%2d, enableDelay=${schedule.enabledTime - schedule.scheduledTime}%3d, runDelay=${schedule.startingTime - schedule.enabledTime}%3d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d, numOfSkippedExecutions=${schedule.numOfSkippedExecutions}, incitingId=$incitingId")
 								selfEndpoint.tell(Tick(counter :: incitingId))
 								repetitions += 1

@@ -1018,7 +1018,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			completeWasNotCalled = false
 			completer()
 		} else {
-			doer.schedule(doer.newDelaySchedule(nat)) { () =>
+			doer.schedule(doer.newDelaySchedule(nat)) { _ =>
 				completeWasNotCalled = false
 				completer()
 			}
@@ -1035,20 +1035,20 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val delaySchedule = doer.newDelaySchedule(delay)
 			val fixedRateSchedule = doer.newFixedRateSchedule(delay, interval)
 			val fixedDelaySchedule = doer.newFixedRateSchedule(delay, interval)
-			doer.schedule(delaySchedule)(() => ())
-			doer.schedule(fixedRateSchedule)(() => ())
-			doer.schedule(fixedDelaySchedule)(() => ())
+			doer.schedule(delaySchedule)(_ => ())
+			doer.schedule(fixedRateSchedule)(_ => ())
+			doer.schedule(fixedDelaySchedule)(_ => ())
 			assert(
 				intercept[IllegalStateException] {
-					doer.schedule(delaySchedule)(() => ())
+					doer.schedule(delaySchedule)(_ => ())
 				}.getMessage.contains("twice"),
 				"No exception thrown despite the same delay schedule was used twice"
 			)
 			assert(intercept[IllegalStateException] {
-				doer.schedule(fixedRateSchedule)(() => ())
+				doer.schedule(fixedRateSchedule)(_ => ())
 			}.getMessage.contains("twice"), "No exception thrown despite the same fixed rate schedule was used twice")
 			assert(intercept[IllegalStateException] {
-				doer.schedule(fixedDelaySchedule)(() => ())
+				doer.schedule(fixedDelaySchedule)(_ => ())
 			}.getMessage.contains("twice"), "No exception thrown despite the same fixed delay schedule was used twice")
 		}
 	}
@@ -1060,7 +1060,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
 			val startNano = System.nanoTime()
-			val duty = doer.Duty_schedules(schedule)(() => delay * 2)
+			val duty = doer.Duty_schedules(schedule)(_ => delay * 2)
 				.map { x =>
 					val actualDelay = System.nanoTime - startNano
 					// println(s"-------> actual delay: ${actualDelay/1000} micros, expected: $delay millis, error: ${actualDelay/1000_000-delay} schedule: $schedule")
@@ -1082,7 +1082,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Int]()
 			val startMilli = System.currentTimeMillis()
 			var counter: Int = 0
-			val duty = doer.Duty_schedules[Int](schedule)(() => counter)
+			val duty = doer.Duty_schedules[Int](schedule)(_ => counter)
 				.andThen { supplierResult =>
 					// println(s"supplierResult = $supplierResult/$repetitions")
 					if !doer.wasActivated(schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
@@ -1281,13 +1281,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val waits = for {
-				_ <- otherDoer.Duty_delays(cancelDelay) { () =>
+				_ <- otherDoer.Duty_delays(cancelDelay) { _ =>
 					doer.execute {
 						doer.cancelAll()
 						cancelAllWasCalled = true
 					}
 				}
-				_ <- otherDoer.Duty_delays(maxDuration) { () =>
+				_ <- otherDoer.Duty_delays(maxDuration) { _ =>
 					promise.trySuccess(())
 				}
 			} yield ()
@@ -1340,12 +1340,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
 			val otherDoer = buildDoer("other")
 			val cancelsAllAfterADelayAndThenWaitsEnough = for {
-				_ <- otherDoer.Duty_delays(cancelDelay) { () =>
+				_ <- otherDoer.Duty_delays(cancelDelay) { _ =>
 					doer.cancelAll()
 					cancelNanoTime = System.nanoTime()
 					cancelAllWasCalled = true
 				}
-				_ <- otherDoer.Duty_delays(maxDelay + 1) { () =>
+				_ <- otherDoer.Duty_delays(maxDelay + 1) { _ =>
 					promise.trySuccess(())
 				}
 			} yield ()

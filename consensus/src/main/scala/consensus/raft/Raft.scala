@@ -116,7 +116,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	def startElectionTimeoutScheduler(): Unit = {
 		val schedule = sequencer.newFixedRateSchedule(config.electionTimeoutMin, config.electionTimeoutMin)
 		electionTimeoutSchedule = Some(schedule)
-		sequencer.schedule(schedule) { () =>
+		sequencer.schedule(schedule) { _ =>
 			checkElectionTimeout()
 		}
 	}
@@ -131,7 +131,7 @@ class Raft(val config: RaftConfig, val clusterService: RaftClusterService)(using
 	private def startHeartbeatScheduler(): Unit = {
 		val schedule = sequencer.newFixedRateSchedule(config.heartbeatInterval, config.heartbeatInterval)
 		heartbeatSchedule = Some(schedule)
-		sequencer.schedule(schedule) { () =>
+		sequencer.schedule(schedule) { _ =>
 			sendHeartbeat()
 		}
 	}

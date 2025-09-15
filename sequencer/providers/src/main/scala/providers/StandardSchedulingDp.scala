@@ -122,7 +122,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 
 		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule = TFixedDelaySchedule(initialDelay, delay)
 
-		override def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit = {
+		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			schedule.synchronized {
 				if schedule.canceled then return
 				else if schedule.scheduledFuture ne null then throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
@@ -132,7 +132,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 							val wrapper: Runnable = () =>
 								if !schedule.scheduledFuture.isDone then {
 									currentDoerThreadLocal.set(this)
-									try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+									try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 									catch {
 										case cause: Throwable =>
 											onUnhandledException(thisDoer, cause)
@@ -146,7 +146,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 
 						case frs: TFixedRateSchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
-								try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)
@@ -158,7 +158,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 
 						case fds: TFixedDelaySchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
-								try runnable.run() // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
+								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)

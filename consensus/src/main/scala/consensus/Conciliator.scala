@@ -950,7 +950,7 @@ trait Conciliator { thisConciliator =>
 							if currentBehavior ne this then return
 							val schedule = sequencer.newDelaySchedule(failedReplicationsLoopInterval)
 							failedReplicationsLoopSchedule = Maybe.some(schedule)
-							sequencer.schedule(schedule) { () =>
+							sequencer.schedule(schedule) { _ =>
 								if currentBehavior eq this then {
 									val retryTasks =
 										for followerIndex <- previousTryResults.indices yield {

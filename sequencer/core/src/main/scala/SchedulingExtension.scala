@@ -35,9 +35,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 
 	/** Represents an execution schedule.
-	 * It is tied to the [[Runnable]] passed along it to the [[schedule]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[schedule]].
+	 * It is tied to the routine passed along it to the [[schedule]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[schedule]].
 	 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[SchedulingExtension]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
-	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the [[Runnable]]s that accompany it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
+	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the routines that accompanied it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
 	type Schedule <: AnyRef
 
 	/** Creates a [[Schedule]] for a single time execution after a delay.
@@ -57,12 +57,12 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
 	def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule
 
-	/** Programs the execution of the provided [[Runnable]] according to the provided [[Schedule]].
-	 * The implementation must ensure mutual sequentiality of the execution of [[Runnable]]s passed to both, this method and [[executeSequentially]].
-	 * @param schedule determines when the provided [[runnable]] will be run.
-	 * @param runnable the [[Runnable]] to be run according to the provided [[schedule]].
+	/** Programs the execution of the provided `routine` according to the provided [[Schedule]].
+	 * The implementation must ensure mutual sequentiality of the execution of routines passed to both, this method and [[executeSequentially]].
+	 * @param schedule determines when the provided `routine` will be executed.
+	 * @param routine the routine to execute according to the provided [[schedule]].
 	 * The implementation should not throw non-fatal exceptions. */
-	def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit
+	def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit
 
 	/**
 	 * The implementation should stop the [[Schedule]] from triggering any executions. Even if it was not activated jet.
@@ -83,8 +83,8 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * An [[Schedule]] instance becomes canceled when either, it is passed to the [[cancel]] method, or the [[cancelAll]] method is called after it [[wasActivated]]. */
 	def isCanceled(schedule: Schedule): Boolean
 
-	inline def schedule(schedule: Schedule)(runnable: Runnable): Unit =
-		scheduleSequentially(schedule, runnable)
+	inline def schedule(schedule: Schedule)(routine: Schedule => Unit): Unit =
+		scheduleSequentially(schedule, routine)
 
 	//// DUTY ////
 
@@ -109,7 +109,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		/** Like [[Duty.map]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Duty]]. The provided [[Schedule]] is activated only after the up-chain duty has completed.
 		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Duty]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_schedules(schedule)(() => f(a)) }}} but more efficient.
+		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_schedules(schedule)(_ => f(a)) }}} but more efficient.
 		 *
 		 * $notReusableDuty */
 		inline def scheduledMap[B](aSchedule: Schedule)(f: A => B): Duty[B] =
@@ -117,7 +117,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Duty.map]] but the function application is delayed.
 		 * Note that what is delayed is the function application, not the execution of the up-chain [[Duty]]. The delay occurs only after the up-chain [[Duty]] is completed.
-		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_delays(delay)(() => f(a)) }}} but more efficient.
+		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_delays(delay)(_ => f(a)) }}} but more efficient.
 		 * */
 		inline def delayedMap[B](delay: MilliDuration)(f: A => B): Duty[B] =
 			new DelayedMap(thisDuty, delay, f)
@@ -125,7 +125,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		/** Like [[Duty.flatMap]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Duty]]. The provided [[Schedule]] is activated only after the up-chain duty has completed.
 		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the function application will be executed multiple times according to the [[Schedule]] until it is canceled.
-		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_schedulesFlat(schedule)(() => f(a)) }}} but more efficient.
+		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_schedulesFlat(schedule)(_ => f(a)) }}} but more efficient.
 		 *
 		 * $notReusableDuty */
 		inline def scheduledFlatMap[B](aSchedule: Schedule)(f: A => Duty[B]): Duty[B] =
@@ -133,7 +133,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 		/** Like [[Duty.flatMap]] but the function application is delayed.
 		 * Note that what is delayed is the function application, not the execution of the up-chain [[Duty]]. The delay occurs only after the up-chain [[Duty]] is completed.
-		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_delaysFlat(delay)(() => f(a)) }}} but more efficient.
+		 * Is equivalent to {{{ thisDuty.flatMap(a => Duty_delaysFlat(delay)(_ => f(a)) }}} but more efficient.
 		 * */
 		inline def delayedFlatMap[B](delay: MilliDuration)(f: A => Duty[B]): Duty[B] =
 			new DelayedFlatMap(thisDuty, delay, f)
@@ -196,7 +196,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** Builds a [[Duty]] that, once executed, does nothing but yields a value of `()` after the specified duration.
 	 * The delay period begins when the returned [[Duty]] is started, not when it is built.
-	 * This is equivalent to both `Duty_unit.delayed(duration)` and `Duty_delay(duration)(() => ())`.
+	 * This is equivalent to both `Duty_unit.delayed(duration)` and `Duty_delays(duration)(_ => ())`.
 	 *
 	 * @param duration the time to wait before the [[Duty]] yields its result.
 	 * @return a new [[Duty]] that will yield a value of `()` after the specified delay.
@@ -214,7 +214,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
 	 * @return a [[Duty]] that yields the supplier’s result(s) according to the specified [[Schedule]].
 	 */
-	inline def Duty_schedules[A](schedule: Schedule)(supplier: () => A): Duty[A] =
+	inline def Duty_schedules[A](schedule: Schedule)(supplier: Schedule => A): Duty[A] =
 		new DelayedSupplierDuty(0, schedule, supplier)
 
 	/**
@@ -227,7 +227,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param builder  the function that produces a new [[Duty[A]]] for each scheduled execution.
 	 * @return a [[Duty]] that yields the results of the [[Duty]] produced by the builder according to the specified [[Schedule]].
 	 */
-	inline def Duty_schedulesFlat[A](schedule: Schedule)(builder: () => Duty[A]): Duty[A] =
+	inline def Duty_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Duty[A]): Duty[A] =
 		new DelayedSupplierFlatDuty(0, schedule, builder)
 
 	/**
@@ -239,7 +239,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param supplier the function that produces a value of type [[A]] after the delay.
 	 * @return a [[Duty]] that yields the supplier’s result after the specified duration.
 	 */
-	inline def Duty_delays[A](duration: MilliDuration)(supplier: () => A): Duty[A] =
+	inline def Duty_delays[A](duration: MilliDuration)(supplier: Schedule => A): Duty[A] =
 		new DelayedSupplierDuty(duration, null, supplier)
 
 	/**
@@ -251,7 +251,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param builder  the function that produces a new [[Duty[A]]] after the delay.
 	 * @return a [[Duty]] that yields the result of the [[Duty]] produced by the builder after the specified duration.
 	 */
-	inline def Duty_delaysFlat[A](duration: MilliDuration)(builder: () => Duty[A]): Duty[A] =
+	inline def Duty_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Duty[A]): Duty[A] =
 		new DelayedSupplierFlatDuty(duration, null, builder)
 
 	/**
@@ -286,14 +286,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledDuty[A](duty: Duty[A], aSchedule: Schedule) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit =
-			schedule(aSchedule)(() => duty.engagePortal(onComplete))
+			schedule(aSchedule)(_ => duty.engagePortal(onComplete))
 	}
 
 	/** $notReusableDuty */
 	final class ScheduledMap[A, B](duty: Duty[A], aSchedule: Schedule, f: A => B) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
 			duty.engagePortal { a =>
-				schedule(aSchedule) { () => onComplete(f(a)) }
+				schedule(aSchedule) { _ => onComplete(f(a)) }
 			}
 		}
 	}
@@ -302,27 +302,27 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class ScheduledFlatMap[A, B](duty: Duty[A], aSchedule: Schedule, f: A => Duty[B]) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
 			duty.engagePortal { a =>
-				schedule(aSchedule) { () => f(a).engagePortal(onComplete) }
+				schedule(aSchedule) { _ => f(a).engagePortal(onComplete) }
 			}
 		}
 	}
 
 	final class DelayedDuty[A](duty: Duty[A], delay: MilliDuration) extends AbstractDuty[A] {
 		override protected def engage(onComplete: A => Unit): Unit =
-			schedule(newDelaySchedule(delay)) { () => duty.engagePortal(onComplete) }
+			schedule(newDelaySchedule(delay)) { _ => duty.engagePortal(onComplete) }
 	}
 
 	final class DelayedMap[A, B](duty: Duty[A], delay: MilliDuration, f: A => B) extends AbstractDuty[B] {
 		override protected def engage(onComplete: B => Unit): Unit =
 			duty.engagePortal { a =>
-				schedule(newDelaySchedule(delay)) { () => onComplete(f(a)) }
+				schedule(newDelaySchedule(delay)) { _ => onComplete(f(a)) }
 			}
 	}
 
 	final class DelayedFlatMap[A, B](duty: Duty[A], delay: MilliDuration, f: A => Duty[B]) extends AbstractDuty[B] {
 		override protected def engage(onComplete: B => Unit): Unit =
 			duty.engagePortal { a =>
-				schedule(newDelaySchedule(delay)) { () => f(a).engagePortal(onComplete) }
+				schedule(newDelaySchedule(delay)) { _ => f(a).engagePortal(onComplete) }
 			}
 	}
 
@@ -337,7 +337,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			}
 			var hasElapsed = false
 			var hasCompleted = false
-			schedule(timer) { () =>
+			schedule(timer) { _ =>
 				cancel(timer)
 				if (!hasCompleted) {
 					hasElapsed = true
@@ -357,26 +357,26 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/**
 	 * Caution: This [[Duty]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: () => A) extends AbstractDuty[A] {
+	final class DelayedSupplierDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => A) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = {
 			val timer: Schedule = limit2 match {
 				case s: Schedule @unchecked => s
 				case _ => newDelaySchedule(limit1)
 			}
-			schedule(timer)(() => onComplete(supplier()))
+			schedule(timer)(_ => onComplete(supplier(timer)))
 		}
 	}
 
 	/**
 	 * Caution: This [[Duty]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierFlatDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: () => Duty[A]) extends AbstractDuty[A] {
+	final class DelayedSupplierFlatDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Duty[A]) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = {
 			val timer: Schedule = limit2 match {
 				case s: Schedule @unchecked => s
 				case _ => newDelaySchedule(limit1)
 			}
-			schedule(timer)(() => supplier().engagePortal(onComplete))
+			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
 		}
 	}
 
@@ -401,14 +401,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		/** Like [[Task.transform]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
 		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedule(schedule)(() => f(tryA)) }}} but more efficient.
+		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedules(schedule)(_ => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
 		def scheduledTransform[B](schedule: Schedule)(f: Try[A] => Try[B]): Task[B] =
 			new ScheduledTransform[A, B](thisTask, schedule, f)
 
 		/** Like [[Task.transform]] but the function application is delayed.
 		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_delay(delay)(() => f(tryA)) }}} but more efficient.
+		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_delays(delay)(_ => f(tryA)) }}} but more efficient.
 		 * */
 		inline def delayedTransform[B](delay: MilliDuration)(f: Try[A] => Try[B]): Task[B] =
 			new DelayedTransform(thisTask, delay, f)
@@ -416,14 +416,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		/** Like [[Task.transformWith]] but the function application is scheduled.
 		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
 		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_flatSchedule(schedule)(() => f(tryA)) }}} but more efficient.
+		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedulesFlat(schedule)(_ => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
 		inline def scheduledTransformWith[B](schedule: Schedule)(f: Try[A] => Task[B]): Task[B] =
 			new ScheduledTransformWith(thisTask, schedule, f)
 
 		/** Like [[Task.transformWith]] but the function application is delayed.
 		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_flatDelay(delay)(() => f(tryA)) }}} but more efficient.
+		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_delaysFlat(delay)(_ => f(tryA)) }}} but more efficient.
 		 * */
 		inline def delayedTransformWith[B](delay: MilliDuration, f: Try[A] => Task[B]): Task[B] =
 			new DelayedTransformWith(thisTask, delay, f)
@@ -502,7 +502,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
 	 * @return a [[Task]] that yields the supplier’s result(s) according to the specified [[Schedule]].
 	 */
-	inline def Task_schedules[A](schedule: Schedule)(supplier: () => Try[A]): Task[A] =
+	inline def Task_schedules[A](schedule: Schedule)(supplier: Schedule => Try[A]): Task[A] =
 		new DelayedSupplierTask(0, schedule, supplier)
 
 	/**
@@ -515,7 +515,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param builder  the function that produces a new [[Task[A]]] for each scheduled execution.
 	 * @return a [[Task]] that yields the results of the [[Task]] produced by the builder according to the specified [[Schedule]].
 	 */
-	inline def Duty_schedulesFlat[A](schedule: Schedule)(builder: () => Task[A]): Task[A] =
+	inline def Task_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Task[A]): Task[A] =
 		new DelayedSupplierFlatTask(0, schedule, builder)
 
 	/**
@@ -524,10 +524,10 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * The supplier is executed once after the delay, and its result is what the returned [[Task]] yields.
 	 *
 	 * @param duration the duration to wait before executing the supplier function.
-	 * @param supplier the function that produces a value of type [[A]] after the delay.
+	 * @param supplier the function that produces a result after the delay.
 	 * @return a [[Task]] that yields the supplier’s result after the specified duration.
 	 */
-	inline def Task_delays[A](duration: MilliDuration)(supplier: () => Try[A]): Task[A] =
+	inline def Task_delays[A](duration: MilliDuration)(supplier: Schedule => Try[A]): Task[A] =
 		new DelayedSupplierTask(duration, null, supplier)
 
 	/**
@@ -536,10 +536,10 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * The builder is executed once after the delay, producing a [[Task]] whose result is yielded by the returned [[Task]].
 	 *
 	 * @param duration the duration to wait before executing the [[Task]] builder.
-	 * @param builder  the function that produces a new [[Task[A]]] after the delay.
+	 * @param builder  the function that produces a new [[Task]] after the delay.
 	 * @return a [[Task]] that yields the result of the [[Task]] produced by the builder after the specified duration.
 	 */
-	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: () => Task[A]): Task[A] =
+	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Task[A]): Task[A] =
 		new DelayedSupplierFlatTask(duration, null, builder)
 
 	/**
@@ -574,7 +574,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledTask[A](task: Task[A], aSchedule: Schedule) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(aSchedule)(() => task.engagePortal(onComplete))
+			schedule(aSchedule)(_ => task.engagePortal(onComplete))
 		}
 	}
 
@@ -582,7 +582,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class ScheduledTransform[A, B](task: Task[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
 			task.engagePortal { tryA =>
-				schedule(aSchedule) { () =>
+				schedule(aSchedule) { _ =>
 					val tryB =
 						try f(tryA)
 						catch {
@@ -598,7 +598,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class ScheduledTransformWith[A, B](taskA: Task[A], aSchedule: Schedule, f: Try[A] => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
 			taskA.engagePortal { tryA =>
-				schedule(aSchedule) { () =>
+				schedule(aSchedule) { _ =>
 					val taskB =
 						try f(tryA)
 						catch {
@@ -612,14 +612,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	final class DelayedTask[A](task: Task[A], delay: MilliDuration) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(newDelaySchedule(delay)) { () => task.engagePortal(onComplete) }
+			schedule(newDelaySchedule(delay)) { _ => task.engagePortal(onComplete) }
 		}
 	}
 
 	final class DelayedTransform[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractTask[B] {
 		override protected def engage(onComplete: Try[B] => Unit): Unit =
 			task.engagePortal { tryA =>
-				schedule(newDelaySchedule(delay)) { () =>
+				schedule(newDelaySchedule(delay)) { _ =>
 					val tryB =
 						try f(tryA)
 						catch {
@@ -633,7 +633,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class DelayedTransformWith[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Task[B]) extends AbstractTask[B] {
 		override protected def engage(onComplete: Try[B] => Unit): Unit =
 			task.engagePortal { tryA =>
-				schedule(newDelaySchedule(delay)) { () =>
+				schedule(newDelaySchedule(delay)) { _ =>
 					val taskB =
 						try f(tryA)
 						catch {
@@ -655,7 +655,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			}
 			var hasElapsed = false
 			var hasCompleted = false
-			schedule(timer) { () =>
+			schedule(timer) { _ =>
 				cancel(timer)
 				if (!hasCompleted) {
 					hasElapsed = true
@@ -678,26 +678,26 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/**
 	 * Caution: This [[Task]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: () => Try[A]) extends AbstractTask[A] {
+	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val timer: Schedule = limit2 match {
 				case s: Schedule @unchecked => s
 				case _ => newDelaySchedule(limit1)
 			}
-			schedule(timer)(() => onComplete(supplier()))
+			schedule(timer)(_ => onComplete(supplier(timer)))
 		}
 	}
 
 	/**
 	 * Caution: This [[Task]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: () => Task[A]) extends AbstractTask[A] {
+	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val timer: Schedule = limit2 match {
 				case s: Schedule @unchecked => s
 				case _ => newDelaySchedule(limit1)
 			}
-			schedule(timer)(() => supplier().engagePortal(onComplete))
+			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
 		}
 	}
 }

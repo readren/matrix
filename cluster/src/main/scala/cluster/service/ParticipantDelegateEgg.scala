@@ -128,7 +128,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 			report match {
 				case Delivered =>
 					// If delivery is successful, schedule the remaining closing steps to happen later to allow the peer to close it first.
-					sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { () =>
+					sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { _ =>
 						incumbentDelegate.completeChannelClosing()
 					}
 				case nd: NotDelivered =>

@@ -43,18 +43,18 @@ object CooperativeWorkersSchedulingDp {
 		 * Updated after the [[Runnable]] execution is completed. */
 		def scheduledTime: MilliTime
 
-		/** Exposes the number of executions of the [[Runnable]] that were skipped before the current one due to processing power saturation or negative `initialDelay`.
+		/** Exposes the number of executions that were skipped before the current one due to processing power saturation or negative `initialDelay`.
 		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
 		 * {{{ (actualTime - scheduledTime) / interval }}}
 		 * Updated before the [[Runnable]] is run.
-		 * The value of this variable is used after the [[runnable]]'s execution completes to calculate the [[scheduledTime]]; <s> therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.</s>
-		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] that is scheduled by this instance. */
+		 * The value of this variable is used after the execution completes to calculate the [[scheduledTime]]; <s> therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.</s>
+		 * Intended to be accessed only within the thread that is currently assigned to the [[Doer]] that owns this instance. */
 		def numOfSkippedExecutions: Long
 
 		/** Exposes the time when the current execution started.
 		 * The [[numOfSkippedExecutions]] is calculated based on this time.
 		 * Updated before the [[Runnable]] is run.
-		 * Intended to be accessed only within the thread that is currently running the [[Runnable]] task that is scheduled by this instance. */
+		 * Intended to be accessed only within the thread that is currently assigned to the [[Doer]] that owns this instance. */
 		def startingTime: MilliTime
 
 		/** An instance becomes enabled after the [[scheduledTime]] is reached, when the [[Runnable]] task that is scheduled by this instance is enqueued for execution (calling [[SchedulingDoerFacade.executeSequentially]]).
@@ -72,6 +72,7 @@ object CooperativeWorkersSchedulingDp {
 	}
 
 	inline def nanosToMillisRoundedUp(nanos: Long): Long = (nanos + 999_999) / 1_000_000
+
 	inline def nanosToMillisRoundedDown(nanos: Long): Long = nanos / 1_000_000
 
 	class Impl(
@@ -119,42 +120,42 @@ abstract class CooperativeWorkersSchedulingDp(
 		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
 			new ScheduleImpl(initialDelay, delay, false)
 
-		override def scheduleSequentially(schedule: Schedule, originalRunnable: Runnable): Unit = {
+		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			if schedule.activated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 			else if !schedule.isCanceled then {
 				schedule.startingTime = nanosToMillisRoundedUp(System.nanoTime)
-				schedule.runnable =
-					if schedule.interval <= 0 then originalRunnable
+				schedule.routine =
+					if schedule.interval <= 0 then routine
 					else {
-						if schedule.isFixedRate then new Runnable {
-							override def run(): Unit = {
-								@tailrec
-								def loop(currentNanoTime: Long): Unit = {
-									if !schedule.isCanceled then {
-										schedule.numOfSkippedExecutions = (nanosToMillisRoundedDown(currentNanoTime) - schedule.scheduledTime) / schedule.interval
-										originalRunnable.run()
-										val updatedCurrentNanoTime = System.nanoTime()
-										schedule.startingTime = nanosToMillisRoundedUp(updatedCurrentNanoTime)
-										val nextTime = schedule.scheduledTime + schedule.interval * (1L + schedule.numOfSkippedExecutions)
-										if nextTime <= nanosToMillisRoundedDown(updatedCurrentNanoTime) then {
-											schedule.scheduledTime = nextTime
-											schedule.enabledTime = schedule.startingTime
-											loop(updatedCurrentNanoTime)
-										} else scheduler.schedule(schedule, nextTime)
-									}
-								}
+						if schedule.isFixedRate then { (s: Schedule) =>
+							if debugEnabled then assert(s eq schedule)
 
-								loop(System.nanoTime())
-							}
-						} else new Runnable {
-							override def run(): Unit = {
-								if !schedule.isCanceled then {
-									originalRunnable.run()
-									val currentMilliTimeRoundedUp = nanosToMillisRoundedUp(System.nanoTime())
-									schedule.startingTime = currentMilliTimeRoundedUp
-									schedule.scheduledTime = currentMilliTimeRoundedUp + schedule.interval
-									scheduler.schedule(schedule, schedule.scheduledTime)
+							@tailrec
+							def loop(currentNanoTime: Long): Unit = {
+								if !s.isCanceled then {
+									s.numOfSkippedExecutions = (nanosToMillisRoundedDown(currentNanoTime) - s.scheduledTime) / s.interval
+									routine(s)
+									val updatedCurrentNanoTime = System.nanoTime()
+									s.startingTime = nanosToMillisRoundedUp(updatedCurrentNanoTime)
+									val nextTime = s.scheduledTime + s.interval * (1L + s.numOfSkippedExecutions)
+									if nextTime <= nanosToMillisRoundedDown(updatedCurrentNanoTime) then {
+										s.scheduledTime = nextTime
+										s.enabledTime = s.startingTime
+										loop(updatedCurrentNanoTime)
+									} else scheduler.schedule(s, nextTime)
 								}
+							}
+
+							loop(System.nanoTime())
+
+						} else { (s: Schedule) =>
+							if debugEnabled then assert(s eq schedule)
+							if !s.isCanceled then {
+								routine(s)
+								val currentMilliTimeRoundedUp = nanosToMillisRoundedUp(System.nanoTime())
+								s.startingTime = currentMilliTimeRoundedUp
+								s.scheduledTime = currentMilliTimeRoundedUp + s.interval
+								scheduler.schedule(s, s.scheduledTime)
 							}
 						}
 					}
@@ -187,8 +188,8 @@ abstract class CooperativeWorkersSchedulingDp(
 
 		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ScheduleFacade {
-			/** The [[Runnable]] that this [[SchedulingExtension.Schedule]] schedules. */
-			var runnable: Runnable | Null = null
+			/** The routine whose execution is scheduled by this [[ScheduleImpl]]. */
+			var routine: (this.type => Unit) | Null = null
 			var scheduledTime: MilliTime = 0L
 			/** The index of this instance in the array-based min-heap. */
 			var heapIndex: Int = -1
@@ -199,9 +200,11 @@ abstract class CooperativeWorkersSchedulingDp(
 			@volatile var isCanceled = false
 			val activated: AtomicBoolean = AtomicBoolean(false)
 
-			def wasActivated: Boolean = activated.get
+			override def wasActivated: Boolean = activated.get
 
 			inline def owner: thisSchedulingDoer.type = thisSchedulingDoer
+
+			inline def execute(): Unit = routine(this)
 
 			override def toString: String = deriveToString(this) + s" scheduledTime: $scheduledTime, startingTime: $startingTime, enableTime: $enabledTime, numOfSkippedExecutions: $numOfSkippedExecutions" // TODO borrar apendice
 		}
@@ -305,7 +308,7 @@ abstract class CooperativeWorkersSchedulingDp(
 			)
 		}
 
-		/** TODO this design is inefficient because requires the creation of a [[Runnable]] instance every call. Consider an improvement. */ 
+		/** TODO this design is inefficient because requires the creation of a [[Runnable]] instance every call. Consider an improvement. */
 		private def signal(command: Runnable): Unit = {
 			this.synchronized {
 				commandsQueue.offer(command)
@@ -325,14 +328,15 @@ abstract class CooperativeWorkersSchedulingDp(
 				var earlierSchedule = peek
 				val currentTime = nanosToMillisRoundedDown(System.nanoTime())
 				while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
-					finishPoll(earlierSchedule)
-					earlierSchedule.isEnabled = true
-					earlierSchedule.enabledTime = currentTime
+					val es = earlierSchedule.asInstanceOf[SchedulingDoerImpl#ScheduleImpl]
+					finishPoll(es)
+					es.isEnabled = true
+					es.enabledTime = currentTime
 					enabledSchedulesByDoer.compute(
-						earlierSchedule.owner,
-						(_, enabledSchedules) => if enabledSchedules eq null then mutable.HashSet(earlierSchedule) else enabledSchedules.addOne(earlierSchedule)
+						es.owner,
+						(_, enabledSchedules) => if enabledSchedules eq null then mutable.HashSet(es) else enabledSchedules.addOne(es)
 					)
-					earlierSchedule.owner.executeSequentially(earlierSchedule.runnable)
+					es.owner.executeSequentially(() => es.execute())
 					earlierSchedule = peek
 				}
 				this.synchronized {

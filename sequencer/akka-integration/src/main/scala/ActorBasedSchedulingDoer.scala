@@ -59,9 +59,10 @@ object ActorBasedSchedulingDoer {
 
 			override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): FixedDelay = FixedDelay(initialDelay, delay)
 
-			override def scheduleSequentially(schedule: Schedule, runnable: Runnable): Unit = {
+			override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 				if schedule.wasActivated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 				else if !schedule.isCanceled then {
+					val runnable: Runnable = () => routine(schedule)
 					schedule match {
 						case SingleTime(delay) => timerScheduler.startSingleTimer(schedule, Procedure(runnable), FiniteDuration(delay, TimeUnit.MILLISECONDS))
 						case FixedRate(initialDelay, interval) => timerScheduler.startTimerAtFixedRate(schedule, Procedure(runnable), FiniteDuration(initialDelay, TimeUnit.MILLISECONDS), FiniteDuration(interval, TimeUnit.MILLISECONDS))
