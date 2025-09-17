@@ -150,6 +150,16 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		r
 	}
 
+	//// UNDER DEVELOPMENT
+
+
+	test("Duty_schedules: Should execute supplier repeatedly for periodic schedules (fixed-delay)") {
+		// Test with fixed-delay schedule
+		// Verify supplier is called multiple times with delay between completions
+		// Verify each result is yielded
+	}
+
+
 
 	////////// DOER INFRASTRUCTURE ////////
 
@@ -1027,6 +1037,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// SCHEDULING ////
 
+	//// scheduling infrastructure ////
+
 	test("Scheduling: `SchedulingExtension.schedule` should fail if called with the same `Schedule` instance twice") {
 		val generators = getGenerators
 		import generators.{*, given}
@@ -1052,6 +1064,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}.getMessage.contains("twice"), "No exception thrown despite the same fixed delay schedule was used twice")
 		}
 	}
+
+	//// Duty instance operations ////
 
 	test("Scheduling Duty: `Duty.schedule(newDelaySchedule(delay))(supplier)` should execute the supplier after the delay") {
 		val generators = getGenerators
@@ -1210,6 +1224,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
+	//// Duty factory methods ////
 
 	test("Scheduling Duty.scheduled: should compose correctly with other Duty operations") {
 		val generators = getGenerators
@@ -1241,6 +1256,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			checks.toFutureHardy()
 		}
 	}
+
+	//// Doer wide cancellation ////
 
 	test("Scheduling Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
 		val generators = getGenerators
@@ -1350,6 +1367,85 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			} yield ()
 			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForget()
+			promise.future
+		}
+	}
+
+	//// Duty_schedules factory method
+
+	test("Duty_schedules: Should execute supplier once for one-time schedule and yield result") {
+		// Test with a schedule that only executes once (e.g., single delay)
+		// Verify supplier is called exactly once and duty yields the result
+
+		val generators = getGenerators
+		import generators.{*, given}
+		PropF.forAllNoShrinkF(
+			Gen.choose(1, 5)
+		) { (expectedDelay: Int) =>
+			// println(s"Begin: upChain: $upChain, delays: $delays")
+
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val latch = new CountDownLatch(2)
+
+			val schedule = doer.newDelaySchedule(expectedDelay)
+			val startTime = System.nanoTime()
+			val duty = doer.Duty_schedules(schedule) { s =>
+				if s ne schedule then break(s"The schedule passed to the routine should be the same as the one passed to the `Duty_schedules` factory method.")
+				else {
+					val actualDelay = System.nanoTime() - startTime
+					if actualDelay < expectedDelay * 1_000_000 then break("The execution occurred sooner than expected")
+					else latch.countDown()
+				}
+			}
+			duty.triggerAndForget()
+			if latch.await(expectedDelay * 2 + 5, TimeUnit.MILLISECONDS) then break("The routine was executed more than one time")
+			else promise.trySuccess(())
+			promise.future
+		}
+	}
+
+	test("Duty_schedules: Should execute supplier repeatedly for periodic schedules (fixed-rate)") {
+		val generators = getGenerators
+		val REPETITIONS = 4
+		var testExecutionsCounter = 0
+		import generators.{*, given}
+		PropF.forAllNoShrinkF(
+			Gen.choose(-1, 10),
+			Gen.choose(1, 5)
+		) { (expectedInitialDelay: Int, expectedPeriod: Int) =>
+			// scribe.debug(s"Begin: $expectedInitialDelay, $expectedPeriod")
+
+			val EXECUTION_DELAY_MARGIN_MILLIS = if testExecutionsCounter < 5 then 100 else 50
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val latch = new CountDownLatch(REPETITIONS)
+
+			val schedule = doer.newFixedRateSchedule(expectedInitialDelay, expectedPeriod)
+			val startTime = System.nanoTime()
+			var executionsCounter = 0
+			val duty = doer.Duty_schedules(schedule) { s =>
+				if s ne schedule then break(s"The schedule passed to the routine should be the same as the one passed to the `Duty_schedules` factory method.")
+				else {
+					val actualDurationNanos = System.nanoTime() - startTime
+					val expectedDurationMillis = expectedInitialDelay + executionsCounter * expectedPeriod
+					val differenceMicros = actualDurationNanos / 1000 - expectedDurationMillis * 1000
+					// scribe.debug(f"difference: $differenceMicros%6d actual: ${actualDurationNanos/1000}%6d, expected: ${expectedDurationMillis*1000}%6d")
+					if differenceMicros < 0 then break(s"The #$executionsCounter execution occurred sooner than expected")
+					else if differenceMicros > EXECUTION_DELAY_MARGIN_MILLIS * 1_000 then break(s"The #$executionsCounter execution occurred later than expected after $testExecutionsCounter successful tests")
+					else latch.countDown()
+				}
+				executionsCounter += 1
+			}
+			duty.triggerAndForget()
+			if latch.await(expectedInitialDelay + expectedPeriod * REPETITIONS + EXECUTION_DELAY_MARGIN_MILLIS, TimeUnit.MILLISECONDS) then promise.trySuccess(())
+			else break(s"The number of executions within the provided time is less than the expected")
+			doer.cancel(schedule)
+			testExecutionsCounter += 1
 			promise.future
 		}
 	}

@@ -13,7 +13,6 @@ import providers.CooperativeWorkersSchedulingDp.*
 import java.util
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
-import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.language.adhocExtensions
 
@@ -39,32 +38,12 @@ object CooperativeWorkersSchedulingDp {
 
 		def isFixedRate: Boolean
 
-		/** Exposes the time the [[Runnable]] is expected to be run.
-		 * Updated after the [[Runnable]] execution is completed. */
+		/** Exposes the time the routine is expected to be run.
+		 * Note that this value is updated by the scheduling thread and its last update may not be visible from other threads. Use for diagnostics only. */
 		def scheduledTime: MilliTime
 
-		/** Exposes the number of executions that were skipped before the current one due to processing power saturation or negative `initialDelay`.
-		 * It is calculated based on the scheduled interval, and the difference between the actual [[startingTime]] and the scheduled time:
-		 * {{{ (actualTime - scheduledTime) / interval }}}
-		 * Updated before the [[Runnable]] is run.
-		 * The value of this variable is used after the execution completes to calculate the [[scheduledTime]]; <s> therefore, the [[Runnable]] may modify it to affect the resulting [[scheduledTime]] and therefore when it's next execution will be.</s>
-		 * Intended to be accessed only within the thread that is currently assigned to the [[Doer]] that owns this instance. */
-		def numOfSkippedExecutions: Long
-
-		/** Exposes the time when the current execution started.
-		 * The [[numOfSkippedExecutions]] is calculated based on this time.
-		 * Updated before the [[Runnable]] is run.
-		 * Intended to be accessed only within the thread that is currently assigned to the [[Doer]] that owns this instance. */
-		def startingTime: MilliTime
-
-		/** An instance becomes enabled after the [[scheduledTime]] is reached, when the [[Runnable]] task that is scheduled by this instance is enqueued for execution (calling [[SchedulingDoerFacade.executeSequentially]]).
-		 * An instance becomes disabled after the [[Runnable]] execution finishes and the */
-		def isEnabled: Boolean
-
-		/** Exposes the time when the [[Runnable]] task, scheduled by this [[ScheduleFacade]], was last enqueued into the task queue for execution (calling [[SchedulingDoerFacade.executeSequentially]]). */
-		def enabledTime: MilliTime
-
-		/** An instance becomes active when it is passed to the [[SchedulingDoerFacade.scheduleSequentially]] method. */
+		/** A flag that tells if this instance was ever passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
+		 * This flag is never cleared. */
 		def wasActivated: Boolean
 
 		/** An instance becomes canceled when either, it is passed to [[SchedulingDoerFacade.cancel]] or [[SchedulingDoerFacade.cancelAll]] is called after it [[wasActivated]]. */
@@ -82,7 +61,7 @@ object CooperativeWorkersSchedulingDp {
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersSchedulingDp(applyMemoryFence, threadPoolSize, threadFactory) {
-		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
 		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
@@ -123,56 +102,40 @@ abstract class CooperativeWorkersSchedulingDp(
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			if schedule.activated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 			else if !schedule.isCanceled then {
-				schedule.startingTime = nanosToMillisRoundedUp(System.nanoTime)
+				val activationTime = nanosToMillisRoundedUp(System.nanoTime)
 				schedule.routine =
 					if schedule.interval <= 0 then routine
 					else {
 						if schedule.isFixedRate then { (s: Schedule) =>
-							if debugEnabled then assert(s eq schedule)
-
-							@tailrec
-							def loop(currentNanoTime: Long): Unit = {
-								if !s.isCanceled then {
-									s.numOfSkippedExecutions = (nanosToMillisRoundedDown(currentNanoTime) - s.scheduledTime) / s.interval
-									routine(s)
-									val updatedCurrentNanoTime = System.nanoTime()
-									s.startingTime = nanosToMillisRoundedUp(updatedCurrentNanoTime)
-									val nextTime = s.scheduledTime + s.interval * (1L + s.numOfSkippedExecutions)
-									if nextTime <= nanosToMillisRoundedDown(updatedCurrentNanoTime) then {
-										s.scheduledTime = nextTime
-										s.enabledTime = s.startingTime
-										loop(updatedCurrentNanoTime)
-									} else scheduler.schedule(s, nextTime)
-								}
-							}
-
-							loop(System.nanoTime())
-
-						} else { (s: Schedule) =>
-							if debugEnabled then assert(s eq schedule)
 							if !s.isCanceled then {
 								routine(s)
-								val currentMilliTimeRoundedUp = nanosToMillisRoundedUp(System.nanoTime())
-								s.startingTime = currentMilliTimeRoundedUp
-								s.scheduledTime = currentMilliTimeRoundedUp + s.interval
-								scheduler.schedule(s, s.scheduledTime)
+								if !s.isCanceled then scheduler.scheduleRelativeToPrevious(s, schedule.interval)
+							}
+
+						} else { (s: Schedule) =>
+							if !s.isCanceled then {
+								routine(s)
+								if !s.isCanceled then {
+									val completionTime = nanosToMillisRoundedUp(System.nanoTime())
+									scheduler.schedule(s, completionTime + s.interval)
+								}
 							}
 						}
 					}
-				scheduler.schedule(schedule, schedule.startingTime + schedule.initialDelay)
+				scheduler.schedule(schedule, activationTime + schedule.initialDelay)
 			}
 		}
 
 		/** @inheritdoc
-		 * This implementation removes the [[Runnable]] corresponding to the provided [[Schedule]] from the schedule.
-		 * If called near its scheduled time from outside this [[Doer]]'s current thread, the [[Runnable]] may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this [[Doer]]'s current thread, it is ensured that no more execution of the [[Runnable]] can occur. */
+		 * This implementation removes the routine executions corresponding to the provided [[Schedule]] from the schedule.
+		 * If called near its scheduled time from outside this [[Doer]]'s current thread, the routine may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this [[Doer]]'s current thread, it is ensured that no more execution of the routine can occur. */
 		override def cancel(schedule: Schedule): Unit =
 			scheduler.cancel(schedule)
 
 
 		/** @inheritdoc
-		 * This implementation removes all the scheduled [[Runnable]]s corresponding to this [[Doer]] from the schedule.
+		 * This implementation removes all the scheduled executions corresponding to this [[Doer]] from its schedule.
 		 * If called near a scheduled time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
 		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
 		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingDoer)
@@ -188,15 +151,19 @@ abstract class CooperativeWorkersSchedulingDp(
 
 		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ScheduleFacade {
-			/** The routine whose execution is scheduled by this [[ScheduleImpl]]. */
+			/** The routine whose execution is scheduled by this [[ScheduleImpl]].
+			 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
 			var routine: (this.type => Unit) | Null = null
+			/** @inheritdoc
+			 * Only accessed within the scheduling thread. */
 			var scheduledTime: MilliTime = 0L
-			/** The index of this instance in the array-based min-heap. */
+			/** The index of this instance in the array-based min-heap.
+			 * Only accessed within the scheduling thread. */
 			var heapIndex: Int = -1
-			var numOfSkippedExecutions: Long = 0
-			var startingTime: MilliTime = 0L
-			var isEnabled = false
-			var enabledTime: MilliTime = 0L
+			/** Knows if the [[scheduler.enqueuedSchedulesByDoer]] collection contains this instance.
+			 * Its purpose is to improve efficiency by avoiding unnecessary manipulations of said collection.
+			 * Only accessed within the scheduling thread. */
+			var isTriggered = false
 			@volatile var isCanceled = false
 			val activated: AtomicBoolean = AtomicBoolean(false)
 
@@ -204,9 +171,10 @@ abstract class CooperativeWorkersSchedulingDp(
 
 			inline def owner: thisSchedulingDoer.type = thisSchedulingDoer
 
+			/** Executes the routine associated to this [[ScheduleImpl]] */
 			inline def execute(): Unit = routine(this)
 
-			override def toString: String = deriveToString(this) + s" scheduledTime: $scheduledTime, startingTime: $startingTime, enableTime: $enabledTime, numOfSkippedExecutions: $numOfSkippedExecutions" // TODO borrar apendice
+			override def toString: String = deriveToString(this) + s" scheduledTime: $scheduledTime"
 		}
 	}
 
@@ -243,8 +211,12 @@ abstract class CooperativeWorkersSchedulingDp(
 		private val commandsQueue = new util.ArrayDeque[Runnable]()
 		private var heap: Array[SchedulingDoerImpl#ScheduleImpl | Null] = Array.fill(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)(null)
 		private var heapSize: Int = 0
-		/** Know the instances of [[SchedulingDoerImpl#ScheduleImpl]] that are enabled, which is necessary to implement the [[cancelAllBelongingTo]] method because enabled instances are not in the [[heap]]. */
-		private var enabledSchedulesByDoer: util.HashMap[SchedulingDoerImpl, mutable.HashSet[SchedulingDoerImpl#ScheduleImpl]] = new util.HashMap()
+		/** A register that knows the instances of [[SchedulingDoerImpl.ScheduleImpl]] that are not in the [[heap]] because they were triggered and still not rescheduled (still not added to the [[heap]] again after the routine completes and [[schedule]] or [[scheduleRelativeToPrevious]] is called again).
+		 * We say that a schedule is triggered when its [[SchedulingDoerImpl.ScheduleImpl.routine]] is enqueued for execution in the [[CooperativeWorkersDp.DoerImpl.taskQueue]].
+		 * A schedule is triggered only after its [[SchedulingDoerImpl.ScheduleImpl.scheduledTime]] is reached.
+		 * This register is necessary to implement the [[cancelAllBelongingTo]] method because enqueued instances are not in the [[heap]].
+		 * The goal of this register is to know all the [[Schedule]] instances that are activated but not contained in the [[heap]]. */
+		private var triggeredSchedulesByDoer: util.HashMap[SchedulingDoerImpl, mutable.HashSet[SchedulingDoerImpl#ScheduleImpl]] = new util.HashMap()
 
 		private var isRunning = true
 
@@ -253,20 +225,30 @@ abstract class CooperativeWorkersSchedulingDp(
 
 		def numOfEnabledSchedules: Int = {
 			var accum = 0
-			enabledSchedulesByDoer.forEach((_, set) => accum += set.size)
+			triggeredSchedulesByDoer.forEach((_, set) => accum += set.size)
 			accum
 		}
 
-		/** // TODO is the second parameter needed. Consider removing it. */
+		/** Schedules a single execution of the routine associated to the specified [[Schedule]] at a specified time. */
 		def schedule(schedule: SchedulingDoerImpl#ScheduleImpl, scheduleTime: MilliTime): Unit = {
 			signal { () =>
-				if schedule.isEnabled then {
-					schedule.isEnabled = false
-					enabledSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule))
-				}
+				removeFromRegister(schedule)
 				if !schedule.isCanceled then {
 					schedule.scheduledTime = scheduleTime
-					enqueue(schedule)
+					if scheduleTime * 1_000_000 <= System.nanoTime() then triggeredForExecution(schedule)
+					else appoint(schedule)
+				}
+			}
+		}
+
+		/** Schedules a single execution of the routine associated to the specified [[Shedule]] at a time relative to the previous schedule time. */
+		def scheduleRelativeToPrevious(schedule: SchedulingDoerImpl#ScheduleImpl, interval: MilliDuration): Unit = {
+			signal { () =>
+				removeFromRegister(schedule)
+				if !schedule.isCanceled then {
+					schedule.scheduledTime += interval
+					if schedule.scheduledTime * 1_000_000 <= System.nanoTime() then triggeredForExecution(schedule)
+					else appoint(schedule)
 				}
 			}
 		}
@@ -274,14 +256,11 @@ abstract class CooperativeWorkersSchedulingDp(
 		def cancel(schedule: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			schedule.isCanceled = true
 			signal { () =>
-				if schedule.isEnabled then {
-					schedule.isEnabled = false
-					if enabledSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule)).isEmpty then
-						enabledSchedulesByDoer.remove(schedule.owner)
-				} else remove(schedule)
+				if !removeFromRegister(schedule) then remove(schedule)
 			}
 		}
 
+		/** Cancels oll the activated [[Schedule]] instances corresponding to a [[Doer]]. */
 		def cancelAllBelongingTo(doer: SchedulingDoerImpl): Unit = {
 			signal { () =>
 				var index = heapSize
@@ -294,14 +273,15 @@ abstract class CooperativeWorkersSchedulingDp(
 					}
 				}
 
-				val enabledSchedules = enabledSchedulesByDoer.remove(doer)
+				val enabledSchedules = triggeredSchedulesByDoer.remove(doer)
 				if enabledSchedules ne null then enabledSchedules.foreach { schedule =>
 					schedule.isCanceled = true
-					schedule.isEnabled = false
+					schedule.isTriggered = false
 				}
 			}
 		}
 
+		/** Stops the scheduling thread. */
 		def stop(): Unit = {
 			signal(() =>
 				isRunning = false
@@ -316,6 +296,28 @@ abstract class CooperativeWorkersSchedulingDp(
 			}
 		}
 
+		/** Removes a [[Schedule]] from the register that knows which [[Schedule]] instances were enqueued and still not scheduled again.
+		 * @return true if the [[Schedule]] was in the register. */
+		private def removeFromRegister(schedule: SchedulingDoerImpl#ScheduleImpl): Boolean = {
+			if schedule.isTriggered then {
+				schedule.isTriggered = false
+				if triggeredSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule)).isEmpty then
+					triggeredSchedulesByDoer.remove(schedule.owner)
+				true
+			} else false
+		}
+
+		private def triggeredForExecution(es: SchedulingDoerImpl#ScheduleImpl): Unit = {
+			es.isTriggered = true
+			// Memorize which schedule instances were triggered for execution. Necessary to support `cancelAll`.
+			triggeredSchedulesByDoer.compute(
+				es.owner,
+				(_, enqueuedSchedules) => if enqueuedSchedules eq null then mutable.HashSet(es) else enqueuedSchedules.addOne(es)
+			)
+			es.owner.executeSequentially(() => es.execute())
+		}
+
+		/** Main loop of the scheduling thread. */
 		override def run(): Unit = {
 			while isRunning do {
 				// execute all pending commands
@@ -330,13 +332,7 @@ abstract class CooperativeWorkersSchedulingDp(
 				while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
 					val es = earlierSchedule.asInstanceOf[SchedulingDoerImpl#ScheduleImpl]
 					finishPoll(es)
-					es.isEnabled = true
-					es.enabledTime = currentTime
-					enabledSchedulesByDoer.compute(
-						es.owner,
-						(_, enabledSchedules) => if enabledSchedules eq null then mutable.HashSet(es) else enabledSchedules.addOne(es)
-					)
-					es.owner.executeSequentially(() => es.execute())
+					triggeredForExecution(es)
 					earlierSchedule = peek
 				}
 				this.synchronized {
@@ -354,19 +350,19 @@ abstract class CooperativeWorkersSchedulingDp(
 			this.synchronized(commandsQueue.clear()) // do not keep unnecessary references after stopped to avoid unnecessary memory retention
 			for i <- 0 until heapSize do heap(i).isCanceled = true
 			heap = null // do not keep unnecessary references after stopped to avoid unnecessary memory retention
-			enabledSchedulesByDoer.forEach { (_, enabledSchedules) =>
+			triggeredSchedulesByDoer.forEach { (_, enabledSchedules) =>
 				enabledSchedules.foreach { schedule =>
 					schedule.isCanceled = true
-					schedule.isEnabled = false
+					schedule.isTriggered = false
 				}
 			}
-			enabledSchedulesByDoer = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
+			triggeredSchedulesByDoer = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 		}
 
 		private inline def peek: SchedulingDoerImpl#ScheduleImpl | Null = heap(0)
 
 		/** Adds the provided element to this min-heap based priority queue. */
-		private def enqueue(element: SchedulingDoerImpl#ScheduleImpl): Unit = {
+		private def appoint(element: SchedulingDoerImpl#ScheduleImpl): Unit = {
 			val holeIndex = heapSize
 			if holeIndex >= heap.length then grow()
 			heapSize = holeIndex + 1

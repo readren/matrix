@@ -41,19 +41,20 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	type Schedule <: AnyRef
 
 	/** Creates a [[Schedule]] for a single time execution after a delay.
+	 * If the delay is non-positive, the execution would be as soon as possible.
 	 * @param delay duration before the execution.
 	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
 	def newDelaySchedule(delay: MilliDuration): Schedule
 
 	/** Creates a [[Schedule]] for a fixed rate repeated execution after an initial delay.
-	 * @param initialDelay duration before the first execution.
-	 * @param interval duration between the scheduled time of the executions.
+	 * @param initialDelay duration before the first execution. If non-positive, the first execution would be ASAP.
+	 * @param interval duration between the scheduled time of the executions. Should be positive.
 	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
 	def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule
 
 	/** Creates a [[Schedule]] for a fixed delay repeated execution after an initial delay.
-	 * @param initialDelay duration before the first execution.
-	 * @param delay duration between the end of an execution and the scheduled start of the next.
+	 * @param initialDelay duration before the first execution. If non-positive, the first execution would be ASAP.
+	 * @param delay duration between the end of an execution and the scheduled start of the next. Should be positive.
 	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
 	def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule
 
@@ -257,7 +258,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/**
 	 * Builds a [[Duty]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
 	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.
-	 * The supplier is not cancelled when it times out; it continues executing in the background even as retries begin.
+	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.
 	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.
 	 * If the supplier has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
 	 * The supplier receives the number of failed attempts as a parameter, allowing it to adjust its behavior based on prior timeouts.
@@ -545,7 +546,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/**
 	 * Builds a [[Task]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
 	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.
-	 * The supplier is not cancelled when it times out; it continues executing in the background even as retries begin.
+	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.
 	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.
 	 * If the supplier has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
 	 * The supplier receives the number of failed attempts as a parameter, allowing it to adjust its behavior based on prior timeouts.
