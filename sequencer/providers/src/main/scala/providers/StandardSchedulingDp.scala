@@ -5,7 +5,7 @@ import SchedulingExtension.MilliDuration
 import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName
-import readren.common.deriveToString
+import readren.common.{Maybe, deriveToString}
 import readren.sequencer.DoerProvider
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -46,7 +46,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		doer
 	}
 
-	override def currentDoer: ProvidedDoerFacade | Null = currentDoerThreadLocal.get
+	override def currentDoer: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
 
 	/** A Doer implementation with embedded testing infrastructure.
 	 *
@@ -85,7 +85,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			})
 		}
 
-		override def current: Doer = currentDoerThreadLocal.get
+		override def current: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
 
 		override def reportFailure(failure: Throwable): Unit = onFailureReported(thisDoer, failure)
 

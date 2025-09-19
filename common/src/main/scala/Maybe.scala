@@ -27,11 +27,11 @@ final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 	inline def getOrElse[B >: A](default: B): B =
 		if isEmpty then default else value.asInstanceOf[A]
 
-	inline def contains(inline predicate: A => Boolean): Boolean =
+	inline def exists(inline predicate: A => Boolean): Boolean =
 		isDefined && predicate(value.asInstanceOf[A])
 
 	inline def isEqualTo[A1>:A](other: Maybe[A1])(using CanEqual[A, A1]): Boolean = {
-		other.fold(this.isEmpty)(this.contentEquals)
+		other.fold(this.isEmpty)(this.contains)
 	}
 
 	override def equals(other: Any): Boolean = {
@@ -42,11 +42,11 @@ final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 	}
 
 	/** @return `true` if [[isDefined]] and the contained value equals the specified one. */
-	inline def contentEqualsNonStrictly[A1 >:A](elem: A1): Boolean =
+	inline def containsNonStrict[A1 >: A](elem: A1): Boolean =
 		if isEmpty then false else value.equals(elem.asInstanceOf[AnyRef])
 
 	/** @return `true` if [[isDefined]] and the contained value equals the specified one. */
-	inline def contentEquals[A1 >: A](elem: A1)(using CanEqual[A, A1]): Boolean =
+	inline def contains[A1 >: A](elem: A1)(using CanEqual[A, A1]): Boolean =
 		if isEmpty then false else value.equals(elem.asInstanceOf[AnyRef])
 
 	override def toString: String =

@@ -153,7 +153,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		delegateByAddress.view.filter(_._2.communicationStatus eq HANDSHOOK).asInstanceOf[MapView[ContactAddress, CommunicableDelegate]]
 		
 	def colleagueDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
-		delegateByAddress.view.filter(_._2.getPeerMembershipStatusAccordingToMe.contentEquals(myMembershipStatus))	
+		delegateByAddress.view.filter(_._2.getPeerMembershipStatusAccordingToMe.contains(myMembershipStatus))	
 
 	/** Creates and adds (to the set of known participants delegates) a new [[CommunicableDelegate]] to manage the communication with the participant at the specified [[ContactAddress]]. */
 	private[service] def addANewCommunicableDelegate(peerContactAddress: ContactAddress, channel: AsynchronousSocketChannel, receiverFromPeer: Receiver, channelId: ChannelId): CommunicableDelegate = {

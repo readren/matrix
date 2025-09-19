@@ -192,7 +192,7 @@ trait BehaviorsHelper { thisCommunicableDelegate: CommunicableDelegate =>
 
 	private[service] def handleMessage(message: AreYouInSyncWithMe): Unit = {
 		if message.yourMembershipStatusAccordingToMe ne owner.myMembershipStatus then incitePeerToUpdateHisStateAboutMyStatus()
-		transmitToPeerOrRestartChannel(AreWeInSyncResponse(message.requestId, oPeerMembershipStatusAccordingToMe.contentEquals(message.myMembershipStatus)))
+		transmitToPeerOrRestartChannel(AreWeInSyncResponse(message.requestId, oPeerMembershipStatusAccordingToMe.contains(message.myMembershipStatus)))
 	}
 
 	/** Incites the peer to update his memory of my membership-status and re-check his memory of the membership-status of other participants that differs from my memory. */
@@ -206,7 +206,7 @@ trait BehaviorsHelper { thisCommunicableDelegate: CommunicableDelegate =>
 		// check if the peer agrees about the membership status of other participants he handshook with.
 		for (participantAddress, participantMembershipStatusAccordingToPeer) <- message.membershipStatusOfParticipantsIHandshookWith do {
 			delegateByAddress.getOrElse(participantAddress, null) match {
-				case communicableDelegate: CommunicableDelegate if !communicableDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantMembershipStatusAccordingToPeer) =>
+				case communicableDelegate: CommunicableDelegate if !communicableDelegate.getPeerMembershipStatusAccordingToMe.contains(participantMembershipStatusAccordingToPeer) =>
 					communicableDelegate.checkSyncWithPeer(s"the participant at `$peerContactAddress` told me that the participant at $participantAddress has a different membership status ($participantMembershipStatusAccordingToPeer) than the one I remember (${communicableDelegate.getPeerMembershipStatusAccordingToMe}).")
 
 				case null =>

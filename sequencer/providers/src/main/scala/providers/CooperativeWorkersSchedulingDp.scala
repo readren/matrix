@@ -4,7 +4,7 @@ package providers
 import DoerProvider.Tag
 
 import readren.common.CompileTime.getTypeName
-import readren.common.deriveToString
+import readren.common.{Maybe, deriveToString}
 import readren.sequencer.SchedulingExtension
 import SchedulingExtension.MilliDuration
 import providers.CooperativeWorkersDp.*
@@ -81,10 +81,11 @@ abstract class CooperativeWorkersSchedulingDp(
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
+		startAllWorkersIfNotAlready()
 		new SchedulingDoerImpl(tag)
 	}
 
-	override def currentDoer: SchedulingDoerFacade | Null = super.currentDoer.asInstanceOf[SchedulingDoerFacade | Null]
+	override def currentDoer: Maybe[SchedulingDoerFacade] = super.currentDoer.asInstanceOf[Maybe[SchedulingDoerFacade]]
 
 	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
 
@@ -288,7 +289,10 @@ abstract class CooperativeWorkersSchedulingDp(
 			)
 		}
 
-		/** TODO this design is inefficient because requires the creation of a [[Runnable]] instance every call. Consider an improvement. */
+		/** TODO this design is inefficient because it blocks and requires the creation of a [[Runnable]] instance for the command in every call. Consider an improvement. May be using an array of reusable commands.
+		 * TODO Another more simple path would be to use a Doer instead of a dedicated thread to manage the scheduling. It also creates an object for the command, but no extra thread is required and no synchronization blocking. The problem is that the commands execution would be queued after regular tasks (unless Doer prioritization is added).
+		 * TODO Another more complex path that avoids blocking would be to use    
+		 * */
 		private def signal(command: Runnable): Unit = {
 			this.synchronized {
 				commandsQueue.offer(command)

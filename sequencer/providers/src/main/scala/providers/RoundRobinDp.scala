@@ -4,6 +4,7 @@ package providers
 import DoerProvider.Tag
 import providers.ShutdownAble
 
+import readren.common.Maybe
 import readren.sequencer.Doer
 
 import java.util.concurrent.*
@@ -45,7 +46,7 @@ abstract class RoundRobinDp(
 	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal
 
 	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
-	inline def currentDoer: ProvidedDoer | Null = doerThreadLocal.get
+	inline def currentDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 	override def provide(tag: Tag): ProvidedDoer =
 		doers(switcher.getAndIncrement() % doers.length)
@@ -66,7 +67,7 @@ abstract class RoundRobinDp(
 
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
-		override def current: ProvidedDoer = currentDoer
+		override def current: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
 	}

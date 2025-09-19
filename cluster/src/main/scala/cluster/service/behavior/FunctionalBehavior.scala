@@ -17,10 +17,10 @@ class FunctionalBehavior(override val host: ParticipantService, startingStateSer
 		if previousStatus eq HANDSHOOK then {
 			assert(delegate.communicationStatus ne HANDSHOOK)
 			scribe.trace(s"${host.myAddress}: ----------> 2")
-			if delegate.getPeerMembershipStatusAccordingToMe.contains(membershipStatus.isColleagueOf) then {
+			if delegate.getPeerMembershipStatusAccordingToMe.exists(membershipStatus.isColleagueOf) then {
 				// get the communication status of the hots's colleagues.
 				val colleaguesCommunicationStatuses = host.delegateByAddress.view.collect {
-					case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe.contains(membershipStatus.isColleagueOf) => delegate.communicationStatus
+					case (_, delegate) if delegate.getPeerMembershipStatusAccordingToMe.exists(membershipStatus.isColleagueOf) => delegate.communicationStatus
 				}
 				scribe.trace(s"${host.myAddress}: ----------> 3 colleaguesStatuses=$colleaguesCommunicationStatuses")
 				if host.config.isolationDecider.shouldIBeIsolated(colleaguesCommunicationStatuses) then host.switchToIsolated(this)

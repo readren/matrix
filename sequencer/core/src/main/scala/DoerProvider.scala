@@ -1,8 +1,11 @@
 package readren.sequencer
 
+import readren.common.Maybe
+
 object DoerProvider {
 	type Tag = String // TODO move inside the trait and make abstract. 
 }
+
 /**
  * A provided interface that regularizes the usage of [[Doer]] providers.
  *
@@ -24,8 +27,8 @@ trait DoerProvider[+D <: Doer] {
 	def provide(tag: DoerProvider.Tag): D
 
 
-	/** @return the [[Doer]] provided by this [[DoerProvider]] that is currently associated to the current [[Thread]]; or `null` if the current thread is associated to a [[Doer]] of another [[DoerProvider]] instance or not associated to any [[Doer]]. */
-	def currentDoer: D | Null
+	/** @return the [[Doer]] instance — among those supplied by this [[DoerProvider]] — to which the current [[Thread]] is assigned; [[Maybe.empty]] otherwise. */
+	def currentDoer: Maybe[D]
 
 	/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception.
 	 * The implementation may assume that the call is withing the thread currently assigned to the provided doer. */
@@ -33,5 +36,5 @@ trait DoerProvider[+D <: Doer] {
 
 	/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
 	protected def onFailureReported(doer: Doer, failure: Throwable): Unit
-	
+
 }

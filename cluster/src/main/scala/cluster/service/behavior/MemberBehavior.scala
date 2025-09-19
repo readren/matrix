@@ -24,7 +24,7 @@ abstract class MemberBehavior(override val host: ParticipantService, startingSta
 	
 	def myCurrentViewpoint: MemberViewpoint = MemberViewpoint(stateSerial, host.clock.getTime, myClusterId, host.getStableParticipantsInfo.toMap)
 
-	def isColleague(delegate: ParticipantDelegate): Boolean = delegate.getPeerMembershipStatusAccordingToMe.contains {
+	def isColleague(delegate: ParticipantDelegate): Boolean = delegate.getPeerMembershipStatusAccordingToMe.exists {
 		case member: Member if member.clusterId == myClusterId => true
 		case _ => false	
 	}
@@ -132,6 +132,6 @@ abstract class MemberBehavior(override val host: ParticipantService, startingSta
 	}
 
 	protected def memberDelegateByAddress: MapView[ContactAddress, ParticipantDelegate] =
-		host.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) }
+		host.delegateByAddress.view.filter { (_, delegate) => delegate.getPeerMembershipStatusAccordingToMe.contains(membershipStatus) }
 
 }

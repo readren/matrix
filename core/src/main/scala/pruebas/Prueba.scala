@@ -5,7 +5,7 @@ import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
 
-import readren.sequencer.providers.{CooperativeWorkersDp, RoundRobinDp, CooperativeWorkersSchedulingDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersSchedulingDp, CooperativeWorkersTieredDp, RoundRobinDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
@@ -19,7 +19,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = CooperativeWorkersSchedulingDp
+	private type TestedDoerProvider = CooperativeWorkersTieredDp
 
 	private sealed trait Report
 
@@ -63,8 +63,8 @@ object Prueba {
 		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersSchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersSchedulingDp.Impl(false)
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersTieredDp.TieredDoerFacade]("scheduling-fence-off") {
+		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersTieredDp.Impl(false)
 	}
 
 	private def roundRobinAide = new SimpleAide(roundRobinDpd)
@@ -77,7 +77,7 @@ object Prueba {
 		given ExecutionContext = ExecutionContext.global
 
 		val numberOfWarmUpRepetitions = 4
-		val numberOfMeasuredOfRepetitions = 16
+		val numberOfMeasuredOfRepetitions = 56
 		var totalFuture = Future.successful[Iteration](Iteration())
 		for i <- 1 to (numberOfWarmUpRepetitions + numberOfMeasuredOfRepetitions) do {
 			totalFuture = totalFuture.flatMap { iteration =>

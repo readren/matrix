@@ -119,7 +119,7 @@ class AspirantBehavior(override val host: ParticipantService) extends Membership
 		val config = host.config
 		val delegateByAddress = host.delegateByAddress
 		// If all the participants I know are aspirants with stable communicability, then propose the cluster creator.
-		if delegateByAddress.forall((_, delegate) => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contentEquals(Aspirant)) then {
+		if delegateByAddress.forall((_, delegate) => delegate.isStable && delegate.getPeerMembershipStatusAccordingToMe.contains(Aspirant)) then {
 			// if I have hand-shaken with all the seeds, then propose the cluster creator.
 			if config.seeds.forall { seed =>
 				seed == config.myAddress || delegateByAddress.getAndTransformOrElse(seed, false)(_.communicationStatus eq HANDSHOOK)
@@ -181,7 +181,7 @@ class AspirantBehavior(override val host: ParticipantService) extends Membership
 		if foundClusters.size == 1 && host.delegateByAddress.iterator.forall(_._2.isStable) then {
 			val membershipStatus = Functional(foundClusters.head)
 			host.delegateByAddress.iterator
-				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contentEquals(membershipStatus) => cd }
+				.collect { case (_, cd: CommunicableDelegate) if cd.getPeerMembershipStatusAccordingToMe.contains(membershipStatus) => cd }
 				.minByOption(_.contactCard)(using ContactCard.ordering)
 				.foreach { chosenMemberDelegate =>
 					aRequestToJoinIsOnTheWay = true
@@ -218,7 +218,7 @@ class AspirantBehavior(override val host: ParticipantService) extends Membership
 															host.addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(participantAddress)
 														}
 													case participantDelegate: CommunicableDelegate =>
-														if !participantDelegate.getPeerMembershipStatusAccordingToMe.contentEquals(participantInfoAccordingToChosenMember.membershipStatus) then {
+														if !participantDelegate.getPeerMembershipStatusAccordingToMe.contains(participantInfoAccordingToChosenMember.membershipStatus) then {
 															inSyncWithChosenMember = false
 															participantDelegate.checkSyncWithPeer(s"the `$jg` response from the member at ${chosenMemberDelegate.peerContactAddress} does not match my memory about the membership-status of $participantAddress.")
 														}

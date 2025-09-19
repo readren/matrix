@@ -4,6 +4,7 @@ package providers
 import DoerProvider.Tag
 import providers.ShutdownAble
 
+import readren.common.Maybe
 import readren.sequencer.Doer
 
 import java.util.concurrent.*
@@ -45,7 +46,7 @@ abstract class LeastLoadedFixedWorkerDp(
 	private val doerThreadLocal: ThreadLocal[ProvidedDoer] = new ThreadLocal()
 
 	/** @return the [[ProvidedDoer]] that is currently associated to the current [[Thread]], if any. */
-	override def currentDoer: ProvidedDoer | Null = doerThreadLocal.get
+	override def currentDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 	class ProvidedDoer(
 		override val tag: Tag,
@@ -64,7 +65,7 @@ abstract class LeastLoadedFixedWorkerDp(
 
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
-		override def current: ProvidedDoer = currentDoer
+		override def current: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}

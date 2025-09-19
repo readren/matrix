@@ -77,11 +77,11 @@ trait Doer { thisDoer =>
 	/**
 	 * The implementation should return the [[Doer]] instance that the current [[java.lang.Thread]] is currently running if it knows it, or null if it doesn't.
 	 * The implementation should know, at least, if the current [[java.lang.Thread]] corresponds to this [[Doer]], and return this instance in that case. */
-	def current: Doer | Null
+	def current: Maybe[Doer]
 
 	/**
 	 * @return true if the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]]. Calling this method within the thread with which the [[Runnable]]s passed to this instance's [[executeSequentially]] or [[execute]] methods is executed, always returns `true`. */
-	inline def isInSequence: Boolean = this eq current
+	inline def isInSequence: Boolean = current.exists(_ eq thisDoer)
 
 	/** Asserts that the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] instance for sequential execution of its operations. */
 	inline def checkWithin(): Unit = {

@@ -5,6 +5,7 @@ import ActorBasedDoer.Procedure
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{Behavior, Scheduler}
 import readren.common.CompileTime.getTypeName
+import readren.common.Maybe
 import readren.sequencer.SchedulingExtension
 import readren.sequencer.SchedulingExtension.MilliDuration
 
@@ -42,8 +43,8 @@ object ActorBasedSchedulingDoer {
 			override def executeSequentially(runnable: Runnable): Unit =
 				actorBasedDoer.executeSequentially(runnable)
 
-			override def current: ActorBasedDoer =
-				ActorBasedDoer.currentDoerThreadLocal.get
+			override def current: Maybe[ActorBasedDoer] =
+				Maybe(ActorBasedDoer.currentDoerThreadLocal.get)
 
 			override def reportFailure(cause: Throwable): Unit =
 				actorBasedDoer.reportFailurePortal(cause)

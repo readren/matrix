@@ -6,6 +6,7 @@ import providers.CooperativeWorkersDp.*
 import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
+import readren.common.Maybe
 import readren.sequencer.AbstractDoer
 
 import java.lang.invoke.VarHandle
@@ -16,7 +17,7 @@ object CooperativeWorkersDp {
 	type TaskQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
-		case keepRunning, shutdownWhenAllWorkersSleep, terminated
+		case notStarted, keepRunning, shutdownWhenAllWorkersSleep, terminated
 	}
 
 	inline val debugEnabled = false
@@ -28,7 +29,8 @@ object CooperativeWorkersDp {
 	 * */
 	abstract class DoerFacade extends AbstractDoer {
 		override type Tag = DoerProvider.Tag
-		/** Exposes the number of [[Runnable]]s that are in the task-queue waiting to be executed sequentially. */
+
+		/** Exposes the number of routines that are waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
 	}
 
@@ -66,15 +68,16 @@ abstract class CooperativeWorkersDp(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends DoerProvider[DoerFacade], ShutdownAble { thisProvider =>
 
-	private val state: AtomicInteger = new AtomicInteger(State.keepRunning.ordinal)
+	private val state: AtomicInteger = new AtomicInteger(State.notStarted.ordinal)
 
-	/** Queue of [[DoerImpl]] with pending tasks that are waiting to be assigned to a [[Worker]] in order to process them.
+	/** Queue of [[DoerImpl]] with pending tasks.
+	 * We say that a [[DoerImpl]] has pending tasks if its [[DoerImpl.taskQueueSize]] is greater than zero, which means that it has tasks waiting to be executed and therefore it should be assigned to a [[Worker]] in order to process them.
 	 *
 	 * Invariant: this queue contains no duplicate elements due to the [[DoerImpl.queueForSequentialExecution]] logic.
-	 * TODO try using my own implementation of concurrent queue that avoids dynamic memory allocation. */
-	private val queuedDoers = new ConcurrentLinkedQueue[DoerImpl]()
+	 * TODO create and use an implementation of concurrent non-blocking queue that minimizes dynamic memory allocation. */
+	protected val queuedDoers = new ConcurrentLinkedQueue[DoerImpl]()
 
-	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(Worker.apply)
+	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(buildWorker)
 
 	private val runningWorkersLatch: CountDownLatch = new CountDownLatch(workers.length)
 	/** Usually equal to the number of workers whose [[Worker.isSleeping]] flag is set, but may be temporarily greater. Never smaller.
@@ -84,42 +87,43 @@ abstract class CooperativeWorkersDp(
 	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
 	private val doerThreadLocal: ThreadLocal[DoerFacade | Null] = new ThreadLocal()
 
-	{
-		workers.foreach(_.start())
-	}
-
+	protected def buildWorker(index: Int): Worker = new Worker(index)
+	
 	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any.
 	 *  Exposed for testing only. */
 	inline private[providers] def currentWorker: Runnable | Null = workerThreadLocal.get
 
 	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
-	override def currentDoer: DoerFacade | Null = doerThreadLocal.get
+	override def currentDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
-	protected class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
+	protected open class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
-		@volatile private var firstTaskInQueue: Runnable = null
+		@volatile protected var firstTaskInQueue: Runnable = null
 		/** Remembers the index of the worker that executed this doer's tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
-		var lastTimeWorkerIndex = 0
+		private[CooperativeWorkersDp] var lastTimeWorkerIndex = 0
 
 		override def numOfPendingTasks: Int = taskQueueSize.get
 
 		override def executeSequentially(task: Runnable): Unit = {
-			if taskQueueSize.getAndIncrement() == 0 then {
+			if taskQueueSize.getAndIncrement() > 0 then taskQueue.offer(task)
+			else {
 				firstTaskInQueue = task
 				if !wakeUpASleepingWorkerIfAny(thisDoer) then {
 					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
-					queuedDoers.offer(thisDoer)
+					enqueueMyself()
 				}
-			} else {
-				taskQueue.offer(task)
 			}
 		}
 
-		override def current: DoerFacade = currentDoer
+		/** Enqueues this [[DoerImpl]] in the queue of [[DoerImpl]] instances that have pending tasks. */
+		protected def enqueueMyself(): Unit = {
+			queuedDoers.offer(thisDoer)
+		}
+
+		override def current: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
-
 
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 * Assumes that [[taskQueueSize]] is greater than zero because, for this method to be called, this [[DoerImpl]] should have been added to the [[queuedDoers]], which happens when the [[taskQueueSize]] transitions from zero to one.
@@ -165,13 +169,12 @@ abstract class CooperativeWorkersDp(
 				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks.
 				if taskQueueSizeIsPositive then {
 					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
-					queuedDoers.offer(thisDoer)
+					enqueueMyself()
 				}
 				// Note that, for efficiency, the `doerThreadLocal` entry corresponding to this worker thread is not cleared here as expected because it will be overwritten before anything that could access it is executed. It is overwritten either in the next call to `executePendingTasks` if there is a Doer with pending tasks, in `tryToSleep` if no Doer has visible pending tasks, or in the unhandled exception catcher.
 			}
 			processedTasksCounter
 		}
-
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"(tag=$tag, taskQueueSize=${taskQueueSize.get}%3d)")
@@ -183,7 +186,7 @@ abstract class CooperativeWorkersDp(
 	/** @return `true` if a worker was awakened.
 	 * The provided [[DoerImpl]] will be assigned to the awakened worker.
 	 * Asumes the provided [[DoerImpl]] is and will not be enqueued in [[queuedDoers]], which ensures it will not be assigned to any other worker simultaneously. */
-	private def wakeUpASleepingWorkerIfAny(stimulator: DoerImpl): Boolean = {
+	protected def wakeUpASleepingWorkerIfAny(stimulator: DoerImpl): Boolean = {
 		if debugEnabled then assert(!queuedDoers.contains(stimulator))
 		if sleepingWorkersCount.get > 0 then {
 			val startingWorkerIndex = stimulator.lastTimeWorkerIndex
@@ -200,7 +203,7 @@ abstract class CooperativeWorkersDp(
 		} else false
 	}
 
-	private class Worker(val index: Int) extends Runnable { thisWorker =>
+	protected open class Worker(val index: Int) extends Runnable { thisWorker =>
 
 		/** The [[Thread]] that executes this worker. */
 		private var thread: Thread = threadFactory.newThread(thisWorker)
@@ -222,7 +225,7 @@ abstract class CooperativeWorkersDp(
 		private var refusedTriesToSleepsCounter: Int = 0
 
 		/**
-		 * A [[DoerImpl]] instance that jumps the queue established by the [[circularIterator]] that determines the order in which the [[DoerImpl]] instances are assigned to this worker.
+		 * A [[DoerImpl]] instance that jumps the [[queuedDoers]].
 		 * Should not be modified by any thread other than the [[thread]] of this worker unless this worker is sleeping.
 		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerImpl.executePendingTasks()]] if the task-queue was not completely emptied;
 		 * is read by this worker after it is awakened;
@@ -256,7 +259,7 @@ abstract class CooperativeWorkersDp(
 			while keepRunning do {
 				val assignedDoer: DoerImpl | Null =
 					if queueJumper != null then queueJumper
-					else queuedDoers.poll()
+					else pollNextDoer()
 				queueJumper = null
 				if assignedDoer == null then tryToSleep()
 				else {
@@ -272,7 +275,7 @@ abstract class CooperativeWorkersDp(
 			isStopped = true
 		}
 
-		def onUncaughtException(): Unit = {
+		private[CooperativeWorkersDp] def onUncaughtException(): Unit = {
 			// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
 			val newThread = threadFactory.newThread(this)
 			thread = newThread
@@ -361,6 +364,14 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
+	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
+
+	protected inline def startAllWorkersIfNotAlready(): Unit = {
+		if state.compareAndSet(State.notStarted.ordinal, State.keepRunning.ordinal) then {
+			workers.foreach(_.start())
+		}
+	}
+
 	private def stopAllWorkers(): Unit = {
 		var workerIndex = workers.length
 		while workerIndex > 0 do {
@@ -370,6 +381,7 @@ abstract class CooperativeWorkersDp(
 	}
 
 	override def provide(tag: Tag): DoerFacade = {
+		startAllWorkersIfNotAlready()
 		new DoerImpl(tag)
 	}
 
