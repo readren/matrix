@@ -8,7 +8,7 @@ import cluster.serialization.{Deserializer, DiscriminationCriteria, ProtocolVers
 import cluster.service.Protocol.*
 
 import readren.common.Maybe
-import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.MilliDuration
 
 import java.net.SocketAddress
 import scala.compiletime.erasedValue

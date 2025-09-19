@@ -6,8 +6,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{Behavior, Scheduler}
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
-import readren.sequencer.SchedulingExtension
-import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.{MilliDuration, SchedulingExtension}
 
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean

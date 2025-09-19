@@ -19,7 +19,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = CooperativeWorkersTieredDp
+	private type TestedDoerProvider = CooperativeWorkersSchedulingDp
 
 	private sealed trait Report
 
@@ -63,8 +63,8 @@ object Prueba {
 		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersTieredDp.TieredDoerFacade]("scheduling-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersTieredDp.Impl(false)
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersSchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
+		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersSchedulingDp.Impl(false)
 	}
 
 	private def roundRobinAide = new SimpleAide(roundRobinDpd)

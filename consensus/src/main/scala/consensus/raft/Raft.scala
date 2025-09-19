@@ -3,7 +3,7 @@ package consensus.raft
 
 import consensus.*
 
-import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.MilliDuration
 import scribe.*
 
 import scala.collection.mutable

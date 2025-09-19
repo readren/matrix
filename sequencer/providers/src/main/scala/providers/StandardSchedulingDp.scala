@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import SchedulingExtension.MilliDuration
 import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName

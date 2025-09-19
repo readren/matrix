@@ -1,7 +1,5 @@
 package readren.sequencer
 
-import SchedulingExtension.MilliDuration
-
 import readren.common.{Maybe, castTo}
 import readren.sequencer.Doer
 
@@ -9,12 +7,6 @@ import scala.annotation.targetName
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-
-object SchedulingExtension {
-
-	/** A duration in milliseconds. */
-	type MilliDuration = Long
-}
 
 /** Extends the [[Doer]] trait and its [[Duty]] and [[Task]] inner traits with scheduling operations.
  *

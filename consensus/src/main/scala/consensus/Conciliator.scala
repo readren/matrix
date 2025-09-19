@@ -2,8 +2,7 @@ package readren.matrix
 package consensus
 
 import readren.common.Maybe
-import readren.sequencer.SchedulingExtension.MilliDuration
-import readren.sequencer.{Doer, SchedulingExtension}
+import readren.sequencer.{Doer, MilliDuration, SchedulingExtension}
 
 import java.util
 import java.util.Comparator

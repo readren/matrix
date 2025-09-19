@@ -6,7 +6,7 @@ import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.MilliDuration
 import readren.sequencer.providers.CooperativeWorkersSchedulingDp
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}

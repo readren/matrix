@@ -11,7 +11,7 @@ import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 import cluster.service.behavior.MembershipScopedBehavior
 
 import readren.common.Maybe
-import readren.sequencer.SchedulingExtension.MilliDuration
+import readren.sequencer.MilliDuration
 
 import java.net.SocketAddress
 import java.nio.channels.AsynchronousSocketChannel
