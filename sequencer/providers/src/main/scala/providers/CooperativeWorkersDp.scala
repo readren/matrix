@@ -132,6 +132,7 @@ abstract class CooperativeWorkersDp(
 		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same doer being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerImpl]] instance simultaneously.
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerImpl]] is enqueued into the [[queuedDoers]] queue to be assigned to a worker at a later time.
+		 * @param worker the [[Worker]] that called this method and owns the current [[Thread]].
 		 */
 		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Int = {
 			doerThreadLocal.set(thisDoer)
@@ -159,8 +160,8 @@ abstract class CooperativeWorkersDp(
 						onUnhandledException(thisDoer, uncaught)
 					} finally {
 						doerThreadLocal.remove()
-						// Notify the worker about the uncaught exception.
-						worker.onUncaughtException()
+						// Start the worker in a new thread and exit this method abruptly so that the worker terminates the current one.
+						worker.startInANewThread()
 					}
 					// Rethrow the uncaught exception to terminate the thread abruptly skipping the `runningWorkersLatch` decremental.
 					throw uncaught
@@ -270,28 +271,29 @@ abstract class CooperativeWorkersDp(
 					completedMainLoopsCounter += 1
 				}
 			}
-			// Note that only decrements when the worker terminates gracefully.
+			// Note that the latch counter is decremented only when the worker terminates gracefully.
 			runningWorkersLatch.countDown()
 			isStopped = true
 		}
 
-		private[CooperativeWorkersDp] def onUncaughtException(): Unit = {
-			// Let the current thread to terminate abruptly, create a new one, and start it with the same Runnable (this worker).
+		/** Starts this [[Worker]] in a new [[Thread]].
+		 * Assumes that the current thread is going to terminate. */
+		private[CooperativeWorkersDp] def startInANewThread(): Unit = {
 			val newThread = threadFactory.newThread(this)
 			thread = newThread
 			thread.start()
 		}
 
-		/** Should be called immediately before the main-loop's exit condition evaluation. */
+		/** Puts the [[thread]] into sleep unless it is the last [[Worker]]'s thread (of this [[CooperativeWorkersDp]] workers pool) that entered into this method and there is a possibility that there is pending but not yet visible work to do. */
 		private def tryToSleep(): Unit = {
 			doerThreadLocal.set(null)
 			val sleepingCounter = sleepingWorkersCount.incrementAndGet()
 			// The purpose of this `if` is to avoid all workers go to sleep when maybe there is work to do.
 			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:
-			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a [[DoerImpl]] was enqueued into `enqueuedDoers` by an external thread and is still not visible from the threads of the workers that were awake)
+			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a [[DoerImpl]] was enqueued into `enqueuedDoers` by an external thread and the addition is still not visible from the threads of the workers that were awake)
 			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
 			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
-			// If another worker's thread is leaving the sleeping state
+			// If I am the last worker entering this section and another worker's thread is leaving the sleeping state
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
 				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoers`.
 				sleepingWorkersCount.getAndDecrement()

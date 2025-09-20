@@ -106,7 +106,7 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 			removeFromRegister(schedule)
 			if !schedule.isCanceled then {
 				schedule.scheduledTime = scheduleTime
-				if scheduleTime * 1_000_000 <= System.nanoTime() then triggeredForExecution(schedule)
+				if scheduleTime * 1_000_000 <= System.nanoTime() then triggerExecutionOf(schedule)
 				else appoint(schedule)
 			}
 		}
@@ -118,7 +118,7 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 			removeFromRegister(schedule)
 			if !schedule.isCanceled then {
 				schedule.scheduledTime += interval
-				if schedule.scheduledTime * 1_000_000 <= System.nanoTime() then triggeredForExecution(schedule)
+				if schedule.scheduledTime * 1_000_000 <= System.nanoTime() then triggerExecutionOf(schedule)
 				else appoint(schedule)
 			}
 		}
@@ -181,14 +181,15 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 		} else false
 	}
 
-	private def triggeredForExecution(es: P): Unit = {
-		es.isTriggered = true
+	/** Triggers the execution of the routine corresponding to the specified [[Plan]], and registers that the [[Plan]] was triggered and still not rescheduled. */
+	private def triggerExecutionOf(plan: P): Unit = {
+		plan.isTriggered = true
 		// Memorize which schedule instances were triggered for execution. Necessary to support `cancelAll`.
 		triggeredSchedulesByDoer.compute(
-			es.owner,
-			(_, enqueuedSchedules) => if enqueuedSchedules eq null then mutable.HashSet(es) else enqueuedSchedules.addOne(es)
+			plan.owner,
+			(_, enqueuedSchedules) => if enqueuedSchedules eq null then mutable.HashSet(plan) else enqueuedSchedules.addOne(plan)
 		)
-		es.owner.executeSequentially(() => es.execute())
+		plan.owner.executeSequentially(() => plan.execute())
 	}
 
 	/** Main loop of the scheduling thread. */
@@ -204,9 +205,9 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 			var earlierSchedule = peek
 			val currentTime = nanosToMillisRoundedDown(System.nanoTime())
 			while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
-				val es = earlierSchedule.asInstanceOf[P]
-				finishPoll(es)
-				triggeredForExecution(es)
+				val plan = earlierSchedule.asInstanceOf[P]
+				finishPoll(plan)
+				triggerExecutionOf(plan)
 				earlierSchedule = peek
 			}
 			this.synchronized {
