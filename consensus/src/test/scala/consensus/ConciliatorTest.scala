@@ -7,7 +7,7 @@ import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
 import readren.sequencer.MilliDuration
-import readren.sequencer.providers.CooperativeWorkersSchedulingDp
+import readren.sequencer.providers.CooperativeWorkersWithAsyncSchedulerDp
 
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
 import scala.collection.mutable.ArrayBuffer
@@ -27,9 +27,9 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	// Test command type
 	private case class TestCommand(value: String)
 
-	private val schedulingDap = new CooperativeWorkersSchedulingDp.Impl(failureReporter = (doer, e) => scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${doer.tag}", e))
+	private val schedulingDap = new CooperativeWorkersWithAsyncSchedulerDp.Impl(failureReporter = (doer, e) => scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${doer.tag}", e))
 
-	private type ScheduSequen = CooperativeWorkersSchedulingDp.SchedulingDoerFacade
+	private type ScheduSequen = CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade
 
 	private class Net(latency: MilliDuration, timeout: MilliDuration) {
 		val sequencer: ScheduSequen = schedulingDap.provide("net")

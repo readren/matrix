@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.ThreadDrivenScheduler.{INITIAL_DELAYED_TASK_QUEUE_CAPACITY, Plan, nanosToMillisRoundedDown}
+import providers.ThreadDrivenScheduler.{INITIAL_DELAYED_TASK_QUEUE_CAPACITY, Plan}
 
 import readren.common.deriveToString
 
@@ -17,35 +17,21 @@ object ThreadDrivenScheduler {
 
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-	abstract class Plan[+D <: Doer](val owner: D) {
+	abstract class Plan[+D <: Doer](val owner: D) extends MinHeapPriorityQueue.Element {
 		val initialDelay: MilliDuration
 		val interval: MilliDuration
 		val isFixedRate: Boolean
-		/** The routine whose execution is scheduled by this [[ScheduleImpl]].
+		/** The [[Runnable]] whose execution is scheduled by this [[ScheduleImpl]].
 		 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
-		var routine: (this.type => Unit) | Null = null
-		/** @inheritdoc
-		 * Only accessed within the scheduling thread. */
-		var scheduledTime: MilliTime = 0L
-		/** The index of this instance in the array-based min-heap.
-		 * Only accessed within the scheduling thread. */
-		var heapIndex: Int = -1
+		var runnable: Runnable | Null = null
 		/** Knows if the [[scheduler.enqueuedSchedulesByDoer]] collection contains this instance.
 		 * Its purpose is to improve efficiency by avoiding unnecessary manipulations of said collection.
 		 * Only accessed within the scheduling thread. */
 		var isTriggered = false
 		@volatile var isCanceled = false
 
-		/** Executes the routine associated to this [[ScheduleImpl]] */
-		inline def execute(): Unit = routine(this)
-
 		override def toString: String = deriveToString(this) + s" scheduledTime: $scheduledTime"
 	}
-
-	inline def nanosToMillisRoundedUp(nanos: Long): Long = (nanos + 999_999) / 1_000_000
-
-	inline def nanosToMillisRoundedDown(nanos: Long): Long = nanos / 1_000_000
-
 }
 
 
@@ -80,10 +66,10 @@ object ThreadDrivenScheduler {
  */
 class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactory)(using ctP: ClassTag[P | Null]) extends Runnable {
 	private val commandsQueue = new util.ArrayDeque[Runnable]()
-	private var heap: Array[P | Null] = new Array(INITIAL_DELAYED_TASK_QUEUE_CAPACITY)
-	private var heapSize: Int = 0
+
+	private val priorityQueue: MinHeapPriorityQueue[Plan[D]] = new MinHeapPriorityQueue[Plan[D]](INITIAL_DELAYED_TASK_QUEUE_CAPACITY)
 	/** A register that knows the instances of [[Plan]] that are not in the [[heap]] because they were triggered and still not rescheduled (still not added to the [[heap]] again after the routine completes and [[schedule]] or [[scheduleRelativeToPrevious]] is called again).
-	 * We say that a schedule is triggered when its [[Plan.routine]] is passed to [[Doer.executeSequentially]].
+	 * We say that a schedule is triggered when its [[Plan.runnable]] is passed to [[Doer.executeSequentially]].
 	 * A schedule is triggered only after its [[Plan.scheduledTime]] is reached.
 	 * This register is necessary to implement the [[cancelAllBelongingTo]] method because enqueued instances are not in the [[heap]].
 	 * The goal of this register is to know all the [[Plan]] instances that are activated but not contained in the [[heap]]. */
@@ -94,20 +80,14 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	private val timeWaitingThread: Thread = threadFactory.newThread(this)
 	timeWaitingThread.start()
 
-	def numOfEnabledSchedules: Int = {
-		var accum = 0
-		triggeredSchedulesByDoer.forEach((_, set) => accum += set.size)
-		accum
-	}
-
 	/** Schedules a single execution of the routine associated to the specified [[Plan]] at a specified time. */
-	def schedule(schedule: P, scheduleTime: MilliTime): Unit = {
+	def schedule(plan: P, scheduleTime: MilliTime): Unit = {
 		signal { () =>
-			removeFromRegister(schedule)
-			if !schedule.isCanceled then {
-				schedule.scheduledTime = scheduleTime
-				if scheduleTime * 1_000_000 <= System.nanoTime() then triggerExecutionOf(schedule)
-				else appoint(schedule)
+			removeFromRegister(plan)
+			if !plan.isCanceled then {
+				plan.scheduledTime = scheduleTime
+				if scheduleTime * 1_000_000 <= System.nanoTime() then triggerExecutionOf(plan)
+				else priorityQueue.add(plan)
 			}
 		}
 	}
@@ -119,7 +99,7 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 			if !schedule.isCanceled then {
 				schedule.scheduledTime += interval
 				if schedule.scheduledTime * 1_000_000 <= System.nanoTime() then triggerExecutionOf(schedule)
-				else appoint(schedule)
+				else priorityQueue.add(schedule)
 			}
 		}
 	}
@@ -127,20 +107,20 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	def cancel(schedule: P): Unit = {
 		schedule.isCanceled = true
 		signal { () =>
-			if !removeFromRegister(schedule) then remove(schedule)
+			if !removeFromRegister(schedule) then priorityQueue.remove(schedule)
 		}
 	}
 
 	/** Cancels oll the activated [[Plan]] instances corresponding to a [[Doer]]. */
 	def cancelAllBelongingTo(doer: D): Unit = {
 		signal { () =>
-			var index = heapSize
+			var index = priorityQueue.size
 			while index > 0 do {
 				index -= 1
-				val schedule = heap(index).asInstanceOf[P]
+				val schedule = priorityQueue(index).asInstanceOf[P]
 				if schedule.owner eq doer then {
 					schedule.isCanceled = true
-					remove(schedule)
+					priorityQueue.remove(schedule)
 				}
 			}
 
@@ -175,8 +155,9 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	private def removeFromRegister(schedule: P): Boolean = {
 		if schedule.isTriggered then {
 			schedule.isTriggered = false
-			if triggeredSchedulesByDoer.computeIfPresent(schedule.owner, (_, enabledSchedules) => enabledSchedules.subtractOne(schedule)).isEmpty then
-				triggeredSchedulesByDoer.remove(schedule.owner)
+			val triggeredSchedules = triggeredSchedulesByDoer.get(schedule.owner)
+			if triggeredSchedules ne null then triggeredSchedules.remove(schedule)
+			if triggeredSchedules.isEmpty then triggeredSchedulesByDoer.remove(schedule.owner)
 			true
 		} else false
 	}
@@ -185,11 +166,10 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	private def triggerExecutionOf(plan: P): Unit = {
 		plan.isTriggered = true
 		// Memorize which schedule instances were triggered for execution. Necessary to support `cancelAll`.
-		triggeredSchedulesByDoer.compute(
-			plan.owner,
-			(_, enqueuedSchedules) => if enqueuedSchedules eq null then mutable.HashSet(plan) else enqueuedSchedules.addOne(plan)
-		)
-		plan.owner.executeSequentially(() => plan.execute())
+		val triggeredSchedules = triggeredSchedulesByDoer.get(plan.owner)
+		if triggeredSchedules eq null then triggeredSchedulesByDoer.put(plan.owner, mutable.HashSet(plan))
+		else triggeredSchedules.addOne(plan)
+		plan.owner.executeSequentially(plan.runnable)
 	}
 
 	/** Main loop of the scheduling thread. */
@@ -202,13 +182,13 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 				command = this.synchronized(commandsQueue.poll())
 			}
 
-			var earlierSchedule = peek
+			var earlierSchedule = priorityQueue.peek
 			val currentTime = nanosToMillisRoundedDown(System.nanoTime())
 			while (earlierSchedule ne null) && earlierSchedule.scheduledTime <= currentTime do {
 				val plan = earlierSchedule.asInstanceOf[P]
-				finishPoll(plan)
+				priorityQueue.finishPoll(plan)
 				triggerExecutionOf(plan)
-				earlierSchedule = peek
+				earlierSchedule = priorityQueue.peek
 			}
 			this.synchronized {
 				if isRunning && commandsQueue.isEmpty then {
@@ -223,8 +203,8 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 		}
 		// Reached when stopped.
 		this.synchronized(commandsQueue.clear()) // do not keep unnecessary references after stopped to avoid unnecessary memory retention
-		for i <- 0 until heapSize do heap(i).isCanceled = true
-		heap = null // do not keep unnecessary references after stopped to avoid unnecessary memory retention
+		for i <- 0 until priorityQueue.size do priorityQueue(i).isCanceled = true
+		priorityQueue.clear() // do not keep unnecessary references after stopped to avoid unnecessary memory retention
 		triggeredSchedulesByDoer.forEach { (_, enabledSchedules) =>
 			enabledSchedules.foreach { schedule =>
 				schedule.isCanceled = true
@@ -234,117 +214,8 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 		triggeredSchedulesByDoer = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 	}
 
-	private inline def peek: P | Null = heap(0)
-
-	/** Adds the provided element to this min-heap based priority queue. */
-	private def appoint(element: P): Unit = {
-		val holeIndex = heapSize
-		if holeIndex >= heap.length then grow()
-		heapSize = holeIndex + 1
-		if holeIndex == 0 then {
-			heap(0) = element
-			element.heapIndex = 0
-		}
-		else siftUp(holeIndex, element)
-	}
-
-	/**
-	 * Polls the element that was peeked: replaces first element with last and sifts it down.
-	 * Assumes the provided element is the same as the returned by [[peek]].
-	 * @param peekedElement the [[ScheduleImpl]] to remove and return.
-	 */
-	private def finishPoll(peekedElement: P): P = {
-		heapSize -= 1
-		val s = heapSize
-		val replacement = heap(s).asInstanceOf[P]
-		heap(s) = null
-		if s != 0 then siftDown(0, replacement)
-		peekedElement.heapIndex = -1
-		peekedElement
-	}
-
-	/** Removes the provided element from this queue.
-	 * @return true if the element was removed; false if it is not contained by this queue. */
-	private def remove(element: P): Boolean = {
-		val elemIndex = indexOf(element)
-		if elemIndex < 0 then return false
-		element.heapIndex = -1
-		heapSize -= 1
-		val s = heapSize
-		val replacement = heap(s).asInstanceOf[P]
-		heap(s) = null
-		if s != elemIndex then {
-			siftDown(elemIndex, replacement)
-			if heap(elemIndex) eq replacement then siftUp(elemIndex, replacement)
-		}
-		true
-	}
-
-	private inline def indexOf(element: P): Int = element.heapIndex
-
-	/**
-	 * Replaces the element at position `holeIndex` of the heap-based array with the `providedElement` and rearranges it and its parents as necessary to ensure that all parents are less than or equal to their children.
-	 * Note that for the entire heap to satisfy the min-heap property, the `providedElement` must be less than or equal to the children of `holeIndex`.
-	 * Sifts element added at bottom up to its heap-ordered spot.
-	 */
-	private def siftUp(holeIndex: Int, providedElement: P): Unit = {
-		var gapIndex = holeIndex
-		var zero = 0
-		while (gapIndex > zero) {
-			val parentIndex = (gapIndex - 1) >>> 1
-			val parent = heap(parentIndex)
-			if providedElement.scheduledTime >= parent.scheduledTime then zero = Int.MaxValue
-			else {
-				heap(gapIndex) = parent
-				parent.heapIndex = gapIndex
-				gapIndex = parentIndex
-			}
-		}
-		heap(gapIndex) = providedElement
-		providedElement.heapIndex = gapIndex
-	}
-
-	/**
-	 * Replaces the element that is currently at position `holeIndex` of the heap-based array with the `providedElement` and rearranges the elements in the subtree rooted at `holeIndex` such that the subtree conform to the min-heap property.
-	 * Sifts element added at top down to its heap-ordered spot.
-	 */
-	private def siftDown(holeIndex: Int, providedElement: P): Unit = {
-		var gapIndex = holeIndex
-		var half = heapSize >>> 1
-		while gapIndex < half do {
-			var childIndex = (gapIndex << 1) + 1
-			var child = heap(childIndex)
-			val rightIndex = childIndex + 1
-			if rightIndex < heapSize && child.scheduledTime > heap(rightIndex).scheduledTime then {
-				childIndex = rightIndex
-				child = heap(childIndex)
-			}
-			if providedElement.scheduledTime <= child.scheduledTime then half = 0
-			else {
-				heap(gapIndex) = child
-				child.heapIndex = gapIndex
-				gapIndex = childIndex
-			}
-		}
-		heap(gapIndex) = providedElement
-		providedElement.heapIndex = gapIndex
-	}
-
-	/**
-	 * Resizes the heap array.
-	 */
-	private def grow(): Unit = {
-		val oldCapacity = heap.length
-		var newCapacity = oldCapacity + (oldCapacity >> 1) // grow 50%
-
-		if newCapacity < 0 then newCapacity = Integer.MAX_VALUE // overflow
-
-		heap = util.Arrays.copyOf[P | Null](heap, newCapacity)
-	}
-
 	def diagnose(sb: StringBuilder): StringBuilder = {
 		sb.append("\t\tisRunning=").append(isRunning).append('\n')
-		sb.append("\t\theapSize=").append(heapSize).append('\n')
-		sb.append("\t\tnumOfEnabledSchedules=").append(numOfEnabledSchedules).append('\n')
+		sb.append("\t\tpriorityQueueSize=").append(priorityQueue.size).append('\n')
 	}
 }

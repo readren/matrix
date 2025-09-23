@@ -84,7 +84,7 @@ class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 	}
 	test("SchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 
-		testVisibility(new CooperativeWorkersSchedulingDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+		testVisibility(new CooperativeWorkersWithAsyncSchedulerDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER / 20)
 	}
 	test("LeastLoadedFixedWorkerDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
 

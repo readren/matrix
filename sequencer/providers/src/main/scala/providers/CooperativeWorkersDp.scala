@@ -106,13 +106,18 @@ abstract class CooperativeWorkersDp(
 		override def numOfPendingTasks: Int = taskQueueSize.get
 
 		override def executeSequentially(task: Runnable): Unit = {
-			if taskQueueSize.getAndIncrement() > 0 then taskQueue.offer(task)
-			else {
+			if enqueueTask(task) && !wakeUpASleepingWorkerIfAny(thisDoer) then enqueueMyself()
+		}
+
+		/** Enqueues a [[Runnable]] to this [[DoerImpl]] queue.
+		 * @return true if the queue transitioned from empty to non-empty thanx to this call. */
+		inline def enqueueTask(task: Runnable): Boolean = {
+			if taskQueueSize.getAndIncrement() > 0 then {
+				taskQueue.offer(task)
+				false
+			} else {
 				firstTaskInQueue = task
-				if !wakeUpASleepingWorkerIfAny(thisDoer) then {
-					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
-					enqueueMyself()
-				}
+				true
 			}
 		}
 
@@ -305,7 +310,7 @@ abstract class CooperativeWorkersDp(
 					var isAwakened = false
 					thisWorker.synchronized {
 						isSleeping = true
-						thisWorker.wait() // TODO analyse if the interrupted exception should be handled
+						lull(thisWorker)
 						// if a spurious wakeup occur then act as if the worker was awakened with `wakeUpIfSleeping(null)`, unless it was simultaneously stopped (very unlikely to occur if it is possible at all), in which case act as if the worker was stopped while sleeping.
 						if keepRunning == isSleeping then isSleeping = !keepRunning
 						isAwakened = !isSleeping
@@ -364,6 +369,11 @@ abstract class CooperativeWorkersDp(
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper ne null}%5b")
 		}
+	}
+
+	/** Called within a synchronization block on the specified [[Worker]]. */
+	protected def lull(worker: Worker): Unit = {
+		worker.wait() // TODO analyse if the interrupted exception should be handled
 	}
 
 	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()

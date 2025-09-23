@@ -8,4 +8,22 @@ package object sequencer {
 
 	/** A duration in milliseconds. */
 	type MilliDuration = Long
+
+
+	inline def nanosToMillisRoundedUp(nanos: Long): Long = (nanos + 999_999) / 1_000_000
+
+	inline def nanosToMillisRoundedDown(nanos: Long): Long = nanos / 1_000_000
+
+
+	trait MilliClock {
+		def milliTimeRoundedDown: MilliTime
+
+		def milliTimeRoundedUp: MilliTime
+	}
+
+	class NanoTimeBasedMilliClock extends MilliClock {
+		override def milliTimeRoundedDown: MilliTime = nanosToMillisRoundedDown(System.nanoTime)
+
+		override def milliTimeRoundedUp: MilliTime = nanosToMillisRoundedUp(System.nanoTime)
+	}
 }

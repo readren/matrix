@@ -5,7 +5,7 @@ import behaviors.Inquisitive
 import core.*
 import core.Matrix.DoerProviderDescriptor
 
-import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersSchedulingDp, CooperativeWorkersTieredDp, RoundRobinDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithAsyncSchedulerDp, CooperativeWorkersTieredDp, RoundRobinDp}
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
@@ -19,7 +19,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private type TestedDoerProvider = CooperativeWorkersSchedulingDp
+	private type TestedDoerProvider = CooperativeWorkersWithAsyncSchedulerDp
 
 	private sealed trait Report
 
@@ -63,8 +63,8 @@ object Prueba {
 		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
 	}
 
-	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersSchedulingDp.SchedulingDoerFacade]("scheduling-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersSchedulingDp.Impl(false)
+	private object testedDpd extends DoerProviderDescriptor[CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade]("scheduling-fence-off") {
+		override def build(owner: Matrix.DoerProvidersManager): TestedDoerProvider = new CooperativeWorkersWithAsyncSchedulerDp.Impl(false)
 	}
 
 	private def roundRobinAide = new SimpleAide(roundRobinDpd)

@@ -3,43 +3,16 @@ package providers
 
 import DoerProvider.Tag
 import providers.CooperativeWorkersDp.*
-import providers.CooperativeWorkersSchedulingDp.*
+import providers.CooperativeWorkersWithAsyncSchedulerDp.*
 
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
-import readren.sequencer.SchedulingExtension
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.language.adhocExtensions
 
-object CooperativeWorkersSchedulingDp {
-
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersSchedulingDp]].
-	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. See [[DoerFacade]] to see why. */
-	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension, LoopingExtension {
-		override type Schedule <: ScheduleFacade
-	}
-
-	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-	trait ScheduleFacade {
-		def initialDelay: MilliDuration
-
-		def interval: MilliDuration
-
-		def isFixedRate: Boolean
-
-		/** Exposes the time the routine is expected to be run.
-		 * Note that this value is updated by the scheduling thread and its last update may not be visible from other threads. Use for diagnostics only. */
-		def scheduledTime: MilliTime
-
-		/** A flag that tells if this instance was ever passed to the [[SchedulingDoerFacade.scheduleSequentially]] method.
-		 * This flag is never cleared. */
-		def wasActivated: Boolean
-
-		/** An instance becomes canceled when either, it is passed to [[SchedulingDoerFacade.cancel]] or [[SchedulingDoerFacade.cancelAll]] is called after it [[wasActivated]]. */
-		def isCanceled: Boolean
-	}
+object CooperativeWorkersWithAsyncSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
 
 	class Impl(
 		applyMemoryFence: Boolean = true,
@@ -47,7 +20,7 @@ object CooperativeWorkersSchedulingDp {
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-	) extends CooperativeWorkersSchedulingDp(applyMemoryFence, threadPoolSize, threadFactory) {
+	) extends CooperativeWorkersWithAsyncSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
@@ -61,7 +34,7 @@ object CooperativeWorkersSchedulingDp {
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-abstract class CooperativeWorkersSchedulingDp(
+abstract class CooperativeWorkersWithAsyncSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
@@ -90,28 +63,22 @@ abstract class CooperativeWorkersSchedulingDp(
 			new ScheduleImpl(initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
+			val activationTime = nanosToMillisRoundedUp(System.nanoTime)
 			if schedule.activated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 			else if !schedule.isCanceled then {
-				val activationTime = ThreadDrivenScheduler.nanosToMillisRoundedUp(System.nanoTime)
-				schedule.routine =
-					if schedule.interval <= 0 then routine
-					else {
-						if schedule.isFixedRate then { (s: Schedule) =>
-							if !s.isCanceled then {
-								routine(s)
-								if !s.isCanceled then scheduler.scheduleRelativeToPrevious(s, schedule.interval)
-							}
-
-						} else { (s: Schedule) =>
-							if !s.isCanceled then {
-								routine(s)
-								if !s.isCanceled then {
-									val completionTime = ThreadDrivenScheduler.nanosToMillisRoundedUp(System.nanoTime())
-									scheduler.schedule(s, completionTime + s.interval)
-								}
+				schedule.runnable = new Runnable {
+					override def run(): Unit = {
+						if !schedule.isCanceled then {
+							routine(schedule)
+							if schedule.interval > 0 && !schedule.isCanceled then {
+								val completionTime = nanosToMillisRoundedUp(System.nanoTime())
+								if schedule.isFixedRate then scheduler.scheduleRelativeToPrevious(schedule, schedule.interval)
+								else scheduler.schedule(schedule, completionTime + schedule.interval)
 							}
 						}
+
 					}
+				}
 				scheduler.schedule(schedule, activationTime + schedule.initialDelay)
 			}
 		}
@@ -149,7 +116,7 @@ abstract class CooperativeWorkersSchedulingDp(
 
 
 	/**
-	 * Makes this [[CooperativeWorkersSchedulingDp]] to shut down when all the workers are sleeping.
+	 * Makes this [[CooperativeWorkersWithAsyncSchedulerDp]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
@@ -162,7 +129,7 @@ abstract class CooperativeWorkersSchedulingDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[CooperativeWorkersSchedulingDp]).append('\n')
+		sb.append(getTypeName[CooperativeWorkersWithAsyncSchedulerDp]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)
