@@ -71,9 +71,8 @@ abstract class CooperativeWorkersWithAsyncSchedulerDp(
 						if !schedule.isCanceled then {
 							routine(schedule)
 							if schedule.interval > 0 && !schedule.isCanceled then {
-								val completionTime = nanosToMillisRoundedUp(System.nanoTime())
 								if schedule.isFixedRate then scheduler.scheduleRelativeToPrevious(schedule, schedule.interval)
-								else scheduler.schedule(schedule, completionTime + schedule.interval)
+								else scheduler.schedule(schedule, nanosToMillisRoundedUp(System.nanoTime()) + schedule.interval)
 							}
 						}
 

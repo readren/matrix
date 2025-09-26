@@ -3,8 +3,8 @@ package providers.descriptor
 
 import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
 
-import readren.sequencer.providers.LeastLoadedFixedWorkerDp
 import readren.common.CompileTime.getTypeName
+import readren.sequencer.providers.LeastLoadedFixedWorkerDp
 import readren.sequencer.{Doer, DoerProvider}
 
 

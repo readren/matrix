@@ -18,6 +18,8 @@ class CooperativeWorkersWithSyncSchedulerDpTest extends SchedulingDoerProviderTe
 
 	/** The implementation should release the specified [[DoerProvider]].
 	 * The implementation may assume that the provided instance was created calling [[buildDoerProvider]]. */
-	override protected def releaseDoerProvider(doerProvider: DP): Unit =
+	override protected def releaseDoerProvider(doerProvider: DP): Unit = {
+		scribe.debug(s"Provider diagnostics:", doerProvider.diagnose(new StringBuilder()).toString())
 		doerProvider.shutdown()
+	}
 }

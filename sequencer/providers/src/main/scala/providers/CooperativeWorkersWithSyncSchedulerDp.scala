@@ -18,7 +18,7 @@ object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSch
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-		clock: MilliClock = new NanoTimeBasedMilliClock
+		clock: MonotonicClock = new NanoTimeBasedMilliClock
 	) extends CooperativeWorkersWithSyncSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
@@ -33,7 +33,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-	clock: MilliClock = new NanoTimeBasedMilliClock,
+	clock: MonotonicClock = new NanoTimeBasedMilliClock,
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	private type Timer = SchedulingDoerImpl#ScheduleImpl
@@ -45,7 +45,11 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	 * The only purpose of this variable is to improve efficiency by minimizing calls to [[priorityQueue.peek]].
 	 * Updates should occur within synchronized sections to avoid race conditions.
 	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed. */
-	@volatile private var earliestScheduledTime: MilliTime = Long.MaxValue
+	@volatile private var earliestScheduledTime: MilliTime = clock.MaxValue
+
+
+	/** Exposes the number of times that [[lull]] was called that didn't put the [[Worker]] to sleep. */
+	var skippedLullsCounter: Int = 0
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
 		startAllWorkersIfNotAlready()
@@ -71,7 +75,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 			new ScheduleImpl(initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
-			val activationTime = clock.milliTimeRoundedUp
+			val activationTime = clock.currentTimeTimeRoundedUp
 			val activationSerial = lastActivationSerial.incrementAndGet()
 			if !schedule.activationSerial.compareAndSet(Long.MaxValue, activationSerial) then
 				throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
@@ -81,7 +85,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 						if !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
 							routine(schedule)
 							if schedule.interval > 0 && !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
-								val base = if schedule.isFixedRate then schedule.scheduledTime else clock.milliTimeRoundedUp
+								val base = if schedule.isFixedRate then schedule.scheduledTime else clock.currentTimeTimeRoundedUp
 								schedule.program(base + schedule.interval)
 							}
 						}
@@ -94,7 +98,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		/** @inheritdoc
 		 * This implementation removes the routine executions corresponding to the provided [[Schedule]] from the schedule.
 		 * If called near its scheduled-time from outside this [[Doer]]'s current thread, the routine may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this [[Doer]]'s current thread, it is ensured that no more execution of the routine can occur. */
+		 * If called within the [[Thread]] assigned to this [[Doer]], it is ensured that no more execution of the routine can occur. */
 		override def cancel(schedule: Schedule): Unit = {
 			schedule.isCanceled = true
 			thisProvider synchronized {
@@ -105,7 +109,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		/** @inheritdoc
 		 * This implementation removes all the scheduled executions corresponding to this [[Doer]] from its schedule.
 		 * If called near a scheduled-time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
-		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
+		 * If called within the [[Thread]] assigned to this [[Doer]], it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
 		override def cancelAll(): Unit = {
 			activationSerialAtLastCancelAll = lastActivationSerial.get
 			thisProvider synchronized {
@@ -166,13 +170,14 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	}
 
 	override def lull(worker: Worker): Unit = {
-		val durationUntilEarliestScheduledTime = earliestScheduledTime - clock.milliTimeRoundedDown
+		val durationUntilEarliestScheduledTime = earliestScheduledTime - clock.currentTimeRoundedDown
 		if durationUntilEarliestScheduledTime > 0 then worker.wait(durationUntilEarliestScheduledTime)
+		else skippedLullsCounter += 1
 	}
 
 	override def pollNextDoer(): DoerImpl | Null = {
-		val currentMilliTime = clock.milliTimeRoundedDown
-		if currentMilliTime < earliestScheduledTime then queuedDoers.poll()
+		val currentMilliTime = clock.currentTimeRoundedDown
+		if earliestScheduledTime - currentMilliTime > 0 then queuedDoers.poll()
 		else {
 			val scheduledTaskDoer = pollDoerWithEarliestExpiredTimer(currentMilliTime)
 			if scheduledTaskDoer ne null then scheduledTaskDoer
@@ -184,20 +189,26 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		while true do {
 			val earliestToExpire: Timer = priorityQueue.peek
 			if earliestToExpire eq null then {
-				earliestScheduledTime = Long.MaxValue
+				earliestScheduledTime = clock.MaxValue
 				return null
-			} else if earliestToExpire.scheduledTime > currentTime then {
+			} else if earliestToExpire.scheduledTime - currentTime > 0 then {
 				earliestScheduledTime = earliestToExpire.scheduledTime
 				return null
 			} else {
 				priorityQueue.finishPoll(earliestToExpire)
 				if earliestToExpire.owner.enqueueTask(earliestToExpire.runnable) then {
 					val next = priorityQueue.peek
-					earliestScheduledTime = if next eq null then Long.MaxValue else next.scheduledTime
+					earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
 					return earliestToExpire.owner
 				}
 			}
 		}
 		null
+	}
+
+	override def diagnose(sb: StringBuilder): StringBuilder = {
+		sb.append(getTypeName[CooperativeWorkersWithSyncSchedulerDp]).append('\n')
+		sb.append("\tskippedLullsCounter = ").append(skippedLullsCounter).append('\n')
+		super.diagnose(sb)
 	}
 }

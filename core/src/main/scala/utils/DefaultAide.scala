@@ -1,6 +1,6 @@
 package readren.matrix
 package utils
 
-import providers.descriptor.DefaultSchedulingDpd
+import providers.descriptor.DefaultAsyncSchedulingDpd
 
-object DefaultAide extends SimpleAide(DefaultSchedulingDpd)
+object DefaultAide extends SimpleAide(DefaultAsyncSchedulingDpd)

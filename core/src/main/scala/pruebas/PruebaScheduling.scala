@@ -2,7 +2,7 @@ package readren.matrix
 package pruebas
 
 import core.{Continue, Matrix, Stop}
-import providers.descriptor.DefaultSchedulingDpd
+import providers.descriptor.{DefaultAsyncSchedulingDpd, DefaultSyncSchedulingDpd}
 import rf.RegularRf
 import utils.DefaultAide
 
@@ -19,7 +19,7 @@ object PruebaScheduling {
 		val matrix = new Matrix("scheduled", DefaultAide)
 		println(s"Matrix created")
 
-		val schedulingDoer = matrix.provideDoer("scheduling-doer", DefaultSchedulingDpd)
+		val schedulingDoer = matrix.provideDoer("scheduling-doer", DefaultSyncSchedulingDpd)
 
 		if false then {
 			@volatile var inside = false
@@ -62,6 +62,8 @@ object PruebaScheduling {
 				}
 			}.trigger() { parent =>
 				parent.stopDuty.trigger() { _ =>
+					println(s"Diagnostics:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
+
 					matrix.doerProvidersManager.shutdown()
 					println("shutdown executed")
 

@@ -15,15 +15,23 @@ package object sequencer {
 	inline def nanosToMillisRoundedDown(nanos: Long): Long = nanos / 1_000_000
 
 
-	trait MilliClock {
-		def milliTimeRoundedDown: MilliTime
+	trait MonotonicClock {
+		val InitialValue: MilliTime
 
-		def milliTimeRoundedUp: MilliTime
+		val MaxValue: MilliTime
+
+		def currentTimeRoundedDown: MilliTime
+
+		def currentTimeTimeRoundedUp: MilliTime
 	}
 
-	class NanoTimeBasedMilliClock extends MilliClock {
-		override def milliTimeRoundedDown: MilliTime = nanosToMillisRoundedDown(System.nanoTime)
+	class NanoTimeBasedMilliClock extends MonotonicClock {
+		override val InitialValue: MilliTime = currentTimeRoundedDown
 
-		override def milliTimeRoundedUp: MilliTime = nanosToMillisRoundedUp(System.nanoTime)
+		override val MaxValue: MilliTime = InitialValue + Long.MaxValue
+
+		override def currentTimeRoundedDown: MilliTime = nanosToMillisRoundedDown(System.nanoTime)
+
+		override def currentTimeTimeRoundedUp: MilliTime = nanosToMillisRoundedUp(System.nanoTime)
 	}
 }
