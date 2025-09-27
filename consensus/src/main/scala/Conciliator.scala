@@ -1,5 +1,4 @@
-package readren.matrix
-package consensus
+package readren.consensus
 
 import readren.common.Maybe
 import readren.sequencer.{Doer, MilliDuration, SchedulingExtension}

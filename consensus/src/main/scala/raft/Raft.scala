@@ -1,7 +1,5 @@
-package readren.matrix
-package consensus.raft
-
-import consensus.*
+package readren.consensus
+package raft
 
 import readren.sequencer.MilliDuration
 import scribe.*

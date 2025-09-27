@@ -24,18 +24,35 @@ ThisBuild / scalacOptions ++= Seq(
 	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 )
 
-lazy val sequencerCore = (project in file("sequencer/core")).dependsOn(common)
+lazy val common = (project in file("common"))
 	.settings(
-		name := "sequencer-core",
+		name := "common",
+		idePackagePrefix := Some("readren.common"),
+		scalacOptions ++= Seq("-source:future", "-language:strictEquality")
+	)
+
+lazy val sequencerCore = (project in file("sequencer/core"))
+	.dependsOn(common)
+	.settings(
+		name := "sequencer_core",
 		idePackagePrefix := Some("readren.sequencer"),
 		scalacOptions ++= Seq("-language:strictEquality")
 	)
 
+lazy val sequencerProviders = (project in file("sequencer/providers"))
+	.dependsOn(common, sequencerCore % "compile->compile;test->test")
+	.settings(
+		name := "sequencer_providers",
+		idePackagePrefix := Some("readren.sequencer"),
+		scalacOptions ++= Seq("-source:future")
+	)
+
 val AkkaVersion = "2.10.1"
 
-lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration")).dependsOn(sequencerCore, common)
+lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration"))
+	.dependsOn(sequencerCore, common)
 	.settings(
-		name := "sequencer-akka_integration",
+		name := "sequencer_akka-integration",
 		idePackagePrefix := Some("readren.sequencer.akka"),
 		scalacOptions ++= Seq("-language:strictEquality"),
 		resolvers += "Akka library repository".at("https://repo.akka.io/maven"),
@@ -47,37 +64,26 @@ lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration
 		)
 	)
 
-lazy val common = (project in file("common"))
+lazy val matrixCore = (project in file("matrix/core"))
+	.dependsOn(common, sequencerCore, sequencerProviders)
 	.settings(
-		name := "common",
-		idePackagePrefix := Some("readren.common"),
-		scalacOptions ++= Seq("-source:future", "-language:strictEquality")
-	)
-
-lazy val sequencerProviders = (project in file("sequencer/providers")).dependsOn(common, sequencerCore % "compile->compile;test->test")
-	.settings(
-		name := "sequencer-providers",
-		idePackagePrefix := Some("readren.sequencer"),
-		scalacOptions ++= Seq("-source:future")
-	)
-
-lazy val cluster = (project in file("cluster")).dependsOn(common % "compile->compile;test->test", sequencerCore, sequencerProviders)
-	.settings(
-		name := "matrix-cluster",
+		name := "matrix_core",
 		idePackagePrefix := Some("readren.matrix"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val core = (project in file("core")).dependsOn(common, sequencerCore, sequencerProviders)
+lazy val checkedReactant = (project in file("matrix/checked-reactant"))
+	.dependsOn(matrixCore, sequencerCore)
 	.settings(
-		name := "matrix-core",
+		name := "matrix_checked-reactant",
 		idePackagePrefix := Some("readren.matrix"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val checkedReactant = (project in file("checked")).dependsOn(core, sequencerCore)
+lazy val cluster = (project in file("matrix/cluster"))
+	.dependsOn(common % "compile->compile;test->test", sequencerCore, sequencerProviders)
 	.settings(
-		name := "matrix-checked_reactant",
+		name := "matrix_cluster",
 		idePackagePrefix := Some("readren.matrix"),
 		scalacOptions ++= Seq("-source:future")
 	)
@@ -85,17 +91,16 @@ lazy val checkedReactant = (project in file("checked")).dependsOn(core, sequence
 lazy val consensus = (project in file("consensus"))
 	.dependsOn(sequencerCore, sequencerProviders % Test)
 	.settings(
-		name := "matrix-consensus",
-		idePackagePrefix := Some("readren.matrix"),
+		name := "consensus",
+		idePackagePrefix := Some("readren.consensus"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
 // Root project - aggregates all subprojects
 lazy val root = (project in file("."))
-	.aggregate(sequencerCore, sequencerAkkaIntegration, sequencerProviders, common, core, checkedReactant, cluster, consensus)
+	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, matrixCore, checkedReactant, cluster, consensus)
 	.settings(
 		name := "matrix",
-		idePackagePrefix := Some("readren.matrix"),
 		scalacOptions ++= Seq("-source:future")
 	)	
 

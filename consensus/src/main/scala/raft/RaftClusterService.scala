@@ -1,5 +1,5 @@
-package readren.matrix
-package consensus.raft
+package readren.consensus
+package raft
 
 
 import readren.sequencer.{Doer, SchedulingExtension}

@@ -1,7 +1,6 @@
-package readren.matrix
-package consensus
+package readren.consensus
 
-import consensus.Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
+import Conciliator.{BehaviorOrdinal, LEADER, RecordIndex, Term}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
