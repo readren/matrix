@@ -1,5 +1,4 @@
-package readren.matrix
-package collections
+package readren.common.collections
 
 import scala.annotation.nowarn
 import scala.collection.AbstractIterator

@@ -1,7 +1,6 @@
-package readren.matrix
-package collections
+package readren.common.collections
 
-import collections.ConcurrentList.Node
+import ConcurrentList.Node
 
 @deprecated("not used")
 object ConcurrentList {

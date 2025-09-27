@@ -1,5 +1,5 @@
 package readren.matrix
-package pruebas
+package examples
 
 import behaviors.Inquisitive.*
 import core.*

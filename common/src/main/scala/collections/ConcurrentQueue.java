@@ -1,4 +1,4 @@
-package readren.matrix.collections;
+package readren.common.collections;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;

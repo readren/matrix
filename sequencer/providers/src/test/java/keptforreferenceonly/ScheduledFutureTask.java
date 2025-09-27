@@ -1,9 +1,12 @@
-package readren.matrix.pruebas;
+package readren.sequencer.keptforreferenceonly;
 
 import java.util.concurrent.*;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+/**
+ * See {@link HeapQueue}
+ */
 class ScheduledFutureTask<V>
         extends FutureTask<V> implements RunnableScheduledFuture<V> {
 

@@ -1,5 +1,5 @@
 package readren.matrix
-package pruebas
+package examples
 
 import core.*
 import rf.RegularRf

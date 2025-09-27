@@ -1,11 +1,11 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="runProbes with epsilon" type="Application" factoryName="Application">
-    <option name="MAIN_CLASS_NAME" value="readren.matrix.pruebas.runProbes" />
-    <module name="matrix.matrix_core.main" />
+    <option name="MAIN_CLASS_NAME" value="readren.matrix.interactive.runProbes" />
+    <module name="matrix.matrix_core.test" />
     <option name="VM_PARAMETERS" value="-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xlog:gc* -Xms8G -Xmx8G" />
     <extension name="coverage">
       <pattern>
-        <option name="PATTERN" value="readren.matrix.pruebas.*" />
+        <option name="PATTERN" value="readren.matrix.interactive.*" />
         <option name="ENABLED" value="true" />
       </pattern>
     </extension>

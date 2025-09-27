@@ -1,4 +1,4 @@
-package readren.matrix.pruebas;
+package readren.sequencer.keptforreferenceonly;
 
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
@@ -9,6 +9,13 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
+/**
+ * A standalone version of the nested class {@link java.util.concurrent.ScheduledThreadPoolExecutor.DelayedWorkQueue} with improved documentation.
+ * The original intention of this class was to be used by the scheduling manager of scheduling doers/sequencers. But I ended up implementing a more specific version in scala.
+ * See {@link readren.sequencer.providers.MinHeapPriorityQueue} package.
+ * This class is kept for reference only, just in case more of its methods should be translated to the mentioned scala versión.
+ *
+ */
 class HeapQueue extends AbstractQueue<Runnable> implements BlockingQueue<Runnable> {
 
     /*

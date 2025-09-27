@@ -1,5 +1,5 @@
 package readren.matrix
-package pruebas
+package interactive
 
 import core.{Continue, Matrix, Stop}
 import providers.descriptor.{DefaultAsyncSchedulingDpd, DefaultSyncSchedulingDpd}

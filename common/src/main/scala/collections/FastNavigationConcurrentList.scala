@@ -1,7 +1,6 @@
-package readren.matrix
-package collections
+package readren.common.collections
 
-import collections.FastNavigationConcurrentList.Node
+import FastNavigationConcurrentList.Node
 
 @deprecated("not used")
 object FastNavigationConcurrentList {

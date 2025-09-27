@@ -1,4 +1,4 @@
-package readren.matrix.collections;
+package readren.common.collections;
 
 public abstract class Node<E> {
     volatile Node<E> next;
