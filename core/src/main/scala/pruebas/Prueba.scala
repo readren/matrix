@@ -18,6 +18,8 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
+	private inline val A_KILO = 1024
+
 	private type TestedDoerProvider = CooperativeWorkersWithAsyncSchedulerDp
 
 	private sealed trait Report
@@ -35,12 +37,12 @@ object Prueba {
 
 	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
-	private val NUMBER_OF_WARM_UP_REPETITIONS = 4
-	private val NUMBER_OF_MEASURE_REPETITIONS = 96
+	private val NUMBER_OF_WARM_UP_REPETITIONS = 1
+	private val NUMBER_OF_MEASURE_REPETITIONS = 10
 
-	private inline val NUMBER_OF_PRODUCERS = 100
-	private inline val NUMBER_OF_CONSUMERS = 100
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 100
+	private inline val NUMBER_OF_PRODUCERS = 50
+	private inline val NUMBER_OF_CONSUMERS = 50
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 50
 	private inline val WATCH_DOG_DELAY_MILLIS = 4000
 
 	private inline val haveToCountAndCheck = true
@@ -85,21 +87,27 @@ object Prueba {
 		var accumulatedDuration: Long = 0
 		var minimumDuration: Long = Long.MaxValue
 		var maximumDuration: Long = 0
+		var accumulatedConsumption: Long = 0
+		var minimumConsumption: Long = Long.MaxValue
+		var maximumConsumption: Long = Long.MinValue
 
 		def measure(loopId: Int)(using ec: ExecutionContext): Future[Unit] = {
 			val aide = SimpleAide(descriptor)
 			run(aide, factory, loopId)
-				.map { duration =>
+				.map { case (duration, consumption) =>
 					if loopId > NUMBER_OF_WARM_UP_REPETITIONS then {
 						accumulatedDuration += duration
 						if duration < minimumDuration then minimumDuration = duration
 						if duration > maximumDuration then maximumDuration = duration
+						accumulatedConsumption += consumption
+						if consumption < minimumConsumption then minimumConsumption = consumption
+						if consumption > maximumConsumption then maximumConsumption = consumption
 					}
 				}
 		}
 
 		def showResult(): Unit = {
-			println(f"max=${maximumDuration / 1_000_000}%5d, min=${minimumDuration / 1_000_000}%5d, average=${accumulatedDuration / (NUMBER_OF_MEASURE_REPETITIONS * 1_000_000)}%5d, $name")
+			println(f"Duration: max=${maximumDuration / 1_000_000}%5d, min=${minimumDuration / 1_000_000}%5d, average=${accumulatedDuration / (NUMBER_OF_MEASURE_REPETITIONS * 1_000_000)}%5d, Consumption: max=${maximumConsumption / A_KILO}%5d, min=${minimumConsumption / A_KILO}%5d, average=${accumulatedConsumption / (NUMBER_OF_MEASURE_REPETITIONS * A_KILO)}%5d, $name")
 		}
 	}
 
@@ -134,7 +142,7 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DefaultDoer <: Doer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[Long] = {
+	private def run[DefaultDoer <: Doer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[(Long, Long)] = {
 		println(s"\nTest started:  loop=$loopId, descriptor=${testingAide.defaultDoerProviderDescriptor.id}, factory=${reactantFactory.getClass.getSimpleName}")
 		val matrix = new Matrix("myMatrix", testingAide)
 		println(s"Matrix created: doerProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getName}")
@@ -169,6 +177,8 @@ object Prueba {
 		}
 
 		System.gc()
+		val memoryBefore = ObjectCounterAgent.getApproximateObjectCount
+
 		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
 		val outEndpoint = matrix.buildEndpoint[Report] {
@@ -210,7 +220,7 @@ object Prueba {
 			}
 		}
 
-		val result = Promise[Long]
+		val result = Promise[(Long, Long)]
 
 		// println(matrix.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
@@ -220,7 +230,7 @@ object Prueba {
 
 			parent.doer.Duty_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
-					parent.spawns[Consumable](reactantFactory, matrix.provideDefaultDoer("consumer")) { consumer =>
+					parent.spawns[Consumable](reactantFactory, matrix.provideDefaultDoer(s"consumer#$consumerIndex")) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
@@ -249,7 +259,7 @@ object Prueba {
 					 * - The Consumables are sent one after the other without waiting any response.
 					 * */
 					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization]] = {
-						parent.spawns[Initialization](reactantFactory, matrix.provideDefaultDoer("regular-producer")) { producer =>
+						parent.spawns[Initialization](reactantFactory, matrix.provideDefaultDoer(s"regular-producer#$producerIndex")) { producer =>
 							producer.doer.checkWithin()
 
 							def loop(restartCount: Int): Behavior[Initialization] = {
@@ -277,7 +287,7 @@ object Prueba {
 					 * - These actions are performed concurrently across all consumers.
 					 */
 					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge]] = {
-						parent.spawns[Started.type | Acknowledge](reactantFactory, matrix.provideDefaultDoer("inquisitive-producer")) { producer =>
+						parent.spawns[Started.type | Acknowledge](reactantFactory, matrix.provideDefaultDoer(s"inquisitive-producer#$producerIndex")) { producer =>
 							producer.doer.checkWithin()
 							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
 
@@ -364,12 +374,13 @@ object Prueba {
 			}
 
 			parent.stopDuty.trigger() { _ =>
+				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
-				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++")
+				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_KILO}M")
 				// println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
 
-				result.success(nanoAtEnd - nanoAtStart)
+				result.success((nanoAtEnd - nanoAtStart, consumption))
 			}
 		}
 		result.future.andThen { tryDuration =>

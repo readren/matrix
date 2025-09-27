@@ -3,6 +3,7 @@ package readren.sequencer
 import GeneratorsForDoerTests.{*, given}
 
 import munit.ScalaCheckEffectSuite
+import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
@@ -946,7 +947,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val testedCommitment = doer.Commitment[Int]
 			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat)())
 			promise.future
-		}
+		}.check(Parameters.default.withMinSuccessfulTests(200))
+
 	}
 
 	test("Commitment: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
@@ -967,7 +969,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val testedCommitment = doer.Commitment[Int]
 			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(task)())
 			promise.future
-		}
+		}.check(Parameters.default.withMinSuccessfulTests(200))
 	}
 
 	private def checksCommitment[DD <: Doer & SchedulingExtension & LoopingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
@@ -998,7 +1000,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				Task_ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
 					if testedCommitment.isAlreadySubscribed(completionObserver) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 					testedCommitment.subscribe(completionObserver)
-					if !testedCommitment.isAlreadySubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
+					if !testedCommitment.isAlreadySubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done and the commitment is still pending.")
 					if !testedCommitment.isPending && completeWasNotCalled then break("`isPending` returned false despite no completion was done")
 					if testedCommitment.isCompleted && completeWasNotCalled then break("`isCompleted` returned true despite no completion was done")
 					testedCommitment.transformWith { testedCommitmentOutcome =>
