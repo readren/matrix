@@ -40,9 +40,17 @@ lazy val sequencerCore = (project in file("sequencer/core"))
 	)
 
 lazy val sequencerProviders = (project in file("sequencer/providers"))
-	.dependsOn(common, sequencerCore % "compile->compile;test->test")
+	.dependsOn(sequencerCore % "compile->compile;test->test")
 	.settings(
 		name := "sequencer_providers",
+		idePackagePrefix := Some("readren.sequencer"),
+		scalacOptions ++= Seq("-source:future")
+	)
+
+lazy val sequencerProvidersManager = (project in file("sequencer/providers-manager"))
+	.dependsOn(sequencerProviders)
+	.settings(
+		name := "sequencer_providers-manager",
 		idePackagePrefix := Some("readren.sequencer"),
 		scalacOptions ++= Seq("-source:future")
 	)
@@ -65,7 +73,7 @@ lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration
 	)
 
 lazy val matrixCore = (project in file("matrix/core"))
-	.dependsOn(common, sequencerCore, sequencerProviders)
+	.dependsOn(sequencerCore, sequencerProviders, sequencerProvidersManager)
 	.settings(
 		name := "matrix_core",
 		idePackagePrefix := Some("readren.matrix"),
@@ -73,7 +81,7 @@ lazy val matrixCore = (project in file("matrix/core"))
 	)
 
 lazy val checkedReactant = (project in file("matrix/checked-reactant"))
-	.dependsOn(matrixCore, sequencerCore)
+	.dependsOn(matrixCore)
 	.settings(
 		name := "matrix_checked-reactant",
 		idePackagePrefix := Some("readren.matrix"),

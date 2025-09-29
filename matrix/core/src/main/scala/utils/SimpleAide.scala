@@ -3,12 +3,12 @@ package utils
 
 import core.{Logger, Matrix}
 import logger.SimpleLogger
-import providers.ShutdownAbleDpm
 
 import readren.sequencer.Doer
+import readren.sequencer.manager.{DoerProviderDescriptor, ShutdownAbleDpm}
 
 open class SimpleAide[D <: Doer](
-	override val defaultDoerProviderDescriptor: Matrix.DoerProviderDescriptor[D],
+	override val defaultDoerProviderDescriptor: DoerProviderDescriptor[D],
 ) extends Matrix.Aide[SimpleAide[D]] {
 	override type DPsManager = ShutdownAbleDpm
 	override type DefaultDoer = D

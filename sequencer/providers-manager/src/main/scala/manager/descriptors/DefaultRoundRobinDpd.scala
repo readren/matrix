@@ -1,11 +1,9 @@
-package readren.matrix
-package providers.descriptor
-
-import core.Matrix.{DoerProviderDescriptor, DoerProvidersManager}
+package readren.sequencer
+package manager
+package descriptors
 
 import readren.common.CompileTime.getTypeName
 import readren.sequencer.providers.RoundRobinDp
-import readren.sequencer.{Doer, DoerProvider}
 
 
 object DefaultRoundRobinDpd extends DoerProviderDescriptor[Doer](getTypeName[DefaultRoundRobinDpd.type]) {

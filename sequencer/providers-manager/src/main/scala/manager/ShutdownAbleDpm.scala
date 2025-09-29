@@ -1,11 +1,9 @@
-package readren.matrix
-package providers
-
-import core.Matrix.*
+package readren.sequencer
+package manager
 
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.{Doer, DoerProvider}
-import readren.sequencer.providers.ShutdownAble
+import manager.{DoerProviderDescriptor, DoerProvidersManager}
+import providers.ShutdownAble
 
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{ConcurrentHashMap, TimeUnit}

@@ -5,7 +5,6 @@ import DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.common.Maybe
-import readren.sequencer.Doer
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger

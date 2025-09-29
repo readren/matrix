@@ -3,11 +3,11 @@ package interactive
 
 import behaviors.Inquisitive
 import core.*
-import core.Matrix.DoerProviderDescriptor
 import rf.{RegularRf, SequentialMsgBufferRf}
 import utils.SimpleAide
 
 import readren.sequencer.Doer
+import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager}
 import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithAsyncSchedulerDp, CooperativeWorkersWithSyncSchedulerDp, RoundRobinDp}
 
 import java.util.concurrent.TimeUnit
@@ -18,7 +18,7 @@ import scala.util.{Failure, Success, Try}
 
 object Prueba {
 
-	private inline val A_KILO = 1024
+	private inline val A_MEGA = 1024 * 1024
 
 	private type TestedDoerProvider = CooperativeWorkersWithAsyncSchedulerDp
 
@@ -37,12 +37,12 @@ object Prueba {
 
 	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
-	private val NUMBER_OF_WARM_UP_REPETITIONS = 1
+	private val NUMBER_OF_WARM_UP_REPETITIONS = 3
 	private val NUMBER_OF_MEASURE_REPETITIONS = 10
 
-	private inline val NUMBER_OF_PRODUCERS = 50
-	private inline val NUMBER_OF_CONSUMERS = 50
-	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 50
+	private inline val NUMBER_OF_PRODUCERS = 100
+	private inline val NUMBER_OF_CONSUMERS = 100
+	private inline val NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER = 10
 	private inline val WATCH_DOG_DELAY_MILLIS = 4000
 
 	private inline val haveToCountAndCheck = true
@@ -56,19 +56,19 @@ object Prueba {
 	private class Pixel(var value: Int, var updateSerial: Int)
 
 	private object roundRobinDpd extends DoerProviderDescriptor[Doer]("round-robin") {
-		override def build(owner: Matrix.DoerProvidersManager): RoundRobinDp = new RoundRobinDp.Impl()
+		override def build(owner: DoerProvidersManager): RoundRobinDp = new RoundRobinDp.Impl()
 	}
 
 	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
+		override def build(owner: DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
 	}
 
 	private object cooperativeWorkersWithAsyncSchedulerDpd extends DoerProviderDescriptor[CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade]("cooperative-with-async-scheduler-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersWithAsyncSchedulerDp = new CooperativeWorkersWithAsyncSchedulerDp.Impl(false)
+		override def build(owner: DoerProvidersManager): CooperativeWorkersWithAsyncSchedulerDp = new CooperativeWorkersWithAsyncSchedulerDp.Impl(false)
 	}
 
 	private object cooperativeWorkersWithSyncSchedulerDpd extends DoerProviderDescriptor[CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade]("cooperative-with-sync-scheduler-fence-off") {
-		override def build(owner: Matrix.DoerProvidersManager): CooperativeWorkersWithSyncSchedulerDp = new CooperativeWorkersWithSyncSchedulerDp.Impl(false)
+		override def build(owner: DoerProvidersManager): CooperativeWorkersWithSyncSchedulerDp = new CooperativeWorkersWithSyncSchedulerDp.Impl(false)
 	}
 
 	private val probes: Seq[Probe[?]] = List(
@@ -107,7 +107,7 @@ object Prueba {
 		}
 
 		def showResult(): Unit = {
-			println(f"Duration: max=${maximumDuration / 1_000_000}%5d, min=${minimumDuration / 1_000_000}%5d, average=${accumulatedDuration / (NUMBER_OF_MEASURE_REPETITIONS * 1_000_000)}%5d, Consumption: max=${maximumConsumption / A_KILO}%5d, min=${minimumConsumption / A_KILO}%5d, average=${accumulatedConsumption / (NUMBER_OF_MEASURE_REPETITIONS * A_KILO)}%5d, $name")
+			println(f"Duration: max=${maximumDuration / 1_000_000}%5d, min=${minimumDuration / 1_000_000}%5d, average=${accumulatedDuration / (NUMBER_OF_MEASURE_REPETITIONS * 1_000_000)}%5d, Consumption: max=${maximumConsumption / A_MEGA}%5d, min=${minimumConsumption / A_MEGA}%5d, average=${accumulatedConsumption / (NUMBER_OF_MEASURE_REPETITIONS * A_MEGA)}%5d, $name")
 		}
 	}
 
@@ -377,7 +377,7 @@ object Prueba {
 				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
-				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_KILO}M")
+				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_MEGA}M")
 				// println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
 
 				result.success((nanoAtEnd - nanoAtStart, consumption))

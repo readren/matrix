@@ -1,10 +1,9 @@
 package readren.matrix
 package core
 
-import core.Matrix.DoerProviderDescriptor
-
 import readren.sequencer.{Doer, DoerProvider}
 import DoerProvider.Tag
+import readren.sequencer.manager.DoerProviderDescriptor
 
 import java.net.URI
 import java.util.concurrent.atomic.AtomicLong
@@ -28,7 +27,7 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 	def genTag(): Tag =
 		doerTagSequencer.getAndIncrement().toString
 
-	def provideDoer[T <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[T]): T
+	def provideDoer[D <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[D]): D
 	
 	/** TODO: add parenthesis because it mutates the [[Matrix.DoerProvider]] */
 	def provideDefaultDoer(tag: DoerProvider.Tag): DefaultDoer

@@ -2,9 +2,10 @@ package readren.matrix
 package interactive
 
 import core.{Continue, Matrix, Stop}
-import providers.descriptor.{DefaultAsyncSchedulingDpd, DefaultSyncSchedulingDpd}
 import rf.RegularRf
 import utils.DefaultAide
+
+import readren.sequencer.manager.descriptors.DefaultSyncSchedulingDpd
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration

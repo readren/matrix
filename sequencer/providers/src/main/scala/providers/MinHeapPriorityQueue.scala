@@ -20,7 +20,8 @@ object MinHeapPriorityQueue {
 
 
 /**
- * A min-heap based priority queue.
+ * A min-heap based priority queue specialized for scheduling time measured in milliseconds.
+ * The specialization avoids the boxing of the value on which the sort criteria is based.
  * @tparam E the type of the [[Element]] instances that this queue accepts.           
  */
 class MinHeapPriorityQueue[E <: Element](initialCapacity: Int = 16)(using ctP: ClassTag[E | Null]) {

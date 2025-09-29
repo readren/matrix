@@ -3,9 +3,10 @@ package interactive
 
 import behaviors.CheckedBehavior
 import core.{Continue, Endpoint, Matrix}
-import providers.descriptor.DefaultCooperativeWorkersDpd
 import rf.RegularRf
 import utils.SimpleAide
+
+import readren.sequencer.manager.descriptors.DefaultCooperativeWorkersDpd
 
 object PruebaChecked {
 
