@@ -224,13 +224,13 @@ object Prueba {
 
 		// println(matrix.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
-		matrix.spawns[ProducerWasStopped | ConsumerWasStopped](reactantFactory, matrix.provideDefaultDoer("parent")) { parent =>
+		matrix.spawns[ProducerWasStopped | ConsumerWasStopped](reactantFactory, "parent") { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Duty_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
-					parent.spawns[Consumable](reactantFactory, matrix.provideDefaultDoer(s"consumer#$consumerIndex")) { consumer =>
+					parent.spawns[Consumable](reactantFactory, s"consumer#$consumerIndex") { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
@@ -258,8 +258,8 @@ object Prueba {
 					 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
 					 * - The Consumables are sent one after the other without waiting any response.
 					 * */
-					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization]] = {
-						parent.spawns[Initialization](reactantFactory, matrix.provideDefaultDoer(s"regular-producer#$producerIndex")) { producer =>
+					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization, parent.matrix.DefaultDoer]] = {
+						parent.spawns[Initialization](reactantFactory, s"regular-producer#$producerIndex") { producer =>
 							producer.doer.checkWithin()
 
 							def loop(restartCount: Int): Behavior[Initialization] = {
@@ -286,8 +286,8 @@ object Prueba {
 					 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
 					 * - These actions are performed concurrently across all consumers.
 					 */
-					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge]] = {
-						parent.spawns[Started.type | Acknowledge](reactantFactory, matrix.provideDefaultDoer(s"inquisitive-producer#$producerIndex")) { producer =>
+					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge, parent.matrix.DefaultDoer]] = {
+						parent.spawns[Started.type | Acknowledge](reactantFactory, s"inquisitive-producer#$producerIndex") { producer =>
 							producer.doer.checkWithin()
 							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
 
@@ -316,7 +316,7 @@ object Prueba {
 						}
 					}
 
-					val buildsProducer: parent.doer.Duty[ReactantRelay[?]] =
+					val buildsProducer: parent.doer.Duty[ReactantRelay[?, ?]] =
 						if useInquisitiveProducer then buildsInquisitiveProducer
 						else buildsRegularProducer
 					buildsProducer.trigger(true) { producer =>

@@ -60,7 +60,7 @@ object Inquisitive {
  * @tparam A The type of answers that this behavior manages. Must extend the `Answer` trait.
  * @tparam U A supertype of `A`, representing the broader category of compatible answers.
  */
-class Inquisitive[A <: Answer, U >: A](val reactant: ReactantRelay[U], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
+class Inquisitive[A <: Answer, U >: A](val reactant: ReactantRelay[U, ?], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
 	private var lastQuestionId = 0L
 	private val pendingQuestions: mutable.LongMap[reactant.doer.Covenant[A]] = mutable.LongMap.empty
 

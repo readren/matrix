@@ -27,20 +27,20 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialReactantSer
 	private var reactantSerialSequencer: Reactant.SerialNumber = initialReactantSerial
 
 	/** Access must be within the [[doer]]. */
-	private val children: mutable.LongMap[Reactant[?]] = mutable.LongMap.empty
+	private val children: mutable.LongMap[Reactant[?, ?]] = mutable.LongMap.empty
 
 	/** A view of the children that aren't fully stopped.
 	 * Access must be within the [[doer]]. */
-	val childrenView: MapView[Long, Reactant[?]] = children.view
+	val childrenView: MapView[Long, Reactant[?, ?]] = children.view
 
 	/** Creates a [[Duty]] that creates a new [[Reactant]].
 	 * Calls must be within the [[doer]]. */
-	def createsReactant[U](
+	def createsReactant[U, CD <: Doer](
 		childFactory: ReactantFactory,
-		childDoer: Doer,
+		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
-	): doer.Duty[ReactantRelay[U]] = {
+		initialBehaviorBuilder: ReactantRelay[U, CD] => Behavior[U]
+	): doer.Duty[ReactantRelay[U, CD]] = {
 		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer

@@ -2,14 +2,14 @@ package readren.matrix
 package core
 
 import readren.common.Maybe
-import readren.sequencer.Doer
+import readren.sequencer.{Doer, DoerProvider}
 
 import scala.collection.MapView
 
-abstract class ReactantRelay[-U] extends Procreative {
+abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
 
 	val serial: Reactant.SerialNumber
-	val doer: Doer
+	val doer: D
 	val endpointProvider: EndpointProvider[U]
 	/** The matrix this [[Reactant]] instance is part of. */
 	val matrix: AbstractMatrix
@@ -19,18 +19,32 @@ abstract class ReactantRelay[-U] extends Procreative {
 	 * This method is thread-safe. */
 	def isMarkedToBeStopped: Boolean
 
-	/** Calls must be within the [[doer]]. */
-	def spawns[V](
+	/** Creates a child [[Reactant]] backed by the specified [[Doer]]
+	 * Calls must be within the [[doer]]. */
+	def spawns[V, CD <: Doer](
 		childFactory: ReactantFactory,
-		childDoer: Doer
+		childDoer: CD
 	)(
-		initialChildBehaviorBuilder: ReactantRelay[V] => Behavior[V]
+		initialChildBehaviorBuilder: ReactantRelay[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Duty[ReactantRelay[V]]
+	): doer.Duty[ReactantRelay[V, CD]]
+
+	/** Creates a child [[Reactant]] backed by a [[Doer]] provided by [[matrix.provideDefaultDoer]] with the specified tag.
+	 * Calls must be within the [[doer]]. */
+	def spawns[V](
+		childFactory: ReactantFactory,
+		childDoerTag: DoerProvider.Tag
+	)(
+		initialChildBehaviorBuilder: ReactantRelay[V, matrix.DefaultDoer] => Behavior[V]
+	)(
+		using isSignalTest: IsSignalTest[V]
+	): doer.Duty[ReactantRelay[V, matrix.DefaultDoer]] = {
+		spawns[V, matrix.DefaultDoer](childFactory, matrix.provideDefaultDoer(childDoerTag))(initialChildBehaviorBuilder)
+	}
 
 	/** Calls must be within the [[doer]]. */
-	def children: MapView[Long, ReactantRelay[?]]
+	def children: MapView[Long, ReactantRelay[?, ?]]
 
 	/**
 	 * Instructs to stop this [[Reactant]].
@@ -65,7 +79,7 @@ abstract class ReactantRelay[-U] extends Procreative {
 	 * @param subscriptionCompleted An optional [[Doer.Covenant]] that will be fulfilled when the subscription process completes.
 	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
 	 */
-	def watch[SS <: U](watchedReactant: ReactantRelay[?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
+	def watch[SS <: U](watchedReactant: ReactantRelay[?, ?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 
 	/** Provides diagnostic information about the current instance. */
 	def diagnoses: doer.Duty[ReactantDiagnostic]

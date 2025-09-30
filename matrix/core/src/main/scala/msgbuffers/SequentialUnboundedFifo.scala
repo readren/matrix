@@ -11,7 +11,7 @@ import scala.collection.AbstractIterator
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
-class SequentialUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
+class SequentialUnboundedFifo[M](owner: Reactant[M, ?]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
 
 	/** Should be accessed only within the [[doer]] */
 	private val queue: java.util.ArrayDeque[M] = new java.util.ArrayDeque()

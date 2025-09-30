@@ -5,7 +5,6 @@ import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager}
 import readren.sequencer.{Doer, DoerProvider}
 
 import java.net.URI
-import scala.compiletime.asMatchable
 
 
 object Matrix {

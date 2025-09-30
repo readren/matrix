@@ -26,7 +26,7 @@ object PruebaChecked {
 
 		val matrix = new Matrix("testChecked", matrixAide)
 
-		matrix.spawns[Cmd](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
+		matrix.spawns[Cmd, matrix.DefaultDoer](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
 			CheckedBehavior.factory[Cmd, MyException] {
 				case cmd: DoWork =>
 					if (cmd.integer % 5) >= 3 then throw new MyException

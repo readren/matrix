@@ -10,7 +10,7 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 	type MsgBuffer[u] = MS[u]
 
 	/** Creates the pending messages buffer needed by the [[createsReactant]] method. */
-	protected def createMsgBuffer[U](reactant: Reactant[U]): MsgBuffer[U]
+	protected def createMsgBuffer[U](reactant: Reactant[U, ?]): MsgBuffer[U]
 
 	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
 
@@ -19,10 +19,10 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 		progenitor: Spawner[?],
 		reactantDoer: D,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
-	): reactantDoer.Duty[Reactant[U]] = {
+		initialBehaviorBuilder: ReactantRelay[U, D] => Behavior[U]
+	): reactantDoer.Duty[Reactant[U, D]] = {
 		reactantDoer.Duty_mineFlat { () =>
-			new Reactant[U](serial, reactantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
+			new Reactant[U, D](serial, reactantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
 

@@ -4,6 +4,7 @@ package msgbuffers
 import core.{Inbox, Reactant, Receiver}
 
 import readren.common.Maybe
+import readren.sequencer.Doer
 
 import java.net.URI
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -12,7 +13,7 @@ import scala.collection.AbstractIterator
 
 /**
  * @param owner the [[Reactant]] that owns this [[Inbox]] */
-class ConcurrentUnboundedFifo[M](owner: Reactant[M]) extends Receiver[M], Inbox[M] {
+class ConcurrentUnboundedFifo[M](owner: Reactant[M, ?]) extends Receiver[M], Inbox[M] {
 	private val queue = new ConcurrentLinkedQueue[M]()
 
 	/** Incremented before a message is added, and decremented after a message is withdrawn. Therefore, its value tend to be equal to the queue's actual size but may be greater.

@@ -28,23 +28,34 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 		doerTagSequencer.getAndIncrement().toString
 
 	def provideDoer[D <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[D]): D
-	
-	/** TODO: add parenthesis because it mutates the [[Matrix.DoerProvider]] */
+
+	/** Provides a [[Doer]] of the default type. */
 	def provideDefaultDoer(tag: DoerProvider.Tag): DefaultDoer
 
 	/** thread-safe */
-	def spawns[U](
+	def spawns[U, CD <: Doer](
 		childFactory: ReactantFactory,
-		childDoer: Doer
+		childDoer: CD
 	)(
-		initialBehaviorBuilder: ReactantRelay[U] => Behavior[U]
+		initialBehaviorBuilder: ReactantRelay[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[ReactantRelay[U]] = {
+	): doer.Duty[ReactantRelay[U, CD]] = {
 		doer.Duty_mineFlat { () =>
-			spawner.createsReactant[U](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
+			spawner.createsReactant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}
+
+	def spawns[U](
+		childFactory: ReactantFactory,
+		childDoerTag: DoerProvider.Tag
+	)(
+		initialBehaviorBuilder: ReactantRelay[U, DefaultDoer] => Behavior[U]
+	)(
+		using isSignalTest: IsSignalTest[U]
+	): doer.Duty[ReactantRelay[U, DefaultDoer]] =
+		spawns[U, DefaultDoer](childFactory, provideDefaultDoer(childDoerTag))(initialBehaviorBuilder)
+
 
 	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
 		val receiver = new Receiver[A] {

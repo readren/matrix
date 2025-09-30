@@ -38,7 +38,7 @@ object PruebaScheduling {
 		} else {
 			val diagnosticScheduler = new Scheduler
 
-			matrix.spawns[Tick](RegularRf, schedulingDoer) { reactant =>
+			matrix.spawns[Tick, schedulingDoer.type](RegularRf, schedulingDoer) { reactant =>
 				val selfEndpoint = reactant.endpointProvider.local[Tick]
 				selfEndpoint.tell(Tick(List.empty))
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)
