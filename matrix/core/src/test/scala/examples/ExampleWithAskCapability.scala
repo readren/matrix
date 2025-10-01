@@ -26,15 +26,15 @@ object ExampleWithAskCapability {
 		val matrix = new Matrix(uri, rootDoer, manager)
 
 		val calculatorDoer = matrix.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		matrix.spawns[CalcCmd, calculatorDoer.type](RegularRf, calculatorDoer)(calculatorRelay => {
+		matrix.spawns[CalcCmd, calculatorDoer.type](RegularRf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo, questionId) =>
 					replyTo.tell(SumResult(a + b, questionId))
 					Continue
 			})
-			.flatMap { calculatorReactant =>
-				val calculatorEndpoint = calculatorReactant.endpointProvider.local[CalcCmd]
+			.flatMap { calculator =>
+				val calculatorEndpoint = calculator.endpointProvider.local[CalcCmd]
 
-				val userDoer = calculatorReactant.provideDoer(DefaultCooperativeWorkersDpd, "user")
+				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
 				matrix.spawns[Started.type | SumResult, userDoer.type](RegularRf, userDoer) { userReactant =>
 					val userEndpoint = userReactant.endpointProvider.local[SumResult]
 

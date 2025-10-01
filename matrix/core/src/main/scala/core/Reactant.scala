@@ -35,14 +35,14 @@ abstract class Reactant[U, D <: Doer](
 	override val doer: D,
 	progenitor: Spawner[?],
 	isSignalTest: IsSignalTest[U],
-	initialBehaviorBuilder: ReactantRelay[U, D] => Behavior[U]
-) extends ReactantRelay[U, D] { thisReactant =>
+	initialBehaviorBuilder: ReactantGate[U, D] => Behavior[U]
+) extends ReactantGate[U, D] { thisReactant =>
 
-	private class ToRestart(val stopChildren: Boolean, val restartBehaviorBuilder: ReactantRelay[U, D] => Behavior[U]) extends Decision[U]
+	private class ToRestart(val stopChildren: Boolean, val restartBehaviorBuilder: ReactantGate[U, D] => Behavior[U]) extends Decision[U]
 	
 	/** the matrix this[[Reactant]] is part of */
-	val matrix: AbstractMatrix = progenitor.owner match {
-		case ab: AbstractMatrix => ab
+	val matrix: MatrixErased = progenitor.owner match {
+		case ab: MatrixErased => ab
 		case r: Reactant[?, ?] => r.matrix
 	}
 	
@@ -75,7 +75,7 @@ abstract class Reactant[U, D <: Doer](
 
 	private var oSpawner: Maybe[Spawner[doer.type]] = Maybe.empty
 	/** Should be accessed withing the [[doer]] */
-	private var childrenRelays: MapView[Long, ReactantRelay[?, ?]] = MapView.empty
+	private var childrenGates: MapView[Long, ReactantGate[?, ?]] = MapView.empty
 
 	override val endpointProvider: EndpointProvider[U]
 
@@ -91,7 +91,7 @@ abstract class Reactant[U, D <: Doer](
 
 	/** Contains the observers subscribed to the [[Reactant.stopCovenant]] of other [[Reactant]] instances that were not unsubscribed calling [[WatchSubscription.unsubscribe()]].
 	 * @see [[watch]]. */
-	private val activeWatchSubscriptions: util.IdentityHashMap[ReactantRelay[?, ?], List[WatchSubscription]] = new util.IdentityHashMap()
+	private val activeWatchSubscriptions: util.IdentityHashMap[ReactantGate[?, ?], List[WatchSubscription]] = new util.IdentityHashMap()
 
 	/**
 	 * Should be called only once and within the [[doer]].
@@ -105,7 +105,7 @@ abstract class Reactant[U, D <: Doer](
 	/** Starts or restarts this [[Reactant]].
 	 * Should be called only once and within the [[doer]].
 	 * */
-	private def selfStarts(comesFromRestart: Boolean, behaviorBuilder: ReactantRelay[U, D] => Behavior[U]): doer.Duty[Unit] = {
+	private def selfStarts(comesFromRestart: Boolean, behaviorBuilder: ReactantGate[U, D] => Behavior[U]): doer.Duty[Unit] = {
 		doer.checkWithin()
 		currentBehavior = behaviorBuilder(thisReactant)
 		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
@@ -125,15 +125,15 @@ abstract class Reactant[U, D <: Doer](
 		childReactantFactory: ReactantFactory,
 		childDoer: CD
 	)(
-		initialChildBehaviorBuilder: ReactantRelay[V, CD] => Behavior[V]
+		initialChildBehaviorBuilder: ReactantGate[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Duty[ReactantRelay[V, CD]] = {
+	): doer.Duty[ReactantGate[V, CD]] = {
 		doer.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[doer.type](thisReactant, doer, serial)
 				oSpawner = Maybe.some(spawner)
-				childrenRelays = spawner.childrenView
+				childrenGates = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
 			.createsReactant[V, CD](childReactantFactory, childDoer, isSignalTest, initialChildBehaviorBuilder)
@@ -142,13 +142,13 @@ abstract class Reactant[U, D <: Doer](
 	/** The children of this [[Reactant]] by serial number.
 	 *
 	 * Calls must be within the [[doer]]. */
-	override def children: MapView[Long, ReactantRelay[?, ?]] = {
+	override def children: MapView[Long, ReactantGate[?, ?]] = {
 		doer.checkWithin()
-		childrenRelays
+		childrenGates
 	}
 
 	/** Calls must be within the [[doer]]. */
-	private final def selfRestarts(stopChildren: Boolean, restartBehaviorBuilder: ReactantRelay[U, D] => Behavior[U]): doer.Duty[Unit] = {
+	private final def selfRestarts(stopChildren: Boolean, restartBehaviorBuilder: ReactantGate[U, D] => Behavior[U]): doer.Duty[Unit] = {
 		doer.checkWithin()
 
 		def restartMe(): doer.Duty[Unit] = {
@@ -183,7 +183,7 @@ abstract class Reactant[U, D <: Doer](
 
 	override def stopDuty: doer.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
 
-	override def watch[CSM <: U](watchedReactant: ReactantRelay[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
+	override def watch[CSM <: U](watchedReactant: ReactantGate[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
 		if stopWasStarted then Maybe.empty
 		else {
@@ -380,6 +380,6 @@ abstract class Reactant[U, D <: Doer](
 		}
 
 	override def staleDiagnose: ReactantDiagnostic =
-		val childrenDiagnostic = childrenRelays.map(_._2.staleDiagnose).toArray
+		val childrenDiagnostic = childrenGates.map(_._2.staleDiagnose).toArray
 		ReactantDiagnostic(thisReactant.isReadyToProcessMsg, thisReactant.isMarkedToStop, thisReactant.stopWasStarted, inbox.size, Iterator.empty, childrenDiagnostic)
 }

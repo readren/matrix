@@ -39,8 +39,8 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialReactantSer
 		childFactory: ReactantFactory,
 		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: ReactantRelay[U, CD] => Behavior[U]
-	): doer.Duty[ReactantRelay[U, CD]] = {
+		initialBehaviorBuilder: ReactantGate[U, CD] => Behavior[U]
+	): doer.Duty[ReactantGate[U, CD]] = {
 		doer.checkWithin()
 		reactantSerialSequencer += 1
 		val reactantSerial = reactantSerialSequencer

@@ -14,7 +14,7 @@ class Matrix[MD <: Doer](
 	override val doer: MD,
 	val doerProvidersManager: DoerProvidersManager,
 	override val logger: Logger = SimpleLogger(Logger.Level.debug)
-) extends AbstractMatrix(uri.getHost) { thisMatrix =>
+) extends MatrixErased(uri.getHost) { thisMatrix =>
 	override type MatrixDoerType = MD
 
 	override protected val spawner: Spawner[doer.type] =

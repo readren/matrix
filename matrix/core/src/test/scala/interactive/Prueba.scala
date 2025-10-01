@@ -306,7 +306,7 @@ object Prueba {
 						}
 					}
 
-					val buildsProducer: parent.doer.Duty[ReactantRelay[?, ?]] =
+					val buildsProducer: parent.doer.Duty[ReactantGate[?, ?]] =
 						if useInquisitiveProducer then buildsInquisitiveProducer
 						else buildsRegularProducer
 					buildsProducer.trigger(true) { producer =>

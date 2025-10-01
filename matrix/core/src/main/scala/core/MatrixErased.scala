@@ -6,7 +6,7 @@ import readren.sequencer.manager.DoerProviderDescriptor
 
 import java.net.URI
 
-abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix =>
+abstract class MatrixErased(val name: String) extends Procreative { thisMatrix =>
 
 	type MatrixDoerType <: Doer
 
@@ -30,10 +30,10 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 		childFactory: ReactantFactory,
 		childDoer: CD
 	)(
-		initialBehaviorBuilder: ReactantRelay[U, CD] => Behavior[U]
+		initialBehaviorBuilder: ReactantGate[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[ReactantRelay[U, CD]] = {
+	): doer.Duty[ReactantGate[U, CD]] = {
 		doer.Duty_mineFlat { () =>
 			spawner.createsReactant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}

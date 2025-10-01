@@ -6,13 +6,13 @@ import readren.sequencer.Doer
 
 import scala.collection.MapView
 
-abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
+abstract class ReactantGate[-U, +D <: Doer] extends Procreative {
 
 	val serial: Reactant.SerialNumber
 	val doer: D
 	val endpointProvider: EndpointProvider[U]
 	/** The matrix this [[Reactant]] instance is part of. */
-	val matrix: AbstractMatrix
+	val matrix: MatrixErased
 
 	export matrix.provideDoer
 	
@@ -27,13 +27,13 @@ abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
 		childFactory: ReactantFactory,
 		childDoer: CD
 	)(
-		initialChildBehaviorBuilder: ReactantRelay[V, CD] => Behavior[V]
+		initialChildBehaviorBuilder: ReactantGate[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Duty[ReactantRelay[V, CD]]
+	): doer.Duty[ReactantGate[V, CD]]
 
 	/** Calls must be within the [[doer]]. */
-	def children: MapView[Long, ReactantRelay[?, ?]]
+	def children: MapView[Long, ReactantGate[?, ?]]
 
 	/**
 	 * Instructs to stop this [[Reactant]].
@@ -68,7 +68,7 @@ abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
 	 * @param subscriptionCompleted An optional [[Doer.Covenant]] that will be fulfilled when the subscription process completes.
 	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
 	 */
-	def watch[SS <: U](watchedReactant: ReactantRelay[?, ?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
+	def watch[SS <: U](watchedReactant: ReactantGate[?, ?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 
 	/** Provides diagnostic information about the current instance. */
 	def diagnoses: doer.Duty[ReactantDiagnostic]

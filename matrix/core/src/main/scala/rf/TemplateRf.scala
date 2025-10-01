@@ -19,7 +19,7 @@ abstract class TemplateRf[MS[u] <: Inbox[u] & Receiver[u]] extends ReactantFacto
 		progenitor: Spawner[?],
 		reactantDoer: D,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: ReactantRelay[U, D] => Behavior[U]
+		initialBehaviorBuilder: ReactantGate[U, D] => Behavior[U]
 	): reactantDoer.Duty[Reactant[U, D]] = {
 		reactantDoer.Duty_mineFlat { () =>
 			new Reactant[U, D](serial, reactantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {

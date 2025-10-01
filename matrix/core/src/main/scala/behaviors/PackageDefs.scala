@@ -2,7 +2,7 @@ package readren.matrix
 package behaviors
 
 import behaviors.Inquisitive.Answer
-import core.{Behavior, ReactantRelay}
+import core.{Behavior, ReactantGate}
 
 import readren.sequencer.Doer
 
@@ -24,7 +24,7 @@ inline def ignore: Behavior[Any] = Ignore
  * - Enable nested behaviors to seamlessly issue questions and handle responses inline using the `ask` capability, reducing boilerplate and improving clarity.
  *
  * **Parameters**:
- * @param reactant              The `ReactantRelay` representing the context in which the questions and answers are exchanged.
+ * @param reactant              The [[ReactantGate]] representing the context in which the questions and answers are exchanged.
  * @param nestedBehavior        The primary behavior of the reactant, extended with the ability to make structured questions.
  * @param unaskedAnswerBehavior A fallback behavior used to handle unexpected answers that do not correspond to a previously asked question. Defaults to [[Ignore]].
  * @tparam M The type of messages handled by the nested behavior.
@@ -33,7 +33,7 @@ inline def ignore: Behavior[Any] = Ignore
  *
  * @return A new behavior that combines the `nestedBehavior`'s message-handling capabilities with the [[Inquisitive.ask]] mechanism for structured question-response handling.
  */
-inline def inquisitiveNest[M, A <: Answer, U >: A](reactant: ReactantRelay[U, ?])(nestedBehavior: Inquisitive[A, U] ?=> Behavior[M])(unaskedAnswerBehavior: Behavior[A] = Ignore): Behavior[A | M] = {
+inline def inquisitiveNest[M, A <: Answer, U >: A](reactant: ReactantGate[U, ?])(nestedBehavior: Inquisitive[A, U] ?=> Behavior[M])(unaskedAnswerBehavior: Behavior[A] = Ignore): Behavior[A | M] = {
 	val inquisitiveInterceptor = new Inquisitive[A, U](reactant, unaskedAnswerBehavior)
 	unitedNest[A, M](inquisitiveInterceptor, nestedBehavior(using inquisitiveInterceptor))
 }
