@@ -89,7 +89,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		sharedDoerProviderFixture = new Fixture[DP]("shared-doer-provider") {
 			override def apply(): DP = sharedDoerProvider
 		}
-		val sharedDoer = sharedDoerProvider.provide("main-doer")
+		val sharedDoer = sharedDoerProvider.provide(sharedDoerProvider.tagFromText("main-doer"))
 		sharedDoerFixture = new Fixture[D]("main-doer") {
 			override def apply(): D = sharedDoer
 		}
@@ -113,7 +113,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	protected def getSharedDoerProvider: DP = sharedDoerProviderFixture()
 
 	/** Builds an instance of [[Doer]] using the shared [[DoerProvider]]. */
-	protected def buildDoer(tag: String): D = sharedDoerProviderFixture().provide(tag)
+	protected def buildDoer(tag: String): D = {
+		val provider = sharedDoerProviderFixture()
+		provider.provide(provider.tagFromText(tag))
+	}
 
 	/** Gets the shared instance of [[Doer]] provided by the shared doer provider. */
 	protected def getSharedDoer: D = sharedDoerFixture()
@@ -351,7 +354,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Doer should handle uncaught exceptions gracefully") {
+	test("The `DoerProvider` should notify uncaught exceptions thrown by the Runnable passed to `Doer.executeSequentially` before executing the next enqueued Runnable") {
 		val mainDoer = getSharedDoer
 
 		PropF.forAllNoShrinkF { (exception: Throwable) =>
@@ -367,7 +370,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					if wasCaught then promise.trySuccess(()) else break("The uncaught exception was not notified")
 				}
 
-				breakAfterWaiting(999, "No notification of the exception until 990 milliseconds after applying the operation. Waiting aborted.")
+				breakAfterWaiting(999, s"No notification of the exception $exception until 990 milliseconds after applying the operation. Waiting aborted.")
 
 			} { (d, t) =>
 				if t eq exception then wasCaught = true else break(s"an unexpected exception was uncaught $t")

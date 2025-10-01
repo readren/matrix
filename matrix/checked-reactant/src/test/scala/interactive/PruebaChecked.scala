@@ -4,9 +4,11 @@ package interactive
 import behaviors.CheckedBehavior
 import core.{Continue, Endpoint, Matrix}
 import rf.RegularRf
-import utils.SimpleAide
 
+import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.DefaultCooperativeWorkersDpd
+
+import java.net.URI
 
 object PruebaChecked {
 
@@ -22,11 +24,13 @@ object PruebaChecked {
 
 	@main def runPruebaChecked(): Unit = {
 
-		val matrixAide = SimpleAide(DefaultCooperativeWorkersDpd)
+		val uri = new URI(null, "localhost", null, null)
+		val manager = new ShutdownAbleDpm
+		val rootDoer = manager.provideDoer(DefaultCooperativeWorkersDpd, "root")
+		val matrix = new Matrix(uri, rootDoer, manager)
 
-		val matrix = new Matrix("testChecked", matrixAide)
-
-		matrix.spawns[Cmd, matrix.DefaultDoer](RegularRf, matrix.provideDefaultDoer("parent")) { parent =>
+		val parentDoer = matrix.provideDoer(DefaultCooperativeWorkersDpd, "parent")
+		matrix.spawns[Cmd, parentDoer.type](RegularRf, parentDoer) { parent =>
 			CheckedBehavior.factory[Cmd, MyException] {
 				case cmd: DoWork =>
 					if (cmd.integer % 5) >= 3 then throw new MyException
@@ -42,7 +46,7 @@ object PruebaChecked {
 		}.trigger() { parent =>
 			val parentEndpoint = parent.endpointProvider.local
 			val outEndpoint = matrix.buildEndpoint[Response] { response =>
-				if response.text eq null then matrix.doerProvidersManager.shutdown()
+				if response.text eq null then manager.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {

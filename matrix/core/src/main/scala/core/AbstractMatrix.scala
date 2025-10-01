@@ -1,18 +1,16 @@
 package readren.matrix
 package core
 
-import readren.sequencer.{Doer, DoerProvider}
-import DoerProvider.Tag
+import readren.sequencer.Doer
 import readren.sequencer.manager.DoerProviderDescriptor
 
 import java.net.URI
-import java.util.concurrent.atomic.AtomicLong
 
 abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix =>
 
-	type DefaultDoer <: Doer
-	
-	val doer: DefaultDoer
+	type MatrixDoerType <: Doer
+
+	val doer: MatrixDoerType
 	
 	protected val spawner: Spawner[doer.type]
 
@@ -22,15 +20,10 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 	
 	val uri: URI
 
-	private val doerTagSequencer = new AtomicLong(0)
-	
-	def genTag(): Tag =
-		doerTagSequencer.getAndIncrement().toString
+	def provideDoer[D <: Doer](descriptor: DoerProviderDescriptor[D], tag: descriptor.Tag): D
 
-	def provideDoer[D <: Doer](tag: DoerProvider.Tag, descriptor: DoerProviderDescriptor[D]): D
+	def provideDoer[D <: Doer](text: String, descriptor: DoerProviderDescriptor[D]): D
 
-	/** Provides a [[Doer]] of the default type. */
-	def provideDefaultDoer(tag: DoerProvider.Tag): DefaultDoer
 
 	/** thread-safe */
 	def spawns[U, CD <: Doer](
@@ -45,17 +38,6 @@ abstract class AbstractMatrix(val name: String) extends Procreative { thisMatrix
 			spawner.createsReactant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}
-
-	def spawns[U](
-		childFactory: ReactantFactory,
-		childDoerTag: DoerProvider.Tag
-	)(
-		initialBehaviorBuilder: ReactantRelay[U, DefaultDoer] => Behavior[U]
-	)(
-		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[ReactantRelay[U, DefaultDoer]] =
-		spawns[U, DefaultDoer](childFactory, provideDefaultDoer(childDoerTag))(initialBehaviorBuilder)
-
 
 	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
 		val receiver = new Receiver[A] {

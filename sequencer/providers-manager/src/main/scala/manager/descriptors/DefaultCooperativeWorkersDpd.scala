@@ -2,9 +2,13 @@ package readren.sequencer
 package manager
 package descriptors
 
+import providers.CooperativeWorkersDp
+
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.providers.CooperativeWorkersDp
 
 object DefaultCooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade](getTypeName[DefaultCooperativeWorkersDpd.type]) {
-	override def build(owner: DoerProvidersManager): DoerProvider[CooperativeWorkersDp.DoerFacade] = new CooperativeWorkersDp.Impl(false)
+	override type Tag = String
+	override type DP = CooperativeWorkersDp.Impl
+
+	override def build(owner: DoerProvidersManager): DP = new CooperativeWorkersDp.Impl(false)
 }

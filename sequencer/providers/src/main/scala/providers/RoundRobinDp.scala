@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.common.Maybe
@@ -38,6 +37,8 @@ abstract class RoundRobinDp(
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 ) extends DoerProvider[Doer], ShutdownAble { thisProvider =>
 
+	override type Tag = Null
+
 	private val switcher = new AtomicInteger(0)
 
 	private val doers: IArray[ProvidedDoer] = IArray.tabulate(threadPoolSize) { index => new ProvidedDoer(s"round-robin#$index") }
@@ -50,10 +51,11 @@ abstract class RoundRobinDp(
 	override def provide(tag: Tag): ProvidedDoer =
 		doers(switcher.getAndIncrement() % doers.length)
 
+	override def tagFromText(text: String): Tag = null
 
-	class ProvidedDoer(override val tag: Tag) extends Doer { thisDoer =>
+	class ProvidedDoer(override val tag: String) extends Doer { thisDoer =>
 
-		override type Tag = DoerProvider.Tag
+		override type Tag = String
 
 		private[RoundRobinDp] val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>

@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.CooperativeWorkersDp.*
 import providers.CooperativeWorkersWithAsyncSchedulerDp.*
 
@@ -21,6 +20,10 @@ object CooperativeWorkersWithAsyncSchedulerDp extends CooperativeWorkersDpWithSc
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersWithAsyncSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
@@ -40,7 +43,14 @@ abstract class CooperativeWorkersWithAsyncSchedulerDp(
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
-	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, SchedulingDoerImpl#ScheduleImpl](threadFactory)
+	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
+	private class ScheduleImpl(owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](owner), ScheduleFacade {
+		val activated: AtomicBoolean = AtomicBoolean(false)
+
+		override def wasActivated: Boolean = activated.get
+	}
+
+	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, ScheduleImpl](threadFactory)
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
 		startAllWorkersIfNotAlready()
@@ -54,13 +64,13 @@ abstract class CooperativeWorkersWithAsyncSchedulerDp(
 		override type Schedule = ScheduleImpl
 
 		override def newDelaySchedule(delay: MilliDuration): Schedule =
-			new ScheduleImpl(delay, 0L, false)
+			new ScheduleImpl(thisSchedulingDoer, delay, 0L, false)
 
 		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =
-			new ScheduleImpl(initialDelay, interval, true)
+			new ScheduleImpl(thisSchedulingDoer, initialDelay, interval, true)
 
 		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
-			new ScheduleImpl(initialDelay, delay, false)
+			new ScheduleImpl(thisSchedulingDoer, initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			val activationTime = nanosToMillisRoundedUp(System.nanoTime)
@@ -103,13 +113,6 @@ abstract class CooperativeWorkersWithAsyncSchedulerDp(
 		/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
 		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
 		override def isCanceled(schedule: ScheduleImpl): Boolean = schedule.isCanceled
-
-		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](thisSchedulingDoer), ScheduleFacade {
-			val activated: AtomicBoolean = AtomicBoolean(false)
-
-			override def wasActivated: Boolean = activated.get
-		}
 	}
 
 

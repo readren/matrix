@@ -1,11 +1,9 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.ShutdownAble
 
 import readren.common.Maybe
-import readren.sequencer.Doer
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -37,8 +35,10 @@ abstract class LeastLoadedFixedWorkerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
-) extends DoerProvider[Doer], ShutdownAble {
+) extends DoerProvider[Doer], ShutdownAble { thisProvider =>
 
+	override type Tag = Null
+	
 	private val doers = Array.tabulate[ProvidedDoer](threadPoolSize)(index => new ProvidedDoer(s"LeastLoadedFixedWorker#$index"))
 
 	private val switcher = new AtomicInteger(0)
@@ -49,12 +49,13 @@ abstract class LeastLoadedFixedWorkerDp(
 	override def currentDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 	class ProvidedDoer(
-		override val tag: Tag,
+		override val tag: String,
 		failureReporter: Throwable => Unit = _.printStackTrace(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends Doer { thisDoer =>
-		override type Tag = DoerProvider.Tag
+		override type Tag = String
+		
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				doerThreadLocal.set(thisDoer)
@@ -81,6 +82,8 @@ abstract class LeastLoadedFixedWorkerDp(
 		pickedDoer
 	}
 
+	override def tagFromText(text: String): Tag = null
+	
 	private def findExecutorsWithShortestWorkQueue(): List[ProvidedDoer] = {
 		var shortestSize = Integer.MAX_VALUE
 		var result: List[ProvidedDoer] = Nil

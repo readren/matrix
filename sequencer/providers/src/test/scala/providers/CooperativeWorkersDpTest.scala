@@ -2,7 +2,6 @@ package readren.sequencer
 package providers
 
 import providers.CooperativeWorkersDp.*
-import DoerProvider.Tag
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.effect.PropF

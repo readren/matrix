@@ -17,11 +17,11 @@ class ShutdownAbleDpm extends DoerProvidersManager, ShutdownAble {
 
 	/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created.
 	 * @throws IllegalStateException if both, this method is called after [[shutdown]] has been called, and it is the first time that this method receives this reference or an equivalent one. */
-	override def get[D <: Doer](descriptor: DoerProviderDescriptor[D]): DoerProvider[D] = {
+	override def get[D <: Doer](descriptor: DoerProviderDescriptor[D]): descriptor.DP = {
 		val provider = registeredProviders.computeIfAbsent(descriptor, descriptor => {
 			if wasShutdown.get() then null
 			else descriptor.build(this)
-		}).asInstanceOf[DoerProvider[D]]
+		}).asInstanceOf[descriptor.DP]
 		if provider eq null then throw new IllegalStateException(s"A ${getTypeName[ShutdownAbleDpm]} instance was asked to build a new instances of ${getTypeName[DoerProvider[D]]} after it was shutdown.")
 		else provider
 	}

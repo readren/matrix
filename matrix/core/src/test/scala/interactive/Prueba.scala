@@ -4,12 +4,13 @@ package interactive
 import behaviors.Inquisitive
 import core.*
 import rf.{RegularRf, SequentialMsgBufferRf}
-import utils.SimpleAide
 
 import readren.sequencer.Doer
-import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager}
+import readren.sequencer.manager.descriptors.{DefaultAsyncSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultRoundRobinDpd, DefaultSyncSchedulingDpd}
+import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager, ShutdownAbleDpm}
 import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithAsyncSchedulerDp, CooperativeWorkersWithSyncSchedulerDp, RoundRobinDp}
 
+import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -55,31 +56,15 @@ object Prueba {
 
 	private class Pixel(var value: Int, var updateSerial: Int)
 
-	private object roundRobinDpd extends DoerProviderDescriptor[Doer]("round-robin") {
-		override def build(owner: DoerProvidersManager): RoundRobinDp = new RoundRobinDp.Impl()
-	}
-
-	private object cooperativeWorkersDpd extends DoerProviderDescriptor[CooperativeWorkersDp.DoerFacade]("cooperative-fence-off") {
-		override def build(owner: DoerProvidersManager): CooperativeWorkersDp = new CooperativeWorkersDp.Impl(false)
-	}
-
-	private object cooperativeWorkersWithAsyncSchedulerDpd extends DoerProviderDescriptor[CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade]("cooperative-with-async-scheduler-fence-off") {
-		override def build(owner: DoerProvidersManager): CooperativeWorkersWithAsyncSchedulerDp = new CooperativeWorkersWithAsyncSchedulerDp.Impl(false)
-	}
-
-	private object cooperativeWorkersWithSyncSchedulerDpd extends DoerProviderDescriptor[CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade]("cooperative-with-sync-scheduler-fence-off") {
-		override def build(owner: DoerProvidersManager): CooperativeWorkersWithSyncSchedulerDp = new CooperativeWorkersWithSyncSchedulerDp.Impl(false)
-	}
-
 	private val probes: Seq[Probe[?]] = List(
-		Probe("RoundRobin and RegularRf", roundRobinDpd, RegularRf),
-		Probe("CooperativeWorkers and RegularRf", cooperativeWorkersDpd, RegularRf),
-		Probe("CooperativeWorkersWithAsyncScheduler and RegularRf", cooperativeWorkersWithAsyncSchedulerDpd, RegularRf),
-		Probe("CooperativeWorkersWithSyncScheduler and RegularRf", cooperativeWorkersWithSyncSchedulerDpd, RegularRf),
-		Probe("RoundRobin and SequentialRf", roundRobinDpd, SequentialMsgBufferRf),
-		Probe("CooperativeWorkers and SequentialRf", cooperativeWorkersDpd, SequentialMsgBufferRf),
-		Probe("CooperativeWorkersWithAsyncScheduler and SequentialRf", cooperativeWorkersWithAsyncSchedulerDpd, SequentialMsgBufferRf),
-		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", cooperativeWorkersWithSyncSchedulerDpd, SequentialMsgBufferRf),
+		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularRf),
+		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularRf),
+		Probe("CooperativeWorkersWithAsyncScheduler and RegularRf", DefaultAsyncSchedulingDpd, RegularRf),
+		Probe("CooperativeWorkersWithSyncScheduler and RegularRf", DefaultSyncSchedulingDpd, RegularRf),
+		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialMsgBufferRf),
+		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialMsgBufferRf),
+		Probe("CooperativeWorkersWithAsyncScheduler and SequentialRf", DefaultAsyncSchedulingDpd, SequentialMsgBufferRf),
+		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", DefaultSyncSchedulingDpd, SequentialMsgBufferRf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ReactantFactory) {
@@ -92,8 +77,7 @@ object Prueba {
 		var maximumConsumption: Long = Long.MinValue
 
 		def measure(loopId: Int)(using ec: ExecutionContext): Future[Unit] = {
-			val aide = SimpleAide(descriptor)
-			run(aide, factory, loopId)
+			run(descriptor, factory, loopId)
 				.map { case (duration, consumption) =>
 					if loopId > NUMBER_OF_WARM_UP_REPETITIONS then {
 						accumulatedDuration += duration
@@ -142,11 +126,13 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DefaultDoer <: Doer](testingAide: SimpleAide[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[(Long, Long)] = {
-		println(s"\nTest started:  loop=$loopId, descriptor=${testingAide.defaultDoerProviderDescriptor.id}, factory=${reactantFactory.getClass.getSimpleName}")
-		val matrix = new Matrix("myMatrix", testingAide)
-		println(s"Matrix created: doerProvider=${matrix.doerProvidersManager.get(testingAide.defaultDoerProviderDescriptor).getClass.getName}")
-
+	private def run[DefaultDoer <: Doer](descriptor: DoerProviderDescriptor[DefaultDoer], reactantFactory: ReactantFactory, loopId: Int): Future[(Long, Long)] = {
+		println(s"\nTest started:  loop=$loopId, descriptor=${descriptor.id}, factory=${reactantFactory.getClass.getSimpleName}")
+		val uri = new URI(null, "localhost", null, null)
+		val manager = new ShutdownAbleDpm
+		val rootDoer = manager.provideDoer("root", descriptor)
+		val matrix = new Matrix(uri, rootDoer, manager)
+		
 		val counter: AtomicInteger = new AtomicInteger(0)
 
 		var printer: Future[Unit] = Future.successful(())
@@ -210,7 +196,7 @@ object Prueba {
 			try {
 				val sb = new StringBuilder
 				sb.append("\n<<< InspectorA <<<\n")
-				matrix.doerProvidersManager.diagnose(sb)
+				manager.diagnose(sb)
 				sb.append(">>> InspectorA >>>\n")
 				println(sb)
 			} catch {
@@ -224,13 +210,15 @@ object Prueba {
 
 		// println(matrix.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
-		matrix.spawns[ProducerWasStopped | ConsumerWasStopped](reactantFactory, "parent") { parent =>
+		val parentDoer = matrix.provideDoer("parent", descriptor)
+		matrix.spawns[ProducerWasStopped | ConsumerWasStopped, parentDoer.type](reactantFactory, parentDoer) { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Duty_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
-					parent.spawns[Consumable](reactantFactory, s"consumer#$consumerIndex") { consumer =>
+					val consumerDoer = parent.provideDoer(s"consumer#$consumerIndex", descriptor)
+					parent.spawns[Consumable, consumerDoer.type](reactantFactory, consumerDoer) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
@@ -258,8 +246,9 @@ object Prueba {
 					 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
 					 * - The Consumables are sent one after the other without waiting any response.
 					 * */
-					def buildsRegularProducer: parent.doer.Duty[ReactantRelay[Initialization, parent.matrix.DefaultDoer]] = {
-						parent.spawns[Initialization](reactantFactory, s"regular-producer#$producerIndex") { producer =>
+					def buildsRegularProducer = {
+						val producerDoer = parent.provideDoer(s"regular-producer#$producerIndex", descriptor)
+						parent.spawns[Initialization, producerDoer.type](reactantFactory, producerDoer) { producer =>
 							producer.doer.checkWithin()
 
 							def loop(restartCount: Int): Behavior[Initialization] = {
@@ -286,8 +275,9 @@ object Prueba {
 					 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
 					 * - These actions are performed concurrently across all consumers.
 					 */
-					def buildsInquisitiveProducer: parent.doer.Duty[ReactantRelay[Started.type | Acknowledge, parent.matrix.DefaultDoer]] = {
-						parent.spawns[Started.type | Acknowledge](reactantFactory, s"inquisitive-producer#$producerIndex") { producer =>
+					def buildsInquisitiveProducer = {
+						val producerDoer = parent.provideDoer(s"inquisitive-producer#$producerIndex", descriptor)
+						parent.spawns[Started.type | Acknowledge, producerDoer.type](reactantFactory, producerDoer) { producer =>
 							producer.doer.checkWithin()
 							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
 
@@ -377,7 +367,7 @@ object Prueba {
 				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
-				println(s"+++ Descriptor: ${testingAide.defaultDoerProviderDescriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_MEGA}M")
+				println(s"+++ Descriptor: ${descriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_MEGA}M")
 				// println(s"After successful completion diagnostic:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
 
 				result.success((nanoAtEnd - nanoAtStart, consumption))
@@ -385,8 +375,8 @@ object Prueba {
 		}
 		result.future.andThen { tryDuration =>
 			// println(s"Before closing: duration=${tryDuration.map(_ / 1000000)}")
-			matrix.doerProvidersManager.shutdown()
-			Try(matrix.doerProvidersManager.awaitTermination(1, TimeUnit.SECONDS)) match {
+			manager.shutdown()
+			Try(manager.awaitTermination(1, TimeUnit.SECONDS)) match {
 				case Success(true) => println("Shutdown completed normally")
 				case Success(false) => println("Await termination timeout elapsed")
 				case Failure(cause) => println(s"Shutdown is not completed after one seconds: $cause")

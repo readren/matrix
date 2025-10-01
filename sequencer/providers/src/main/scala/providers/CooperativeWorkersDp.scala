@@ -1,13 +1,11 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.CooperativeWorkersDp.*
 import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
-import readren.sequencer.AbstractDoer
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*
@@ -28,8 +26,6 @@ object CooperativeWorkersDp {
 	 * If this design causes type-hierarchy problems, define it as a trait that extends [[Doer]] instead of [[AbstractDoer]].
 	 * */
 	abstract class DoerFacade extends AbstractDoer {
-		override type Tag = DoerProvider.Tag
-
 		/** Exposes the number of routines that are waiting to be executed sequentially. */
 		def numOfPendingTasks: Int
 	}
@@ -42,6 +38,10 @@ object CooperativeWorkersDp {
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
@@ -88,7 +88,7 @@ abstract class CooperativeWorkersDp(
 	private val doerThreadLocal: ThreadLocal[DoerFacade | Null] = new ThreadLocal()
 
 	protected def buildWorker(index: Int): Worker = new Worker(index)
-	
+
 	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any.
 	 *  Exposed for testing only. */
 	inline private[providers] def currentWorker: Runnable | Null = workerThreadLocal.get
@@ -97,6 +97,9 @@ abstract class CooperativeWorkersDp(
 	override def currentDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
 	protected open class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
+
+		override type Tag = thisProvider.Tag
+
 		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
 		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile protected var firstTaskInQueue: Runnable = null

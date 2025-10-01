@@ -26,7 +26,7 @@ class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 			val p1, p2, p3, p4, p5, p6, p7, p8: Long = 0
 		}
 		class DoerData(serial: Long) {
-			val doer: Doer = provider.provide(serial.toString)
+			val doer: Doer = provider.provide(provider.tagFromText(serial.toString))
 			var failed: Boolean = false
 			val promise: Promise[Int] = Promise()
 			var counter: Counter | Null = null

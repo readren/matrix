@@ -3,7 +3,11 @@ package examples
 
 import core.*
 import rf.RegularRf
-import utils.DefaultAide
+
+import readren.sequencer.manager.ShutdownAbleDpm
+import readren.sequencer.manager.descriptors.DefaultCooperativeWorkersDpd
+
+import java.net.URI
 
 object ExampleWithoutAskCapability {
 	private sealed trait CalcCmd
@@ -13,16 +17,21 @@ object ExampleWithoutAskCapability {
 	private case class SumResult(result: Int)
 
 	@main def runExample(): Unit = {
-		val matrix = new Matrix("example", DefaultAide)
+		val uri = new URI(null, "localhost", null, null)
+		val manager = new ShutdownAbleDpm
+		val rootDoer = manager.provideDoer(DefaultCooperativeWorkersDpd, "root")
+		val matrix = new Matrix(uri, rootDoer, manager)
 
-		matrix.spawns[CalcCmd, matrix.DefaultDoer](RegularRf, matrix.provideDefaultDoer("calculator"))(calculatorRelay => {
+		val calculatorDoer = matrix.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
+		matrix.spawns[CalcCmd, calculatorDoer.type](RegularRf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo) =>
 					replyTo.tell(SumResult(a + b))
 					Continue
 			}).flatMap { calculatorReactant =>
 				val endpointForCalculator = calculatorReactant.endpointProvider.local[CalcCmd]
 
-				matrix.spawns[Started.type | SumResult, matrix.DefaultDoer](RegularRf, matrix.provideDefaultDoer("user")) { userReactant =>
+				val userDoer = calculatorReactant.provideDoer(DefaultCooperativeWorkersDpd, "user")
+				matrix.spawns[Started.type | SumResult, userDoer.type](RegularRf, userDoer) { userReactant =>
 					val userEndpoint = userReactant.endpointProvider.local[SumResult]
 
 					{
@@ -39,7 +48,7 @@ object ExampleWithoutAskCapability {
 			}
 			.flatMap { userReactant => userReactant.stopDuty.onBehalfOf(matrix.doer) }
 			.trigger() { _ =>
-				matrix.doerProvidersManager.shutdown()
+				manager.shutdown()
 			}
 
 

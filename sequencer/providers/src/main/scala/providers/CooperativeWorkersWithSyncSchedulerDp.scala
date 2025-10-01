@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.CooperativeWorkersWithSyncSchedulerDp.{ScheduleFacade, SchedulingDoerFacade}
 
 import readren.common.CompileTime.getTypeName
@@ -20,6 +19,11 @@ object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSch
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
 	) extends CooperativeWorkersWithSyncSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
@@ -36,12 +40,40 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
-	private type Timer = SchedulingDoerImpl#ScheduleImpl
+	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
+	private class ScheduleImpl(val owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {
+		val activationSerial: AtomicLong = AtomicLong(Long.MaxValue)
 
-	/** The priority queue used to memorize the [[Timer]] instances and sort them by its next scheduled-time. */
-	private val priorityQueue = new MinHeapPriorityQueue[Timer]()
+		override def wasActivated: Boolean = activationSerial.get() != Long.MaxValue
 
-	/** Memorizes the earliest scheduled-time of all the [[Timer]] instances.
+		/** The routine whose execution is scheduled by this [[ScheduleImpl]].
+		 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
+		var runnable: Runnable | Null = null
+		/** Knows if the [[scheduler.enqueuedSchedulesByDoer]] collection contains this instance.
+		 * Its purpose is to improve efficiency by avoiding unnecessary manipulations of said collection.
+		 * Only accessed within the scheduling thread. */
+		var isTriggered = false
+		@volatile var isCanceled = false
+
+		/** Executes the routine associated to this [[ScheduleImpl]] */
+		inline def execute(): Unit = runnable.run()
+
+		def program(scheduledTime: MilliTime): Unit = {
+			this.scheduledTime = scheduledTime
+			thisProvider synchronized {
+				priorityQueue.add(this)
+				earliestScheduledTime = priorityQueue.peek.scheduledTime
+			}
+		}
+
+		override def toString: String =
+			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, $interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
+	}
+
+	/** The priority queue used to memorize the [[ScheduleImpl]] instances and sort them by its next scheduled-time. */
+	private val priorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
+
+	/** Memorizes the earliest scheduled-time of all the [[ScheduleImpl]] instances.
 	 * The only purpose of this variable is to improve efficiency by minimizing calls to [[priorityQueue.peek]].
 	 * Updates should occur within synchronized sections to avoid race conditions.
 	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed. */
@@ -66,13 +98,13 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
 
 		override def newDelaySchedule(delay: MilliDuration): Schedule =
-			new ScheduleImpl(delay, 0L, false)
+			new ScheduleImpl(thisDoer, delay, 0L, false)
 
 		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =
-			new ScheduleImpl(initialDelay, interval, true)
+			new ScheduleImpl(thisDoer, initialDelay, interval, true)
 
 		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
-			new ScheduleImpl(initialDelay, delay, false)
+			new ScheduleImpl(thisDoer, initialDelay, delay, false)
 
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			val activationTime = clock.currentTimeTimeRoundedUp
@@ -135,38 +167,6 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
 		override def isCanceled(schedule: ScheduleImpl): Boolean =
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
-
-		/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
-		class ScheduleImpl(override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {
-			val activationSerial: AtomicLong = AtomicLong(Long.MaxValue)
-
-			override def wasActivated: Boolean = activationSerial.get() != Long.MaxValue
-
-			/** The routine whose execution is scheduled by this [[Timer]].
-			 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
-			var runnable: Runnable | Null = null
-			/** Knows if the [[scheduler.enqueuedSchedulesByDoer]] collection contains this instance.
-			 * Its purpose is to improve efficiency by avoiding unnecessary manipulations of said collection.
-			 * Only accessed within the scheduling thread. */
-			var isTriggered = false
-			@volatile var isCanceled = false
-
-			def owner: SchedulingDoerImpl = thisDoer
-
-			/** Executes the routine associated to this [[Timer]] */
-			inline def execute(): Unit = runnable.run()
-
-			def program(scheduledTime: MilliTime): Unit = {
-				this.scheduledTime = scheduledTime
-				thisProvider synchronized {
-					priorityQueue.add(this)
-					earliestScheduledTime = priorityQueue.peek.scheduledTime
-				}
-			}
-
-			override def toString: String =
-				deriveToString(this) + s" scheduledTime: $scheduledTime"
-		}
 	}
 
 	override def lull(worker: Worker): Unit = {
@@ -187,7 +187,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 
 	private def pollDoerWithEarliestExpiredTimer(currentTime: MilliTime): DoerImpl | Null = thisProvider synchronized {
 		while true do {
-			val earliestToExpire: Timer = priorityQueue.peek
+			val earliestToExpire: ScheduleImpl = priorityQueue.peek
 			if earliestToExpire eq null then {
 				earliestScheduledTime = clock.MaxValue
 				return null

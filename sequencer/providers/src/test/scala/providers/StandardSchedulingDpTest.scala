@@ -1,8 +1,6 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.SchedulingDoerProviderTest
-
 /** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[StandardSchedulingDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
  */
 class StandardSchedulingDpTest extends SchedulingDoerProviderTest[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
@@ -11,6 +9,10 @@ class StandardSchedulingDpTest extends SchedulingDoerProviderTest[StandardSchedu
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	override protected def buildDoerProvider: DP = new StandardSchedulingDp() {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
 
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = thisSuite.onFailureReported(doer, failure)

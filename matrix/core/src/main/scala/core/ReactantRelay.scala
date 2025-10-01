@@ -2,7 +2,7 @@ package readren.matrix
 package core
 
 import readren.common.Maybe
-import readren.sequencer.{Doer, DoerProvider}
+import readren.sequencer.Doer
 
 import scala.collection.MapView
 
@@ -14,6 +14,8 @@ abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
 	/** The matrix this [[Reactant]] instance is part of. */
 	val matrix: AbstractMatrix
 
+	export matrix.provideDoer
+	
 	/** Indicates whether this [[Reactant]] was marked to be stopped, which does not necessarily mean that the stop process has already started.
 	 *
 	 * This method is thread-safe. */
@@ -29,19 +31,6 @@ abstract class ReactantRelay[-U, +D <: Doer] extends Procreative {
 	)(
 		using isSignalTest: IsSignalTest[V]
 	): doer.Duty[ReactantRelay[V, CD]]
-
-	/** Creates a child [[Reactant]] backed by a [[Doer]] provided by [[matrix.provideDefaultDoer]] with the specified tag.
-	 * Calls must be within the [[doer]]. */
-	def spawns[V](
-		childFactory: ReactantFactory,
-		childDoerTag: DoerProvider.Tag
-	)(
-		initialChildBehaviorBuilder: ReactantRelay[V, matrix.DefaultDoer] => Behavior[V]
-	)(
-		using isSignalTest: IsSignalTest[V]
-	): doer.Duty[ReactantRelay[V, matrix.DefaultDoer]] = {
-		spawns[V, matrix.DefaultDoer](childFactory, matrix.provideDefaultDoer(childDoerTag))(initialChildBehaviorBuilder)
-	}
 
 	/** Calls must be within the [[doer]]. */
 	def children: MapView[Long, ReactantRelay[?, ?]]

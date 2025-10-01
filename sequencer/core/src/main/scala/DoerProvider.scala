@@ -2,10 +2,6 @@ package readren.sequencer
 
 import readren.common.Maybe
 
-object DoerProvider {
-	type Tag = String // TODO move inside the trait and make abstract. 
-}
-
 /**
  * A provided interface that regularizes the usage of [[Doer]] providers.
  *
@@ -13,6 +9,10 @@ object DoerProvider {
  * @tparam D The type of the provided [[Doer]]. Must extend [[Doer]].
  */
 trait DoerProvider[+D <: Doer] {
+
+	/** The type of parameter of the [[provide]] method.
+	 * For implementations that create a new [[Doer]] instance for every call to [[provide]], this type is usually the same as the [[Doer.Tag]] of the provided [[Doer]] instances. */
+	type Tag
 
 	/**
 	 * Supplies a [[Doer]] instance.
@@ -24,8 +24,9 @@ trait DoerProvider[+D <: Doer] {
 	 *   Its solely goals is to help tracking to which objects the [[Doer]] is associated with, provided that said objects are also tagged.
 	 *   Implementations may use the `tag` for purposes such as debugging or tracking, but this is optional and not required for the [[DoerProvider]] functionality.
 	 */
-	def provide(tag: DoerProvider.Tag): D
+	def provide(tag: Tag): D
 
+	def tagFromText(text: String): Tag
 
 	/** @return the [[Doer]] instance — among those supplied by this [[DoerProvider]] — to which the current [[Thread]] is assigned; [[Maybe.empty]] otherwise. */
 	def currentDoer: Maybe[D]

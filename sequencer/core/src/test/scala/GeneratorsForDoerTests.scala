@@ -145,7 +145,7 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	export doer.*
 
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
-	val foreignDoer: Doer = doerProvider.provide(s"foreign-doer-$recursionLevel")
+	val foreignDoer: Doer = doerProvider.provide(doerProvider.tagFromText(s"foreign-doer-$recursionLevel"))
 
 	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Task]] instances. */
 	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests[foreignDoer.type](foreignDoer, doerProvider, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)

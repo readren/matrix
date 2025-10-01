@@ -3,10 +3,11 @@ package interactive
 
 import core.{Continue, Matrix, Stop}
 import rf.RegularRf
-import utils.DefaultAide
 
-import readren.sequencer.manager.descriptors.DefaultSyncSchedulingDpd
+import readren.sequencer.manager.ShutdownAbleDpm
+import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultSyncSchedulingDpd}
 
+import java.net.URI
 import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.FiniteDuration
 
@@ -17,10 +18,13 @@ object PruebaScheduling {
 
 		case class Tick(incitingId: List[Int])
 
-		val matrix = new Matrix("scheduled", DefaultAide)
+		val uri = new URI(null, "localhost", null, null)
+		val manager = new ShutdownAbleDpm
+		val rootDoer = manager.provideDoer(DefaultCooperativeWorkersDpd, "root")
+		val matrix = new Matrix(uri, rootDoer, manager)
 		println(s"Matrix created")
 
-		val schedulingDoer = matrix.provideDoer("scheduling-doer", DefaultSyncSchedulingDpd)
+		val schedulingDoer = matrix.provideDoer(DefaultSyncSchedulingDpd, "scheduling-doer")
 
 		if false then {
 			@volatile var inside = false
@@ -63,9 +67,9 @@ object PruebaScheduling {
 				}
 			}.trigger() { parent =>
 				parent.stopDuty.trigger() { _ =>
-					println(s"Diagnostics:\n${matrix.doerProvidersManager.diagnose(new StringBuilder())}")
+					println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")
 
-					matrix.doerProvidersManager.shutdown()
+					manager.shutdown()
 					println("shutdown executed")
 
 					diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
@@ -75,7 +79,7 @@ object PruebaScheduling {
 							sb.append("\n<<< Inspector <<<\n")
 							sb.append(
 								s"""Parent's diagnostic: ${parent.staleDiagnose}
-								   |SchedulingDoer's diagnostic: ${matrix.doerProvidersManager.diagnose(sb)}
+								   |SchedulingDoer's diagnostic: ${manager.diagnose(sb)}
 								   |""".stripMargin
 
 							)

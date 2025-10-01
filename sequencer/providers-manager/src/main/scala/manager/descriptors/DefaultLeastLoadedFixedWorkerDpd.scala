@@ -2,9 +2,14 @@ package readren.sequencer
 package manager
 package descriptors
 
+import manager.descriptors.DefaultAsyncSchedulingDpd.Tag
+import providers.LeastLoadedFixedWorkerDp
+
 import readren.common.CompileTime.getTypeName
-import readren.sequencer.providers.LeastLoadedFixedWorkerDp
 
 object DefaultLeastLoadedFixedWorkerDpd extends DoerProviderDescriptor[Doer](getTypeName[DefaultLeastLoadedFixedWorkerDpd.type]) {
-	override def build(owner: DoerProvidersManager): DoerProvider[Doer] = new LeastLoadedFixedWorkerDp.Impl()
+	override type Tag = Null
+	override type DP = LeastLoadedFixedWorkerDp.Impl
+
+	override def build(owner: DoerProvidersManager): DP = new LeastLoadedFixedWorkerDp.Impl()
 }

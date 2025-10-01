@@ -5,7 +5,6 @@ import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
-import readren.sequencer.DoerProvider
 
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
@@ -20,6 +19,10 @@ object StandardSchedulingDp {
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 	) extends StandardSchedulingDp {
+		override type Tag = String
+
+		override def tagFromText(text: String): String = text
+
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
@@ -32,14 +35,13 @@ object StandardSchedulingDp {
  * Designed for testing, but can be used in production in scenarios where few instances of [[Doer & SchedulingExtension]] are created.
  *
  */
-trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoerFacade], ShutdownAble {
-
+trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoerFacade], ShutdownAble { thisProvider =>
 	/** Thread-local storage for the current Doer instance. */
 	private val currentDoerThreadLocal: ThreadLocal[DoerImpl] = new ThreadLocal()
 
 	private val providedDoers: java.util.concurrent.ConcurrentLinkedQueue[DoerImpl] = new ConcurrentLinkedQueue()
 
-	override def provide(tag: DoerProvider.Tag): StandardSchedulingDp.ProvidedDoerFacade = {
+	override def provide(tag: Tag): StandardSchedulingDp.ProvidedDoerFacade = {
 		val doer = new DoerImpl(tag)
 		providedDoers.add(doer)
 		doer
@@ -52,9 +54,9 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 	 * This Doer provides the necessary infrastructure for testing while maintaining
 	 * the abstract interface required by Doer and SchedulingExtension.
 	 */
-	class DoerImpl(override val tag: DoerProvider.Tag) extends AbstractDoer, StandardSchedulingDp.ProvidedDoerFacade { thisDoer =>
+	class DoerImpl(override val tag: Tag) extends AbstractDoer, StandardSchedulingDp.ProvidedDoerFacade { thisDoer =>
 
-		override type Tag = DoerProvider.Tag
+		override type Tag = thisProvider.Tag
 
 		/** The single-threaded executor for this Doer. */
 		private[StandardSchedulingDp] val doSiThEx = Executors.newSingleThreadScheduledExecutor()

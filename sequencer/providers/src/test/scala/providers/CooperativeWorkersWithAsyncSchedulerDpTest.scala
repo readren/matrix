@@ -11,6 +11,10 @@ class CooperativeWorkersWithAsyncSchedulerDpTest extends SchedulingDoerProviderT
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	override protected def buildDoerProvider: DP = new CooperativeWorkersWithAsyncSchedulerDp(applyMemoryFence = false) {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
 
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = thisSuite.onFailureReported(doer, failure)

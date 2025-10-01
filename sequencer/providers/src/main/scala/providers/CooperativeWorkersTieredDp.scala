@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import DoerProvider.Tag
 import providers.CooperativeWorkersTieredDp.TieredDoerFacade
 
 import readren.common.Maybe
@@ -22,6 +21,10 @@ object CooperativeWorkersTieredDp {
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersTieredDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 
