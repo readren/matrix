@@ -75,10 +75,10 @@ object ScribeConfig {
 			.replace()
 
 		// Set debug level for Transmitter class
-		Logger("readren.matrix.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
+		Logger("readren.nexus.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
 
 		// Set debug level for Receiver class
-		Logger("readren.matrix.cluster.channel.Receiver").withMinimumLevel(Level.Debug).replace()
+		Logger("readren.nexus.cluster.channel.Receiver").withMinimumLevel(Level.Debug).replace()
 
 		Thread.setDefaultUncaughtExceptionHandler((t: Thread, e: Throwable) => scribe.error(s"Uncaught exception in thread ${t.getName}:", e))
 	}

@@ -1,7 +1,7 @@
 package readren.sequencer
 package manager
 
-/** Specifies how a [[Matrix]] instance interacts with the object responsible for managing the [[DoerProviderDescriptor]]s and corresponding [[DoerProvider]]s that the [[Matrix]] instance uses. */
+/** Manages and provides [[DoerProvider]] instances. */
 trait DoerProvidersManager {
 
 	/** Gets the [[DoerProvider]] associated with the provided [[DoerProviderDescriptor]]. If none exists one is created. */

@@ -72,27 +72,27 @@ lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration
 		)
 	)
 
-lazy val matrixCore = (project in file("matrix/core"))
+lazy val nexusCore = (project in file("nexus/core"))
 	.dependsOn(sequencerCore, sequencerProviders, sequencerProvidersManager)
 	.settings(
-		name := "matrix_core",
-		idePackagePrefix := Some("readren.matrix"),
+		name := "nexus_core",
+		idePackagePrefix := Some("readren.nexus"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val checkedReactant = (project in file("matrix/checked-reactant"))
-	.dependsOn(matrixCore)
+lazy val checkedSpuron = (project in file("nexus/checked-spuron"))
+	.dependsOn(nexusCore)
 	.settings(
-		name := "matrix_checked-reactant",
-		idePackagePrefix := Some("readren.matrix"),
+		name := "nexus_checked-spuron",
+		idePackagePrefix := Some("readren.nexus"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val cluster = (project in file("matrix/cluster"))
+lazy val cluster = (project in file("nexus/cluster"))
 	.dependsOn(common % "compile->compile;test->test", sequencerCore, sequencerProviders)
 	.settings(
-		name := "matrix_cluster",
-		idePackagePrefix := Some("readren.matrix"),
+		name := "nexus_cluster",
+		idePackagePrefix := Some("readren.nexus"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
@@ -106,7 +106,7 @@ lazy val consensus = (project in file("consensus"))
 
 // Root project - aggregates all subprojects
 lazy val root = (project in file("."))
-	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, matrixCore, checkedReactant, cluster, consensus)
+	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensus)
 	.settings(
 		name := "matrix",
 		scalacOptions ++= Seq("-source:future")
