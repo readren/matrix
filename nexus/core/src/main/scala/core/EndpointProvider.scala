@@ -1,17 +1,17 @@
 package readren.nexus
 package core
 
-class EndpointProvider[-U](receiver: Receiver[U]) {
+class ReceptorProvider[-U](receiver: Inqueue[U]) {
 
 	/** Thread-safe */
-	def local[M <: U]: Endpoint[M] = LocalEndpoint(receiver)
+	def local[M <: U]: Receptor[M] = LocalReceptor(receiver)
 
 	/** Thread-safe */
-	def remote[M <: U]: Endpoint[M] = RemoteEndpoint(receiver.uri)
+	def remote[M <: U]: Receptor[M] = RemoteReceptor(receiver.uri)
 
 	/** Thread-safe */
-	def forSpuron[M <: U](otherSpuronEndpoint: Endpoint[?]): Endpoint[M] = {
-		if otherSpuronEndpoint.isLocal then LocalEndpoint(receiver)
-		else RemoteEndpoint(receiver.uri)
+	def forOwnerOf[M <: U](foreignReceptor: Receptor[?]): Receptor[M] = {
+		if foreignReceptor.isLocal then LocalReceptor(receiver)
+		else RemoteReceptor(receiver.uri)
 	}
 }

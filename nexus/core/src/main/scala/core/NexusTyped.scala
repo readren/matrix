@@ -9,10 +9,10 @@ import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager}
 import java.net.URI
 
 /**
- * A nexus of [[Spuron]] instances.
+ * A nexus of [[Actant]] instances.
  *
- * Serves as the central hub for autonomous Spuron components.
- * While the Spuron instances manage their own internal behavior, the Nexus orchestrates their creation, registration, and overall coordination, using the execution services provided by the [[DoerProvidersManager]].
+ * Serves as the central hub for autonomous Actant components.
+ * While the Actant instances manage their own internal behavior, the Nexus orchestrates their creation, registration, and overall coordination, using the execution services provided by the [[DoerProvidersManager]].
  */
 class NexusTyped[+MD <: Doer](
 	override val uri: URI,

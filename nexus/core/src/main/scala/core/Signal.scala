@@ -16,7 +16,7 @@ sealed trait Signal {
 	def isRestartReceived: Boolean
 }
 
-/** After the spuron was started and before the first message is handled. */
+/** After the actant was started and before the first message is handled. */
 sealed abstract class Initialization extends Signal {
 	override final def isInitialization: Boolean = true
 
@@ -27,21 +27,21 @@ sealed abstract class Initialization extends Signal {
 	override final def isRestartReceived: Boolean = false
 }
 
-/** After the spuron was started for the first time but before the first message is handled. */
+/** After the actant was started for the first time but before the first message is handled. */
 case object Started extends Initialization {
 	override final def isStarted: Boolean = true
 
 	override final def isRestarted: Boolean = false
 }
 
-/** After the spuron was restarted and before the first message after the one that caused the restart is handled. */
+/** After the actant was restarted and before the first message after the one that caused the restart is handled. */
 case object Restarted extends Initialization {
 	override final def isStarted: Boolean = false
 
 	override final def isRestarted: Boolean = true
 }
 
-/** After a stop or restart command but before the spuron is terminated or restarted. */
+/** After a stop or restart command but before the actant is terminated or restarted. */
 sealed abstract class CmdReceived extends Signal {
 	override final def isInitialization: Boolean = false
 
@@ -52,14 +52,14 @@ sealed abstract class CmdReceived extends Signal {
 	override final def isCmdReceived: Boolean = true
 }
 
-/** After a stop command but before the spuron is terminated. */
+/** After a stop command but before the actant is terminated. */
 case object StopReceived extends CmdReceived {
 	override final def isStopReceived: Boolean = true
 
 	override final def isRestartReceived: Boolean = false
 }
 
-/** After a restart command but before the spuron is restarted. */
+/** After a restart command but before the actant is restarted. */
 case object RestartReceived extends CmdReceived {
 	override final def isStopReceived: Boolean = false
 

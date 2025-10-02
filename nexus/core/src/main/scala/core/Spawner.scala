@@ -10,45 +10,45 @@ object Spawner {
 
 }
 
-/** A spawner of [[SpuronCore]]s.
- * @param owner the [[Procreative]] that owns this [[Spawner]]. A [[Spawner]] is owned by either a [[SpuronCore]] or a [[NexusTyped]].
+/** A spawner of [[ActantCore]]s.
+ * @param owner the [[Procreative]] that owns this [[Spawner]]. A [[Spawner]] is owned by either a [[ActantCore]] or a [[NexusTyped]].
  * The [[Doer]] referred by this parameter should be the same as the assigned to the `owner`.
- * @param initialSpuronSerial child spurons' serial will start at this value.
+ * @param initialSerial child actant's serial will start at this value.
  * @tparam D the singleton type of the [[Doer]] assigned to the `owner`.
  * */
-class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSpuronSerial: SpuronCore.SerialNumber) { thisSpawner =>
+class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: ActantCore.SerialNumber) { thisSpawner =>
 
 	/**
-	 * The [[Doer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createsSpuron]]
+	 * The [[Doer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createsActant]]
 	 * Is the same [[Doer]] instance as the owner's.
 	 */
 
 	/** Access must be within the [[doer]]. */
-	private var spuronSerialSequencer: SpuronCore.SerialNumber = initialSpuronSerial
+	private var lastChildSerial: ActantCore.SerialNumber = initialSerial
 
 	/** Access must be within the [[doer]]. */
-	private val children: mutable.LongMap[SpuronCore[?, ?]] = mutable.LongMap.empty
+	private val children: mutable.LongMap[ActantCore[?, ?]] = mutable.LongMap.empty
 
 	/** A view of the children that aren't fully stopped.
 	 * Access must be within the [[doer]]. */
-	val childrenView: MapView[Long, SpuronCore[?, ?]] = children.view
+	val childrenView: MapView[Long, ActantCore[?, ?]] = children.view
 
-	/** Creates a [[Duty]] that creates a new [[SpuronCore]].
+	/** Creates a [[Duty]] that creates a new [[ActantCore]].
 	 * Calls must be within the [[doer]]. */
-	def createsSpuron[U, CD <: Doer](
-		childFactory: SpuronFactory,
+	def createsActant[U, CD <: Doer](
+		childFactory: ActantFactory,
 		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: Spuron[U, CD] => Behavior[U]
-	): doer.Duty[Spuron[U, CD]] = {
+		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
+	): doer.Duty[Actant[U, CD]] = {
 		doer.checkWithin()
-		spuronSerialSequencer += 1
-		val spuronSerial = spuronSerialSequencer
-		childFactory.createsSpuron(spuronSerial, thisSpawner, childDoer, isSignalTest, initialBehaviorBuilder)
+		lastChildSerial += 1
+		val childSerial = lastChildSerial
+		childFactory.createsActant(childSerial, thisSpawner, childDoer, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(doer)
-			.map { spuron =>
-				children.addOne(spuronSerial, spuron)
-				spuron
+			.map { childActant =>
+				children.addOne(childSerial, childActant)
+				childActant
 			}
 	}
 

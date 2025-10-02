@@ -36,7 +36,7 @@ object Prueba {
 
 	private case class Acknowledge(override val toQuestion: Inquisitive.QuestionId) extends Inquisitive.Answer
 
-	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Endpoint[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
+	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Receptor[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
 	private val NUMBER_OF_WARM_UP_REPETITIONS = 3
 	private val NUMBER_OF_MEASURE_REPETITIONS = 10
@@ -67,7 +67,7 @@ object Prueba {
 		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", DefaultSyncSchedulingDpd, SequentialMsgBufferSf),
 	)
 
-	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: SpuronFactory) {
+	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {
 
 		var accumulatedDuration: Long = 0
 		var minimumDuration: Long = Long.MaxValue
@@ -126,8 +126,8 @@ object Prueba {
 		println("Key caught. Main thread is ending.")
 	}
 
-	private def run[DefaultDoer <: Doer](descriptor: DoerProviderDescriptor[DefaultDoer], spuronFactory: SpuronFactory, loopId: Int): Future[(Long, Long)] = {
-		println(s"\nTest started:  loop=$loopId, descriptor=${descriptor.id}, factory=${spuronFactory.getClass.getSimpleName}")
+	private def run[DefaultDoer <: Doer](descriptor: DoerProviderDescriptor[DefaultDoer], actantFactory: ActantFactory, loopId: Int): Future[(Long, Long)] = {
+		println(s"\nTest started:  loop=$loopId, descriptor=${descriptor.id}, factory=${actantFactory.getClass.getSimpleName}")
 		val uri = new URI(null, "localhost", null, null)
 		val manager = new ShutdownAbleDpm
 		val rootDoer = manager.provideDoer("root", descriptor)
@@ -167,7 +167,7 @@ object Prueba {
 
 		var nanoAtEnd: Long = 0
 		val nanoAtStart = System.nanoTime()
-		val outEndpoint = nexus.buildEndpoint[Report] {
+		val outReceptor = nexus.buildReceptorFor[Report] {
 			case consumedReport: ConsumedReport =>
 				consumedReport.doer.checkWithin()
 
@@ -211,19 +211,19 @@ object Prueba {
 		// println(nexus.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
 		val parentDoer = nexus.provideDoer("parent", descriptor)
-		nexus.spawns[ProducerWasStopped | ConsumerWasStopped, parentDoer.type](spuronFactory, parentDoer) { parent =>
+		nexus.createsActant[ProducerWasStopped | ConsumerWasStopped, parentDoer.type](actantFactory, parentDoer) { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Duty_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					val consumerDoer = parent.provideDoer(s"consumer#$consumerIndex", descriptor)
-					parent.spawns[Consumable, consumerDoer.type](spuronFactory, consumerDoer) { consumer =>
+					parent.spawns[Consumable, consumerDoer.type](actantFactory, consumerDoer) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
 							if consumable.value >= 0 then {
-								outEndpoint.tell(ConsumedReport(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
+								outReceptor.tell(ConsumedReport(consumer.doer, consumable.producerIndex, consumerIndex, consumable.value))
 								// if consumable.value == 9 && (consumerIndex % 10) == 5 then throw new Exception("a ver que onda")
 								if useInquisitiveProducer then consumable.replyTo.tell(Acknowledge(consumable.questionId))
 								Continue
@@ -235,10 +235,10 @@ object Prueba {
 					}.map { consumer =>
 						parent.doer.checkWithin()
 						parent.watch(consumer, ConsumerWasStopped(consumerIndex))
-						consumer.endpointProvider.local[Consumable]
+						consumer.receptorProvider.local[Consumable]
 					}
 				}
-			).trigger(true) { consumersEndpoints =>
+			).trigger(true) { consumersReceptors =>
 				parent.doer.checkWithin()
 				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 
@@ -248,18 +248,18 @@ object Prueba {
 					 * */
 					def buildsRegularProducer = {
 						val producerDoer = parent.provideDoer(s"regular-producer#$producerIndex", descriptor)
-						parent.spawns[Initialization, producerDoer.type](spuronFactory, producerDoer) { producer =>
+						parent.spawns[Initialization, producerDoer.type](actantFactory, producerDoer) { producer =>
 							producer.doer.checkWithin()
 
 							def loop(restartCount: Int): Behavior[Initialization] = {
 								_ =>
 									if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
-										for consumerEndpoint <- consumersEndpoints do
-											consumerEndpoint.tell(Consumable(producerIndex, restartCount))
+										for consumerReceptor <- consumersReceptors do
+											consumerReceptor.tell(Consumable(producerIndex, restartCount))
 										RestartWith(loop(restartCount + 1))
 									} else {
-										for consumerEndpoint <- consumersEndpoints do
-											consumerEndpoint.tell(Consumable(producerIndex, -1))
+										for consumerReceptor <- consumersReceptors do
+											consumerReceptor.tell(Consumable(producerIndex, -1))
 										Stop
 									}
 							}
@@ -277,23 +277,23 @@ object Prueba {
 					 */
 					def buildsInquisitiveProducer = {
 						val producerDoer = parent.provideDoer(s"inquisitive-producer#$producerIndex", descriptor)
-						parent.spawns[Started.type | Acknowledge, producerDoer.type](spuronFactory, producerDoer) { producer =>
+						parent.spawns[Started.type | Acknowledge, producerDoer.type](actantFactory, producerDoer) { producer =>
 							producer.doer.checkWithin()
-							val selfEndpoint = producer.endpointProvider.local[Acknowledge]
+							val selfAckReceptor = producer.receptorProvider.local[Acknowledge]
 
 							behaviors.inquisitiveNest(producer) { (started: Started.type) =>
 								import Inquisitive.*
 								var completedConsumersCounter = 0
 								// for each consumer simultaneously do: send a Consumable to it and wait for the Acknowledge before sending the next Consumable to it, repeating this cycle NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
-								for (consumerEndpoint, consumerIndex) <- consumersEndpoints.zipWithIndex do {
+								for (consumerReceptor, consumerIndex) <- consumersReceptors.zipWithIndex do {
 									def loop(numberOfMessagesAlreadySentToConsumer: Int): Unit = {
 
 										if numberOfMessagesAlreadySentToConsumer < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
-											consumerEndpoint.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfEndpoint))
+											consumerReceptor.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfAckReceptor))
 												.andThen(_ => loop(numberOfMessagesAlreadySentToConsumer + 1))
 												.triggerAndForget(true)
 										} else {
-											consumerEndpoint.tell(Consumable(producerIndex, -1))
+											consumerReceptor.tell(Consumable(producerIndex, -1))
 											completedConsumersCounter += 1
 											if completedConsumersCounter == NUMBER_OF_CONSUMERS then producer.stop()
 										}
@@ -306,7 +306,7 @@ object Prueba {
 						}
 					}
 
-					val buildsProducer: parent.doer.Duty[Spuron[?, ?]] =
+					val buildsProducer: parent.doer.Duty[Actant[?, ?]] =
 						if useInquisitiveProducer then buildsInquisitiveProducer
 						else buildsRegularProducer
 					buildsProducer.trigger(true) { producer =>
@@ -322,13 +322,13 @@ object Prueba {
 			{
 				case cws@ConsumerWasStopped(consumerIndex) =>
 					parent.doer.checkWithin()
-					outEndpoint.tell(cws)
+					outReceptor.tell(cws)
 					activeConsumers -= 1
 					if activeProducers > 0 || activeConsumers > 0 then {
 						// println(s"Consumer $consumerIndex stopped. Active children: ${parent.children.size}")
 						Continue
 					} else {
-						outEndpoint.tell(End)
+						outReceptor.tell(End)
 						Stop
 					}
 				case ProducerWasStopped(producerIndex, producerDoer) =>
@@ -338,7 +338,7 @@ object Prueba {
 						// println(s"Producer $producerIndex (#${producerDoer.id}) stopped. Active children: ${parent.children.size}")
 						Continue
 					} else {
-						outEndpoint.tell(End)
+						outReceptor.tell(End)
 						Stop
 					}
 			}

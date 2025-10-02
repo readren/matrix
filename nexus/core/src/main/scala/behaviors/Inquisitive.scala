@@ -17,7 +17,7 @@ object Inquisitive {
 	 */
 	trait Question[A <: Answer] {
 		val questionId: QuestionId
-		val replyTo: Endpoint[A]
+		val replyTo: Receptor[A]
 	}
 
 	/**
@@ -32,16 +32,16 @@ object Inquisitive {
 		val toQuestion: QuestionId
 	}
 
-	extension [A <: Answer, Q <: Question[A], U >: A](endpoint: Endpoint[Q]) 
+	extension [A <: Answer, Q <: Question[A], U >: A](receptor: Receptor[Q])
 		/**
-		 * Sends a question constructed by the provided `questionBuilder` to the specified endpoint, and returns an instance of {{{ inquisitive.spuron.doer.SubscriptableDuty[A] }}} that will be completed when the corresponding answer is received.
+		 * Sends a question constructed by the provided `questionBuilder` to the specified [[Receptor]], and returns an instance of {{{ inquisitive.agent.doer.SubscriptableDuty[A] }}} that will be completed when the corresponding answer is received.
 		 *
 		 * @param questionBuilder A function that takes a unique [[QuestionId]] and builds a [[Question]] of type `Q`.
 		 * @param inquisitive The instance of [[Inquisitive]] responsible for managing the interaction. It is the interceptor 
 		 * @return A subscriptable duty of type `SubscriptableDuty[A]`, representing the eventual answer to the question.
 		 */
-		def ask(questionBuilder: Inquisitive.QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.SubscriptableDuty[A] = {
-			inquisitive.ask(endpoint, questionBuilder)
+		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.SubscriptableDuty[A] = {
+			inquisitive.ask(receptor, questionBuilder)
 		}
 	
 }
@@ -52,15 +52,14 @@ object Inquisitive {
  * This class is intended to be used as the interceptor behavior of an [[UnitedNest]]. See [[behaviors.inquisitiveNest]].
  *
  * The `Inquisitive` class encapsulates the logic for managing the lifecycle of questions and answers.
- * It allows components to send **questions** to specific endpoints, track the pending requests, 
- * and handle **answers** when they are received.
+ * It allows components to send **questions** to specific [[Receptor]]s, track the pending requests, and handle **answers** when they are received.
  *
- * @param agent The [[Spuron]] responsible for relaying answers.
+ * @param agent The [[Actant]] responsible for relaying answers.
  * @param unaskedAnswersBehavior A fallback behavior to handle unexpected answers (default is `Ignore`).
  * @tparam A The type of answers that this behavior manages. Must extend the `Answer` trait.
  * @tparam U A supertype of `A`, representing the broader category of compatible answers.
  */
-class Inquisitive[A <: Answer, U >: A](val agent: Spuron[U, ?], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
+class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
 	private var lastQuestionId = 0L
 	private val pendingQuestions: mutable.LongMap[agent.doer.Covenant[A]] = mutable.LongMap.empty
 
@@ -90,20 +89,20 @@ class Inquisitive[A <: Answer, U >: A](val agent: Spuron[U, ?], unaskedAnswersBe
 	}
 
 	/**
-	 * Sends a question to a specified `Endpoint` 
+	 * Sends a question to a specified `Receptor`
 	 *
-	 * @param endpoint The target `Endpoint` to send the question to.
+	 * @param receptor The target `Receptor` to send the question to.
 	 * @param questionBuilder A function that builds the `Question` using a `QuestionId`.
 	 * @tparam Q The type of the `Question`, constrained to match `A`.
-	 * @return A {{{ spuron.doer.SubscriptableDuty[A] }}} instance that will be completed when the answer is received.
+	 * @return A {{{ actant.doer.SubscriptableDuty[A] }}} instance that will be completed when the answer is received.
 	 */
-	def ask[Q <: Question[A]](endpoint: Endpoint[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.SubscriptableDuty[A] = {
+	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.SubscriptableDuty[A] = {
 		assert(agent.doer.isInSequence)
 		val covenant = new agent.doer.Covenant[A]
 		lastQuestionId += 1
 		pendingQuestions.update(lastQuestionId, covenant)
 		val question = questionBuilder(lastQuestionId)
-		endpoint.tell(question)
+		receptor.tell(question)
 		covenant.subscriptableDuty
 	}
 }

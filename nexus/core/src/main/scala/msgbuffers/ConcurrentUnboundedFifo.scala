@@ -1,7 +1,7 @@
 package readren.nexus
 package msgbuffers
 
-import core.{Inbox, SpuronCore, Receiver}
+import core.{Inbox, ActantCore, Inqueue}
 
 import readren.common.Maybe
 import readren.sequencer.Doer
@@ -12,8 +12,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.AbstractIterator
 
 /**
- * @param owner the [[SpuronCore]] that owns this [[Inbox]] */
-class ConcurrentUnboundedFifo[M](owner: SpuronCore[M, ?]) extends Receiver[M], Inbox[M] {
+ * @param owner the [[ActantCore]] that owns this [[Inbox]] */
+class ConcurrentUnboundedFifo[M](owner: ActantCore[M, ?]) extends Inqueue[M], Inbox[M] {
 	private val queue = new ConcurrentLinkedQueue[M]()
 
 	/** Incremented before a message is added, and decremented after a message is withdrawn. Therefore, its value tend to be equal to the queue's actual size but may be greater.

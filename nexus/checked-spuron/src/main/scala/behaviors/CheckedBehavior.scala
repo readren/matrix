@@ -44,7 +44,7 @@ trait CheckedBehavior[-A, E <: Exception /* : Typeable*/] {
 	 * Otherwise, the `case m: M => ...` part would be unchecked, and we can't use [[TypeTest]] here because the current version of scala (2.6.2) only generates  capabilities for catch clauses of the form `case ex: Ex =>`.
 	 * Additionally, the `safer` method must reside within `makeSafe` to preserve the visibility and proper scoping of `E`.
 	 *
-	 * @param recovery A complete function that converts exceptions of type `E` to an indicator of the behavior with which the host spuron will handle the next message.
+	 * @param recovery A complete function that converts exceptions of type `E` to an indicator of the behavior with which the host actant will handle the next message.
 	 * @return A safe behavior that handles exceptions internally
 	 *
 	 * @example

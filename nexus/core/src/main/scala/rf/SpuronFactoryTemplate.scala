@@ -5,30 +5,30 @@ import core.*
 
 import readren.sequencer.Doer
 
-abstract class SpuronFactoryTemplate[MS[u] <: Inbox[u] & Receiver[u]] extends SpuronFactory {
+abstract class ActantFactoryTemplate[MS[u] <: Inbox[u] & Inqueue[u]] extends ActantFactory {
 	/** Design note: Allows delegating the construction to subsidiary methods without losing type safety. */
 	type MsgBuffer[u] = MS[u]
 
-	/** Creates the pending messages buffer needed by the [[createsSpuron]] method. */
-	protected def createMsgBuffer[U, D <: Doer](spuron: SpuronCore[U, D]): MsgBuffer[U]
+	/** Creates the pending messages buffer needed by the [[createsActant]] method. */
+	protected def createMsgBuffer[U, D <: Doer](actant: ActantCore[U, D]): MsgBuffer[U]
 
-	protected def createEndpointProvider[U](msgBuffer: MsgBuffer[U]): EndpointProvider[U] = new EndpointProvider[U](msgBuffer)
+	protected def createReceptorProvider[U](msgBuffer: MsgBuffer[U]): ReceptorProvider[U] = new ReceptorProvider[U](msgBuffer)
 
-	override def createsSpuron[U, D <: Doer](
-		serial: SpuronCore.SerialNumber,
+	override def createsActant[U, D <: Doer](
+		serial: ActantCore.SerialNumber,
 		progenitor: Spawner[?],
-		spuronDoer: D,
+		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
-		initialBehaviorBuilder: Spuron[U, D] => Behavior[U]
-	): spuronDoer.Duty[SpuronCore[U, D]] = {
-		spuronDoer.Duty_mineFlat { () =>
-			new SpuronCore[U, D](serial, spuronDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
+		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
+	): actantDoer.Duty[ActantCore[U, D]] = {
+		actantDoer.Duty_mineFlat { () =>
+			new ActantCore[U, D](serial, actantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)
 
-				override val endpointProvider: EndpointProvider[U] = createEndpointProvider(inbox)
+				override val receptorProvider: ReceptorProvider[U] = createReceptorProvider(inbox)
 
-			}.initialize().castTypePath(spuronDoer)
+			}.initialize().castTypePath(actantDoer)
 		}
 	}
 }

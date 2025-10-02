@@ -2,7 +2,7 @@ package readren.nexus
 package interactive
 
 import behaviors.CheckedBehavior
-import core.{Continue, Endpoint, NexusTyped}
+import core.{Continue, Receptor, NexusTyped}
 import rf.RegularSf
 
 import readren.sequencer.manager.ShutdownAbleDpm
@@ -16,9 +16,9 @@ object PruebaChecked {
 
 	private trait Cmd
 
-	private case class DoWork(integer: Int, replyTo: Endpoint[Response]) extends Cmd
+	private case class DoWork(integer: Int, replyTo: Receptor[Response]) extends Cmd
 
-	private case class Relax(replyTo: Endpoint[Response]) extends Cmd
+	private case class Relax(replyTo: Receptor[Response]) extends Cmd
 	
 	private class MyException extends Exception
 
@@ -30,7 +30,7 @@ object PruebaChecked {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val parentDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "parent")
-		nexus.spawns[Cmd, parentDoer.type](RegularSf, parentDoer) { parent =>
+		nexus.createsActant[Cmd, parentDoer.type](RegularSf, parentDoer) { parent =>
 			CheckedBehavior.factory[Cmd, MyException] {
 				case cmd: DoWork =>
 					if (cmd.integer % 5) >= 3 then throw new MyException
@@ -44,15 +44,15 @@ object PruebaChecked {
 				Continue
 			}
 		}.trigger() { parent =>
-			val parentEndpoint = parent.endpointProvider.local
-			val outEndpoint = nexus.buildEndpoint[Response] { response =>
+			val parentReceptor = parent.receptorProvider.local
+			val outReceptor = nexus.buildReceptorFor[Response] { response =>
 				if response.text eq null then manager.shutdown()
 				else println(response)
 			}
 			for i <- 0 to 20 do {
-				parentEndpoint.tell(DoWork(i, outEndpoint))
+				parentReceptor.tell(DoWork(i, outReceptor))
 			}
-			parentEndpoint.tell(Relax(outEndpoint))
+			parentReceptor.tell(Relax(outReceptor))
 		}
 
 	}

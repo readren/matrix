@@ -42,9 +42,9 @@ object PruebaScheduling {
 		} else {
 			val diagnosticScheduler = new Scheduler
 
-			nexus.spawns[Tick, schedulingDoer.type](RegularSf, schedulingDoer) { spuron =>
-				val selfEndpoint = spuron.endpointProvider.local[Tick]
-				selfEndpoint.tell(Tick(List.empty))
+			nexus.createsActant[Tick, schedulingDoer.type](RegularSf, schedulingDoer) { actant =>
+				val tickSelfReceptor = actant.receptorProvider.local[Tick]
+				tickSelfReceptor.tell(Tick(List.empty))
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)
 				var counter: Int = 0
 				{
@@ -59,7 +59,7 @@ object PruebaScheduling {
 							var repetitions = 0
 							schedulingDoer.schedule(schedule) { _ =>
 								println(f"counter=$counter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d, incitingId=$incitingId")
-								selfEndpoint.tell(Tick(counter :: incitingId))
+								tickSelfReceptor.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}
 							Continue

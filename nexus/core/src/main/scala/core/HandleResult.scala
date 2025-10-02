@@ -24,12 +24,12 @@ case object Continue extends WithSameBehavior
 
 case object Stop extends WithSameBehavior
 
-/** Restart the spuron after stopping all children. */
+/** Restart the actant after stopping all children. */
 case object Restart extends WithSameBehavior
 
-/** Restart the spuron without stopping any of its child spurons.
- * Note that if the [[Behavior.handle]] of the current behavior responds with [[Stop]] to the [[RestartReceived]] signal then the restart is canceled and the [[SpuronCore]] is stopped instead.
- * @param behavior the behavior that the spuron will have after the restart. Note that the consequent [[RestartReceived]] signal will be handled by the spuron's current behavior, while the [[Restarted]] signal will be handled by the specified behavior. */
+/** Restart the actant without stopping any of its child actants.
+ * Note that if the [[Behavior.handle]] of the current behavior responds with [[Stop]] to the [[RestartReceived]] signal then the restart is canceled and the [[ActantCore]] is stopped instead.
+ * @param behavior the behavior that the actant will have after the restart. Note that the consequent [[RestartReceived]] signal will be handled by the actant's current behavior, while the [[Restarted]] signal will be handled by the specified behavior. */
 case class RestartWith[-A](behavior: Behavior[A]) extends HandleResult[A] {
 	override def mapBehavior[B, A1 <: A](f: Behavior[A1] => Behavior[B]): HandleResult[B] = RestartWith(f(behavior))
 

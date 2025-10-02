@@ -12,7 +12,7 @@ import java.net.URI
 object ExampleWithoutAskCapability {
 	private sealed trait CalcCmd
 
-	private case class Sum(a: Int, b: Int, replyTo: Endpoint[SumResult]) extends CalcCmd
+	private case class Sum(a: Int, b: Int, replyTo: Receptor[SumResult]) extends CalcCmd
 
 	private case class SumResult(result: Int)
 
@@ -23,20 +23,20 @@ object ExampleWithoutAskCapability {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val calculatorDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		nexus.spawns[CalcCmd, calculatorDoer.type](RegularSf, calculatorDoer)(_ => {
+		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularSf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo) =>
 					replyTo.tell(SumResult(a + b))
 					Continue
-			}).flatMap { calculatorSpuron =>
-				val endpointForCalculator = calculatorSpuron.endpointProvider.local[CalcCmd]
+			}).flatMap { calculator =>
+				val receptorForCalculator = calculator.receptorProvider.local[CalcCmd]
 
-				val userDoer = calculatorSpuron.provideDoer(DefaultCooperativeWorkersDpd, "user")
-				nexus.spawns[Started.type | SumResult, userDoer.type](RegularSf, userDoer) { userSpuron =>
-					val userEndpoint = userSpuron.endpointProvider.local[SumResult]
+				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
+				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularSf, userDoer) { user =>
+					val userReceptor = user.receptorProvider.local[SumResult]
 
 					{
 						case _: Started.type =>
-							endpointForCalculator.tell(Sum(3, 7, userEndpoint))
+							receptorForCalculator.tell(Sum(3, 7, userReceptor))
 							Continue
 
 						case SumResult(result) =>
@@ -46,7 +46,7 @@ object ExampleWithoutAskCapability {
 				}
 
 			}
-			.flatMap { userSpuron => userSpuron.stopDuty.onBehalfOf(nexus.doer) }
+			.flatMap { user => user.stopDuty.onBehalfOf(nexus.doer) }
 			.trigger() { _ =>
 				manager.shutdown()
 			}

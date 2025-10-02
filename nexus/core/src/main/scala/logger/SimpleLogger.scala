@@ -1,7 +1,7 @@
 package readren.nexus
 package logger
 
-import core.{Logger, Receiver}
+import core.{Logger, Inqueue}
 
 import scribe.mdc.MDC
 
@@ -17,8 +17,8 @@ class SimpleLogger(aLevel: Logger.Level) extends Logger {
 		case Logger.Level.warn => scribe.Level.Debug
 		case Logger.Level.error => scribe.Level.Debug
 	}
-	
-	override val destination: Receiver[String] = new Receiver[String] {
+
+	override val destination: Inqueue[String] = new Inqueue[String] {
 		val mdc: scribe.mdc.MDC = summon[scribe.mdc.MDC]
 		override def submit(message: String): Unit = scribe.log(scribeLevel, mdc, message)
 

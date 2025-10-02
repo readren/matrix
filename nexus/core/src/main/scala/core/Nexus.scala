@@ -6,7 +6,7 @@ import readren.sequencer.manager.DoerProviderDescriptor
 
 import java.net.URI
 
-/** A facade of [[NexusTyped]] that exposes what the contained [[Spuron]] need to know about.
+/** A facade of [[NexusTyped]] that exposes what the an [[Actant]] needs to know about the [[Nexus]] that contain it.
  *  Nexus is an invented word that comes from nexus + orchestrator.
  * */
 abstract class Nexus(val name: String) extends Procreative { thisNexus =>
@@ -27,30 +27,30 @@ abstract class Nexus(val name: String) extends Procreative { thisNexus =>
 
 
 	/** thread-safe */
-	def spawns[U, CD <: Doer](
-		childFactory: SpuronFactory,
+	def createsActant[U, CD <: Doer](
+		childFactory: ActantFactory,
 		childDoer: CD
 	)(
-		initialBehaviorBuilder: Spuron[U, CD] => Behavior[U]
+		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[Spuron[U, CD]] = {
+	): doer.Duty[Actant[U, CD]] = {
 		doer.Duty_mineFlat { () =>
-			spawner.createsSpuron[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
+			spawner.createsActant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}
 
-	def buildEndpointProvider[A](callback: A => Unit): EndpointProvider[A] = {
-		val receiver = new Receiver[A] {
-			override def submit(message: A): Unit = callback(message)
+	def buildReceptorProviderFor[A](consumer: A => Unit): ReceptorProvider[A] = {
+		val receiver = new Inqueue[A] {
+			override def submit(message: A): Unit = consumer(message)
 
 			override def uri: _root_.java.net.URI = thisNexus.uri
 		}
 		// TODO register the receiver in order to be accessible from remote JVMs.
-		new EndpointProvider[A](receiver)
+		new ReceptorProvider[A](receiver)
 	}
 
-	def buildEndpoint[A](receiver: A => Unit): Endpoint[A] =
-		buildEndpointProvider[A](receiver).local
+	def buildReceptorFor[A](consumer: A => Unit): Receptor[A] =
+		buildReceptorProviderFor[A](consumer).local
 
 }

@@ -1,7 +1,7 @@
 package readren.nexus
 package msgbuffers
 
-import core.{Inbox, SpuronCore, Receiver}
+import core.{Inbox, ActantCore, Inqueue}
 
 import readren.common.Maybe
 import readren.sequencer.Doer
@@ -10,8 +10,8 @@ import java.net.URI
 import scala.collection.AbstractIterator
 
 /**
- * @param owner the [[SpuronCore]] that owns this [[Inbox]] */
-class SequentialUnboundedFifo[M](owner: SpuronCore[M, ?]) extends Receiver[M], Inbox[M] { thisFifoInbox =>
+ * @param owner the [[ActantCore]] that owns this [[Inbox]] */
+class SequentialUnboundedFifo[M](owner: ActantCore[M, ?]) extends Inqueue[M], Inbox[M] { thisFifoInbox =>
 
 	/** Should be accessed only within the [[doer]] */
 	private val queue: java.util.ArrayDeque[M] = new java.util.ArrayDeque()

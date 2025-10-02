@@ -3,8 +3,8 @@ package core
 
 import java.net.URI
 
-/** Facade of the [[SpuronFactory.MsgBuffer]]. Exposes the receiving aspect of it to the [[Endpoint]]s. */
-trait Receiver[-U] {
+/** Facade exposed to the [[Receptor]]s of the buffer where all the messages received from them are enqueued. */
+trait Inqueue[-U] {
 	
 	/** Should be thread-safe. */
 	def submit(message: U): Unit

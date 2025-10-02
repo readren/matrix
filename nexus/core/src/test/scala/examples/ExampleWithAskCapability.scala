@@ -13,7 +13,7 @@ import java.net.URI
 object ExampleWithAskCapability {
 	sealed trait CalcCmd
 
-	case class Sum(a: Int, b: Int, replyTo: Endpoint[SumResult], questionId: QuestionId) extends CalcCmd, Question[SumResult]
+	case class Sum(a: Int, b: Int, replyTo: Receptor[SumResult], questionId: QuestionId) extends CalcCmd, Question[SumResult]
 
 	case class SumResult(result: Int, toQuestion: QuestionId) extends Answer
 
@@ -26,31 +26,31 @@ object ExampleWithAskCapability {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val calculatorDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		nexus.spawns[CalcCmd, calculatorDoer.type](RegularSf, calculatorDoer)(_ => {
+		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularSf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo, questionId) =>
 					replyTo.tell(SumResult(a + b, questionId))
 					Continue
 			})
 			.flatMap { calculator =>
-				val calculatorEndpoint = calculator.endpointProvider.local[CalcCmd]
+				val calculatorReceptor = calculator.receptorProvider.local[CalcCmd]
 
 				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
-				nexus.spawns[Started.type | SumResult, userDoer.type](RegularSf, userDoer) { userSpuron =>
-					val userEndpoint = userSpuron.endpointProvider.local[SumResult]
+				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularSf, userDoer) { user =>
+					val userReceptor = user.receptorProvider.local[SumResult]
 
-					behaviors.inquisitiveNest(userSpuron)(new Behavior[Started.type] {
+					behaviors.inquisitiveNest(user)(new Behavior[Started.type] {
 						override def handle(message: Started.type): HandleResult[Started.type] =
-							calculatorEndpoint.ask(questionId => Sum(3, 7, userEndpoint, questionId))
+							calculatorReceptor.ask(questionId => Sum(3, 7, userReceptor, questionId))
 								.trigger(true) { answer =>
 									println(s"3 + 7 = ${answer.result}")
-									userSpuron.stop()
+									user.stop()
 								}
 							Continue
 					})()
 				}
 
 			}
-			.flatMap { userSpuron => userSpuron.stopDuty.onBehalfOf(nexus.doer) }
+			.flatMap { user => user.stopDuty.onBehalfOf(nexus.doer) }
 			.trigger() { _ =>
 				manager.shutdown()
 			}

@@ -11,8 +11,8 @@ object Logger {
 trait Logger {
 	
 	val level: Level
-	
-	val destination: Receiver[String]
+
+	val destination: Inqueue[String]
 	
 	inline def debug(inline text: String): Unit = {
 		if level.ordinal <= Level.debug.ordinal then destination.submit(text)   

@@ -2,7 +2,7 @@ package readren.nexus
 package behaviors
 
 import behaviors.Inquisitive.Answer
-import core.{Behavior, Spuron}
+import core.{Behavior, Actant}
 
 import readren.sequencer.Doer
 
@@ -24,8 +24,8 @@ inline def ignore: Behavior[Any] = Ignore
  * - Enable nested behaviors to seamlessly issue questions and handle responses inline using the `ask` capability, reducing boilerplate and improving clarity.
  *
  * **Parameters**:
- * @param spuron              The [[Spuron]] representing the context in which the questions and answers are exchanged.
- * @param nestedBehavior        The primary behavior of the spuron, extended with the ability to make structured questions.
+ * @param actant              The [[Actant]] representing the context in which the questions and answers are exchanged.
+ * @param nestedBehavior        The primary behavior of the actant, extended with the ability to make structured questions.
  * @param unaskedAnswerBehavior A fallback behavior used to handle unexpected answers that do not correspond to a previously asked question. Defaults to [[Ignore]].
  * @tparam M The type of messages handled by the nested behavior.
  * @tparam A The type of answers, constrained to extend [[Answer]].
@@ -33,8 +33,8 @@ inline def ignore: Behavior[Any] = Ignore
  *
  * @return A new behavior that combines the `nestedBehavior`'s message-handling capabilities with the [[Inquisitive.ask]] mechanism for structured question-response handling.
  */
-inline def inquisitiveNest[M, A <: Answer, U >: A](spuron: Spuron[U, ?])(nestedBehavior: Inquisitive[A, U] ?=> Behavior[M])(unaskedAnswerBehavior: Behavior[A] = Ignore): Behavior[A | M] = {
-	val inquisitiveInterceptor = new Inquisitive[A, U](spuron, unaskedAnswerBehavior)
+inline def inquisitiveNest[M, A <: Answer, U >: A](actant: Actant[U, ?])(nestedBehavior: Inquisitive[A, U] ?=> Behavior[M])(unaskedAnswerBehavior: Behavior[A] = Ignore): Behavior[A | M] = {
+	val inquisitiveInterceptor = new Inquisitive[A, U](actant, unaskedAnswerBehavior)
 	unitedNest[A, M](inquisitiveInterceptor, nestedBehavior(using inquisitiveInterceptor))
 }
 
