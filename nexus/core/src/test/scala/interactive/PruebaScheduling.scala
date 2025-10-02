@@ -2,7 +2,7 @@ package readren.nexus
 package interactive
 
 import core.{Continue, NexusTyped, Stop}
-import rf.RegularSf
+import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultSyncSchedulingDpd}
@@ -42,7 +42,7 @@ object PruebaScheduling {
 		} else {
 			val diagnosticScheduler = new Scheduler
 
-			nexus.createsActant[Tick, schedulingDoer.type](RegularSf, schedulingDoer) { actant =>
+			nexus.createsActant[Tick, schedulingDoer.type](RegularAf, schedulingDoer) { actant =>
 				val tickSelfReceptor = actant.receptorProvider.local[Tick]
 				tickSelfReceptor.tell(Tick(List.empty))
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)

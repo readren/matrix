@@ -2,7 +2,7 @@ package readren.nexus
 package examples
 
 import core.*
-import rf.RegularSf
+import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.DefaultCooperativeWorkersDpd
@@ -23,7 +23,7 @@ object ExampleWithoutAskCapability {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val calculatorDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularSf, calculatorDoer)(_ => {
+		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularAf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo) =>
 					replyTo.tell(SumResult(a + b))
 					Continue
@@ -31,7 +31,7 @@ object ExampleWithoutAskCapability {
 				val receptorForCalculator = calculator.receptorProvider.local[CalcCmd]
 
 				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
-				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularSf, userDoer) { user =>
+				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularAf, userDoer) { user =>
 					val userReceptor = user.receptorProvider.local[SumResult]
 
 					{

@@ -3,7 +3,7 @@ package interactive
 
 import behaviors.Inquisitive
 import core.*
-import rf.{RegularSf, SequentialMsgBufferSf}
+import factories.{RegularAf, SequentialInqueueAf}
 
 import readren.sequencer.Doer
 import readren.sequencer.manager.descriptors.{DefaultAsyncSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultRoundRobinDpd, DefaultSyncSchedulingDpd}
@@ -57,14 +57,14 @@ object Prueba {
 	private class Pixel(var value: Int, var updateSerial: Int)
 
 	private val probes: Seq[Probe[?]] = List(
-		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularSf),
-		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularSf),
-		Probe("CooperativeWorkersWithAsyncScheduler and RegularRf", DefaultAsyncSchedulingDpd, RegularSf),
-		Probe("CooperativeWorkersWithSyncScheduler and RegularRf", DefaultSyncSchedulingDpd, RegularSf),
-		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialMsgBufferSf),
-		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialMsgBufferSf),
-		Probe("CooperativeWorkersWithAsyncScheduler and SequentialRf", DefaultAsyncSchedulingDpd, SequentialMsgBufferSf),
-		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", DefaultSyncSchedulingDpd, SequentialMsgBufferSf),
+		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularAf),
+		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularAf),
+		Probe("CooperativeWorkersWithAsyncScheduler and RegularRf", DefaultAsyncSchedulingDpd, RegularAf),
+		Probe("CooperativeWorkersWithSyncScheduler and RegularRf", DefaultSyncSchedulingDpd, RegularAf),
+		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithAsyncScheduler and SequentialRf", DefaultAsyncSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", DefaultSyncSchedulingDpd, SequentialInqueueAf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {

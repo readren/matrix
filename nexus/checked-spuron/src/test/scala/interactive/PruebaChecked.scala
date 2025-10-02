@@ -3,7 +3,7 @@ package interactive
 
 import behaviors.CheckedBehavior
 import core.{Continue, Receptor, NexusTyped}
-import rf.RegularSf
+import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.DefaultCooperativeWorkersDpd
@@ -30,7 +30,7 @@ object PruebaChecked {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val parentDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "parent")
-		nexus.createsActant[Cmd, parentDoer.type](RegularSf, parentDoer) { parent =>
+		nexus.createsActant[Cmd, parentDoer.type](RegularAf, parentDoer) { parent =>
 			CheckedBehavior.factory[Cmd, MyException] {
 				case cmd: DoWork =>
 					if (cmd.integer % 5) >= 3 then throw new MyException
