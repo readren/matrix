@@ -6,9 +6,7 @@ import readren.sequencer.manager.DoerProviderDescriptor
 
 import java.net.URI
 
-/** A facade of [[NexusTyped]] that exposes what the an [[Actant]] needs to know about the [[Nexus]] that contain it.
- *  Nexus is an invented word that comes from nexus + orchestrator.
- * */
+/** A facade of [[NexusTyped]] that exposes the functionality that an [[Actant]] needs from the [[Nexus]] that contain it. */
 abstract class Nexus(val name: String) extends Procreative { thisNexus =>
 
 	val doer: Doer
