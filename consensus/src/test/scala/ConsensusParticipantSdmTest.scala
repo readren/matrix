@@ -1,6 +1,6 @@
 package readren.consensus
 
-import ConsensusParticipantSdm.{Record, AppendResult, BehaviorOrdinal, LEADER, LeaderTransition, RecordIndex, SnapshotPoint, StateInfo, Term, Vote}
+import ConsensusParticipantSdm.{AppendResult, BehaviorOrdinal, LEADER, Record, RecordIndex, StateInfo, Term, Vote}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
@@ -8,7 +8,7 @@ import org.scalacheck.effect.PropF
 import readren.sequencer.MilliDuration
 import readren.sequencer.providers.CooperativeWorkersWithAsyncSchedulerDp
 
-import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap, Executors}
+import java.util.concurrent.Executors
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
 import scala.compiletime.uninitialized
@@ -16,7 +16,7 @@ import scala.concurrent.ExecutionContext
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
-class ConciliatorTest extends ScalaCheckEffectSuite {
+class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	private given ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
 
@@ -83,11 +83,11 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		private var receiverIndex: Int = initialReceiverIndex
 
 		/**
-		 * Sends a command to a node of the net.
-		 * Initially, the target node is the node at the `initialReceiverIndex`.
-		 * If the target node responds with a [[RedirectTo]] the target node is updated to the redirected node and following commands are sent to the new target node.
-		 * If the target node responds with an [[Unable]] the command is retried on the next node of the net.
-		 * If the target node responds with a [[Processed]] the command is considered processed and the target node is not updated.
+		 * Sends a command to a [[Node]] of the net.
+		 * Initially, the target [[Node]] is the [[Node]] at the [[initialReceiverIndex]].
+		 * If the target [[Node]] responds with a [[RedirectTo]] the target [[Node]] is updated to the redirected [[Node]] and following commands are sent to the new target [[Node]].
+		 * If the target [[Node]] responds with an [[Unable]] the target [[Node]] is updated to the next [[Node]] of the [[Net]] and the command is retried to it.
+		 * If the target [[Node]] responds with a [[Processed]] the command is considered processed and the target [[Node]] is not updated.
 		 * @param command The command to send.
 		 * @param isFallback Whether the command is a fallback command.
 		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
@@ -139,8 +139,8 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		override type ClientCommand = TestCommand
 		override type StateMachineResponse = String
 
-		var logListener: LogListener = new LogListener() {
-			override def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+		var appendRecordListener: AppendRecordListener = new AppendRecordListener() {
+			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
 		}
 
 		private var _participant: ConsensusParticipant = uninitialized
@@ -148,7 +148,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		/** @return the [[ConsensusParticipant]] service instance corresponding to this [[Node]]. */
 		inline def participant: ConsensusParticipant = _participant
 
-		/** Initializes this node, adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
+		/** Initializes this [[Node]], adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
 		def initializes(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
 			net.addNode(myId, thisNode)
 			sequencer.Duty_mine { () =>
@@ -157,7 +157,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 		}
 
 
-		/** Initializes this node and waits its [[ConsensusParticipant]] service instance to be started. */
+		/** Initializes this [[Node]] and waits its [[ConsensusParticipant]] service instance to be started. */
 		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
 			net.addNode(myId, thisNode)
 			sequencer.Duty_mineFlat { () =>
@@ -251,7 +251,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 			override def saves(workspace: WS): sequencer.Task[Unit] = {
 				memory = workspace
-				sequencer.Task_successful(()) // TODO add a delay
+				sequencer.Task_unit // TODO add a delay
 			}
 		}
 
@@ -315,7 +315,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				}
 				if conflictFound then {
 					logBuffer.takeInPlace(storedIndex)
-					logListener.onConflict(storedIndex + logBufferOffset, participant.getTerm, participant.getBehaviorOrdinal)
+					appendRecordListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getBehaviorOrdinal)
 				}
 				while newIndex < records.size do {
 					logBuffer += records(newIndex)
@@ -329,8 +329,13 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 			override def release(): Unit = ()
 		}
 
-		trait LogListener {
-			def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit
+		trait AppendRecordListener {
+			/** Called when any entry in the log buffer of a [[Node]] is overwritten.
+			 * @param index the [[RecordIndex]] of the first overwritten entry.
+			 * @param firstReplacedRecord the first stored [[Record]] that is removed.
+			 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
+			 * @param behaviorOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
+			def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit
 		}
 
 		object notificationScribe extends NotificationListener {
@@ -361,15 +366,19 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 	}
 
 
-	/** Helper to create and initialize the nodes. */
-	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int)(notificationListenerBuilder: (node: Node) => node.NotificationListener): net.netSequencer.Duty[Array[Unit]] = {
+	/** Helper to create and initialize [[Node]]s.
+	 * @param net the [[Net]] where the created [[Node]] instances will be added.
+	 * @param clusterSize the number of [[Node]]s to create.
+	 * @param weakReferencesHolder a collection to which the created instances of [[NotificationListener]] are added in order to avoid being garbage-collected.
+	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor.
+	 * @return a [[Duty]] that completes when the creation and initialization is complete. */
+	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int, weakReferencesHolder: mutable.Buffer[AnyRef])(notificationListenerBuilder: (node: Node) => node.NotificationListener): net.netSequencer.Duty[Array[Unit]] = {
 		val ids = createIds(clusterSize)
 		val nodes = for id <- ids yield Node(id, ids.toSet, net)
-		var notificationsListenersHolder: List[Any] = Nil
 		val nodeInitializerByIndex =
 			for node <- nodes yield {
 				val nl = notificationListenerBuilder(node)
-				notificationsListenersHolder = nl :: notificationsListenersHolder
+				weakReferencesHolder.addOne(nl)
 				node.initializes(initialNotificationListener = nl).onBehalfOf(net.netSequencer)
 			}
 		net.netSequencer.Duty_sequenceToArray(nodeInitializerByIndex)
@@ -377,23 +386,24 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 
 	test("Election Safety - at most one leader can be elected in a given term") {
+		inline val timeout = 20
+		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, 5).flatMap(n => Gen.choose(0, n - 1).map(m => (n, m))),
-			Gen.choose(1, 11)
+			Gen.choose(1, timeout + 1 + timeout / 10)
 		) { (t, latency) =>
 			val (clusterSize, receiverIndex) = t
 			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
-			val net = new Net(latency, 10)
-			val leaderNodeByTerm: ConcurrentMap[Term, Node] = new ConcurrentHashMap()
+			val net = new Net(latency, timeout)
+			val leaderNodeByTerm: Array[Node] = new Array(numberOfCommandsToSend + 1)
 			val atMostOneLeaderCommitment = net.netSequencer.Commitment[Unit]
+			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			val initializes = createsAndInitializesNodes(net, clusterSize) { node =>
+			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
-						leaderNodeByTerm.compute(term, (t, previousLeader) =>
-							if previousLeader ne null then atMostOneLeaderCommitment.break(new AssertionError(s"Node $node became leader at term $t despite node $previousLeader was a leader of the same term before"))()
-							node
-						)
+						if leaderNodeByTerm(term) eq null then leaderNodeByTerm(term) = node
+						else atMostOneLeaderCommitment.break(new AssertionError(s"Node $node became leader at term $t despite node ${leaderNodeByTerm(term)} was a leader of the same term before"))()
 					}
 				}
 			}
@@ -404,7 +414,7 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 				inline val MAX_RETRIES = 9
 
 				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.netSequencer.Task[Unit] = {
-					if commandIndex >= 10 || atMostOneLeaderCommitment.isCompleted then net.netSequencer.Task_unit
+					if commandIndex >= numberOfCommandsToSend || atMostOneLeaderCommitment.isCompleted then net.netSequencer.Task_unit
 					else if retriesCounter > MAX_RETRIES then net.netSequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
 					else for {
 						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
@@ -436,10 +446,13 @@ class ConciliatorTest extends ScalaCheckEffectSuite {
 
 			val net = new Net(latency, 10)
 			val leaderNeverOverwritesCommitment = net.netSequencer.Commitment[Unit]
-			val initializes = createsAndInitializesNodes(net, clusterSize) { node =>
-				node.logListener = new node.LogListener() {
-					override def onConflict(index: RecordIndex, term: Term, behaviorOrdinal: BehaviorOrdinal): Unit =
-						if behaviorOrdinal == LEADER then leaderNeverOverwritesCommitment.break(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index in term $term."))()
+			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
+
+			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+				node.appendRecordListener = new node.AppendRecordListener() {
+					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
+						if behaviorOrdinal == LEADER then leaderNeverOverwritesCommitment.break(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))()
+					}
 				}
 				node.DefaultNotificationListener()
 			}

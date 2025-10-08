@@ -12,11 +12,12 @@ import scala.util.{Failure, Success, Try}
 
 
 object ConsensusParticipantSdm {
-	/** The type of record indices.
+	/** The type of the index for the logs where [[Record]]s are stored.
 	 * Index base is 1.
-	 * Zero means before the first record. */
+	 * Zero means before the first log [[Record]] entry. */
 	final type RecordIndex = Long
-	/** The type of terms.
+	/** The integer type used for term numbers.
+	 * Terms are numbered with consecutive integers. Each term begins when a [[ConsensusParticipantSdm.ConsensusParticipant]] becomes leader.
 	 * Starts from 1.
 	 * Zero means "before first election". */
 	final type Term = Int
@@ -165,7 +166,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	/** The response to a client command.
 	 * @see [[Cluster.MessagesListener.onCommandFromClient]]. */
-	trait ResponseToClient
+	sealed trait ResponseToClient
 
 	case class Processed(recordIndex: RecordIndex, content: StateMachineResponse) extends ResponseToClient
 
@@ -232,7 +233,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param prevRecordIndex The index of record after which the specified `records` should be appended.
 			 * @param prevRecordTerm The term of the record after which the specified `records` should be appended.
 			 * @param records The records to append.
-			 * @param leaderCommit The index of the highest log entry known to be committed by the leader.
+			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
 			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult]
@@ -272,7 +273,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param prevLogIndex the [[RecordIndex]] of the [[Record]] after which the records should be appended.
 			 * @param prevLogTerm the expected [[Term]] of the [[Record]] at `prevLogIndex`.
 			 * @param records The records to append.
-			 * @param leaderCommit The index of the highest log entry known to be committed by the leader.
+			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
 			def asksToAppendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult]
@@ -433,9 +434,9 @@ trait ConsensusParticipantSdm { thisModule =>
 	//// PARTICIPANT'S CONSENSUS SERVICE
 
 	/**
-	 * A consensus algorithm for managing a replicated log in distributed systems.
+	 * A service of consensus for managing a replicated log with other participants in a distributed system.
 	 *
-	 * This algorithm enables multiple participants (typically hosted on different nodes) to reach agreement on values.
+	 * This service algorithm enables multiple participants (typically hosted on different nodes) to reach agreement on values.
 	 * Once consensus is reached on a value, that decision becomes final and irreversible.
 	 *
 	 * Like Raft, this consensus algorithm relies on strong leadership and makes progress when a majority of participants
@@ -506,7 +507,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var currentTerm: Term = 0
 
 		/** The index of the highest entry known to be committed according to this participant.
-		 * A log record is committed once the leader that created the record has replicated it on a majority of the servers.
+		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
 		 * This also commits all preceding records in the leader’s log, including records created by previous leaders.
 		 * Should be informed to the [[Workspace]] by calling [[Workspace.informCommitIndex]] whenever it changes. */
 		private var commitIndex: RecordIndex = 0
@@ -616,6 +617,46 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
+			/**
+			 * Handles an AppendEntries RPC from the leader, attempting to reconcile log state and apply committed records.
+			 *
+			 * This method performs the following steps:
+			 *
+			 *   - Rejects the request if:
+			 *     - This participant is still starting or was stopped (`ordinal < ISOLATED`)
+			 *     - The leader's term is stale (`inquirerTerm < currentTerm`)
+			 *     - The leader's `prevRecordIndex` does not match the term at that index locally
+			 *
+			 *   - If the leader's term is newer or this participant is not yet a follower:
+			 *     - Updates `currentTerm` to `inquirerTerm`
+			 *     - Triggers a state update process via `updatesState.triggerExposingFailures()`
+			 *
+			 *   - Appends new records from the leader, resolving any log conflicts
+			 *     - Uses `workspace.appendResolvingConflicts` to reconcile entries starting at `prevRecordIndex + 1`
+			 *
+			 *   - Applies committed records to the state machine in log order:
+			 *     - Determines `newCommitIndex` as the minimum of `leaderCommit` and `lastAppendedRecordIndex`
+			 *     - Iteratively applies records from `commitIndex + 1` to `newCommitIndex`
+			 *     - Handles `Command[ClientCommand]` entries by invoking `machine.appliesClientCommand`
+			 *     - On failure, retries up to `applyCommandRetries` times before failing the task
+			 *     - Other record types (`LeaderTransition`, `SnapshotPoint`, `ConfigurationChange`) are currently unimplemented
+			 *
+			 *   - If the participant remains in a valid state (`ordinal > STARTING`):
+			 *     - Updates `commitIndex` and informs the workspace
+			 *     - Persists the updated workspace via `storage.saves`
+			 *     - On failure to persist, transitions to `Stopped` and returns a failed result
+			 *
+			 * @param inquirerId         ID of the leader sending the AppendEntries request
+			 * @param inquirerTerm       Term of the leader
+			 * @param prevRecordIndex    Index of the record preceding the new entries
+			 * @param prevRecordTerm     Term of the preceding record
+			 * @param records            New records to append
+			 * @param leaderCommit       Commit index reported by the leader
+			 * @return a [[sequencer.Task]] yielding [[AppendResult]]:
+			 *         - If all the records were appended and commands corresponding to commited [[Record]]s successfully applied: contains the current term, success flag, and behavior ordinal;
+			 *         - If rejected: contains the current term (or 0), failure flag, and behavior ordinal
+			 *         - If a command application failed or the participant failed to persist its [[Workspace]]: contains the exception.
+			 */
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
 				assert(isInSequence)
 				if ordinal < ISOLATED then sequencer.Task_successful(AppendResult(0, false, ordinal))
@@ -634,10 +675,12 @@ trait ConsensusParticipantSdm { thisModule =>
 					// Unconditionally apply commited records to the state machine (in log order)
 					val newCommitIndex = if leaderCommit < lastAppendedRecordIndex then leaderCommit else lastAppendedRecordIndex
 
-					def applyRecordLoop(index: RecordIndex): sequencer.Task[Any] = {
-						if index <= newCommitIndex then {
+					def applyCommitedRecordsLoop(index: RecordIndex): sequencer.Task[Any] = {
+						if index > newCommitIndex then sequencer.Task_unit
+						else {
 							val task: sequencer.Task[Any] = workspace.getRecordAt(index) match {
 								case command: Command[ClientCommand] @unchecked =>
+									// Execute the command on the state machine and discard successful outcomes, relying on deterministic execution guarantees. // TODO add a setting to enable result equality verification across state machines by returning each result to the leader for comparison.
 									machine.appliesClientCommand(index, command.command).recover { e =>
 										scribe.error(s"$hostId: Unexpected error while applying commited records to the state machine. This participant's state-machine must be restarted and commands replayed.", e)
 										become(Starting(true, true))
@@ -654,18 +697,18 @@ trait ConsensusParticipantSdm { thisModule =>
 							var retriesCounter = 0
 							task.transformWith {
 								case Success(_) =>
-									applyRecordLoop(index + 1)
+									applyCommitedRecordsLoop(index + 1)
 								case Failure(e) =>
 									if retriesCounter < applyCommandRetries then {
 										retriesCounter += 1
 										task
 									} else sequencer.Task_failed(e)
 							}
-						} else sequencer.Task_successful(())
+						}
 					}
 
 					for {
-						_ <- applyRecordLoop(commitIndex + 1)
+						_ <- applyCommitedRecordsLoop(commitIndex + 1)
 						result <- {
 							if currentBehavior.ordinal <= STARTING then sequencer.Task_successful(AppendResult(0, false, ordinal))
 							else {
@@ -911,7 +954,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				replicateUncommitedRecords().trigger(true) {
 					case Success(_) => // do nothing
 					case Failure(e) =>
-						scribe.trace(s"$hostId: Failed to replicate pending records:", e)
+						scribe.trace(s"$hostId: Failed to replicate records that weren't commited when becoming the leader:", e)
 				}
 			}
 
@@ -934,11 +977,19 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/**
-			 * Replicates uncommitted records to all followers.
-			 *	- If firstEmptyRecordIndex > indexOfNextRecordToSend for a follower: send AppendEntries RPC with log entries starting at indexOfNextRecordToSend
-			 *		- If successful: update indexOfNextRecordToSend and matchIndex for follower
-			 *		- If AppendEntries fails because of log inconsistency: decrement indexOfNextRecordToSend and retry
-			 *	- If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
+			 * Attempts to replicate uncommitted [[Record]]s to all participants.
+			 * Detailed behavior:
+			 *		- If [[Record]] weren't replicated to a follower, replicate them.
+			 *			- If successful: update the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]]
+			 *			- If AppendEntries fails because of log inconsistency: decrement the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]], and retry.
+			 *		- If there exists an N such that N > [[commitIndex]], a majority of the [[highestRecordIndexKnowToBeReplicated_ByParticipantIndex]] entries is ≥ N, and log[N].term == [[currentTerm]]: set commitIndex = N
+			 *		- If there are laggard participants (a minority whose corresponding entry in [[highestRecordIndexKnowToBeReplicated_ByParticipantIndex]] trails the leader's [[commitIndex]]), initiate targeted retries to catch them up.
+			 * @return a [[sequencer.Task]] that yields [[Unit]] if either:
+			 *         - there is no uncommited [[Record]] to replicate;
+			 *         - all the uncommited ones are replicated to a majority of the participants;
+			 *         - or the behavior of this participant changed during the process.
+			 *
+			 * Completes with a failure otherwise. // TODO: not true. Currently it always successes.
 			 * */
 			private def replicateUncommitedRecords(): sequencer.Task[Unit] = {
 				// First, abort the failed replications loop if it is running.
@@ -946,15 +997,15 @@ trait ConsensusParticipantSdm { thisModule =>
 				failedReplicationsLoopSchedule = Maybe.empty
 				// Then, start regular replication to all followers.
 				val until = workspace.firstEmptyRecordIndex
-				// Create a task that appends uncommited records for each follower.
-				val asksToAppendUncommitedRecords_byFollowerIndex =
-					for followerIndex <- otherParticipants.indices yield {
-						val followerId = otherParticipants(followerIndex)
-						appendsRecordsToFollower(followerIndex, until)
+				// For every other participants, generate a task to replicate records this participant holds and believes the other lack.
+				val asksToAppendPendingRecords_byParticipantIndex =
+					for otherParticipantIndex <- otherParticipants.indices yield {
+						val followerId = otherParticipants(otherParticipantIndex)
+						appendsRecordsToParticipant(otherParticipantIndex, until)
 					}
-				// Execute the tasks in parallel.
-				for appendResults <- sequencer.Task_sequenceHardyToArray(asksToAppendUncommitedRecords_byFollowerIndex) yield {
-					// If the behavior hasn't changed, then the leader is still the same, and we can continue.
+				// Execute the tasks in parallel. Note that the tasks, when successful, update the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnowToBeReplicated_ByParticipantIndex` arrays.
+				for appendResults <- sequencer.Task_sequenceHardyToArray(asksToAppendPendingRecords_byParticipantIndex) yield {
+					// If the behavior hasn't changed while waiting the result, then the leader is still the same, and we can continue.
 					if currentBehavior eq this then {
 						// Update the commitIndex if a majority of the followers have replicated the uncommited records.
 						// If there exists an N such that N > commitIndex, a majority of highestEntryIndexKnowToBeReplicated_ByParticipantIndex[i] ≥ N, and getRecordAt[N].term == currentTerm: set commitIndex = N
@@ -964,81 +1015,96 @@ trait ConsensusParticipantSdm { thisModule =>
 							n += 1
 						}
 
-						// For those minority of followers whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because they failed to replicate the uncommited records), retry to append records to them.
+						// For those minority of followers whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because they failed to replicate the uncommited records), retry the ask to append records to them.
 						// This retry is indefinite until this method (replicateUncommitedRecords) is called again (as the effect of an external stimulus).
-						def loop(previousTryResults: Array[Try[Unit]]): Unit = {
+						def retryLaggardFollowers(previousTryResults: Iterable[(previousTryResult: Try[Unit], participantIndex: Int)]): Unit = {
 							if currentBehavior ne this then return
-							val schedule = sequencer.newDelaySchedule(failedReplicationsLoopInterval)
-							failedReplicationsLoopSchedule = Maybe.some(schedule)
-							sequencer.schedule(schedule) { _ =>
-								if currentBehavior eq this then {
-									val retryTasks =
-										for followerIndex <- previousTryResults.indices yield {
-											val followerId = otherParticipants(followerIndex)
-											previousTryResults(followerIndex) match {
-												case Success(_) =>
-													assert(highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) >= commitIndex)
-													sequencer.Task_successful(())
-
-												case Failure(e) =>
-													if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) >= commitIndex then {
-														sequencer.Task_successful(())
-													} else {
-														scribe.info(s"$hostId: Retrying to replicate commited records to $followerId because of:", e)
-														appendsRecordsToFollower(followerIndex, workspace.firstEmptyRecordIndex) // TODO Is `firstEmptyRecordIndex` the right index to retry until? Or should it be the `commitIndex`?
-													}
-											}
+							val indicesOfLaggardParticipants: List[Int] = previousTryResults.foldLeft(Nil) { (accum, elem) =>
+								elem.previousTryResult match {
+									case Success(_) =>
+										assert(highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex)
+										accum
+									case Failure(e) =>
+										if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex then accum
+										else {
+											scribe.info(s"$hostId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
+											elem.participantIndex :: accum
 										}
-									sequencer.Task_sequenceHardyToArray(retryTasks).map(loop).triggerAndForget(true)
+								}
+							}
+							if indicesOfLaggardParticipants.nonEmpty then {
+								val schedule = sequencer.newDelaySchedule(failedReplicationsLoopInterval)
+								failedReplicationsLoopSchedule = Maybe.some(schedule)
+								sequencer.schedule(schedule) { _ =>
+									if currentBehavior eq this then {
+										val appendTasks = for followerIndex <- indicesOfLaggardParticipants yield appendsRecordsToParticipant(followerIndex, workspace.firstEmptyRecordIndex) // TODO Is `firstEmptyRecordIndex` the right index to retry until? Or should it be the `commitIndex`?
+										sequencer.Task_sequenceHardyToArray(appendTasks)
+											.map(appendResults => retryLaggardFollowers(appendResults.zipWithIndex))
+											.triggerAndForget(true)
+									}
 								}
 							}
 						}
 
-						loop(appendResults)
+						retryLaggardFollowers(appendResults.zipWithIndex)
 					}
 				}
 			}
 
 			/**
-			 * Creates a task that sends log records to the specified follower, starting from the follower's next expected record up to (but not including) the given index.
-			 * If the follower's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
-			 * @param followerIndex The index of the follower in the [[otherParticipants]] array.
+			 * Creates a task that sends log records to the specified participant (assuming optimistically it is in [[Follower]] state), starting from the participant's next record to send, up to (but not including) the given index.
+			 * If the participant's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
+			 * @param destinationParticipantIndex The index of the participant in the [[otherParticipants]] array.
 			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[workspace.firstEmptyRecordIndex]]?
-			 * @return A task that attempts to append records to the follower.
+			 * @return A task that attempts to append records to the specified participant, yielding [[Unit]] if the participant was successful applying all the commands.
 			 */
-			private def appendsRecordsToFollower(followerIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
-				val followerId = otherParticipants(followerIndex)
-				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(followerIndex)
-				if until <= indexOfNextRecordToSend then sequencer.Task_successful(Maybe.empty)
+			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
+				val destinationParticipantId = otherParticipants(destinationParticipantIndex)
+				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
+				if until <= indexOfNextRecordToSend then sequencer.Task_unit
 				else {
 					val recordsToSend = workspace.getRecordsBetween(indexOfNextRecordToSend, until)
 					val previousRecordIndex = indexOfNextRecordToSend - 1
 					val previousRecordTerm = if previousRecordIndex == 0 then 0 else workspace.getRecordAt(previousRecordIndex).term
 					for {
-						AppendResult(followerTerm, success, ordinal) <- followerId.asksToAppendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
+						appendResult <- destinationParticipantId.asksToAppendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
 						result <- {
-							// If the behavior haven't changed, then the leader is still the same, and we can continue.
-							if currentBehavior ne this then sequencer.Task_successful(())
-							else {
-								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(followerIndex)
-								if followerTerm > currentTerm then {
-									// If the term is greater than the current term, then the leader has changed. So, start the state-update process.
-									currentTerm = followerTerm
-									updatesState.triggerExposingFailures()
-									// Yield a successful result to avoid the retry loop.
-									sequencer.Task_successful(())
-								} else if success then {
-									// If the follower has successfully appended the records, then update the index of the next record to send and the highest record index known to be replicated.
-									indexOfNextRecordToSend_ByParticipantIndex(followerIndex) += recordsToSend.size
-									highestRecordIndexKnowToBeReplicated_ByParticipantIndex(followerIndex) = indexOfNextRecordToSend + recordsToSend.size
-									sequencer.Task_successful(())
-								} else if indexOfNextRecordToSend > workspace.logBufferOffset then {
-									// If the follower has not successfully appended the records because his the previous record is not the same as the previous record in my log, then try again at the previous record.
-									indexOfNextRecordToSend_ByParticipantIndex(followerIndex) = indexOfNextRecordToSend - 1
-									appendsRecordsToFollower(followerIndex, until)
-								} else {
-									scribe.error(s"$hostId: Unable to replicate uncommited records to $followerId because its log has inconsitencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
-									sequencer.Task_successful(())
+							// If this participant's behavior changed while waiting the follower response, ignore the successful response and yield a successful result to avoid the retry loop.
+							if currentBehavior ne this then sequencer.Task_unit
+							// If the term is greater than the current term, then the leader has changed. So:
+							else if appendResult.term > currentTerm then {
+								// update the current term and start the state-update process
+								currentTerm = appendResult.term
+								updatesState.triggerExposingFailures()
+								// Yield a successful result to avoid the retry loop below.
+								sequencer.Task_unit
+							} else {
+								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
+								// If the follower has successfully appended the records, applied the commited commands, and persisted its workspace, then update the index of the next record to send and the highest record index known to be replicated and yield a success.
+								if appendResult.success then {
+									indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) += recordsToSend.size
+									highestRecordIndexKnowToBeReplicated_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend + recordsToSend.size
+									sequencer.Task_unit
+								}
+								// else (if the participant rejected the appending)
+								else {
+									// If the rejection was because the previous record's term is not the same in his log and my log then:
+									if appendResult.behaviorOrdinal >= ISOLATED && appendResult.term == currentTerm then {
+										// if I remember the previous record then try again starting one record before.
+										if indexOfNextRecordToSend > workspace.logBufferOffset then {
+											indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend - 1
+											appendsRecordsToParticipant(destinationParticipantIndex, until)
+										}
+										// else (I don't remember the previous record)
+										else {
+											// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism.
+											scribe.error(s"$hostId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
+											// yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.											
+											sequencer.Task_unit
+										}
+									}
+									// if the rejection was for another reason, yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.  
+									else sequencer.Task_unit
 								}
 							}
 						}

@@ -1,7 +1,7 @@
 package readren.sequencer
 
 import readren.common.{Maybe, castTo, deriveToString}
-import readren.sequencer.Doer.successUnit
+import Doer.{successUnit, successTrue, successFalse}
 
 import scala.annotation.{tailrec, threadUnsafe}
 import scala.collection.IterableFactory
@@ -18,6 +18,8 @@ object Doer {
 	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 
 	val successUnit: Success[Unit] = Success(())
+	val successTrue: Success[true] = Success(true)
+	val successFalse: Success[false] = Success(false)
 }
 
 abstract class AbstractDoer extends Doer
@@ -940,9 +942,23 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** A [[Task]] yields [[Unit]].
+	/** An always successful ready [[Task]] that yields [[Unit]].
+	 * Equivalent to {{{Task_successful[Unit](())}}}
+	 *
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy val Task_unit: Task[Unit] = Task_Ready(successUnit)
+
+	/** An always successful ready [[Task]] that yields [[true]].
+	 * Equivalent to {{{Task_successful[true](true}}}
+	 *
+	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+	@threadUnsafe lazy val Task_true: Task[true] = Task_Ready(successTrue)
+
+	/** An always successful ready [[Task]] that yields [[false]].
+	 * Equivalent to {{{Task_successful[false](false)}}}
+	 *
+	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+	@threadUnsafe lazy val Task_false: Task[false] = Task_Ready(successFalse)
 
 	/** A [[Task]] whose execution never ends. */
 	@threadUnsafe lazy val Task_never: Task[Nothing] = Task_Never()
@@ -956,7 +972,7 @@ trait Doer { thisDoer =>
 	 */
 	inline final def Task_ready[A](tryA: Try[A]): Task[A] = new Task_Ready(tryA)
 
-	/** Creates a [[Task]] that always succeeds with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Success]] with the provided value.
+	/** Creates a ready [[Task]] that always succeeds with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Success]] with the provided value.
 	 *
 	 * $threadSafe
 	 *
@@ -1136,15 +1152,17 @@ trait Doer { thisDoer =>
 
 
 	/**
-	 * Creates a task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
+	 * Creates an always successful task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
+	 *
 	 * $threadSafe
+	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
 	 *
 	 * @param tasks the `Iterable` of tasks that the returned task will trigger simultaneously to combine their results.
 	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
 	 * @tparam A the result type of all the tasks.
 	 * @tparam C the higher-kinded type of the `Iterable` of tasks.
 	 * @tparam To the type of the `Iterable` that will contain the results.
-	 * @return the task described in the method description.
+	 * @return the successful task described in the method description.
 	 * */
 	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], tasks: C[Task[A]]): Task[To[Try[A]]] = {
 		Task_sequenceHardyToArray(tasks).map { array =>
@@ -1158,8 +1176,11 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** Like [[Task_sequenceHardy]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Task[Array[Try[A]]] = new Task_SequenceHardy[A, C](tasks)
+	/** Like [[Task_sequenceHardy]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]].
+	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
+	 * */
+	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Task[Array[Try[A]]] =
+		new Task_SequenceHardy[A, C](tasks)
 
 	/** A [[Task]] that never completes.
 	 *
