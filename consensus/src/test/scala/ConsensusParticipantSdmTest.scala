@@ -1,6 +1,6 @@
 package readren.consensus
 
-import ConsensusParticipantSdm.{AppendResult, BehaviorOrdinal, LEADER, Record, RecordIndex, StateInfo, Term, Vote}
+import ConsensusParticipantSdm.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
@@ -12,7 +12,7 @@ import java.util.concurrent.Executors
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
 import scala.compiletime.uninitialized
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{ExecutionContext, Promise}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
@@ -22,6 +22,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	/** Id of a [[Node]]. Implements [[ConsensusParticipantSdm.ParticipantId]]. */
 	private type Id = String
+
+	private def nameOf(ordinal: BehaviorOrdinal): String = {
+		ordinal match {
+			case STOPPED => "STOPPED"
+			case STARTING => "STARTING"
+			case ISOLATED => "ISOLATED"
+			case CANDIDATE => "CANDIDATE"
+			case FOLLOWER => "FOLLOWER"
+			case LEADER => "stopped"
+		}
+	}
 
 	// Test command type
 	private case class TestCommand(value: String)
@@ -119,10 +130,25 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						case Failure(e) =>
 							scribe.info(s"Client: the participant ${receiverNode.myId} failed (retries=$retriesCounter) to respond to the command `$command`:", e)
 							retry()
-						case Success(_) =>
-							throw new AssertionError("unreachable")
 					}
 			}.onBehalfOf(net.netSequencer)
+		}
+
+		def sendsCommandsUntil(predicate: (commandIndex: Int) => Boolean, maxRetries: Int = 9): net.netSequencer.Task[Unit] = {
+
+			def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.netSequencer.Task[Unit] = {
+				if predicate.apply(commandIndex) then net.netSequencer.Task_unit
+				else if retriesCounter > maxRetries then net.netSequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
+				else for {
+					wasProcessed <- sendsCommand(s"command#$commandIndex")
+					_ <- {
+						if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
+						else sendCommandLoop(commandIndex, retriesCounter + 1)
+					}
+				} yield ()
+			}
+
+			sendCommandLoop(1, 0)
 		}
 
 	}
@@ -139,7 +165,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override type ClientCommand = TestCommand
 		override type StateMachineResponse = String
 
-		var appendRecordListener: AppendRecordListener = new AppendRecordListener() {
+		var statesChangesListener: StateChangesListener = new StateChangesListener() {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
 		}
 
@@ -174,8 +200,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		object machine extends StateMachine {
 			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {
-				sequencer.Task_successful(command.value) // TODO add delay
+				// TODO add delay
+				sequencer.Task_mine { () =>
+					statesChangesListener.onCommandApplied(command, index)
+					command.value
+				}
 			}
+
+			override def recoversIndexOfLastAppliedCommand: sequencer.Task[RecordIndex] = sequencer.Task_successful(0)
 		}
 
 		override def isEager: Boolean = false
@@ -206,7 +238,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						} yield si
 
 					result.andThen { response =>
-						scribe.info(s"$hostId: $destinationId.asksHowAreYou(inquirerTerm:$inquirerTerm, leaderMissing:$aLeaderMaybeMissing) returned $response")
+						scribe.info(s"$hostId: $destinationId.asksHowAreYou(inquirerTerm:$inquirerTerm, leaderMissing:$aLeaderMaybeMissing) yielded $response")
 					}
 				}
 
@@ -219,7 +251,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							}.onBehalfOf(sequencer)
 						} yield vote
 					result.andThen { response =>
-						scribe.info(s"$hostId: $destinationId.askToChooseForLeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo) returned $response")
+						scribe.info(s"$hostId: $destinationId.askToChooseForLeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo) yielded $response")
 					}
 				}
 
@@ -233,7 +265,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							}.onBehalfOf(sequencer)
 						} yield ar
 					result.andThen { response =>
-						scribe.info(s"$myId: $destinationId.asksToAppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm;$prevLogTerm, records:$records, leaderCommit:$leaderCommit) returned $response")
+						scribe.info(s"$myId: $destinationId.asksToAppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm;$prevLogTerm, records:$records, leaderCommit:$leaderCommit) yielded $response")
 					}
 				}
 			}
@@ -245,7 +277,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		object storage extends Storage {
 			override def invalidWorkspace(): WS = InvalidWorkspace
 
-			private var memory: WS = ValidWorkspace()
+			private[ConsensusParticipantSdmTest] var memory: WS = ValidWorkspace()
 
 			override val loads: sequencer.Task[WS] = sequencer.Task_successful(memory) // TODO add a delay
 
@@ -288,8 +320,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def firstEmptyRecordIndex: RecordIndex = _logBufferOffset + logBuffer.size
 
-			override def lastAppendedRecord: Record = logBuffer.last
-
 			override def getRecordAt(index: RecordIndex): Record = logBuffer((index - logBufferOffset).toInt)
 
 			override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = {
@@ -299,7 +329,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			override def appendRecord(record: Record): Unit = {
+				val index = firstEmptyRecordIndex
 				logBuffer += record
+				statesChangesListener.onRecordAppended(record, index)
 			}
 
 			override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = {
@@ -315,27 +347,32 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 				if conflictFound then {
 					logBuffer.takeInPlace(storedIndex)
-					appendRecordListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getBehaviorOrdinal)
+					statesChangesListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getBehaviorOrdinal)
 				}
 				while newIndex < records.size do {
-					logBuffer += records(newIndex)
+					appendRecord(records(newIndex))
 					newIndex += 1
 				}
 				logBufferOffset + logBuffer.size - 1
 			}
 
-			override def informCommitIndex(commitIndex: RecordIndex): Unit = ()
+			override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = ()
 
 			override def release(): Unit = ()
 		}
 
-		trait AppendRecordListener {
+		trait StateChangesListener {
 			/** Called when any entry in the log buffer of a [[Node]] is overwritten.
 			 * @param index the [[RecordIndex]] of the first overwritten entry.
 			 * @param firstReplacedRecord the first stored [[Record]] that is removed.
 			 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
 			 * @param behaviorOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
-			def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit
+			def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+
+			/** Called when a [[Record]] is appended to the log buffer. */
+			def onRecordAppended(record: Record, index: RecordIndex): Unit = ()
+
+			def onCommandApplied(command: ClientCommand, index: RecordIndex): Unit = ()
 		}
 
 		object notificationScribe extends NotificationListener {
@@ -343,15 +380,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}started.")
 
-			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = scribe.info(s"$myId: became stoped during term $term.", motive)
+			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = scribe.info(s"$myId: became stopped from ${nameOf(previous)} during term $term.", motive)
 
-			override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from $previous during term $term.")
+			override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from ${nameOf(previous)} during term $term.")
 
-			override def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became candidate during term $term.")
+			override def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became candidate from ${nameOf(previous)} during term $term.")
 
-			override def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: Id): Unit = scribe.info(s"$myId: became follower of $leaderId during term $term")
+			override def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: Id): Unit = scribe.info(s"$myId: became follower of $leaderId from ${nameOf(previous)} during term $term")
 
-			override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became leader of term $term")
+			override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became leader of term $term from ${nameOf(previous)}")
 
 			override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
 		}
@@ -362,7 +399,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	 * Helper to create participant ids.
 	 */
 	private def createIds(size: Int): IndexedSeq[Id] = {
-		(1 to size).map(i => s"participant-$i")
+		(0 until size).map(i => s"participant-$i")
 	}
 
 
@@ -385,7 +422,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	}
 
 
-	test("Election Safety - at most one leader can be elected in a given term") {
+	test("Election Safety: at most one leader can be elected in a given term. §5.2") {
 		inline val timeout = 20
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
@@ -394,92 +431,217 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		) { (t, latency) =>
 			val (clusterSize, receiverIndex) = t
 			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
+
+			val promise = Promise[Unit]()
 			val net = new Net(latency, timeout)
-			val leaderNodeByTerm: Array[Node] = new Array(numberOfCommandsToSend + 1)
-			val atMostOneLeaderCommitment = net.netSequencer.Commitment[Unit]
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
+			val leaderNodeByTerm: Array[Node] = new Array(numberOfCommandsToSend + 1)
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
 						if leaderNodeByTerm(term) eq null then leaderNodeByTerm(term) = node
-						else atMostOneLeaderCommitment.break(new AssertionError(s"Node $node became leader at term $t despite node ${leaderNodeByTerm(term)} was a leader of the same term before"))()
+						else promise.tryFailure(new AssertionError(s"Node $node became leader at term $t despite node ${leaderNodeByTerm(term)} was a leader of the same term before"))
 					}
 				}
 			}
-			val checks = for _ <- initializes yield {
 
-				val client = Client[net.type](net, receiverIndex)
-
-				inline val MAX_RETRIES = 9
-
-				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.netSequencer.Task[Unit] = {
-					if commandIndex >= numberOfCommandsToSend || atMostOneLeaderCommitment.isCompleted then net.netSequencer.Task_unit
-					else if retriesCounter > MAX_RETRIES then net.netSequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
-					else for {
-						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
-						_ <- {
-							if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
-							else sendCommandLoop(commandIndex, retriesCounter + 1)
-						}
-					} yield ()
-				}
-
-				atMostOneLeaderCommitment.completeWith(sendCommandLoop(1, 0))()
-			}
-
+			val checks = for {
+				_ <- initializes
+				client = Client[net.type](net, receiverIndex)
+				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
+					.toDuty(promise.tryFailure)
+			} yield promise.tryComplete(Success(()))
 			checks.triggerAndForget(false)
-
-			atMostOneLeaderCommitment.toFuture(false)
+			promise.future
 		}
 	}
 
 
-	test("Leader Append-Only - a leader never overwrites or deletes entries in its log") {
+	test("Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3") {
+		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 5).flatMap(n => Gen.choose(0, n - 1).map(m => (n, m))),
+			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
 			Gen.choose(1, 11),
-			Gen.choose(2, 5)
-		) { (t, latency, numCommands) =>
-			val (clusterSize, receiverIndex) = t
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency, numCommands=$numCommands")
+		) { (clusterConf, latency) =>
+			val (clusterSize, receiverIndex) = clusterConf
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
 
+			val promise = Promise[Unit]()
 			val net = new Net(latency, 10)
-			val leaderNeverOverwritesCommitment = net.netSequencer.Commitment[Unit]
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
-				node.appendRecordListener = new node.AppendRecordListener() {
+				node.statesChangesListener = new node.StateChangesListener() {
 					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
-						if behaviorOrdinal == LEADER then leaderNeverOverwritesCommitment.break(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))()
+						if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
 					}
 				}
 				node.DefaultNotificationListener()
 			}
 
-			val checks = for _ <- initializes yield {
+			val checks: net.netSequencer.Task[Unit] = for {
+				_ <- initializes.toTask
+				client = Client[net.type](net, receiverIndex)
+				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
+			} yield promise.tryComplete(Success(()))
 
-				val client = Client[net.type](net, receiverIndex)
+			checks.trigger(false)(promise.tryComplete)
+			promise.future
+		}
+	}
 
-				inline val MAX_RETRIES = 9
+	test("Log Matching: if two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index. §5.3") {
+		inline val numberOfCommandsToSend = 10
 
-				def sendCommandLoop(commandIndex: Int, retriesCounter: Int): net.netSequencer.Task[Unit] = {
-					if commandIndex >= 10 || leaderNeverOverwritesCommitment.isCompleted then net.netSequencer.Task_unit
-					else if retriesCounter > MAX_RETRIES then net.netSequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
-					else for {
-						wasProcessed <- client.sendsCommand(s"command#$commandIndex")
-						_ <- {
-							if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
-							else sendCommandLoop(commandIndex, retriesCounter + 1)
+		PropF.forAllNoShrinkF(
+			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
+			Gen.choose(1, 11),
+		) { (clusterConf, latency) =>
+			val (clusterSize, receiverIndex) = clusterConf
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
+
+			val promise = Promise[Unit]()
+			val net = new Net(latency, 10)
+			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
+
+			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+				node.statesChangesListener = new node.StateChangesListener() {
+					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
+
+						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, index)
+
+						for nodeIndex <- 0 until clusterSize do {
+							val otherNode = net.getNode(nodeIndex)
+							if otherNode ne node then {
+								otherNode.sequencer.execute {
+									if otherNode.storage.memory.firstEmptyRecordIndex > index && otherNode.storage.memory.getRecordAt(index).term == record.term then {
+										val otherNodeRecords = otherNode.storage.memory.getRecordsBetween(1, index)
+										if otherNodeRecords != thisNodeRecords then promise.tryFailure(new AssertionError(s"The logs of nodes ${node.myId} and ${otherNode.myId} are not identical in all entries up through $index despite the records at $index have the same term."))
+									}
+								}
+
+							}
 						}
-					} yield ()
+					}
 				}
-
-				leaderNeverOverwritesCommitment.completeWith(sendCommandLoop(1, 0))()
+				node.DefaultNotificationListener()
 			}
 
-			checks.triggerAndForget(false)
-			leaderNeverOverwritesCommitment.toFuture(false)
+			val checks: net.netSequencer.Task[Unit] = for {
+				_ <- initializes.toTask
+				client = Client[net.type](net, receiverIndex)
+				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
+			} yield promise.tryComplete(Success(()))
+
+			checks.trigger(false)(promise.tryComplete)
+			promise.future
+		}
+	}
+
+	test("Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4") {
+		inline val numberOfCommandsToSend = 10
+
+		PropF.forAllNoShrinkF(
+			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
+			Gen.choose(1, 11),
+		) { (clusterConf, latency) =>
+			val (clusterSize, receiverIndex) = clusterConf
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
+
+			val promise = Promise[Unit]()
+			val net = new Net(latency, 10)
+			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
+
+			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+				node.statesChangesListener = new node.StateChangesListener() {
+					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
+
+						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, index)
+
+						for nodeIndex <- 0 until clusterSize do {
+							val otherNode = net.getNode(nodeIndex)
+							if otherNode ne node then {
+								otherNode.sequencer.execute {
+									if otherNode.storage.memory.firstEmptyRecordIndex > index && otherNode.storage.memory.getRecordAt(index).term == record.term then {
+										val otherNodeRecords = otherNode.storage.memory.getRecordsBetween(1, index)
+										if otherNodeRecords != thisNodeRecords then promise.tryFailure(new AssertionError(s"The logs of nodes ${node.myId} and ${otherNode.myId} are not identical in all entries up through $index despite the records at $index have the same term."))
+									}
+								}
+
+							}
+						}
+					}
+				}
+				node.DefaultNotificationListener()
+			}
+
+			val checks: net.netSequencer.Task[Unit] = for {
+				_ <- initializes.toTask
+				client = Client[net.type](net, receiverIndex)
+				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
+			} yield promise.tryComplete(Success(()))
+
+			checks.trigger(false)(promise.tryComplete)
+			promise.future
+		}
+	}
+
+	test("State Machine Safety: if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index. §5.4.3") {
+		inline val numberOfCommandsToSend = 10
+
+		PropF.forAllNoShrinkF(
+			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
+			Gen.choose(1, 11),
+		) { (clusterConf, latency) =>
+			val (clusterSize, receiverIndex) = clusterConf
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, latency=$latency")
+
+			val promise = Promise[Unit]()
+			val net = new Net(latency, 10)
+			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
+			val appliedCommandsByNodeIndex: Array[Array[TestCommand | Null]] = Array.fill(clusterSize, numberOfCommandsToSend + 1)(null)
+
+			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+				node.statesChangesListener = new node.StateChangesListener() {
+					override def onCommandApplied(command: node.ClientCommand, index: RecordIndex): Unit = {
+
+						val commandsAppliedToThisNode = appliedCommandsByNodeIndex(net.indexOf(node.myId))
+						val previouslyAppliedCommand = commandsAppliedToThisNode(index.toInt)
+						if previouslyAppliedCommand ne null then promise.tryFailure(new AssertionError(s"Two commands with same index were applied to the node ${node.myId}: previous=$previouslyAppliedCommand, new=$command"))
+						var i = index.toInt
+						while i < numberOfCommandsToSend do {
+							i += 1
+							if commandsAppliedToThisNode(i) ne null then promise.tryFailure(new AssertionError(s"The command $command was applied with index $index which is less than the index $i of the previously applied command ${commandsAppliedToThisNode(i)}."))
+						}
+						commandsAppliedToThisNode(index.toInt) = command
+
+						for nodeIndex <- 0 until clusterSize do {
+							val otherNode = net.getNode(nodeIndex)
+							if otherNode ne node then {
+								otherNode.sequencer.execute {
+									val commandsAppliedToTheOtherNode = appliedCommandsByNodeIndex(net.indexOf(otherNode.myId))
+									val commandAppliedToTheOtherNodeAtIndex = commandsAppliedToTheOtherNode(index.toInt)
+									if (commandAppliedToTheOtherNodeAtIndex ne null) && commandAppliedToTheOtherNodeAtIndex != command then
+										promise.tryFailure(new AssertionError(s"The node ${node.myId} applied the command $command at index $index, which is different from the command $commandAppliedToTheOtherNodeAtIndex applied at the same index in node ${otherNode.myId}."))
+
+								}
+
+							}
+						}
+					}
+				}
+				node.DefaultNotificationListener()
+			}
+
+			val checks: net.netSequencer.Task[Unit] = for {
+				_ <- initializes.toTask
+				client = Client[net.type](net, receiverIndex)
+				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
+			} yield promise.tryComplete(Success(()))
+
+			checks.trigger(false)(promise.tryComplete)
+			promise.future
 		}
 	}
 }

@@ -5,6 +5,7 @@ import readren.sequencer.{Doer, MilliDuration, SchedulingExtension}
 
 import java.util
 import java.util.Comparator
+import scala.annotation.tailrec
 import scala.collection.IndexedSeq as GenIndexedSeq
 import scala.math.Ordering.Implicits.infixOrderingOps
 import scala.reflect.ClassTag
@@ -25,7 +26,6 @@ object ConsensusParticipantSdm {
 	final type BehaviorOrdinal = Byte
 
 
-	final val UNBORN: BehaviorOrdinal = -1
 	final val STOPPED: BehaviorOrdinal = 0
 	final val STARTING: BehaviorOrdinal = 1
 	final val ISOLATED: BehaviorOrdinal = 2
@@ -135,7 +135,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	//// CONFIGURATION
 
 	/** Tells how many times the task returned by [[appliesClientCommand]] method should be tried when its execution fails.
-	 * After exceeding the specified number of retries, the state machine is considered corrupted, and therefore the consensus participant service stops because it has no way to continue replicating. */
+	 * After exceeding the specified number of retries, the state machine is considered corrupted, and therefore the corresponding [[ConsensusParticipant]] service is restarted with a flag indicating the [[StateMachine]] should be restarted also. */
 	def applyCommandRetries: Int = 1
 
 	def isEager: Boolean = false
@@ -157,9 +157,19 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	//// STATE MACHINE
 
+	/** Describes the interface that a [[ConsensusParticipant]] relies on to interact with the state machine. */
 	trait StateMachine {
-		/** Gives the [[sequencer.Task]] that applies the [[ClientCommand]] to the state-machine. */
+		/** Returns a [[sequencer.Task]] that applies the given [[ClientCommand]] to the state machine.
+		 * The implementation may assume that tasks returned by successive calls to this method are executed in the same order as the calls themselves.
+		 */
 		def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse]
+
+		/** Returns a [[sequencer.Task]] that yields the [[RecordIndex]] most recently passed to [[appliesClientCommand]] whose corresponding [[sequencer.Task]] completed successfully.
+		 * If the implementation cannot determine this index, it should return zero, indicating that all commands must be replayed.
+		 *
+		 * This method is invoked only during recovery after restarts or persistence failures.
+		 */
+		def recoversIndexOfLastAppliedCommand: sequencer.Task[RecordIndex]
 	}
 
 	//// RESPONSE TO CLIENT
@@ -311,9 +321,6 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** The index of the first empty entry in the log. The initial value is 1. */
 		def firstEmptyRecordIndex: RecordIndex // = logBufferOffset + logBuffer.size
 
-		/** The index of the last appended record. The initial value is 0, which means that the log is empty. */
-		def lastAppendedRecord: Record // = getRecordAt(firstEmptyRecordIndex - 1)
-
 		def getRecordAt(index: RecordIndex): Record // = logBuffer((index - logBufferOffset).toInt)
 
 		/** Returns the records in the log starting at `from` and up to `until` exclusive.
@@ -329,8 +336,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @return The index of the last record appended. */
 		def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex
 
-		/** Should be called whenever the commit index changed to allow this [[Workspace]] to release the storage used to memorize already commited records. */
-		def informCommitIndex(commitIndex: RecordIndex): Unit
+		/** Should be called whenever the [[ConsensusParticipant.lastAppliedCommandIndex]] changes to allow this [[Workspace]] to release the storage used to memorize the records that are pending to be applied to the [[StateMachine]]. */
+		def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit
 
 		def release(): Unit
 
@@ -358,8 +365,6 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		override def firstEmptyRecordIndex: RecordIndex = throw new InvalidWorkspaceException
 
-		override def lastAppendedRecord: Record = throw new InvalidWorkspaceException
-
 		override def getRecordAt(index: RecordIndex): Record = throw new InvalidWorkspaceException
 
 		override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = throw new InvalidWorkspaceException
@@ -368,7 +373,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = throw new InvalidWorkspaceException
 
-		override def informCommitIndex(commitIndex: RecordIndex): Unit = throw new InvalidWorkspaceException
+		override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = throw new InvalidWorkspaceException
 
 		override def release(): Unit = ()
 	}
@@ -508,9 +513,12 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** The index of the highest entry known to be committed according to this participant.
 		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
-		 * This also commits all preceding records in the leader’s log, including records created by previous leaders.
-		 * Should be informed to the [[Workspace]] by calling [[Workspace.informCommitIndex]] whenever it changes. */
+		 * This also commits all preceding records in the leader’s log, including records created by previous leaders. */
 		private var commitIndex: RecordIndex = 0
+
+		/** The index of the highest command entry whose command was successfully applied to the [[StateMachine]] of this [[ConsensusParticipant]].
+		 * Whenever it changes should be informed to the [[Workspace]] by calling [[Workspace.informAppliedCommandIndex]]. */
+		private var lastAppliedCommandIndex: RecordIndex = 0
 
 		private var workspace: WS = storage.invalidWorkspace()
 
@@ -519,6 +527,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** Memorices the schedule that is currently scheduled. Needed to cancel the schedule when becoming a new behavior. */
 		private var currentSchedule: Maybe[sequencer.Schedule] = Maybe.empty
+
+		private var decoupledCommandsApplierIsRunning: Boolean = false
 
 		private val notificationListeners: java.util.WeakHashMap[NotificationListener, None.type] = new util.WeakHashMap()
 
@@ -623,28 +633,26 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * This method performs the following steps:
 			 *
 			 *   - Rejects the request if:
-			 *     - This participant is still starting or was stopped (`ordinal < ISOLATED`)
-			 *     - The leader's term is stale (`inquirerTerm < currentTerm`)
-			 *     - The leader's `prevRecordIndex` does not match the term at that index locally
+			 *     - This participant is still starting or was stopped (`ordinal < ISOLATED`).
+			 *     - The leader's term is stale (`inquirerTerm < currentTerm`).
+			 *     - The leader's `prevRecordIndex` does not match the term at that index locally.
 			 *
 			 *   - If the leader's term is newer or this participant is not yet a follower:
 			 *     - Updates `currentTerm` to `inquirerTerm`
-			 *     - Triggers a state update process via `updatesState.triggerExposingFailures()`
+			 *     - Triggers the state-update process via `updatesState.triggerExposingFailures()`
 			 *
 			 *   - Appends new records from the leader, resolving any log conflicts
-			 *     - Uses `workspace.appendResolvingConflicts` to reconcile entries starting at `prevRecordIndex + 1`
-			 *
-			 *   - Applies committed records to the state machine in log order:
-			 *     - Determines `newCommitIndex` as the minimum of `leaderCommit` and `lastAppendedRecordIndex`
-			 *     - Iteratively applies records from `commitIndex + 1` to `newCommitIndex`
-			 *     - Handles `Command[ClientCommand]` entries by invoking `machine.appliesClientCommand`
-			 *     - On failure, retries up to `applyCommandRetries` times before failing the task
-			 *     - Other record types (`LeaderTransition`, `SnapshotPoint`, `ConfigurationChange`) are currently unimplemented
+			 *   - Updates the [[commitIndex]] as the minimum of `leaderCommit` and the index of the last appended record.
 			 *
 			 *   - If the participant remains in a valid state (`ordinal > STARTING`):
-			 *     - Updates `commitIndex` and informs the workspace
 			 *     - Persists the updated workspace via `storage.saves`
 			 *     - On failure to persist, transitions to `Stopped` and returns a failed result
+			 *
+			 *   - Starts the decoupled process that applies committed commands to the state machine in log order:
+			 *     - Iteratively applies records from `commitIndex + 1` to `newCommitIndex`
+			 *     - Handles [[Command]] entries by invoking [[StateMachine.appliesClientCommand]]
+			 *     - On failure, retries up to [[applyCommandRetries]] times before restarting the [[ConsensusParticipant]] and its [[StateMachine]] (by calling {{{ become(Starting(true, true)) }}})
+			 *     - Other record types (`LeaderTransition`, `SnapshotPoint`, `ConfigurationChange`) are currently unimplemented
 			 *
 			 * @param inquirerId         ID of the leader sending the AppendEntries request
 			 * @param inquirerTerm       Term of the leader
@@ -672,48 +680,17 @@ trait ConsensusParticipantSdm { thisModule =>
 					// Append any new entry not already in the log resolving conflicts.
 					val lastAppendedRecordIndex = workspace.appendResolvingConflicts(records, prevRecordIndex + 1)
 
-					// Unconditionally apply commited records to the state machine (in log order)
-					val newCommitIndex = if leaderCommit < lastAppendedRecordIndex then leaderCommit else lastAppendedRecordIndex
+					val previousCommitIndex = commitIndex
+					// Update the commitIndex
+					commitIndex = if leaderCommit < lastAppendedRecordIndex then leaderCommit else lastAppendedRecordIndex
 
-					def applyCommitedRecordsLoop(index: RecordIndex): sequencer.Task[Any] = {
-						if index > newCommitIndex then sequencer.Task_unit
-						else {
-							val task: sequencer.Task[Any] = workspace.getRecordAt(index) match {
-								case command: Command[ClientCommand] @unchecked =>
-									// Execute the command on the state machine and discard successful outcomes, relying on deterministic execution guarantees. // TODO add a setting to enable result equality verification across state machines by returning each result to the leader for comparison.
-									machine.appliesClientCommand(index, command.command).recover { e =>
-										scribe.error(s"$hostId: Unexpected error while applying commited records to the state machine. This participant's state-machine must be restarted and commands replayed.", e)
-										become(Starting(true, true))
-									}
-								case lt: LeaderTransition =>
-									???
-								case snapshot: SnapshotPoint =>
-									???
-								case cc1: ConfigurationChangeOldNew[ParticipantId] @unchecked =>
-									???
-								case cc2: ConfigurationChangeNew[ParticipantId] @unchecked =>
-									???
-							}
-							var retriesCounter = 0
-							task.transformWith {
-								case Success(_) =>
-									applyCommitedRecordsLoop(index + 1)
-								case Failure(e) =>
-									if retriesCounter < applyCommandRetries then {
-										retriesCounter += 1
-										task
-									} else sequencer.Task_failed(e)
-							}
-						}
-					}
 
+					// Apply commited records
 					for {
-						_ <- applyCommitedRecordsLoop(commitIndex + 1)
+						_ <- applyCommitedRecords(previousCommitIndex + 1)
 						result <- {
 							if currentBehavior.ordinal <= STARTING then sequencer.Task_successful(AppendResult(0, false, ordinal))
 							else {
-								commitIndex = newCommitIndex
-								workspace.informCommitIndex(newCommitIndex)
 								storage.saves(workspace).transform {
 									case Success(_) =>
 										Success(AppendResult(currentTerm, true, currentBehavior.ordinal))
@@ -725,7 +702,72 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 						}
 					} yield result
+
 				}
+			}
+
+			/** Applies commited records starting from the specified [[RecordIndex]].
+			 * [[Command]] and [[SnapshotPoint]] application is decoupled.
+			 * [[ConfigurationChangeNew]] and [[ConfigurationChangeOldNew]] application is coupled. */
+			@tailrec
+			private def applyCommitedRecords(from: RecordIndex): sequencer.Task[Any] = {
+				if from > commitIndex then sequencer.Task_unit
+				else {
+					workspace.getRecordAt(from) match {
+						case command: Command[ClientCommand] @unchecked =>
+							if !decoupledCommandsApplierIsRunning then startApplyingCommitedCommands()
+						case lt: LeaderTransition =>
+							???
+						case snapshot: SnapshotPoint =>
+							???
+						case cc1: ConfigurationChangeOldNew[ParticipantId] @unchecked =>
+							???
+						case cc2: ConfigurationChangeNew[ParticipantId] @unchecked =>
+							???
+					}
+					applyCommitedRecords(from + 1)
+				}
+			}
+
+			/** Applies commited [[Command]]s decoupled. */
+			private def startApplyingCommitedCommands(): Unit = {
+				decoupledCommandsApplierIsRunning = true
+
+				def applyCommitedCommandsLoop(index: RecordIndex): sequencer.Task[Any] = {
+					if index > commitIndex then sequencer.Task_unit
+					else {
+						workspace.getRecordAt(index) match {
+							case command: Command[ClientCommand] @unchecked =>
+								val appliesCommand = machine.appliesClientCommand(index, command.command)
+								var retriesCounter = 0
+								appliesCommand.transformWith {
+									case Success(_) =>
+										applyCommitedCommandsLoop(index + 1)
+									case Failure(e) =>
+										if retriesCounter < applyCommandRetries then {
+											retriesCounter += 1
+											appliesCommand
+										} else {
+											scribe.error(s"$hostId: Unexpected error while applying commited commands to the state machine. This participant's state-machine must be restarted and commands replayed.", e)
+											become(Starting(true, true))
+											sequencer.Task_failed(e)
+										}
+								}
+							case _ =>
+								sequencer.Task_unit
+						}
+					}
+				}
+
+				val appliesCommitedCommands =
+					if lastAppliedCommandIndex > 0 then applyCommitedCommandsLoop(lastAppliedCommandIndex + 1)
+					else {
+						for {
+							index <- machine.recoversIndexOfLastAppliedCommand
+							_ <- applyCommitedCommandsLoop(index)
+						} yield ()
+					}
+				appliesCommitedCommands.trigger(true) { _ => decoupledCommandsApplierIsRunning = false }
 			}
 
 			protected def updatesState: sequencer.Task[Unit] = {
@@ -817,6 +859,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							newWorkspace.setCurrentParticipants(cluster.getParticipants.toIndexedSeq.sorted)
 						}
 						commitIndex = 0
+						if stateMachineNeedsRestart then lastAppliedCommandIndex = 0
 						currentTerm = newWorkspace.getCurrentTerm
 						currentParticipants = newWorkspace.getCurrentParticipants
 						otherParticipants = currentParticipants.filter(_ != hostId)
@@ -825,7 +868,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						become(Isolated)
 
 					case Failure(e) =>
-						scribe.error(s"$hostId: Unexpected error while restarting the consensus service:", e)
+						scribe.error(s"$hostId: Unexpected error while loading the consensus-service's workspace:", e)
 						become(Stopped(e))
 				}
 			}
@@ -1000,7 +1043,6 @@ trait ConsensusParticipantSdm { thisModule =>
 				// For every other participants, generate a task to replicate records this participant holds and believes the other lack.
 				val asksToAppendPendingRecords_byParticipantIndex =
 					for otherParticipantIndex <- otherParticipants.indices yield {
-						val followerId = otherParticipants(otherParticipantIndex)
 						appendsRecordsToParticipant(otherParticipantIndex, until)
 					}
 				// Execute the tasks in parallel. Note that the tasks, when successful, update the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnowToBeReplicated_ByParticipantIndex` arrays.
