@@ -153,19 +153,31 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	}
 
+	private trait NodeStateChangesListener {
+		/** Called when any entry in the log buffer of a [[Node]] is overwritten.
+		 * @param index the [[RecordIndex]] of the first overwritten entry.
+		 * @param firstReplacedRecord the first stored [[Record]] that is removed.
+		 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
+		 * @param behaviorOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
+		def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+
+		/** Called when a [[Record]] is appended to the log buffer. */
+		def onRecordAppended(record: Record, index: RecordIndex): Unit = ()
+
+		def onCommandApplied(command: TestCommand, index: RecordIndex): Unit = ()
+	}
+
 	/**
 	 * An implementation of the [[ConsensusParticipantSdm]] for testing.
 	 */
-	private class Node(val myId: Id, participantsIds: Set[Id], net: Net, stateMachineNeedsRestart: Boolean = false) extends ConsensusParticipantSdm { thisNode =>
-		assert(participantsIds.contains(myId))
-
+	private class Node(val myId: Id, initialParticipants: Set[Id], net: Net, stateMachineNeedsRestart: Boolean = false) extends ConsensusParticipantSdm { thisNode =>
 		import net.accessNode
 
 		override type ParticipantId = Id
 		override type ClientCommand = TestCommand
 		override type StateMachineResponse = String
 
-		var statesChangesListener: StateChangesListener = new StateChangesListener() {
+		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
 		}
 
@@ -174,25 +186,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		/** @return the [[ConsensusParticipant]] service instance corresponding to this [[Node]]. */
 		inline def participant: ConsensusParticipant = _participant
 
-		/** Initializes this [[Node]], adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
-		def initializes(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
+		/** Starts this [[Node]], adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
+		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
 				net.addNode(myId, thisNode)
 				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
-			}
-		}
-
-
-		/** Initializes this [[Node]] and waits its [[ConsensusParticipant]] service instance to be started. */
-		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
-			net.addNode(myId, thisNode)
-			sequencer.Duty_mineFlat { () =>
-				val startedCovenant = sequencer.Covenant[Unit]
-				val startedListener = new DefaultNotificationListener() {
-					override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = if !isRestart then startedCovenant.fulfill(())(_ => ())
-				}
-				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(startedListener, initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
-				startedCovenant
 			}
 		}
 
@@ -221,7 +219,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			var messagesListener: MessagesListener = uninitialized
 
-			override def getInitialParticipants: Set[ParticipantId] = participantsIds
+			override def getInitialParticipants: Set[ParticipantId] = initialParticipants
 
 			override def setMessagesListener(listener: MessagesListener): Unit = {
 				messagesListener = listener
@@ -275,9 +273,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * Test instance and implementation of the [[Storage]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
 		 */
 		object storage extends Storage {
-			override def invalidWorkspace(): WS = InvalidWorkspace
-
-			private[ConsensusParticipantSdmTest] var memory: WS = ValidWorkspace()
+			private[ConsensusParticipantSdmTest] var memory: WS = TestWorkspace()
 
 			override val loads: sequencer.Task[WS] = sequencer.Task_successful(memory) // TODO add a delay
 
@@ -292,11 +288,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		/**
 		 * Test implementation of [[Workspace]]
 		 */
-		sealed trait TestWorkspace extends Workspace
-
-		object InvalidWorkspace extends InvalidWorkspacePi, TestWorkspace
-
-		class ValidWorkspace extends TestWorkspace {
+		class TestWorkspace extends Workspace {
 			private var currentParticipants: IndexedSeq[ParticipantId] = IndexedSeq.empty
 			private var currentTerm: Term = 0
 			private var _logBufferOffset: RecordIndex = 1
@@ -361,20 +353,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def release(): Unit = ()
 		}
 
-		trait StateChangesListener {
-			/** Called when any entry in the log buffer of a [[Node]] is overwritten.
-			 * @param index the [[RecordIndex]] of the first overwritten entry.
-			 * @param firstReplacedRecord the first stored [[Record]] that is removed.
-			 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
-			 * @param behaviorOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
-			def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
-
-			/** Called when a [[Record]] is appended to the log buffer. */
-			def onRecordAppended(record: Record, index: RecordIndex): Unit = ()
-
-			def onCommandApplied(command: ClientCommand, index: RecordIndex): Unit = ()
-		}
-
 		object notificationScribe extends NotificationListener {
 			override def onStarting(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}starting...")
 
@@ -393,7 +371,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
 		}
 	}
-
 
 	/**
 	 * Helper to create participant ids.
@@ -416,7 +393,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			for node <- nodes yield {
 				val nl = notificationListenerBuilder(node)
 				weakReferencesHolder.addOne(nl)
-				node.initializes(initialNotificationListener = nl).onBehalfOf(net.netSequencer)
+				node.starts(initialNotificationListener = nl).onBehalfOf(net.netSequencer)
 			}
 		net.netSequencer.Duty_sequenceToArray(nodeInitializerByIndex)
 	}
@@ -472,7 +449,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
-				node.statesChangesListener = new node.StateChangesListener() {
+				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
 						if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
 					}
@@ -506,7 +483,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
-				node.statesChangesListener = new node.StateChangesListener() {
+				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
 
 						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, index)
@@ -554,7 +531,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
-				node.statesChangesListener = new node.StateChangesListener() {
+				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
 
 						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, index)
@@ -603,7 +580,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val appliedCommandsByNodeIndex: Array[Array[TestCommand | Null]] = Array.fill(clusterSize, numberOfCommandsToSend + 1)(null)
 
 			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
-				node.statesChangesListener = new node.StateChangesListener() {
+				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onCommandApplied(command: node.ClientCommand, index: RecordIndex): Unit = {
 
 						val commandsAppliedToThisNode = appliedCommandsByNodeIndex(net.indexOf(node.myId))

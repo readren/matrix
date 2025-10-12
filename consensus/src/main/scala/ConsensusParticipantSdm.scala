@@ -368,44 +368,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			else getRecordAt(index).term
 	}
 
-	class InvalidWorkspaceException extends RuntimeException
-
-	/** Partial implementation of an invalid [[Workspace]].
-	 * Design note: An invalid [[Workspace]] is required to avoid the use of [[Option]], [[Maybe]] or nullable in the definition of [[ConsensusParticipant.workspace]]. // TODO analyze if this crap is worth. */
-	abstract class InvalidWorkspacePi extends Workspace {
-		override def isBrandNew: Boolean = throw new InvalidWorkspaceException
-
-		override def getCurrentParticipants: IndexedSeq[ParticipantId] = throw new InvalidWorkspaceException
-
-		override def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit = throw new InvalidWorkspaceException
-
-		override def getCurrentTerm: Term = throw new InvalidWorkspaceException
-
-		override def setCurrentTerm(term: Term): Unit = throw new InvalidWorkspaceException
-
-		override def logBufferOffset: RecordIndex = throw new InvalidWorkspaceException
-
-		override def firstEmptyRecordIndex: RecordIndex = throw new InvalidWorkspaceException
-
-		override def getRecordAt(index: RecordIndex): Record = throw new InvalidWorkspaceException
-
-		override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = throw new InvalidWorkspaceException
-
-		override def appendRecord(record: Record): Unit = throw new InvalidWorkspaceException
-
-		override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = throw new InvalidWorkspaceException
-
-		override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = throw new InvalidWorkspaceException
-
-		override def release(): Unit = ()
-	}
-
 	/** Defines what a [[ConsensusParticipant]] requires from a persistence service to load and save its [[Workspace]].
 	 * Implementations may assume that all methods of this trait are invoked within the [[sequencer]] thread, enabling optimizations such as avoiding unnecessary creation of new task objects. */
 	trait Storage {
-		/** Creates a new invalid workspace whose methods (except [[Workspace.release]]) should terminate abruptly. */
-		def invalidWorkspace(): WS
-
 		val loads: sequencer.Task[WS]
 
 		/** Saves the workspace to the persistence storage.
@@ -542,7 +507,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Whenever it changes should be informed to the [[Workspace]] by calling [[Workspace.informAppliedCommandIndex]]. */
 		private var lastAppliedCommandIndex: RecordIndex = 0
 
-		private var workspace: WS = storage.invalidWorkspace()
+		private var workspace: WS | Null = null
 
 		/** The current behavior of this participant. */
 		private var currentBehavior: Behavior = Starting(false, stateMachineNeedsRestart)
@@ -713,7 +678,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						result <- {
 							if currentBehavior.ordinal <= STARTING then sequencer.Task_successful(AppendResult(0, false, ordinal))
 							else {
-								storage.saves(workspace).transform {
+								storage.saves(workspace.asInstanceOf[WS]).transform {
 									case Success(_) =>
 										Success(AppendResult(currentTerm, true, currentBehavior.ordinal))
 									case Failure(e) =>
@@ -802,6 +767,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			protected def updatesState(myVote: Vote[ParticipantId]): sequencer.Task[Unit] = {
 				assert(currentBehavior.ordinal >= ISOLATED)
+				val workspace = thisConsensusParticipant.workspace.asInstanceOf[WS]
 				if myVote.term > currentTerm then currentTerm = myVote.term
 
 				if myVote.reachableCandidatesCount == currentParticipants.size then {
@@ -869,8 +835,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val ordinal: BehaviorOrdinal = STARTING
 
 			override def onEnter(previous: BehaviorOrdinal): Unit = {
-				workspace.release()
-				workspace = storage.invalidWorkspace()
+				if workspace ne null then workspace.release()
+				workspace = null
 				notifyListeners(_.onStarting(previous, currentTerm, isRestart))
 				storage.loads.trigger(true) {
 					case Success(loadedWorkspace) =>
@@ -1119,7 +1085,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * Creates a task that sends log records to the specified participant (assuming optimistically it is in [[Follower]] state), starting from the participant's next record to send, up to (but not including) the given index.
 			 * If the participant's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
 			 * @param destinationParticipantIndex The index of the participant in the [[otherParticipants]] array.
-			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[workspace.firstEmptyRecordIndex]]?
+			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[Workspace.firstEmptyRecordIndex]]?
 			 * @return A task that attempts to append records to the specified participant, yielding [[Unit]] if the participant was successful applying all the commands.
 			 */
 			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
