@@ -115,7 +115,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			receiverNode.sequencer.Task_ownFlat { () =>
 				val receiverBehavior = receiverNode.participant.getBehaviorOrdinal
-				receiverNode.cluster.messagesListener.onCommandFromClient(TestCommand(command), isFallback)
+				receiverNode.clusterParticipant.messagesListener.onCommandFromClient(TestCommand(command), isFallback)
 					.transformWith[Boolean] {
 						case Success(receiverNode.Processed(index, content)) =>
 							scribe.info(s"Client: command `$command` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
@@ -176,9 +176,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/** Initializes this [[Node]], adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
 		def initializes(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
-			net.addNode(myId, thisNode)
 			sequencer.Duty_mine { () =>
-				_participant = ConsensusParticipant(cluster, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
+				net.addNode(myId, thisNode)
+				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
 			}
 		}
 
@@ -191,7 +191,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				val startedListener = new DefaultNotificationListener() {
 					override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = if !isRestart then startedCovenant.fulfill(())(_ => ())
 				}
-				_participant = ConsensusParticipant(cluster, storage, machine, List(startedListener, initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
+				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(startedListener, initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
 				startedCovenant
 			}
 		}
@@ -213,15 +213,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override def isEager: Boolean = false
 
 		/**
-		 * Test instance and implementation of the [[Cluster]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
+		 * Test instance and implementation of the [[ClusterParticipant]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
 		 */
-		object cluster extends Cluster {
+		object clusterParticipant extends ClusterParticipant {
 
-			override val hostId: ParticipantId = myId
+			override val boundParticipantId: ParticipantId = myId
 
 			var messagesListener: MessagesListener = uninitialized
 
-			override def getParticipants: Set[ParticipantId] = participantsIds
+			override def getInitialParticipants: Set[ParticipantId] = participantsIds
 
 			override def setMessagesListener(listener: MessagesListener): Unit = {
 				messagesListener = listener
@@ -231,27 +231,27 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				def asksHowAreYou(inquirerTerm: Term, aLeaderMaybeMissing: Boolean): sequencer.Task[StateInfo] = {
 					val result =
 						for {
-							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
+							replier <- boundParticipantId.accessNode(destinationId).onBehalfOf(sequencer)
 							si <- replier.sequencer.Task_mine { () =>
-								replier.cluster.messagesListener.onHowAreYou(hostId, inquirerTerm)
+								replier.clusterParticipant.messagesListener.onHowAreYou(boundParticipantId, inquirerTerm)
 							}.onBehalfOf(sequencer)
 						} yield si
 
 					result.andThen { response =>
-						scribe.info(s"$hostId: $destinationId.asksHowAreYou(inquirerTerm:$inquirerTerm, leaderMissing:$aLeaderMaybeMissing) yielded $response")
+						scribe.info(s"$boundParticipantId: $destinationId.asksHowAreYou(inquirerTerm:$inquirerTerm, leaderMissing:$aLeaderMaybeMissing) yielded $response")
 					}
 				}
 
 				def askToChooseForLeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
 					val result =
 						for {
-							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
+							replier <- boundParticipantId.accessNode(destinationId).onBehalfOf(sequencer)
 							vote <- replier.sequencer.Task_ownFlat { () =>
-								replier.cluster.messagesListener.onChooseALeader(destinationId, inquirerInfo)
+								replier.clusterParticipant.messagesListener.onChooseALeader(destinationId, inquirerInfo)
 							}.onBehalfOf(sequencer)
 						} yield vote
 					result.andThen { response =>
-						scribe.info(s"$hostId: $destinationId.askToChooseForLeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo) yielded $response")
+						scribe.info(s"$boundParticipantId: $destinationId.askToChooseForLeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo) yielded $response")
 					}
 				}
 
@@ -259,9 +259,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					scribe.info(s"$myId: Asking $destinationId to append the records: inquirerTerm=$inquirerTerm, prevLogIndex=$prevLogIndex, prevLogTerm=$prevLogTerm, records=$records, leaderCommit=$leaderCommit")
 					val result =
 						for {
-							replier <- hostId.accessNode(destinationId).onBehalfOf(sequencer)
+							replier <- boundParticipantId.accessNode(destinationId).onBehalfOf(sequencer)
 							ar <- replier.sequencer.Task_ownFlat { () =>
-								replier.cluster.messagesListener.onAppendRecords(hostId, inquirerTerm, prevLogIndex, prevLogTerm, records, leaderCommit)
+								replier.clusterParticipant.messagesListener.onAppendRecords(boundParticipantId, inquirerTerm, prevLogIndex, prevLogTerm, records, leaderCommit)
 							}.onBehalfOf(sequencer)
 						} yield ar
 					result.andThen { response =>

@@ -150,7 +150,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	//// THREADING & TIMING
 
-	/** The tool that the hosting [[ConsensusParticipant]] uses to mutate its state and schedule executions sequentially. */
+	/** The execution sequencer that the [[ConsensusParticipant]] instances use to mutate its state and schedule tasks. */
 	val sequencer: Doer & SchedulingExtension
 
 	inline def isInSequence: Boolean = sequencer.isInSequence
@@ -175,7 +175,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	//// RESPONSE TO CLIENT
 
 	/** The response to a client command.
-	 * @see [[Cluster.MessagesListener.onCommandFromClient]]. */
+	 * @see [[ClusterParticipant.MessagesListener.onCommandFromClient]]. */
 	sealed trait ResponseToClient
 
 	case class Processed(recordIndex: RecordIndex, content: StateMachineResponse) extends ResponseToClient
@@ -189,23 +189,43 @@ trait ConsensusParticipantSdm { thisModule =>
 	 */
 	case class Unable(behaviorOrdinal: BehaviorOrdinal, otherParticipants: IndexedSeq[ParticipantId]) extends ResponseToClient
 
-	//// DATA TYPES
-
 	//// CLUSTER
 
-	/** Specifies what a [[ConsensusParticipant]] service requires from the cluster-participant-service hosted in the participant. */
-	trait Cluster {
+	/** Specifies what a [[ConsensusParticipant]] service requires from the cluster-participant-service it is bound to.
+	 *
+	 * A [[ClusterParticipant]] represents a single participant within a specific cluster and provides the identity,
+	 * membership, and communication mechanisms required by the bound [[ConsensusParticipant]] service.
+	 *
+	 * Responsibilities of a [[ClusterParticipant]] include:
+	 *   - Exposing the identity of the participant it services via [[boundParticipantId]].
+	 *   - Providing the initial cluster membership via [[getInitialParticipants]], which must return the same set across all participants listed.
+	 *   - Acting as the source of truth for cluster membership and determining when a configuration change should be triggered.
+	 *     This includes reacting to node join/leave events, quorum loss, scaling decisions, or health-based adjustments.
+	 *   - Initiating configuration transitions by calling a method on the bound [[ConsensusParticipant]] when a change is required.
+	 *   - Routing inter-participant RPCs (e.g., [[asksHowAreYou]], [[askToChooseForLeader]], [[asksToAppendRecords]]) to the appropriate [[MessageListener]] methods.
+	 *   - Delivering client commands and consensus messages to the bound [[ConsensusParticipant]] via a registered [[MessageListener]],
+	 *     ensuring all invocations occur within the [[sequencer]] thread.
+	 *
+	 * Each [[ClusterParticipant]] instance is tightly bound to a single [[ConsensusParticipant]] instance and must not be shared across multiple participants.
+	 */
+	trait ClusterParticipant {
 
-		/** The id of the participant that hosts this cluster service. */
-		def hostId: ParticipantId
+		/** The identifier of the participant that this [[ClusterParticipant]] service — and its bound [[ConsensusParticipant]] service — are responsible for. */
+		def boundParticipantId: ParticipantId
 
-		/** The ids of all participants in the cluster that the participant hosting this [[Cluster]] service knows about right now.
-		 * Includes itself. */
-		def getParticipants: Set[ParticipantId]
+		/** Returns the identifiers of the participants in the initial cluster configuration.
+		 * This method is called by the bounded [[ConsensusParticipant]] when started for the first time ([[Workspace.isBrandNew]] returns true); and must return exactly the same set across all participants listed.
+		 * The returned set must include the identifier of the participant serviced by this [[ClusterParticipant]] instance.
+		 */
+		def getInitialParticipants: Set[ParticipantId]
 
-		/**
-		 * Specifies what a [[ConsensusParticipant]] listens to.
-		 * The [[Cluster]] implementation should call the methods of this listener within the [[sequencer]] thread. */
+		/** Defines the listener that a [[ConsensusParticipant]] creates and registers with its bound [[ClusterParticipant]].
+		 *
+		 * The [[ClusterParticipant]] invokes the methods of this listener to deliver client commands and consensus messages.
+		 * All invocations must occur within the [[sequencer]] thread to preserve consistency and serialization guarantees.
+		 *
+		 * This listener is unidirectional and tightly bound to a single [[ConsensusParticipant]] instance.
+		 */
 		trait MessagesListener {
 
 			/**
@@ -305,8 +325,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		//		 * Contains the records since the last snapshot. */
 		//		private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
+		/** @return the identifiers of the participants in the current cluster configuration, sorted. */
 		def getCurrentParticipants: IndexedSeq[ParticipantId]
 
+		/** @param participants the identifiers of the participants in the current cluster configuration, sorted. */
 		def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit
 
 		/** The current term according to this participant.
@@ -487,7 +509,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * - Only one [[ConsensusParticipant]] instance should exist per participant in the cluster.
 	 * - All state mutations must occur within the sequencer thread to ensure consistency.
 	 */
-	class ConsensusParticipant(cluster: Cluster, storage: Storage, machine: StateMachine, initialListeners: Iterable[NotificationListener], stateMachineNeedsRestart: Boolean) { thisConsensusParticipant =>
+	class ConsensusParticipant(cluster: ClusterParticipant, storage: Storage, machine: StateMachine, initialListeners: Iterable[NotificationListener], stateMachineNeedsRestart: Boolean) { thisConsensusParticipant =>
 
 		import cluster.*
 
@@ -613,7 +635,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
 				assert(isInSequence)
-				if ordinal <= STARTING then sequencer.Task_successful(Vote(0, hostId, 0, ordinal))
+				if ordinal <= STARTING then sequencer.Task_successful(Vote(0, boundParticipantId, 0, ordinal))
 				else decidesMyVote(inquirerId, inquirerInfo).andThen {
 					case Success(vote) =>
 						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidatesCount < smallestMajority && ordinal >= CANDIDATE) then {
@@ -621,7 +643,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							updatesState(vote).triggerExposingFailures()
 						}
 					case Failure(e) =>
-						scribe.error(s"$hostId: Unexpected error while deciding my vote for $inquirerId.")
+						scribe.error(s"$boundParticipantId: Unexpected error while deciding my vote for $inquirerId.")
 						// start the state-updater process
 						updatesState.triggerExposingFailures()
 				}
@@ -695,7 +717,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									case Success(_) =>
 										Success(AppendResult(currentTerm, true, currentBehavior.ordinal))
 									case Failure(e) =>
-										scribe.error(s"$hostId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will stop.", e)
+										scribe.error(s"$boundParticipantId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will stop.", e)
 										become(Stopped(e))
 										Success(AppendResult(0, false, currentBehavior.ordinal))
 								}
@@ -748,7 +770,7 @@ trait ConsensusParticipantSdm { thisModule =>
 											retriesCounter += 1
 											appliesCommand
 										} else {
-											scribe.error(s"$hostId: Unexpected error while applying commited commands to the state machine. This participant's state-machine must be restarted and commands replayed.", e)
+											scribe.error(s"$boundParticipantId: Unexpected error while applying commited commands to the state machine. This participant's state-machine must be restarted and commands replayed.", e)
 											become(Starting(true, true))
 											sequencer.Task_failed(e)
 										}
@@ -783,7 +805,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				if myVote.term > currentTerm then currentTerm = myVote.term
 
 				if myVote.reachableCandidatesCount == currentParticipants.size then {
-					if myVote.candidateId == hostId then become(Leader())
+					if myVote.candidateId == boundParticipantId then become(Leader())
 					else become(Follower(myVote.candidateId))
 					workspace.setCurrentTerm(currentTerm)
 					storage.saves(workspace)
@@ -793,7 +815,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					storage.saves(workspace)
 				} else {
 					val myStateInfo = buildMyStateInfo
-					val inquires = for replierId <- otherParticipants yield replierId.askToChooseForLeader(hostId, myStateInfo)
+					val inquires = for replierId <- otherParticipants yield replierId.askToChooseForLeader(boundParticipantId, myStateInfo)
 					for {
 						replies <- sequencer.Task_sequenceHardyToArray(inquires)
 						saveResult <- {
@@ -807,7 +829,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								if replierVote.candidateId == myVote.candidateId && replierVote.reachableCandidatesCount >= smallestMajority then votesMatchingMyVoteCount += 1
 							}
 							if myVoteIsValid && votesMatchingMyVoteCount >= smallestMajority then {
-								if myVote.candidateId == hostId then become(Leader())
+								if myVote.candidateId == boundParticipantId then become(Leader())
 								else become(Follower(myVote.candidateId))
 							} else become(Candidate)
 
@@ -822,7 +844,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				def triggerExposingFailures(): Unit = {
 					updatesState.trigger(true) {
 						case Success(()) => // do nothing
-						case Failure(e) => scribe.error(s"$hostId: Unexpected error:", e)
+						case Failure(e) => scribe.error(s"$boundParticipantId: Unexpected error:", e)
 					}
 				}
 			}
@@ -851,24 +873,24 @@ trait ConsensusParticipantSdm { thisModule =>
 				workspace = storage.invalidWorkspace()
 				notifyListeners(_.onStarting(previous, currentTerm, isRestart))
 				storage.loads.trigger(true) {
-					case Success(newWorkspace) =>
+					case Success(loadedWorkspace) =>
 						// TODO consider the stateMachineNeedsRestart flag
-						workspace = newWorkspace
-						if newWorkspace.isBrandNew then {
-							newWorkspace.setCurrentTerm(0)
-							newWorkspace.setCurrentParticipants(cluster.getParticipants.toIndexedSeq.sorted)
+						workspace = loadedWorkspace
+						if loadedWorkspace.isBrandNew then {
+							loadedWorkspace.setCurrentTerm(0)
+							loadedWorkspace.setCurrentParticipants(cluster.getInitialParticipants.toIndexedSeq.sorted)
 						}
 						commitIndex = 0
 						if stateMachineNeedsRestart then lastAppliedCommandIndex = 0
-						currentTerm = newWorkspace.getCurrentTerm
-						currentParticipants = newWorkspace.getCurrentParticipants
-						otherParticipants = currentParticipants.filter(_ != hostId)
+						currentTerm = loadedWorkspace.getCurrentTerm
+						currentParticipants = loadedWorkspace.getCurrentParticipants
+						otherParticipants = currentParticipants.filter(_ != boundParticipantId)
 						smallestMajority = currentParticipants.length / 2 + 1
 						notifyListeners(_.onStarted(previous, currentTerm, isRestart))
 						become(Isolated)
 
 					case Failure(e) =>
-						scribe.error(s"$hostId: Unexpected error while loading the consensus-service's workspace:", e)
+						scribe.error(s"$boundParticipantId: Unexpected error while loading the consensus-service's workspace:", e)
 						become(Stopped(e))
 				}
 			}
@@ -997,7 +1019,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				replicateUncommitedRecords().trigger(true) {
 					case Success(_) => // do nothing
 					case Failure(e) =>
-						scribe.trace(s"$hostId: Failed to replicate records that weren't commited when becoming the leader:", e)
+						scribe.trace(s"$boundParticipantId: Failed to replicate records that weren't commited when becoming the leader:", e)
 				}
 			}
 
@@ -1069,7 +1091,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									case Failure(e) =>
 										if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex then accum
 										else {
-											scribe.info(s"$hostId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
+											scribe.info(s"$boundParticipantId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
 											elem.participantIndex :: accum
 										}
 								}
@@ -1140,7 +1162,7 @@ trait ConsensusParticipantSdm { thisModule =>
 										// else (I don't remember the previous record)
 										else {
 											// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism.
-											scribe.error(s"$hostId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
+											scribe.error(s"$boundParticipantId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
 											// yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.											
 											sequencer.Task_unit
 										}
@@ -1173,7 +1195,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			for replies <- sequencer.Task_sequenceHardyToArray(areYouThereQuestions) yield {
 				var laterCurrentTerm = this.currentTerm
-				var chosenCandidate = CandidateInfo(hostId, this.currentBehavior.buildMyStateInfo)
+				var chosenCandidate = CandidateInfo(boundParticipantId, this.currentBehavior.buildMyStateInfo)
 				var reachableCandidatesCounter = 1 // myself
 				for replierIndex <- replies.indices do {
 					val replierId = otherParticipants(replierIndex)
@@ -1186,7 +1208,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
 
 						case Failure(e) =>
-							scribe.trace(s"$hostId: `$replierId.asksHowAreYou($currentTerm)` failed with:", e)
+							scribe.trace(s"$boundParticipantId: `$replierId.asksHowAreYou($currentTerm)` failed with:", e)
 					}
 				}
 				Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
