@@ -201,6 +201,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
 			}
 		}
+		
+		def stops(): sequencer.Duty[Unit] = {
+			sequencer.Duty_mine { () =>
+				participant.stop()
+				_participant = null
+			}
+		}
 
 		override val sequencer: ScheduSequen = sharedDap.provide("node-sequencer")
 
@@ -297,16 +304,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * Test implementation of [[Workspace]]
 		 */
 		class TestWorkspace extends Workspace {
-			private var currentParticipants: IndexedSeq[ParticipantId] = IndexedSeq.empty
+			private var currentParticipants: IArray[ParticipantId] = IArray.empty
 			private var currentTerm: Term = 0
 			private var _logBufferOffset: RecordIndex = 1
 			private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
 			override def isBrandNew: Boolean = logBuffer.isEmpty
 
-			override def getCurrentParticipants: IndexedSeq[ParticipantId] = currentParticipants
+			override def getCurrentParticipants: IArray[ParticipantId] = currentParticipants
 
-			override def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit = {
+			override def setCurrentParticipants(participants: IArray[ParticipantId]): Unit = {
 				currentParticipants = participants
 			}
 
@@ -366,7 +373,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}started.")
 
-			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = scribe.info(s"$myId: became stopped from ${nameOf(previous)} during term $term.", motive)
+			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable | Null): Unit = scribe.info(s"$myId: became stopped from ${nameOf(previous)} during term $term.", motive)
 
 			override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from ${nameOf(previous)} during term $term.")
 

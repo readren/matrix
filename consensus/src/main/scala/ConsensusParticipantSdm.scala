@@ -272,7 +272,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		/**
 		 * Sets the message listener.
 		 * Is called within the [[sequencer]] thread. */
-		def setMessagesListener(listener: MessagesListener): Unit
+		def setMessagesListener(listener: MessagesListener | Null): Unit
 
 		extension (destinationId: ParticipantId) {
 			/**
@@ -326,10 +326,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		//		private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
 		/** @return the identifiers of the participants in the current cluster configuration, sorted. */
-		def getCurrentParticipants: IndexedSeq[ParticipantId]
+		def getCurrentParticipants: IArray[ParticipantId]
 
 		/** @param participants the identifiers of the participants in the current cluster configuration, sorted. */
-		def setCurrentParticipants(participants: IndexedSeq[ParticipantId]): Unit
+		def setCurrentParticipants(participants: IArray[ParticipantId]): Unit
 
 		/** The current term according to this participant.
 		 * Zero means "before the first election". */
@@ -387,7 +387,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit
 
-		def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit
+		def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable | Null): Unit
 
 		def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit
 
@@ -409,7 +409,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = ()
 
-		override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable): Unit = ()
+		override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable | Null): Unit = ()
 
 		override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = ()
 
@@ -483,7 +483,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** The current set of participants in the cluster, according to this participant, sorted.
 		 * Should be reflected in the [[Workspace]].
 		 * */
-		private var currentParticipants: IndexedSeq[ParticipantId] = IndexedSeq.empty
+		private var currentParticipants: IArray[ParticipantId] = IArray.empty
 
 		/** Should be updated whenever [[currentParticipants]] mutates */
 		private var smallestMajority: Int = 0
@@ -536,7 +536,14 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** @return the current term. */
 		inline def getTerm: Term = currentTerm
 
-		/** @return the index of the specified [[ParticipantId]] in the [[currentParticipants]]' IndexedSeq.
+		/** Stops this [[ConsensusParticipant]] instance.
+		 * Should be called within the [[sequencer]]. */
+		def stop(): Unit = {
+			assert(isInSequence)
+			if currentBehavior.ordinal != STOPPED then become(Stopped(null))
+		}
+
+		/** @return the index of the specified [[ParticipantId]] in the [[currentParticipants]]' [[IndexedSeq]].
 		 * @param participantId the id of the participant to find. */
 		private inline def participantIndexOf(participantId: ParticipantId): Int = {
 			java.util.Arrays.binarySearch(currentParticipants.asInstanceOf[Array[ParticipantId]], participantId, participantIdComparator)
@@ -770,7 +777,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				val workspace = thisConsensusParticipant.workspace.asInstanceOf[WS]
 				if myVote.term > currentTerm then currentTerm = myVote.term
 
-				if myVote.reachableCandidatesCount == currentParticipants.size then {
+				if myVote.reachableCandidatesCount == currentParticipants.length then {
 					if myVote.candidateId == boundParticipantId then become(Leader())
 					else become(Follower(myVote.candidateId))
 					workspace.setCurrentTerm(currentTerm)
@@ -816,11 +823,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private case class Stopped(motive: Throwable) extends Behavior {
+		private case class Stopped(motive: Throwable | Null) extends Behavior {
 			override val ordinal: BehaviorOrdinal = STOPPED
 
 			override def onEnter(previous: BehaviorOrdinal): Unit = {
 				notifyListeners(_.onBecameStopped(previous, currentTerm, motive))
+				cluster.setMessagesListener(null)
+				workspace.release()
+				workspace = null
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
@@ -844,7 +854,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						workspace = loadedWorkspace
 						if loadedWorkspace.isBrandNew then {
 							loadedWorkspace.setCurrentTerm(0)
-							loadedWorkspace.setCurrentParticipants(cluster.getInitialParticipants.toIndexedSeq.sorted)
+							loadedWorkspace.setCurrentParticipants(cluster.getInitialParticipants.toIndexedSeq.sorted.toArray.asInstanceOf[IArray[ParticipantId]])
 						}
 						commitIndex = 0
 						if stateMachineNeedsRestart then lastAppliedCommandIndex = 0

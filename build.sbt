@@ -55,7 +55,10 @@ lazy val sequencerProvidersManager = (project in file("sequencer/providers-manag
 		scalacOptions ++= Seq("-source:future")
 	)
 
-val AkkaVersion = "2.10.1"
+val AkkaVersion = "2.10.9"
+
+resolvers in ThisBuild += "akka-secure-mvn" at "https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"
+resolvers in ThisBuild += Resolver.url("akka-secure-ivy", url("https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"))(Resolver.ivyStylePatterns)
 
 lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration"))
 	.dependsOn(sequencerCore, common)
