@@ -52,9 +52,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private var indexById: Map[Id, Int] = Map.empty
 		private val nodeByIndex: ArrayBuffer[Node] = ArrayBuffer.empty
 
-		def addNode(id: Id, node: Node): Unit = synchronized {
-			nodeById += id -> node
-			indexById += id -> nodeByIndex.size
+		def addNode(node: Node): Unit = synchronized {
+			assert(!nodeById.contains(node.myId))
+			nodeById += node.myId -> node
+			indexById += node.myId -> nodeByIndex.size
 			nodeByIndex.addOne(node)
 		}
 
@@ -170,7 +171,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	/**
 	 * An implementation of the [[ConsensusParticipantSdm]] for testing.
 	 */
-	private class Node(val myId: Id, initialParticipants: Set[Id], net: Net, stateMachineNeedsRestart: Boolean = false) extends ConsensusParticipantSdm { thisNode =>
+	private class Node(val myId: Id, initialParticipants: Set[Id], net: Net) extends ConsensusParticipantSdm { thisNode =>
+
 		import net.accessNode
 
 		override type ParticipantId = Id
@@ -181,15 +183,21 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
 		}
 
+		private var initialNotificationListener: NotificationListener = new DefaultNotificationListener()
+
 		private var _participant: ConsensusParticipant = uninitialized
 
 		/** @return the [[ConsensusParticipant]] service instance corresponding to this [[Node]]. */
 		inline def participant: ConsensusParticipant = _participant
 
-		/** Starts this [[Node]], adding it to the `net` and creating its [[ConsensusParticipant]] service instance. */
-		def starts(initialNotificationListener: NotificationListener = DefaultNotificationListener()): sequencer.Duty[Unit] = {
+		/** Initializes this [[Node]]. Does not start the [[ConsensusParticipant]] service. */
+		inline def initialize(initialNotificationListener: NotificationListener = DefaultNotificationListener()): Unit = {
+			this.initialNotificationListener = initialNotificationListener;
+		}
+
+		/** Creates this [[Node]]'s [[ConsensusParticipant]] service instance. */
+		def starts(stateMachineNeedsRestart: Boolean = false): sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
-				net.addNode(myId, thisNode)
 				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
 			}
 		}
@@ -384,18 +392,24 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	 * @param net the [[Net]] where the created [[Node]] instances will be added.
 	 * @param clusterSize the number of [[Node]]s to create.
 	 * @param weakReferencesHolder a collection to which the created instances of [[NotificationListener]] are added in order to avoid being garbage-collected.
-	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor.
-	 * @return a [[Duty]] that completes when the creation and initialization is complete. */
-	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int, weakReferencesHolder: mutable.Buffer[AnyRef])(notificationListenerBuilder: (node: Node) => node.NotificationListener): net.netSequencer.Duty[Array[Unit]] = {
-		val ids = createIds(clusterSize)
-		val nodes = for id <- ids yield Node(id, ids.toSet, net)
-		val nodeInitializerByIndex =
-			for node <- nodes yield {
-				val nl = notificationListenerBuilder(node)
-				weakReferencesHolder.addOne(nl)
-				node.starts(initialNotificationListener = nl).onBehalfOf(net.netSequencer)
-			}
-		net.netSequencer.Duty_sequenceToArray(nodeInitializerByIndex)
+	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor. */
+	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int, weakReferencesHolder: mutable.Buffer[AnyRef])(notificationListenerBuilder: (node: Node) => node.NotificationListener): Unit = {
+		val ids = createIds(clusterSize).toSet
+		for id <- ids do {
+			val node = Node(id, ids, net)
+			net.addNode(node)
+			val nl = notificationListenerBuilder(node)
+			weakReferencesHolder.addOne(nl)
+			node.initialize(nl)
+		}
+	}
+
+	private def startsAllNodes(net: Net): net.netSequencer.Duty[Array[Unit]] = {
+		val starters = for nodeIndex <- 0 until net.size yield {
+			val node = net.getNode(nodeIndex)
+			node.starts(false).onBehalfOf(net.netSequencer)
+		}
+		net.netSequencer.Duty_sequenceToArray(starters)
 	}
 
 
@@ -414,7 +428,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 			val leaderNodeByTerm: Array[Node] = new Array(numberOfCommandsToSend + 1)
 
-			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
 						if leaderNodeByTerm(term) eq null then leaderNodeByTerm(term) = node
@@ -424,7 +438,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks = for {
-				_ <- initializes
+				_ <- startsAllNodes(net)
 				client = Client[net.type](net, receiverIndex)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 					.toDuty(promise.tryFailure)
@@ -448,7 +462,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val net = new Net(latency, 10)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
 						if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
@@ -458,7 +472,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- initializes.toTask
+				_ <- startsAllNodes(net).toTask
 				client = Client[net.type](net, receiverIndex)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -482,7 +496,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val net = new Net(latency, 10)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
 
@@ -506,7 +520,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- initializes.toTask
+				_ <- startsAllNodes(net).toTask
 				client = Client[net.type](net, receiverIndex)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -530,7 +544,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val net = new Net(latency, 10)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
 
@@ -554,7 +568,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- initializes.toTask
+				_ <- startsAllNodes(net).toTask
 				client = Client[net.type](net, receiverIndex)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -579,7 +593,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 			val appliedCommandsByNodeIndex: Array[Array[TestCommand | Null]] = Array.fill(clusterSize, numberOfCommandsToSend + 1)(null)
 
-			val initializes = createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onCommandApplied(command: node.ClientCommand, index: RecordIndex): Unit = {
 
@@ -612,7 +626,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- initializes.toTask
+				_ <- startsAllNodes(net).toTask
 				client = Client[net.type](net, receiverIndex)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
