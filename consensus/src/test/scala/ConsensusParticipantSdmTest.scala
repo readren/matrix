@@ -76,13 +76,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		extension (inquirerId: Id) {
 			/** @return a [[netSequencer.Task]] that yields the [[Node]] with the specified [[Id]] simulating latency, or a [[RuntimeException]] if this [[Net]] know no [[Node]] with that [[Id]] simulating timeout dealy. */
 			def accessNode(id: Id): netSequencer.Task[Node] = {
-				netSequencer.Task_ownFlat { () =>
-					getNode(id).fold {
-						netSequencer.Task_failed(new RuntimeException(s"$inquirerId: no response from $id")).scheduled(netSequencer.newDelaySchedule(timeout))
-					} { node =>
-						netSequencer.Task_successful(node).scheduled(netSequencer.newDelaySchedule(latency))
-					}
-				}
+				netSequencer.Task_mine[Node] { () =>
+					val node = nodeById(id)
+					node
+
+				}.scheduled(netSequencer.newDelaySchedule(latency))
 			}
 		}
 	}
