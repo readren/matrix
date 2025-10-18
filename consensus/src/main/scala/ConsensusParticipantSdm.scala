@@ -66,10 +66,10 @@ object ConsensusParticipantSdm {
 	 * The response to a "how are you" question from a participant to another.
 	 * @param currentTerm The term of the participant that is answering.
 	 * @param ordinal The behavior of the participant that is answering.
-	 * @param lastRecordTerm The term of the last record in the log of the participant that is answering.
-	 * @param lastRecordIndex The index of the last record in the log of the participant that is answering.
+	 * @param termAtCommitIndex The term of the last commited record in the log of the participant that is answering.
+	 * @param commitIndex The index of the last commited record in the log of the participant that is answering.
 	 */
-	case class StateInfo(currentTerm: Term, ordinal: BehaviorOrdinal, lastRecordTerm: Term, lastRecordIndex: RecordIndex)
+	case class StateInfo(currentTerm: Term, ordinal: BehaviorOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex)
 
 	//// LOG RECORD
 
@@ -150,7 +150,13 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	//// THREADING & TIMING
 
-	/** The execution sequencer that the [[ConsensusParticipant]] instances use to mutate its state and schedule tasks. */
+	/** The execution sequencer that [[ConsensusParticipant]] instances uses to mutate its state and schedule tasks.
+	 *
+	 * All methods that access mutable consensus state must be invoked through this sequencer to ensure deterministic,
+	 * single-threaded execution. This coordination model avoids the need for blocking synchronization.
+	 *
+	 * The sequencer supports both ASAP and scheduled execution via [[Doer.executeSequentially]] and [[SchedulingExtension.scheduleSequentially]].
+	 */
 	val sequencer: Doer & SchedulingExtension
 
 	inline def isInSequence: Boolean = sequencer.isInSequence
@@ -228,18 +234,25 @@ trait ConsensusParticipantSdm { thisModule =>
 		 */
 		trait MessagesListener {
 
-			/**
-			 * This method is invoked by this cluster when a client sends a command to the state-machine.
+			/** Handles a client-submitted command intended for the state machine.
 			 *
-			 * @param command The command sent by the client.
-			 * @param isFallback true if the client request is a retry of a previous request that failed and sent to a different participant.
-			 * @return A [[sequencer.Task]] that yields the response of the state-machine to the client, or a [[RedirectTo]] message instructing to send the command to the leader, or a [[Unable]] message if the participant is not able to reach consensus.
+			 * This method is invoked by the bound [[ClusterParticipant]] when a client sends a command to this participant.
+			 * It must be called within the [[sequencer]].
+			 *
+			 * @param command The command issued by the client for state-machine execution.
+			 * @param isFallback True if the client previously attempted to send this command to a different participant,
+			 *                   which either failed or rejected the request.
+			 * @return A [[sequencer.Task]] that yields one of:
+			 *         - The state-machine's response to the client.
+			 *         - A [[RedirectTo]] message instructing the client to contact the current leader.
+			 *         - An [[Unable]] message indicating that this participant cannot currently reach consensus.
 			 */
 			def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient]
 
 			/**
 			 * This method is invoked by this cluster when another participant calls [[asksHowAreYou]].
 			 *
+			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[asksHowAreYou]].
 			 * @param inquirerTerm The term of the participant that called [[asksHowAreYou]].
 			 * @return The state information of the destination participant.
@@ -249,6 +262,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/**
 			 * This method is invoked by this cluster when another participant calls [[askToChooseForLeader]].
 			 *
+			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[askToChooseForLeader]].
 			 * @param inquirerInfo Information about the state of the participant that called.
 			 * @return A [[sequencer.Task]] that yields a [[Vote]] indicating the candidate chosen by the listening participant for the specified term.
@@ -258,6 +272,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/**
 			 * This method is invoked by this cluster when another participant calls [[asksToAppendRecords]].
 			 *
+			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[asksToAppendRecords]].
 			 * @param inquirerTerm The term of the participant that called [[asksToAppendRecords]].
 			 * @param prevRecordIndex The index of record after which the specified `records` should be appended.
@@ -280,10 +295,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * The implementation should make, somehow, the destination participant's [[MessagesListener.onHowAreYou]] to be called, and return what it returns.
 			 * Called within the [[sequencer]] thread.
 			 * @param inquirerTerm The term of the participant that is asking.
-			 * @param aLeaderMaybeMissing If true, the destination participant should update its view of the cluster state and its role.
 			 * @return A [[sequencer.Task]] that yields the state information of the destination participant.
 			 */
-			def asksHowAreYou(inquirerTerm: Term, aLeaderMaybeMissing: Boolean): sequencer.Task[StateInfo]
+			def asksHowAreYou(inquirerTerm: Term): sequencer.Task[StateInfo]
 
 			/**
 			 * Asks the destination participant to choose a leader.
@@ -589,9 +603,8 @@ trait ConsensusParticipantSdm { thisModule =>
 				val currentBehaviorOrdinal = currentBehavior.ordinal
 				if currentBehaviorOrdinal <= STARTING then StateInfo(0, ordinal, 0, 0)
 				else {
-					val lastRecordIndex = workspace.firstEmptyRecordIndex - 1
-					val lastRecordTerm = workspace.getRecordTermAt(lastRecordIndex)
-					StateInfo(currentTerm, currentBehaviorOrdinal, lastRecordTerm, lastRecordIndex)
+					val termAtCommitIndex = workspace.getRecordTermAt(commitIndex)
+					StateInfo(currentTerm, currentBehaviorOrdinal, termAtCommitIndex, commitIndex)
 				}
 			}
 
@@ -610,7 +623,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				if ordinal <= STARTING then sequencer.Task_successful(Vote(0, boundParticipantId, 0, ordinal))
 				else decidesMyVote(inquirerId, inquirerInfo).andThen {
 					case Success(vote) =>
-						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidatesCount < smallestMajority && ordinal >= CANDIDATE) then {
+						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidatesCount < smallestMajority && currentBehavior.ordinal >= CANDIDATE) then {
 							// start the state-updater process
 							updatesState(vote).triggerExposingFailures()
 						}
@@ -622,7 +635,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/**
-			 * Handles an AppendEntries RPC from the leader, attempting to reconcile log state and apply committed records.
+			 * Handles an AppendEntries RPC from the leader, attempting to reconcile log state and apply committed [[Record]]s.
 			 *
 			 * This method performs the following steps:
 			 *
@@ -630,6 +643,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *     - This participant is still starting or was stopped (`ordinal < ISOLATED`).
 			 *     - The leader's term is stale (`inquirerTerm < currentTerm`).
 			 *     - The leader's `prevRecordIndex` does not match the term at that index locally.
+			 *     - This participant state transitions to a non-receptive one while updating this participant consensus state due to a configuration change [[Record]] among the received [[Record]]s that should be commited.
 			 *
 			 *   - If the leader's term is newer or this participant is not yet a follower:
 			 *     - Updates `currentTerm` to `inquirerTerm`
@@ -638,7 +652,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *   - Appends new records from the leader, resolving any log conflicts
 			 *   - Updates the [[commitIndex]] as the minimum of `leaderCommit` and the index of the last appended record.
 			 *
-			 *   - If the participant remains in a valid state (`ordinal > STARTING`):
+			 *   - If this participant state haven't changed to a no receptive one (`ordinal <= STARTING`) while waiting the application of commited [[Record]]s of the kind that update this participant consensus state (like [[ConfigurationChangeOldNew]] and [[ConfigurationChangeOldNew]]), then :
 			 *     - Persists the updated workspace via `storage.saves`
 			 *     - On failure to persist, transitions to `Stopped` and returns a failed result
 			 *
@@ -696,7 +710,6 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 						}
 					} yield result
-
 				}
 			}
 
@@ -813,10 +826,24 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
+			/** Updates the state and [[Behavior]] of this [[ConsensusParticipant]] and then returns the [[sequencer.Task]] returned by the [[Behavior.onCommandFromClient]] method applied to the updated [[Behavior]].
+			 * @return a [[sequencer.Task]] returned by [[Behavior.onCommandFromClient]] applied to the updated [[Behavior]] */
+			protected def updatesStateAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.Task[ResponseToClient] = {
+				assert(isInSequence)
+				for {
+					_ <- updatesState
+					result <- {
+						val currentBehaviorOrdinal = currentBehavior.ordinal
+						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
+						else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
+					}
+				} yield result
+			}
+
 			extension [T](task: sequencer.Task[T]) {
 				def triggerExposingFailures(): Unit = {
-					updatesState.trigger(true) {
-						case Success(()) => // do nothing
+					task.trigger(true) {
+						case Success(_) => // do nothing
 						case Failure(e) => scribe.error(s"$boundParticipantId: Unexpected error:", e)
 					}
 				}
@@ -878,9 +905,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/**
-		 * Behavior state to which the participant transitions to when the leader becomes unreachable or receives a message with a term greater than the current term.
-		 * This state is abandoned when the leader is found or the majority of the participants are reachable.
-		 * The [[ConsensusParticipant]] behaves exactly the same in [[Isolated]] and [[Candidate]] states. The only goal of the separation is to allow the user to distinguish if a majority of participants is reachable or not.
+		 * Behavior state when reachability to a majority of the participants was not achieved or is still not checked.
+		 * The participant transitions to this state after [[Starting]] or when reachability to other participants drops below [[smallestMajority]].
+		 * This state is abandoned when a majority of the participants are reachable.
+		 * [[Vote]]s cast by participants in this state are ignored.
 		 */
 		private case object Isolated extends Behavior {
 			override val ordinal: BehaviorOrdinal = ISOLATED
@@ -902,20 +930,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
-				assert(isInSequence)
-				for {
-					_ <- updatesState
-					result <- {
-						val currentBehaviorOrdinal = currentBehavior.ordinal
-						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
-						else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
-					}
-				} yield result
+				updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 		}
 
 		/**
-		 * Behavior state when the participant is running for leadership.
+		 * Behavior state when reachability to a majority of the participants is achieved but none of them is in [[Leader]] state.
 		 *
 		 * In this state, the participant participates in leader election and may transition to [[Leader]], [[Follower]], or [[Isolated]] based on his viewpoint of other participants state.
 		 * A new term is started when becoming leader.
@@ -935,15 +955,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
-				Isolated.onCommandFromClient(command, isFallback)
+				updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 		}
 
 		/**
 		 * Behavior state when the participant follows a known leader.
 		 *
-		 * In this state, the participant acknowledges the specified leader and may
-		 * transition to [[Candidate]] if the consensus protocol requires it.
+		 * In this state, the participant acknowledges the specified leader and may transition to [[Candidate]] if the consensus protocol requires it.
 		 *
 		 * @param leaderId The ID of the leader this participant is following
 		 */
@@ -956,7 +975,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
-				if isFallback then Isolated.onCommandFromClient(command, isFallback)
+				if isFallback then updatesStateAndThenCallsOnCommandFromClient(command)
 				else sequencer.Task_successful(RedirectTo(leaderId))
 			}
 		}
@@ -995,7 +1014,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				replicateUncommitedRecords().trigger(true) {
 					case Success(_) => // do nothing
 					case Failure(e) =>
-						scribe.trace(s"$boundParticipantId: Failed to replicate records that weren't commited when becoming the leader:", e)
+						scribe.warn(s"$boundParticipantId: Failed to replicate records that weren't commited when becoming the leader:", e)
 				}
 			}
 
@@ -1013,6 +1032,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				for {
 					_ <- replicateUncommitedRecords()
+					_ <- storage.saves(workspace.asInstanceOf[WS])
 					response <- machine.appliesClientCommand(index, command)
 				} yield Processed(index, response)
 			}
@@ -1057,7 +1077,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 						// For those minority of followers whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because they failed to replicate the uncommited records), retry the ask to append records to them.
 						// This retry is indefinite until this method (replicateUncommitedRecords) is called again (as the effect of an external stimulus).
-						def retryLaggardFollowers(previousTryResults: Iterable[(previousTryResult: Try[Unit], participantIndex: Int)]): Unit = {
+						def retryLaggardParticipants(previousTryResults: Iterable[(previousTryResult: Try[Unit], participantIndex: Int)]): Unit = {
 							if currentBehavior ne this then return
 							val indicesOfLaggardParticipants: List[Int] = previousTryResults.foldLeft(Nil) { (accum, elem) =>
 								elem.previousTryResult match {
@@ -1067,7 +1087,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									case Failure(e) =>
 										if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex then accum
 										else {
-											scribe.info(s"$boundParticipantId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
+											scribe.debug(s"$boundParticipantId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
 											elem.participantIndex :: accum
 										}
 								}
@@ -1079,97 +1099,96 @@ trait ConsensusParticipantSdm { thisModule =>
 									if currentBehavior eq this then {
 										val appendTasks = for followerIndex <- indicesOfLaggardParticipants yield appendsRecordsToParticipant(followerIndex, workspace.firstEmptyRecordIndex) // TODO Is `firstEmptyRecordIndex` the right index to retry until? Or should it be the `commitIndex`?
 										sequencer.Task_sequenceHardyToArray(appendTasks)
-											.map(appendResults => retryLaggardFollowers(appendResults.zipWithIndex))
+											.map(appendResults => retryLaggardParticipants(appendResults.zipWithIndex))
 											.triggerAndForget(true)
 									}
 								}
 							}
 						}
 
-						retryLaggardFollowers(appendResults.zipWithIndex)
+						retryLaggardParticipants(appendResults.zipWithIndex)
 					}
 				}
 			}
 
 			/**
-			 * Creates a task that sends log records to the specified participant (assuming optimistically it is in [[Follower]] state), starting from the participant's next record to send, up to (but not including) the given index.
+			 * Creates a task that sends log records to the specified participant (assuming optimistically it is in receptive state), starting from the corresponding [[indexOfNextRecordToSend_ByParticipantIndex]] up to (but not including) the given index.
 			 * If the participant's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
 			 * @param destinationParticipantIndex The index of the participant in the [[otherParticipants]] array.
 			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[Workspace.firstEmptyRecordIndex]]?
-			 * @return A task that attempts to append records to the specified participant, yielding [[Unit]] if the participant was successful applying all the commands.
+			 * @return A task that attempts to append records to the specified participant, yielding [[Unit]] if the participant was successful appending them, but not necessarily applying them.
 			 */
 			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
 				val destinationParticipantId = otherParticipants(destinationParticipantIndex)
 				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
-				if until <= indexOfNextRecordToSend then sequencer.Task_unit
-				else {
-					val recordsToSend = workspace.getRecordsBetween(indexOfNextRecordToSend, until)
-					val previousRecordIndex = indexOfNextRecordToSend - 1
-					val previousRecordTerm = if previousRecordIndex == 0 then 0 else workspace.getRecordAt(previousRecordIndex).term
-					for {
-						appendResult <- destinationParticipantId.asksToAppendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
-						result <- {
-							// If this participant's behavior changed while waiting the follower response, ignore the successful response and yield a successful result to avoid the retry loop.
-							if currentBehavior ne this then sequencer.Task_unit
-							// If the term is greater than the current term, then the leader has changed. So:
-							else if appendResult.term > currentTerm then {
-								// update the current term and start the state-update process
-								currentTerm = appendResult.term
-								updatesState.triggerExposingFailures()
-								// Yield a successful result to avoid the retry loop below.
-								sequencer.Task_unit
-							} else {
-								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
-								// If the follower has successfully appended the records, applied the commited commands, and persisted its workspace, then update the index of the next record to send and the highest record index known to be replicated and yield a success.
-								if appendResult.success then {
-									indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) += recordsToSend.size
-									highestRecordIndexKnowToBeReplicated_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend + recordsToSend.size
+				if until <= indexOfNextRecordToSend then return sequencer.Task_unit
+				val recordsToSend = workspace.getRecordsBetween(indexOfNextRecordToSend, until)
+				val previousRecordIndex = indexOfNextRecordToSend - 1
+				val previousRecordTerm = if previousRecordIndex == 0 then 0 else workspace.getRecordAt(previousRecordIndex).term
+				for {
+					appendResult <- destinationParticipantId.asksToAppendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
+					_ <- {
+						// This point is reached only if the destination participant responds normally to the AppendRecords request.
+						// If this participant's behavior changed while waiting the destination participant response, ignore the response and yield successfully (to skip/exit the retry laggards loop).
+						if currentBehavior ne this then sequencer.Task_unit
+						// If the term (according to the target) is greater than the current term (according to this participant), then the leader has changed. So:
+						else if appendResult.term > currentTerm then {
+							// update the current term and start the state-update process
+							currentTerm = appendResult.term
+							updatesState.triggerExposingFailures()
+							// Yield a successful result to avoid the retry loop below.
+							sequencer.Task_unit
+						}
+						// If the destination participant has successfully appended the records to its log and persisted its workspace, then update the index of the next record to send and the highest record index known to be replicated and yield a success.
+						else if appendResult.success then {
+							assert(indexOfNextRecordToSend + recordsToSend.size == until - 1)
+							indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = until
+							highestRecordIndexKnowToBeReplicated_ByParticipantIndex(destinationParticipantIndex) = until - 1
+							sequencer.Task_unit
+						}
+						// else (if the participant rejected the appending)
+						else {
+							// If the rejection was because the previous record's term is not the same in his log and my log then:
+							if appendResult.behaviorOrdinal >= ISOLATED && appendResult.term == currentTerm then {
+								// if I remember the previous record then try again starting one record before.
+								if indexOfNextRecordToSend > workspace.logBufferOffset then {
+									indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend - 1
+									appendsRecordsToParticipant(destinationParticipantIndex, until)
+								}
+								// else (I don't remember the previous record)
+								else {
+									// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism.
+									scribe.error(s"$boundParticipantId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
+									// yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.
 									sequencer.Task_unit
 								}
-								// else (if the participant rejected the appending)
-								else {
-									// If the rejection was because the previous record's term is not the same in his log and my log then:
-									if appendResult.behaviorOrdinal >= ISOLATED && appendResult.term == currentTerm then {
-										// if I remember the previous record then try again starting one record before.
-										if indexOfNextRecordToSend > workspace.logBufferOffset then {
-											indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend - 1
-											appendsRecordsToParticipant(destinationParticipantIndex, until)
-										}
-										// else (I don't remember the previous record)
-										else {
-											// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism.
-											scribe.error(s"$boundParticipantId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
-											// yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.											
-											sequencer.Task_unit
-										}
-									}
-									// if the rejection was for another reason, yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.  
-									else sequencer.Task_unit
-								}
 							}
+							// if the rejection was for another reason, yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.
+							else sequencer.Task_unit
 						}
-					} yield result
-				}
+					}
+				} yield ()
 			}
 		}
 
 		//// UTILITIES USED BY MANY BEHAVIORS
 
 		/**
-		 * Determines the best leader candidate based on the [StateInfo] of the inquirer, the host, and the other participants.
+		 * Determines the best leader candidate based on the [StateInfo]s of the inquirer, the bound, and the other participants.
 		 * Design note: The caller should not update any state variable before calling this method.
 		 *
-		 * @param inquirerId the id of the participant that asked me to cast a vote; or null if asking myself.
-		 * @param inquirerInfo The candidate info of the inquirer; or null if asking myself.
+		 * @param inquirerId the id of the participant that asked me to cast a vote; or null if asking myself. This is needed for efficiency only, to use the [[StateInfo]] it provided along its request instead of asking for it.
+		 * @param inquirerInfo the [[CandidateInfo]] of the inquirer, or null if asking myself. This is needed for efficiency only, to use the [[StateInfo]] it provided along its request instead of asking for it.
 		 * @return A task that yields a [[Vote]] with the chosen leader for the current term.
 		 */
 		private def decidesMyVote(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
-			val areYouThereQuestions: IndexedSeq[sequencer.Task[StateInfo]] =
-				for replierId <- otherParticipants yield
-					if replierId == inquirerId then sequencer.Task_successful(inquirerInfo)
-					else replierId.asksHowAreYou(this.currentTerm, false)
-
-			for replies <- sequencer.Task_sequenceHardyToArray(areYouThereQuestions) yield {
+			val howAreYouQuestions: IndexedSeq[sequencer.Task[StateInfo]] =
+				for otherParticipantId <- otherParticipants yield {
+					if otherParticipantId == inquirerId then sequencer.Task_successful(inquirerInfo)
+					else otherParticipantId.asksHowAreYou(this.currentTerm)
+				}
+			var borrame: List[CandidateInfo] = Nil // TODO delete line
+			for replies <- sequencer.Task_sequenceHardyToArray(howAreYouQuestions) yield {
 				var laterCurrentTerm = this.currentTerm
 				var chosenCandidate = CandidateInfo(boundParticipantId, this.currentBehavior.buildMyStateInfo)
 				var reachableCandidatesCounter = 1 // myself
@@ -1181,28 +1200,38 @@ trait ConsensusParticipantSdm { thisModule =>
 							if replierInfo.currentTerm > laterCurrentTerm then {
 								laterCurrentTerm = replierInfo.currentTerm
 							}
+							borrame = CandidateInfo(replierId, replierInfo) :: borrame // TODO delete line
 							chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
 
 						case Failure(e) =>
-							scribe.trace(s"$boundParticipantId: `$replierId.asksHowAreYou($currentTerm)` failed with:", e)
+							scribe.debug(s"$boundParticipantId: `$replierId.asksHowAreYou($currentTerm)` failed with:", e)
 					}
 				}
+				scribe.trace(s"$boundParticipantId: decidesMyVote($inquirerId, $inquirerInfo) has chosen $chosenCandidate among $borrame") // TODO delete line
 				Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
 			}
 		}
 
+		// participant-2: has chosen
+		// 		CandidateInfo(participant-2,StateInfo(currentTerm:1, ordinal:4, lastRecordTerm:1, lastRecordIndex:4))
+		// among: List(
+		// 		CandidateInfo(participant-1,StateInfo(currentTerm:1, ordinal:4, lastRecordTerm:1, lastRecordIndex:2)),
+		// 		CandidateInfo(participant-0,StateInfo(currentTerm:1, ordinal:5, lastRecordTerm:1, lastRecordIndex:1))
+		// 	)
+
 		/**
 		 * Knows all the information about a candidate necessary by participants to decide which to vote in a leader election.
 		 */
-		private class CandidateInfo(val id: ParticipantId, val info: StateInfo) {
+		// TODO remove "case"
+		private case class CandidateInfo(val id: ParticipantId, val info: StateInfo) {
 			/** @return the winner of the competition between this candidate and the other candidate when competing for leadership. The winner is the more up-to-date one.
-			 * The more up-to-date criteria are: greater last record term, longer log, greater current term, greater behavior ordinal, and lesser [[ParticipantId]], with the left to right priority.
+			 * The more up-to-date criteria are: greater last record term, longer log, greater current term, is leader over not, and lesser [[ParticipantId]], with the left to right priority.
 			 */
 			def getWinnerAgainst(other: CandidateInfo): CandidateInfo = {
-				if this.info.lastRecordTerm > other.info.lastRecordTerm then this
-				else if this.info.lastRecordTerm < other.info.lastRecordTerm then other
-				else if this.info.lastRecordIndex > other.info.lastRecordIndex then this
-				else if this.info.lastRecordIndex < other.info.lastRecordIndex then other
+				if this.info.termAtCommitIndex > other.info.termAtCommitIndex then this
+				else if this.info.termAtCommitIndex < other.info.termAtCommitIndex then other
+				else if this.info.commitIndex > other.info.commitIndex then this
+				else if this.info.commitIndex < other.info.commitIndex then other
 				else if this.info.currentTerm > other.info.currentTerm then this
 				else if this.info.currentTerm < other.info.currentTerm then other
 				else if this.info.ordinal == LEADER && other.info.ordinal != LEADER then this
