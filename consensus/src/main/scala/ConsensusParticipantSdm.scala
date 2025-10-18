@@ -1187,7 +1187,6 @@ trait ConsensusParticipantSdm { thisModule =>
 					if otherParticipantId == inquirerId then sequencer.Task_successful(inquirerInfo)
 					else otherParticipantId.asksHowAreYou(this.currentTerm)
 				}
-			var borrame: List[CandidateInfo] = Nil // TODO delete line
 			for replies <- sequencer.Task_sequenceHardyToArray(howAreYouQuestions) yield {
 				var laterCurrentTerm = this.currentTerm
 				var chosenCandidate = CandidateInfo(boundParticipantId, this.currentBehavior.buildMyStateInfo)
@@ -1200,24 +1199,15 @@ trait ConsensusParticipantSdm { thisModule =>
 							if replierInfo.currentTerm > laterCurrentTerm then {
 								laterCurrentTerm = replierInfo.currentTerm
 							}
-							borrame = CandidateInfo(replierId, replierInfo) :: borrame // TODO delete line
 							chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
 
 						case Failure(e) =>
 							scribe.debug(s"$boundParticipantId: `$replierId.asksHowAreYou($currentTerm)` failed with:", e)
 					}
 				}
-				scribe.trace(s"$boundParticipantId: decidesMyVote($inquirerId, $inquirerInfo) has chosen $chosenCandidate among $borrame") // TODO delete line
 				Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
 			}
 		}
-
-		// participant-2: has chosen
-		// 		CandidateInfo(participant-2,StateInfo(currentTerm:1, ordinal:4, lastRecordTerm:1, lastRecordIndex:4))
-		// among: List(
-		// 		CandidateInfo(participant-1,StateInfo(currentTerm:1, ordinal:4, lastRecordTerm:1, lastRecordIndex:2)),
-		// 		CandidateInfo(participant-0,StateInfo(currentTerm:1, ordinal:5, lastRecordTerm:1, lastRecordIndex:1))
-		// 	)
 
 		/**
 		 * Knows all the information about a candidate necessary by participants to decide which to vote in a leader election.
