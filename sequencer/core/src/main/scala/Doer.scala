@@ -990,6 +990,10 @@ trait Doer { thisDoer =>
 	 */
 	inline final def Task_failed[A](throwable: Throwable): Task[A] = new Task_Ready(Failure(throwable))
 
+	/** Transforms a [[Duty]] to a [[Task]] */
+	def Task_fromDuty[A](duty: Duty[Try[A]]): Task[A] =
+		(onComplete: Try[A] => Unit) => duty.engagePortal(onComplete)
+		
 	/**
 	 * Creates a task whose result is the result of the provided supplier.
 	 * ===Detailed behavior===
@@ -1152,7 +1156,7 @@ trait Doer { thisDoer =>
 
 
 	/**
-	 * Creates an always successful task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
+	 * Creates a [[Duty]] that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
 	 *
 	 * $threadSafe
 	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
@@ -1162,10 +1166,10 @@ trait Doer { thisDoer =>
 	 * @tparam A the result type of all the tasks.
 	 * @tparam C the higher-kinded type of the `Iterable` of tasks.
 	 * @tparam To the type of the `Iterable` that will contain the results.
-	 * @return the successful task described in the method description.
+	 * @return the successful duty described in the method description.
 	 * */
-	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], tasks: C[Task[A]]): Task[To[Try[A]]] = {
-		Task_sequenceHardyToArray(tasks).map { array =>
+	def Duty_sequenceTasks[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], tasks: C[Task[A]]): Duty[To[Try[A]]] = {
+		Duty_sequenceTasksToArray(tasks).map { array =>
 			val builder = factory.newBuilder[Try[A]]
 			var index = 0
 			while index < array.length do {
@@ -1176,10 +1180,10 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** Like [[Task_sequenceHardy]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]].
+	/** Like [[Duty_sequenceTasks]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]].
 	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
 	 * */
-	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Task[Array[Try[A]]] =
+	inline def Duty_sequenceTasksToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Duty[Array[Try[A]]] =
 		new Task_SequenceHardy[A, C](tasks)
 
 	/** A [[Task]] that never completes.
@@ -1305,7 +1309,7 @@ trait Doer { thisDoer =>
 
 	final class Task_Foreign[+A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			foreignTask.trigger() { tryA => execute(onComplete(tryA)) }
+			foreignTask.trigger(false) { tryA => execute(onComplete(tryA)) }
 		}
 
 		override def toString: String = deriveToString[Task_Foreign[A]](this)
@@ -1504,11 +1508,11 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[Try[A]]] {
-		override def engage(onComplete: Try[Array[Try[A]]] => Unit): Unit = {
+	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractDuty[Array[Try[A]]] {
+		override def engage(onComplete: Array[Try[A]] => Unit): Unit = {
 			val size = tasks.size
 			val array = Array.ofDim[Try[A]](size)
-			if size == 0 then onComplete(Success(array))
+			if size == 0 then onComplete(array)
 			else {
 				val taskIterator = tasks.iterator
 				var completedCounter: Int = 0
@@ -1519,7 +1523,7 @@ trait Doer { thisDoer =>
 					task.engagePortal { tryA =>
 						array(taskIndex) = tryA
 						completedCounter += 1
-						if completedCounter == size then onComplete(Success(array))
+						if completedCounter == size then onComplete(array)
 					}
 					index += 1
 				}

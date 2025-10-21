@@ -6,6 +6,7 @@ import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
+import readren.sequencer.Doer
 import readren.sequencer.providers.CooperativeWorkersWithAsyncSchedulerDp
 
 import java.util.concurrent.{Executors, TimeUnit}
@@ -51,11 +52,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	private type ScheduSequen = CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade
 
-	/** Simulates a net of nodes for testing.
-	 * Assumes that the [[Node]]s are added before the test begins, and remains constant during the test. */
+	/** Simulates a net of nodes for testing. */
 	private class Net(val size: Int, randomnessSeed: Long) {
 		private val MAX_TRAVELING_MESSAGES = size * 2
 		private inline val SILENCE_MAX_DURATION = 5
+		private inline val REQUEST_FAILURE_PERCENTAGE = 10
+		private inline val RESPONSE_FAILURE_PERCENTAGE = 10
+		private val failureMaxDurationSqrt = size - 1
 
 		val netSequencer: ScheduSequen = sharedDap.provide("net-sequencer")
 		private var indexById: Map[Id, Int] = Map.empty
@@ -80,65 +83,100 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			indexById(id)
 		}
 
+		private type RequestId = (global: Int, channel: Int)
+
+		/** A communication channel between two [[Node]]s.
+		 * Mimics a TCP channel by maintaining delivery order. */
 		private case class Channel() {
 			private val queue: mutable.Queue[netSequencer.Duty[Unit]] = mutable.Queue.empty
 			private var lastRequestId = 0
+			private var failingUntil: Int = 0
 
-			inline def nextRequestId: Int = {
+			inline def nextRequestId: RequestId = {
 				lastRequestId += 1
-				lastRequestId
+				lastGlobalRequestId += 1
+				(lastGlobalRequestId, lastRequestId)
 			}
 
 			inline def enqueue(duty: netSequencer.Duty[Unit]): Unit = {
-				lastRequestId += 1
 				queue.enqueue(duty)
 				travelingMessages += 1
 			}
 
-			inline def nonEmpty = queue.nonEmpty
+			inline def nonEmpty: Boolean = queue.nonEmpty
 
 			inline def dispatchNext(): Unit = {
 				travelingMessages -= 1
 				queue.dequeue().triggerAndForget(true)
 			}
+
+			inline def markAsFailing(durationSqrt: Int): Unit = {
+				failingUntil = lastGlobalRequestId + durationSqrt * durationSqrt
+			}
+
+			inline def isFailing: Boolean = lastGlobalRequestId <= failingUntil
 		}
 
 		private val random = new Random(randomnessSeed)
 		private val channelBySenderByReceiver: Array[Array[Channel]] = Array.fill(size, size)(Channel())
 		private var travelingMessages: Int = 0
 		private var lastProcessTimeoutSchedule: Maybe[netSequencer.Schedule] = Maybe.empty
+		private var lastGlobalRequestId: Int = 0
 
 		extension (inquirerId: Id) {
-			/** Perform a Remote Procedure Call from a [[Node]] of this [[Net]] to another [[Node]] of this [[Net]].
-			 * Assumes this [[Net]] is not changed
+			/** Performs a Remote Procedure Call from a [[Node]] of this [[Net]] (the inquirer) to another [[Node]] of this [[Net]] (the replier).
+			 * Assumes that the set of [[Node]]s remains invariant since the first invocation.
+			 * To simulate a real network, the order in which messages of different [[Channel]]s are delivered is modified randomly.
+			 * Messages sent from a [[Node]] to another maintain delivery order to mimic TCP characteristics.
+			 * The randomness is deterministic to allow reproducing a scenario.
 			 * @param replierId the identifier of the targeted [[Node]], the one on whose [[Node.sequencer]] is the `call` function is executed.
-			 * @param call a function that is executed in the target's [[Node.sequencer]], takes the targeted [[Node]] and returns a [[readren.sequencer.Doer.Task]] that yields the value to be yieled by the returned [[readren.sequencer.Doer.Task]].
-			 * @return a [[netSequencer.Task]] that yields the [[Node]] with the specified [[Id]] simulating latency, or a [[RuntimeException]] if this [[Net]] know no [[Node]] with that [[Id]] simulating timeout dealy. */
-			def rpc[R](replierId: Id, requestDescription: String)(call: (node: Node) => node.sequencer.Task[R]): netSequencer.Task[R] = {
+			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Task]]. The function is called within the replier's [[Node.sequencer]].
+			 * @return a [[netSequencer.Task]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
+			 * @throws RuntimeException if this [[Net]] does not contain the [[Node]]s identified with `inquirerId` and `replierId`. */
+			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Task[R]): netSequencer.Task[R] = {
 
 				if true then {
 					val inquirerIndex = indexOf(inquirerId)
-					val inquirerBehaviorOrdinal = nameOf(getNode(inquirerIndex).participant.getBehaviorOrdinal)
-					val covenant = netSequencer.Covenant[(Try[R], Int)]()
+					val replierIndex = indexOf(replierId)
+					val inquirerNode = getNode(inquirerIndex)
+					assert(inquirerNode.sequencer.isInSequence)
+					val inquirerBehaviorOrdinal = nameOf(inquirerNode.participant.getBehaviorOrdinal)
+					val covenant = netSequencer.Covenant[(Try[R], RequestId)]()
 					netSequencer.execute {
-						lastProcessTimeoutSchedule.foreach(netSequencer.cancel(_))
+						lastProcessTimeoutSchedule.foreach(netSequencer.cancel)
 
-						val replierIndex = indexOf(replierId)
 						val requestChannel = channelBySenderByReceiver(inquirerIndex)(replierIndex)
+						val responseChannel = channelBySenderByReceiver(replierIndex)(inquirerIndex)
 						val requestId = requestChannel.nextRequestId
-						val replierNode = getNode(replierId)
-						requestChannel.enqueue {
-							val requestingTask = for {
-								response <- replierNode.sequencer.Task_ownFlat[R] { () => call(replierNode) }.onBehalfOf(netSequencer)
-							} yield {
-								val responseChannel = channelBySenderByReceiver(replierIndex)(inquirerIndex)
-								responseChannel.enqueue(
-									netSequencer.Duty_mine { () => covenant.fulfill((Success(response), requestId))() }
-								)
-							}
-							requestingTask.toDuty(failure => covenant.fulfill((Failure(failure), requestId))())
+						assert(requestChannel.isFailing == responseChannel.isFailing)
+
+						scribe.trace(s"$inquirerId: requested $replierId with $requestId:$requestDescription as $inquirerBehaviorOrdinal while there were $travelingMessages messages on the way")
+
+						val requestIsCursed = requestChannel.isFailing || responseChannel.isFailing || random.nextInt(100) < REQUEST_FAILURE_PERCENTAGE
+						val responseIsCursed = requestIsCursed || random.nextInt(100) < RESPONSE_FAILURE_PERCENTAGE
+						if requestIsCursed || responseIsCursed then {
+							val failureDurationSqrt = random.nextInt(failureMaxDurationSqrt)
+							requestChannel.markAsFailing(failureDurationSqrt)
+							responseChannel.markAsFailing(failureDurationSqrt)
 						}
-						scribe.info(s"$inquirerId: requested $replierId with $requestId:$requestDescription as $inquirerBehaviorOrdinal while there are $travelingMessages messages on the way")
+						val replierNode = getNode(replierId)
+						val requestingDuty =
+							if requestIsCursed then {
+								netSequencer.Duty_mine[Unit] { () =>
+									covenant.fulfill((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId))()
+								}
+							} else {
+								netSequencer.Task_foreign(replierNode.sequencer)(replierNode.sequencer.Task_ownFlat { () => call(replierNode) })
+									.transform { reply =>
+										val response =
+											if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
+											else reply
+										val respondingDuty = netSequencer.Duty_mine[Unit](() => covenant.fulfill((response, requestId))())
+										responseChannel.enqueue(respondingDuty)
+										Doer.successUnit
+									}.toDuty(_ => ())
+							}
+						requestChannel.enqueue(requestingDuty)
 
 						while travelingMessages > MAX_TRAVELING_MESSAGES do chooseAChannel().dispatchNext()
 
@@ -147,7 +185,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							lastProcessTimeoutSchedule = Maybe.some(processTimeoutSchedule)
 							netSequencer.schedule(processTimeoutSchedule) { _ =>
 								if travelingMessages > 0 then {
-									// scribe.debug(s"A long silence occurred with $travelingMessages messages on the way. Dispatching one of them.")
+									// scribe.trace(s"A long silence occurred with $travelingMessages messages on the way. Dispatching one of them.")
 									chooseAChannel().dispatchNext()
 									dispatchAMessageIfLongSilence()
 								}
@@ -157,18 +195,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						dispatchAMessageIfLongSilence()
 					}
 
-					val x = covenant.map {
+					netSequencer.Task_fromDuty(covenant.map {
 						case (response, requestId) =>
-							scribe.info(s"$replierId: responded $inquirerId with $response to $requestId:$requestDescription, leaving $travelingMessages messages on the way")
+							scribe.trace(s"$replierId: responded $inquirerId with $requestId:$response, leaving $travelingMessages messages on the way")
 							response
-					}
-					x.toTask.map {
-						case Success(r) => r
-						case Failure(f) => throw f
-					}
+					})
 
 				} else {
-					/// OLD
+					/// Simple implementation that always succeeds and adds no randomness
 					val replierNode = getNode(replierId)
 					replierNode.sequencer.Task_ownFlat[R] { () =>
 						call(replierNode)
@@ -346,7 +380,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			extension (replierId: ParticipantId) {
 
 
-				def asksHowAreYou(inquirerTerm: Term): sequencer.Task[StateInfo] = {
+				def howAreYou(inquirerTerm: Term): sequencer.Task[StateInfo] = {
 					boundParticipantId.rpc[StateInfo](
 						replierId,
 						s"HowAreYou(inquirerTerm:$inquirerTerm)"
@@ -355,16 +389,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				def askToChooseForLeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
+				def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
 					boundParticipantId.rpc[Vote[ParticipantId]](
 						replierId,
-						s"ChooseForLeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
+						s"ChooseALeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
 					) { replier =>
-						replier.clusterParticipant.messagesListener.onChooseALeader(inquirerId, inquirerInfo)
+						replier.clusterParticipant.messagesListener.onChooseALeader(inquirerId, inquirerInfo).toTask
 					}.onBehalfOf(sequencer)
 				}
 
-				def asksToAppendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
+				def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
 					boundParticipantId.rpc[AppendResult](
 						replierId,
 						s"AppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm;$prevLogTerm, records:$records, leaderCommit:$leaderCommit)"
