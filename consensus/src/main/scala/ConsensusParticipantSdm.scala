@@ -281,7 +281,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
-			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult]
+			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult]
 		}
 
 		/**
@@ -320,7 +320,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
-			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult]
+			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult]
 		}
 	}
 
@@ -621,7 +621,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Duty[Vote[ParticipantId]] = {
 				assert(isInSequence)
 				if ordinal <= STARTING then sequencer.Duty_ready(Vote(0, boundParticipantId, 0, ordinal))
-				else decidesMyVote(inquirerId, inquirerInfo)
+				else decideMyVote(inquirerId, inquirerInfo)
 					.andThen { vote =>
 						if (vote.term > currentTerm && currentBehavior.ordinal >= ISOLATED) || (vote.reachableCandidatesCount < smallestMajority && currentBehavior.ordinal >= CANDIDATE) then {
 							// start the state-updater process
@@ -669,7 +669,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *         - If rejected: contains the current term (or 0), failure flag, and behavior ordinal
 			 *         - If a command application failed or the participant failed to persist its [[Workspace]]: contains the exception.
 			 */
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
 				assert(isInSequence)
 				if ordinal < ISOLATED then sequencer.Task_successful(AppendResult(0, false, ordinal))
 				else if inquirerTerm < currentTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
@@ -677,7 +677,8 @@ trait ConsensusParticipantSdm { thisModule =>
 				else {
 					if inquirerTerm > currentTerm || ordinal <= CANDIDATE then {
 						currentTerm = inquirerTerm
-						updatesState.triggerExposingFailures() // TODO: analyze what happens if this updateState causes to become the leader, preferably with a test.
+						val inquirerInfo = StateInfo(inquirerTerm, LEADER, termAtLeaderCommit, leaderCommit)
+						updatesState(inquirerId, inquirerInfo).triggerExposingFailures() // TODO: analyze what happens if this updateState causes to become the leader, preferably with a test.
 					}
 
 					assert(inquirerTerm == currentTerm)
@@ -776,7 +777,15 @@ trait ConsensusParticipantSdm { thisModule =>
 			protected def updatesState: sequencer.Task[Unit] = {
 				assert(currentBehavior.ordinal >= ISOLATED)
 				for {
-					myVote <- decidesMyVote(null, null).toTask
+					myVote <- decideMyVote(null, null).toTask
+					_ <- updatesState(myVote)
+				} yield ()
+			}
+
+			protected def updatesState(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Unit] = {
+				assert(currentBehavior.ordinal >= ISOLATED)
+				for {
+					myVote <- decideMyVote(inquirerId, inquirerInfo).toTask
 					_ <- updatesState(myVote)
 				} yield ()
 			}
@@ -801,19 +810,18 @@ trait ConsensusParticipantSdm { thisModule =>
 					for {
 						replies <- sequencer.Duty_sequenceTasksToArray(inquires).toTask
 						saveResult <- {
-							var myVoteIsValid = true
+							var myVoteIsStale = false
 							var votesMatchingMyVoteCount = 1 // includes my vote
 							for case Success(replierVote) <- replies do {
 								if replierVote.term > currentTerm then {
 									currentTerm = replierVote.term
-									myVoteIsValid = false
+									myVoteIsStale = true
 								}
 								if replierVote.candidateId == myVote.candidateId && replierVote.reachableCandidatesCount >= smallestMajority then votesMatchingMyVoteCount += 1
 							}
-							if myVoteIsValid && votesMatchingMyVoteCount >= smallestMajority then {
-								if myVote.candidateId == boundParticipantId then become(Leader())
-								else become(Follower(myVote.candidateId))
-							} else become(Candidate)
+							if myVoteIsStale || votesMatchingMyVoteCount < smallestMajority then become(Candidate)
+							else if myVote.candidateId == boundParticipantId then become(Leader())
+							else become(Follower(myVote.candidateId))
 
 							workspace.setCurrentTerm(currentTerm)
 							storage.saves(workspace)
@@ -1118,7 +1126,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				val previousRecordIndex = indexOfNextRecordToSend - 1
 				val previousRecordTerm = if previousRecordIndex == 0 then 0 else workspace.getRecordAt(previousRecordIndex).term
 				for {
-					appendResult <- destinationParticipantId.appendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex)
+					appendResult <- destinationParticipantId.appendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex, workspace.getRecordTermAt(commitIndex))
 					_ <- {
 						// This point is reached only if the destination participant responds normally to the AppendRecords request.
 						// If this participant's behavior changed while waiting the destination participant response, ignore the response and yield successfully (to skip/exit the retry laggards loop).
@@ -1166,22 +1174,25 @@ trait ConsensusParticipantSdm { thisModule =>
 		//// UTILITIES USED BY MANY BEHAVIORS
 
 		/**
-		 * Determines the best leader candidate based on the [StateInfo]s of the inquirer, the bound, and the other participants.
-		 * Design note: The caller should not update any state variable before calling this method.
+		 * Determines the best leader candidate based on the [[StateInfo]]s of all the participants, including itself.
+		 * of the inquirer, the bound, and the other participants.
+		 * This method only queries. Does not mutate anything.
 		 *
-		 * @param inquirerId the id of the participant that asked me to cast a vote; or null if asking myself. This is needed for efficiency only, to use the [[StateInfo]] it provided along its request instead of asking for it.
-		 * @param inquirerInfo the [[CandidateInfo]] of the inquirer, or null if asking myself. This is needed for efficiency only, to use the [[StateInfo]] it provided along its request instead of asking for it.
+		 * @param inquirerId the id of the participant of which this participant already knows its [[StateInfo]] (because it sent it to this participant along the request this participant is currently responding) or null if this participant does not know the [[StateInfo]] of anyone else. Note that this parameter is not necessarily needed. Its only purpose is to improve efficiency by saving a query of already known information.
+		 * @param inquirerInfo the [[StateInfo]] of the inquirer if `inquirerId` is not null. Note that this parameter is not necessarily needed. Its only purpose is to improve efficiency by saving a query of already known information.
 		 * @return A task that yields a [[Vote]] with the chosen leader for the current term.
 		 */
-		private def decidesMyVote(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Duty[Vote[ParticipantId]] = {
+		private def decideMyVote(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Duty[Vote[ParticipantId]] = {
 			val howAreYouQuestions: IndexedSeq[sequencer.Task[StateInfo]] =
 				for otherParticipantId <- otherParticipants yield {
 					if otherParticipantId == inquirerId then sequencer.Task_successful(inquirerInfo)
 					else otherParticipantId.howAreYou(this.currentTerm)
 				}
-			for replies <- sequencer.Duty_sequenceTasksToArray(howAreYouQuestions) yield {
+			var borrame: List[CandidateInfo] = Nil
+			val x = for replies <- sequencer.Duty_sequenceTasksToArray(howAreYouQuestions) yield {
 				var laterCurrentTerm = this.currentTerm
 				var chosenCandidate = CandidateInfo(boundParticipantId, this.currentBehavior.buildMyStateInfo)
+				borrame = chosenCandidate :: borrame //TODO delete line
 				var reachableCandidatesCounter = 1 // myself
 				for replierIndex <- replies.indices do {
 					val replierId = otherParticipants(replierIndex)
@@ -1191,6 +1202,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							if replierInfo.currentTerm > laterCurrentTerm then {
 								laterCurrentTerm = replierInfo.currentTerm
 							}
+							borrame = CandidateInfo(replierId, replierInfo) :: borrame //TODO delete line
 							chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
 
 						case Failure(e) =>
@@ -1199,6 +1211,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 				Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
 			}
+			x.andThen(chosen => scribe.debug(s"$boundParticipantId: decideMyVote($inquirerId, $inquirerInfo): chosen=$chosen, among: $borrame")) //TODO delete line
 		}
 
 		/**

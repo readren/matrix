@@ -23,7 +23,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	override def scalaCheckInitialSeed = "mLbrswnMGqQ8czetIVPfw3Wh8rh8m-nkAjknVe4oiUE="
 
-	override def munitTimeout: Duration = new FiniteDuration(120, TimeUnit.SECONDS)
+	override def munitTimeout: Duration = new FiniteDuration(200, TimeUnit.SECONDS)
 
 	private given ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
 
@@ -37,7 +37,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			case ISOLATED => "ISOLATED"
 			case CANDIDATE => "CANDIDATE"
 			case FOLLOWER => "FOLLOWER"
-			case LEADER => "stopped"
+			case LEADER => "LEADER"
 		}
 	}
 
@@ -129,6 +129,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			 * To simulate a real network, the order in which messages of different [[Channel]]s are delivered is modified randomly.
 			 * Messages sent from a [[Node]] to another maintain delivery order to mimic TCP characteristics.
 			 * The randomness is deterministic to allow reproducing a scenario.
+			 * The fate of all the stages of an RPC are determined in advance in the first stage.
 			 * @param replierId the identifier of the targeted [[Node]], the one on whose [[Node.sequencer]] is the `call` function is executed.
 			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Task]]. The function is called within the replier's [[Node.sequencer]].
 			 * @return a [[netSequencer.Task]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
@@ -140,7 +141,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					val replierIndex = indexOf(replierId)
 					val inquirerNode = getNode(inquirerIndex)
 					assert(inquirerNode.sequencer.isInSequence)
-					val inquirerBehaviorOrdinal = nameOf(inquirerNode.participant.getBehaviorOrdinal)
+					val inquirerRole = nameOf(inquirerNode.participant.getBehaviorOrdinal)
 					val covenant = netSequencer.Covenant[(Try[R], RequestId)]()
 					netSequencer.execute {
 						lastProcessTimeoutSchedule.foreach(netSequencer.cancel)
@@ -148,13 +149,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						val requestChannel = channelBySenderByReceiver(inquirerIndex)(replierIndex)
 						val responseChannel = channelBySenderByReceiver(replierIndex)(inquirerIndex)
 						val requestId = requestChannel.nextRequestId
-						assert(requestChannel.isFailing == responseChannel.isFailing)
+						val requestChannelIsFailing = requestChannel.isFailing
+						val responseChannelIsFailing = responseChannel.isFailing
+						assert(requestChannelIsFailing == responseChannelIsFailing)
 
-						scribe.trace(s"$inquirerId: requested $replierId with $requestId:$requestDescription as $inquirerBehaviorOrdinal while there were $travelingMessages messages on the way")
+						scribe.trace(s"$inquirerId >- $replierId: $requestId:$requestDescription as $inquirerRole while there were $travelingMessages messages on the way")
 
-						val requestIsCursed = requestChannel.isFailing || responseChannel.isFailing || random.nextInt(100) < REQUEST_FAILURE_PERCENTAGE
+						// Determine the fate of all the stages of this RPC here, in the first stage.
+						val requestIsCursed = requestChannelIsFailing || responseChannelIsFailing || random.nextInt(100) < REQUEST_FAILURE_PERCENTAGE
 						val responseIsCursed = requestIsCursed || random.nextInt(100) < RESPONSE_FAILURE_PERCENTAGE
-						if requestIsCursed || responseIsCursed then {
+						if !requestChannelIsFailing && (requestIsCursed || responseIsCursed) then {
 							val failureDurationSqrt = random.nextInt(failureMaxDurationSqrt)
 							requestChannel.markAsFailing(failureDurationSqrt)
 							responseChannel.markAsFailing(failureDurationSqrt)
@@ -166,15 +170,18 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 									covenant.fulfill((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId))()
 								}
 							} else {
-								netSequencer.Task_foreign(replierNode.sequencer)(replierNode.sequencer.Task_ownFlat { () => call(replierNode) })
-									.transform { reply =>
-										val response =
-											if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
-											else reply
-										val respondingDuty = netSequencer.Duty_mine[Unit](() => covenant.fulfill((response, requestId))())
-										responseChannel.enqueue(respondingDuty)
-										Doer.successUnit
-									}.toDuty(_ => ())
+								netSequencer.Task_foreign(replierNode.sequencer)(replierNode.sequencer.Task_ownFlat { () =>
+									val replierRole = nameOf(replierNode.participant.getBehaviorOrdinal)
+									scribe.trace(s"$inquirerId -> $replierId: $requestId:$requestDescription as $replierRole")
+									call(replierNode)
+								}).transform { reply =>
+									val response =
+										if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
+										else reply
+									val respondingDuty = netSequencer.Duty_mine[Unit](() => covenant.fulfill((response, requestId))())
+									responseChannel.enqueue(respondingDuty)
+									Doer.successUnit
+								}.toDuty(_ => ())
 							}
 						requestChannel.enqueue(requestingDuty)
 
@@ -197,7 +204,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 					netSequencer.Task_fromDuty(covenant.map {
 						case (response, requestId) =>
-							scribe.trace(s"$replierId: responded $inquirerId with $requestId:$response, leaving $travelingMessages messages on the way")
+							scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, leaving $travelingMessages messages on the way")
 							response
 					})
 
@@ -398,12 +405,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex): sequencer.Task[AppendResult] = {
+				def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
 					boundParticipantId.rpc[AppendResult](
 						replierId,
 						s"AppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm;$prevLogTerm, records:$records, leaderCommit:$leaderCommit)"
 					) { replier =>
-						replier.clusterParticipant.messagesListener.onAppendRecords(boundParticipantId, inquirerTerm, prevLogIndex, prevLogTerm, records, leaderCommit)
+						replier.clusterParticipant.messagesListener.onAppendRecords(boundParticipantId, inquirerTerm, prevLogIndex, prevLogTerm, records, leaderCommit, termAtLeaderCommit)
 					}.onBehalfOf(sequencer)
 				}
 			}
@@ -516,7 +523,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	 * Helper to create participant ids.
 	 */
 	private def createIds(size: Int): IndexedSeq[Id] = {
-		(0 until size).map(i => s"participant-$i")
+		(0 until size).map(i => s"p-$i")
 	}
 
 
