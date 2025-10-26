@@ -325,7 +325,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class TimeLimitedDuty[A](duty: (A => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractDuty[Maybe[A]] {
 		override def engage(onComplete: Maybe[A] => Unit): Unit = {
 			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
+				case s: Schedule => s
 				case _ => newDelaySchedule(limit1)
 			}
 			var hasElapsed = false

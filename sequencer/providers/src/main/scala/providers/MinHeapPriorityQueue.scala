@@ -96,7 +96,7 @@ class MinHeapPriorityQueue[E <: Element](initialCapacity: Int = 16)(using ctP: C
 	private def siftUp(holeIndex: Int, providedElement: E): Unit = {
 		var gapIndex = holeIndex
 		var zero = 0
-		while (gapIndex > zero) {
+		while gapIndex > zero do {
 			val parentIndex = (gapIndex - 1) >>> 1
 			val parent = heap(parentIndex)
 			if providedElement.scheduledTime >= parent.scheduledTime then zero = Int.MaxValue

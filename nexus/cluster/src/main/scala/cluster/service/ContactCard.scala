@@ -42,7 +42,7 @@ object ContactCard {
 		val minLength = math.min(arr1.length, arr2.length)
 		// Compare elements up to minLength
 		var i = 0
-		while (i < minLength) {
+		while i < minLength do {
 			val comparison = ProtocolVersion.newerFirstOrdering.compare(arr1(i), arr2(i))
 			if comparison != 0 then return comparison
 			i += 1
@@ -67,15 +67,15 @@ object ContactCard {
 		// Compare byte by byte without creating intermediate objects
 		var i = 0
 		val len = math.min(bytes1.length, bytes2.length)
-		while (i < len) {
+		while i < len do {
 			val cmp = (bytes1(i) & 0xff) - (bytes2(i) & 0xff) // unsigned byte comparison
-			if (cmp != 0) return cmp
+			if cmp != 0 then return cmp
 			i += 1
 		}
 
 		// If all bytes equal up to common length, compare array lengths
 		val lengthCmp = bytes1.length - bytes2.length
-		if (lengthCmp != 0) return lengthCmp
+		if lengthCmp != 0 then return lengthCmp
 
 		// Finally compare ports if IPs are equal
 		isa1.getPort - isa2.getPort

@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.7.2"
+ThisBuild / scalaVersion := "3.7.3"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",
@@ -10,11 +10,12 @@ ThisBuild / libraryDependencies ++= Seq(
 	"com.outr" %% "scribe-file" % "3.17.0",
 
 	"org.typelevel" %% "scalacheck-effect" % "1.0.4" % Test,
-	"org.typelevel" %% "scalacheck-effect-munit" % "1.0.4" % Test
+	"org.typelevel" %% "scalacheck-effect-munit" % "1.0.4" % Test,
 )
 
 ThisBuild / scalacOptions ++= Seq(
 	"-preview",
+	"-g:vars", // adds debug info
 //	"-source:future",
 //	"-language:strictEquality",
 	"-experimental",

@@ -336,6 +336,14 @@ trait Doer { thisDoer =>
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy val Duty_unit: Duty[Unit] = Duty_ready(())
 
+	/** A [[Duty]] that yields `true`.
+	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+	@threadUnsafe lazy val Duty_true: Duty[true] = Duty_ready(true)
+
+	/** A [[Duty]] that yields `false`.
+	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+	@threadUnsafe lazy val Duty_false: Duty[false] = Duty_ready(false)
+
 	/** Creates a [[Duty]] whose execution never ends.
 	 * $threadSafe
 	 *
@@ -875,6 +883,12 @@ trait Doer { thisDoer =>
 		 *
 		 * @param exceptionHandler the complete function to apply to the result of this task if it is a [[Failure]]. $isExecutedByDoSiThEx */
 		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] = new Task_ToDuty[A, B](thisTask, exceptionHandler)
+
+		/** @return a [[Duty]] that yields the result of this [[Task]]. */
+		final def toDutyHardy: Duty[Try[A]] = new AbstractDuty[Try[A]] {
+			override protected def engage(onComplete: Try[A] => Unit): Unit =
+				thisTask.engage(onComplete)
+		}
 
 		/** Transforms this task applying the given partial function to failure results. This is like map but for the throwable; and like [[toDuty]] but with a partial function. Analogous to [[Future.recover]].
 		 * ===detailed description===

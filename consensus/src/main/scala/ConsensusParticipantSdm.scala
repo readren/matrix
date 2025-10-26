@@ -69,7 +69,9 @@ object ConsensusParticipantSdm {
 	 * @param termAtCommitIndex The term of the last commited record in the log of the participant that is answering.
 	 * @param commitIndex The index of the last commited record in the log of the participant that is answering.
 	 */
-	case class StateInfo(currentTerm: Term, ordinal: BehaviorOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex)
+	case class StateInfo(currentTerm: Term, ordinal: BehaviorOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex) {
+		assert(currentTerm >= termAtCommitIndex)
+	}
 
 	//// LOG RECORD
 
@@ -77,7 +79,7 @@ object ConsensusParticipantSdm {
 		def term: Term
 	}
 
-	private[consensus] case class Command[C <: AnyRef](override val term: Term, command: C) extends Record
+	private[consensus] case class CommandRecord[C <: AnyRef](override val term: Term, command: C) extends Record
 
 	private[consensus] case class LeaderTransition(override val term: Term) extends Record
 
@@ -124,8 +126,40 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	/** The type of participant ids. */
 	type ParticipantId <: AnyRef: {Ordering, ClassTag}
-	/** The type of client commands. */
+
+	/** The type of the client identifier.
+	 *
+	 * Each client interacting with the consensus system must be uniquely identifiable.
+	 * This identifier is used to associate commands with their origin and to enforce per-client deduplication and retry semantics.
+	 */
+	type ClientId
+
+	/** The type of commands received from clients.
+	 *
+	 * Commands must carry enough information to support deduplication, ordering, and conflict detection. Typically, this includes a `ClientId` and a monotonically increasing request identifier or timestamp.
+	 */
 	type ClientCommand <: AnyRef
+
+	/** Defines a total ordering over [[ClientCommand]] instances.
+	 *
+	 * This ordering is used to determine the relative freshness of commands from the same client.
+	 * Implementations must ensure that:
+	 *
+	 *   - For any two commands `a` and `b` from the same client, if `a` was issued *after* `b`, then `clientCommandOrdering.compare(a, b) > 0`.
+	 *   - If `a` and `b` are semantically identical (e.g., same request ID), then `clientCommandOrdering.compare(a, b) == 0`.
+	 *   - If `a` was issued *before* `b`, then `clientCommandOrdering.compare(a, b) < 0`.
+	 *
+	 * The ordering must be consistent and total for commands from the same client.
+	 * Ordering between commands from different clients may be arbitrary or undefined.
+	 */
+	val clientCommandOrdering: Ordering[ClientCommand]
+
+	/** Extracts the client identifier from a given [[ClientCommand]].
+	 *
+	 * This enables the consensus module to group commands by origin and apply per-client deduplication and retry logic.
+	 */
+	def clientIdOf(command: ClientCommand): ClientId
+
 	/** The type of the state-machine's [[StateMachine.appliesClientCommand]] method's responses. */
 	type StateMachineResponse
 
@@ -187,6 +221,9 @@ trait ConsensusParticipantSdm { thisModule =>
 	case class Processed(recordIndex: RecordIndex, content: StateMachineResponse) extends ResponseToClient
 
 	case class RedirectTo(participantId: ParticipantId) extends ResponseToClient
+
+	/** Tells that the [[Workspace]] of the [[ConsensusParticipant]] service is inconsistent. Should never happen. TODO consider restarting the service in this situation, instead. */
+	case class InconsistentState(detail: String) extends ResponseToClient
 
 	/** The participant is unable to process the command because it is isolated, starting, or stopped.
 	 * After receiving this response, the client should try again with any of the [[otherParticipants]] with a flag indicating it is a fallback. 
@@ -375,6 +412,9 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** Should be called whenever the [[ConsensusParticipant.lastAppliedCommandIndex]] changes to allow this [[Workspace]] to release the storage used to memorize the records that are pending to be applied to the [[StateMachine]]. */
 		def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit
 
+		/** Should return the index of the last [[CommandRecord]] in the log whose [[ClientId]] is the provided one, or zero if none. */
+		def indexOfLastAppendedCommandFrom(clientId: ClientId): RecordIndex
+
 		def release(): Unit
 
 		inline def getRecordTermAt(index: RecordIndex): Term =
@@ -412,6 +452,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit
 
 		def onLeft(left: BehaviorOrdinal, term: Term): Unit
+
+		def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit
 	}
 
 	/**
@@ -433,7 +475,9 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = ()
 
-		def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
+		override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
+
+		override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = ()
 	}
 
 
@@ -654,7 +698,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *
 			 *   - Starts the decoupled process that applies committed commands to the state machine in log order:
 			 *     - Iteratively applies records from `commitIndex + 1` to `newCommitIndex`
-			 *     - Handles [[Command]] entries by invoking [[StateMachine.appliesClientCommand]]
+			 *     - Handles [[CommandRecord]] entries by invoking [[StateMachine.appliesClientCommand]]
 			 *     - On failure, retries up to [[applyCommandRetries]] times before restarting the [[ConsensusParticipant]] and its [[StateMachine]] (by calling {{{ become(Starting(true, true)) }}})
 			 *     - Other record types (`LeaderTransition`, `SnapshotPoint`, `ConfigurationChange`) are currently unimplemented
 			 *
@@ -673,7 +717,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				assert(isInSequence)
 				if ordinal < ISOLATED then sequencer.Task_successful(AppendResult(0, false, ordinal))
 				else if inquirerTerm < currentTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
-				else if workspace.getRecordTermAt(prevRecordIndex) != prevRecordTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
+				else if prevRecordIndex >= workspace.firstEmptyRecordIndex || workspace.getRecordTermAt(prevRecordIndex) != prevRecordTerm then sequencer.Task_successful(AppendResult(currentTerm, false, ordinal))
 				else {
 					if inquirerTerm > currentTerm || ordinal <= CANDIDATE then {
 						currentTerm = inquirerTerm
@@ -688,7 +732,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					val previousCommitIndex = commitIndex
 					// Update the commitIndex
 					commitIndex = if leaderCommit < lastAppendedRecordIndex then leaderCommit else lastAppendedRecordIndex
-
+					if commitIndex > previousCommitIndex then notifyListeners(_.onCommitIndexChange(previousCommitIndex, commitIndex))
 
 					// Apply commited records
 					for {
@@ -711,14 +755,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/** Applies commited records starting from the specified [[RecordIndex]].
-			 * [[Command]] and [[SnapshotPoint]] application is decoupled.
+			 * [[CommandRecord]] and [[SnapshotPoint]] application is decoupled.
 			 * [[ConfigurationChangeNew]] and [[ConfigurationChangeOldNew]] application is coupled. */
 			@tailrec
 			private def applyCommitedRecords(from: RecordIndex): sequencer.Task[Any] = {
 				if from > commitIndex then sequencer.Task_unit
 				else {
 					workspace.getRecordAt(from) match {
-						case command: Command[ClientCommand] @unchecked =>
+						case command: CommandRecord[ClientCommand] @unchecked =>
 							if !decoupledCommandsApplierIsRunning then startApplyingCommitedCommands()
 						case lt: LeaderTransition =>
 							???
@@ -733,7 +777,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			/** Applies commited [[Command]]s decoupled. */
+			/** Applies commited [[CommandRecord]]s decoupled. */
 			private def startApplyingCommitedCommands(): Unit = {
 				decoupledCommandsApplierIsRunning = true
 
@@ -741,11 +785,13 @@ trait ConsensusParticipantSdm { thisModule =>
 					if index > commitIndex then sequencer.Task_unit
 					else {
 						workspace.getRecordAt(index) match {
-							case command: Command[ClientCommand] @unchecked =>
+							case command: CommandRecord[ClientCommand] @unchecked =>
 								val appliesCommand = machine.appliesClientCommand(index, command.command)
 								var retriesCounter = 0
 								appliesCommand.transformWith {
 									case Success(_) =>
+										lastAppliedCommandIndex = index
+										workspace.informAppliedCommandIndex(index)
 										applyCommitedCommandsLoop(index + 1)
 									case Failure(e) =>
 										if retriesCounter < applyCommandRetries then {
@@ -768,14 +814,19 @@ trait ConsensusParticipantSdm { thisModule =>
 					else {
 						for {
 							index <- machine.recoversIndexOfLastAppliedCommand
-							_ <- applyCommitedCommandsLoop(index)
+							_ <- {
+								lastAppliedCommandIndex = index
+								workspace.informAppliedCommandIndex(index)
+								if index == 0 then sequencer.Task_unit
+								else applyCommitedCommandsLoop(index + 1)
+							}
 						} yield ()
 					}
 				appliesCommitedCommands.trigger(true) { _ => decoupledCommandsApplierIsRunning = false }
 			}
 
 			protected def updatesState: sequencer.Task[Unit] = {
-				assert(currentBehavior.ordinal >= ISOLATED)
+				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
 				for {
 					myVote <- decideMyVote(null, null).toTask
 					_ <- updatesState(myVote)
@@ -783,7 +834,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			protected def updatesState(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Unit] = {
-				assert(currentBehavior.ordinal >= ISOLATED)
+				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
 				for {
 					myVote <- decideMyVote(inquirerId, inquirerInfo).toTask
 					_ <- updatesState(myVote)
@@ -791,7 +842,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			protected def updatesState(myVote: Vote[ParticipantId]): sequencer.Task[Unit] = {
-				assert(currentBehavior.ordinal >= ISOLATED)
+				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
 				val workspace = thisConsensusParticipant.workspace.asInstanceOf[WS]
 				if myVote.term > currentTerm then currentTerm = myVote.term
 
@@ -859,9 +910,9 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onEnter(previous: BehaviorOrdinal): Unit = {
 				notifyListeners(_.onBecameStopped(previous, currentTerm, motive))
-				cluster.setMessagesListener(null)
+				// cluster.setMessagesListener(null) // commented because it complicates a bit the ClusterParticipant implementation.
 				workspace.release()
-				workspace = null
+				// workspace = null // commented after commenting setMessagesListener(null), because, otherwise, all usages of `workspace` in the MessageListener methods would require null check.  Uncomment this only if the `setMessagesLister(null)` line is also uncommented.
 			}
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
@@ -887,8 +938,11 @@ trait ConsensusParticipantSdm { thisModule =>
 							loadedWorkspace.setCurrentTerm(0)
 							loadedWorkspace.setCurrentParticipants(cluster.getInitialParticipants.toIndexedSeq.sorted.toArray.asInstanceOf[IArray[ParticipantId]])
 						}
+						val previousCommitIndex = commitIndex
 						commitIndex = 0
+						if previousCommitIndex != 0 then notifyListeners(_.onCommitIndexChange(previousCommitIndex, 0))
 						if stateMachineNeedsRestart then lastAppliedCommandIndex = 0
+						workspace.informAppliedCommandIndex(0)
 						currentTerm = loadedWorkspace.getCurrentTerm
 						currentParticipants = loadedWorkspace.getCurrentParticipants
 						otherParticipants = currentParticipants.filter(_ != boundParticipantId)
@@ -1015,7 +1069,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def onEnter(previous: BehaviorOrdinal): Unit = {
 				currentTerm += 1
 				notifyListeners(_.onBecameLeader(previous, currentTerm))
-				replicateUncommitedRecords().triggerAndForget(true)
+				if isEager then replicateRecords().triggerAndForget(true)
 			}
 
 			override def onLeave(): Unit = {
@@ -1025,34 +1079,64 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
+
+				val clientId = clientIdOf(command)
+				val indexOfLastAppendedCommandFromClient = workspace.indexOfLastAppendedCommandFrom(clientId)
+
+				if indexOfLastAppendedCommandFromClient == 0 then acceptNewCommand(command)
+				else {
+					workspace.getRecordAt(indexOfLastAppendedCommandFromClient) match {
+						case CommandRecord[ClientCommand@unchecked] (term, lastClientCommand) =>
+					if clientCommandOrdering.gt (command, lastClientCommand) then acceptNewCommand (command)
+					else {
+						// Obtain the response applying the command again, assuming the state-machine is idempotent.
+					for smr <- machine.appliesClientCommand (indexOfLastAppendedCommandFromClient, command)
+					yield Processed (indexOfLastAppendedCommandFromClient, smr)
+					}
+
+						case _ =>
+							sequencer.Task_successful(InconsistentState(s"For client $clientId, the last known log-entry index ($indexOfLastAppendedCommandFromClient) does not point to a record of the expected type."))
+					}
+				}
+			}
+
+			private def acceptNewCommand(command: ClientCommand): sequencer.Task[ResponseToClient] = {
 				// append the command to the log buffer
-				val commandRecord = Command(currentTerm, command)
-				val index = workspace.firstEmptyRecordIndex
+				val commandRecord = CommandRecord(currentTerm, command)
+				val recordIndex = workspace.firstEmptyRecordIndex
 				workspace.appendRecord(commandRecord)
 
 				for {
-					_ <- replicateUncommitedRecords().toTask
+					replicatedToAMajority <- replicateRecords().toTask
 					_ <- storage.saves(workspace.asInstanceOf[WS])
-					response <- machine.appliesClientCommand(index, command)
-				} yield Processed(index, response)
+					rtc <- {
+						if replicatedToAMajority then {
+							for {
+								smr <- machine.appliesClientCommand(recordIndex, command)
+							} yield {
+								lastAppliedCommandIndex = recordIndex
+								workspace.informAppliedCommandIndex(recordIndex)
+								Processed(recordIndex, smr)
+							}
+						} else {
+							become(Isolated)
+							sequencer.Task_successful(Unable(Isolated.ordinal, otherParticipants))
+						}
+					}: sequencer.Task[ResponseToClient]
+				} yield rtc
 			}
 
 			/**
-			 * Attempts to replicate uncommitted [[Record]]s to all participants.
+			 * Attempts to replicate the [[Record]]s to all participants.
 			 * Detailed behavior:
 			 *		- If [[Record]] weren't replicated to a follower, replicate them.
 			 *			- If successful: update the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]]
 			 *			- If AppendEntries fails because of log inconsistency: decrement the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]], and retry.
 			 *		- If there exists an N such that N > [[commitIndex]], a majority of the [[highestRecordIndexKnowToBeReplicated_ByParticipantIndex]] entries is ≥ N, and log[N].term == [[currentTerm]]: set commitIndex = N
 			 *		- If there are laggard participants (a minority whose corresponding entry in [[highestRecordIndexKnowToBeReplicated_ByParticipantIndex]] trails the leader's [[commitIndex]]), initiate targeted retries to catch them up.
-			 * @return a [[sequencer.Task]] that yields [[Unit]] if either:
-			 *         - there is no uncommited [[Record]] to replicate;
-			 *         - all the uncommited ones are replicated to a majority of the participants;
-			 *         - or the behavior of this participant changed during the process.
-			 *
-			 * Completes with a failure otherwise. // TODO: not true. Currently it always successes.
+			 * @return a [[sequencer.Task]] that yields true if all the records in the log are replicated to a majority of the participants (including itself), false otherwise.
 			 * */
-			private def replicateUncommitedRecords(): sequencer.Duty[Unit] = {
+			private def replicateRecords(): sequencer.Duty[Boolean] = {
 				// First, abort the failed replications loop if it is running.
 				failedReplicationsLoopSchedule.foreach(sequencer.cancel(_))
 				failedReplicationsLoopSchedule = Maybe.empty
@@ -1066,30 +1150,32 @@ trait ConsensusParticipantSdm { thisModule =>
 				// Execute the tasks in parallel. Note that the tasks, when successful, update the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnowToBeReplicated_ByParticipantIndex` arrays.
 				for appendResults <- sequencer.Duty_sequenceTasksToArray(requestToAppendPendingRecords_byParticipantIndex) yield {
 					// If the behavior hasn't changed while waiting the result, then the leader is still the same, and we can continue.
-					if currentBehavior eq this then {
+					if currentBehavior ne this then false
+					else {
 						// Update the commitIndex if a majority of the followers have replicated the uncommited records.
-						// If there exists an N such that N > commitIndex, a majority of highestEntryIndexKnowToBeReplicated_ByParticipantIndex[i] ≥ N, and getRecordAt[N].term == currentTerm: set commitIndex = N
-						var n = commitIndex + 1
-						while n < workspace.firstEmptyRecordIndex && highestRecordIndexKnowToBeReplicated_ByParticipantIndex.count(_ >= n) >= smallestMajority && workspace.getRecordAt(n).term == currentTerm do {
+						// If there exists an N such that N > commitIndex, the highest log-entry index known to be replicated is > N in a majority of the servers, and getRecordAt[N].term == currentTerm: set commitIndex = N
+						val previousCommitIndex = commitIndex
+						var n = previousCommitIndex + 1
+						while n < workspace.firstEmptyRecordIndex && highestRecordIndexKnowToBeReplicated_ByParticipantIndex.count(_ >= n) + 1 >= smallestMajority && workspace.getRecordAt(n).term == currentTerm do {
 							commitIndex = n
 							n += 1
 						}
+						if commitIndex > previousCommitIndex then notifyListeners(_.onCommitIndexChange(previousCommitIndex, commitIndex))
 
-						// For those minority of followers whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because they failed to replicate the uncommited records), retry the ask to append records to them.
-						// This retry is indefinite until this method (replicateUncommitedRecords) is called again (as the effect of an external stimulus).
-						def retryLaggardParticipants(previousTryResults: Iterable[(previousTryResult: Try[Unit], participantIndex: Int)]): Unit = {
+
+						// For those minority of participants whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because they failed to replicate commited records), retry the append records RPC.
+						// This retry is indefinite until the outer method (replicateUncommitedRecords) is called again (as the effect of an external stimulus).
+						def retryLaggardParticipants(previousTryResults: Iterable[(previousTryResult: Try[Boolean], participantIndex: Int)]): Unit = {
 							if currentBehavior ne this then return
+							// Include only the participants for which the append records RPC failed. Those for which the result was either successful or definitively rejected are filtered out.
 							val indicesOfLaggardParticipants: List[Int] = previousTryResults.foldLeft(Nil) { (accum, elem) =>
 								elem.previousTryResult match {
-									case Success(_) =>
-										assert(highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex)
+									case Success(wasReplicationSuccessful) =>
+										assert(!wasReplicationSuccessful || highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex, s"!$wasReplicationSuccessful || ${highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex)} >= $commitIndex")
 										accum
 									case Failure(e) =>
-										if highestRecordIndexKnowToBeReplicated_ByParticipantIndex(elem.participantIndex) >= commitIndex then accum
-										else {
-											scribe.debug(s"$boundParticipantId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
-											elem.participantIndex :: accum
-										}
+										scribe.debug(s"$boundParticipantId: The replication of the commited records to ${otherParticipants(elem.participantIndex)} failed with:", e)
+										elem.participantIndex :: accum
 								}
 							}
 							if indicesOfLaggardParticipants.nonEmpty then {
@@ -1106,7 +1192,13 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 						}
 
-						retryLaggardParticipants(appendResults.zipWithIndex)
+						// Return true if the record was appended in a majority of the participants.
+						if appendResults.count(_.isSuccess) + 1 < smallestMajority then false
+						else {
+							// Retry the append on laggard participants but only if the replication succeeded in a majority. TODO: analyze if the retry should be done independently of majority-replication success.
+							retryLaggardParticipants(appendResults.zipWithIndex)
+							true
+						}
 					}
 				}
 			}
@@ -1116,35 +1208,38 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * If the participant's response indicates its log does not match this participant's log before `indexOfNextRecordToSend`, the task will retry after a delay, starting from the previous record.
 			 * @param destinationParticipantIndex The index of the participant in the [[otherParticipants]] array.
 			 * @param until The index immediately after the last record to send. TODO: is this parameter needed? or should it be fixed to the [[Workspace.firstEmptyRecordIndex]]?
-			 * @return A task that attempts to append records to the specified participant, yielding [[Unit]] if the participant was successful appending them, but not necessarily applying them.
+			 * @return A task that attempts to append records to the specified participant, yielding
+			 *         - `true` if the participant was successful appending them, but not necessarily applying them. This is the only case in which, as side effect, the corresponding entry in the [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnowToBeReplicated_ByParticipantIndex]] arrays is updated.
+			 *         - `false` if the participant rejected the appending definitively.
+			 *         - a failure if the [[sequencer.Task]] returned by the participant's [[ClusterParticipant.MessagesListener.onAppendRecords]] method completed with failure, or there was a [[ClusterParticipant]] related failure.
 			 */
-			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Unit] = {
+			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Boolean] = {
 				val destinationParticipantId = otherParticipants(destinationParticipantIndex)
 				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
-				if until <= indexOfNextRecordToSend then return sequencer.Task_unit
+				assert(until >= indexOfNextRecordToSend)
 				val recordsToSend = workspace.getRecordsBetween(indexOfNextRecordToSend, until)
 				val previousRecordIndex = indexOfNextRecordToSend - 1
 				val previousRecordTerm = if previousRecordIndex == 0 then 0 else workspace.getRecordAt(previousRecordIndex).term
 				for {
 					appendResult <- destinationParticipantId.appendRecords(currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex, workspace.getRecordTermAt(commitIndex))
-					_ <- {
+					appendWasSuccessful <- {
 						// This point is reached only if the destination participant responds normally to the AppendRecords request.
 						// If this participant's behavior changed while waiting the destination participant response, ignore the response and yield successfully (to skip/exit the retry laggards loop).
-						if currentBehavior ne this then sequencer.Task_unit
+						if currentBehavior ne this then sequencer.Task_false
 						// If the term (according to the target) is greater than the current term (according to this participant), then the leader has changed. So:
 						else if appendResult.term > currentTerm then {
 							// update the current term and start the state-update process
 							currentTerm = appendResult.term
 							updatesState.triggerExposingFailures()
 							// Yield a successful result to avoid the retry loop below.
-							sequencer.Task_unit
+							sequencer.Task_false
 						}
 						// If the destination participant has successfully appended the records to its log and persisted its workspace, then update the index of the next record to send and the highest record index known to be replicated and yield a success.
 						else if appendResult.success then {
-							assert(indexOfNextRecordToSend + recordsToSend.size == until - 1)
+							assert(indexOfNextRecordToSend + recordsToSend.size == until)
 							indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = until
 							highestRecordIndexKnowToBeReplicated_ByParticipantIndex(destinationParticipantIndex) = until - 1
-							sequencer.Task_unit
+							sequencer.Task_true
 						}
 						// else (if the participant rejected the appending)
 						else {
@@ -1153,21 +1248,21 @@ trait ConsensusParticipantSdm { thisModule =>
 								// if I remember the previous record then try again starting one record before.
 								if indexOfNextRecordToSend > workspace.logBufferOffset then {
 									indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex) = indexOfNextRecordToSend - 1
-									appendsRecordsToParticipant(destinationParticipantIndex, until)
+									appendsRecordsToParticipant(destinationParticipantIndex, workspace.firstEmptyRecordIndex)
 								}
 								// else (I don't remember the previous record)
 								else {
 									// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism.
 									scribe.error(s"$boundParticipantId: Unable to replicate uncommited records to $destinationParticipantId because its log has inconsistencies at records that I already snapshotted (they are at indexes less than my logBufferOffset ($workspace.logBufferOffset)). THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
 									// yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.
-									sequencer.Task_unit
+									sequencer.Task_false
 								}
 							}
-							// if the rejection was for another reason, yield a success but without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.
-							else sequencer.Task_unit
+							// if the rejection was for another reason, yield false without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnowToBeReplicated_ByParticipantIndex.
+							else sequencer.Task_false
 						}
 					}
-				} yield ()
+				} yield appendWasSuccessful
 			}
 		}
 
@@ -1220,17 +1315,17 @@ trait ConsensusParticipantSdm { thisModule =>
 		// TODO remove "case"
 		private case class CandidateInfo(val id: ParticipantId, val info: StateInfo) {
 			/** @return the winner of the competition between this candidate and the other candidate when competing for leadership. The winner is the more up-to-date one.
-			 * The more up-to-date criteria are: greater last record term, longer log, greater current term, is leader over not, and lesser [[ParticipantId]], with the left to right priority.
+			 * The more up-to-date criteria are: greater current term, is leader over not, greater last record term, longer log, and lesser [[ParticipantId]], with the left to right priority.
 			 */
 			def getWinnerAgainst(other: CandidateInfo): CandidateInfo = {
-				if this.info.termAtCommitIndex > other.info.termAtCommitIndex then this
-				else if this.info.termAtCommitIndex < other.info.termAtCommitIndex then other
-				else if this.info.commitIndex > other.info.commitIndex then this
-				else if this.info.commitIndex < other.info.commitIndex then other
-				else if this.info.currentTerm > other.info.currentTerm then this
+				if this.info.currentTerm > other.info.currentTerm then this
 				else if this.info.currentTerm < other.info.currentTerm then other
 				else if this.info.ordinal == LEADER && other.info.ordinal != LEADER then this
 				else if this.info.ordinal != LEADER && other.info.ordinal == LEADER then other
+				else if this.info.termAtCommitIndex > other.info.termAtCommitIndex then this
+				else if this.info.termAtCommitIndex < other.info.termAtCommitIndex then other
+				else if this.info.commitIndex > other.info.commitIndex then this
+				else if this.info.commitIndex < other.info.commitIndex then other
 				else if this.id < other.id then this
 				else other
 			}

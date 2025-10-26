@@ -2,8 +2,11 @@ package readren.common
 
 import scribe.*
 import scribe.file.*
+import scribe.filter.Filter
 import scribe.format.*
 import scribe.format.FormatBlock.{ClassAndMethodName, ColumnNumber, LineNumber}
+import scribe.handler.LogHandler
+import scribe.modify.LogModifier
 import scribe.output.{LogOutput, TextOutput}
 
 import java.io.File
@@ -11,12 +14,12 @@ import java.io.File
 object ScribeConfig {
 	object myPosition extends FormatBlock {
 		override def format(record: LogRecord): LogOutput = {
-			val line = if (record.line.nonEmpty) {
+			val line = if record.line.nonEmpty then {
 				s":${LineNumber.format(record).plainText}"
 			} else {
 				""
 			}
-			val column = if (record.column.nonEmpty) {
+			val column = if record.column.nonEmpty then {
 				s":${ColumnNumber.format(record).plainText}"
 			} else {
 				""
@@ -48,14 +51,14 @@ object ScribeConfig {
 	 * @param useSimpleFormatter If true, use Formatter.simple (default). If false, use mySourceLinkFormatter.
 	 * @param deleteLogFilesOnLaunch If true, delete previous log files at launch.
 	 */
-	def init(useSimpleFormatter: Boolean = true, deleteLogFilesOnLaunch: Boolean = false): Unit = {
+	def init(modifiers: List[LogModifier] = Nil, useSimpleFormatter: Boolean = true, deleteLogFilesOnLaunch: Boolean = false): Unit = {
 		val formatter = if useSimpleFormatter then formatter"${format.timeStamp} ${format.messages}${format.mdc}"
 		else mySourceLinkFormatter
 
 		if deleteLogFilesOnLaunch then {
 			// Delete previous log files at launch
 			val logsDir = new File("logs")
-			if (logsDir.exists && logsDir.isDirectory) {
+			if logsDir.exists && logsDir.isDirectory then {
 				logsDir.listFiles().filter(f => f.isFile && f.getName.startsWith("app-") && f.getName.endsWith(".log")).foreach(_.delete())
 			}
 		}
@@ -65,14 +68,15 @@ object ScribeConfig {
 			.withMinimumLevel(Level.Trace)
 			.withHandler(
 				minimumLevel = Some(Level.Trace),
-				formatter = formatter
+				formatter = formatter,
+				modifiers = modifiers
 			)
 			.withHandler(
 				minimumLevel = Some(Level.Trace),
 				writer = FileWriter("logs" / ("app-" % year % "-" % month % "-" % day % ".log")),
-				formatter = formatter
-			)
-			.replace()
+				formatter = formatter,
+				modifiers = modifiers
+			).replace()
 
 		// Set debug level for Transmitter class
 		Logger("readren.nexus.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
