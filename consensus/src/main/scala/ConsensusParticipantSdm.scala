@@ -22,10 +22,9 @@ object ConsensusParticipantSdm {
 	 * Starts from 1.
 	 * Zero means "before first election". */
 	final type Term = Int
+
 	/** The type of behavior ids. */
 	final type BehaviorOrdinal = Byte
-
-
 	final val STOPPED: BehaviorOrdinal = 0
 	final val STARTING: BehaviorOrdinal = 1
 	final val ISOLATED: BehaviorOrdinal = 2
@@ -33,6 +32,18 @@ object ConsensusParticipantSdm {
 	final val FOLLOWER: BehaviorOrdinal = 4
 	final val LEADER: BehaviorOrdinal = 5
 
+	/** Indicates the outcome of a client's previous attempt to send a command to a [[ConsensusParticipantSdm.ConsensusParticipant]].
+	 * Used to annotate retry semantics and guide routing behavior. */
+	type CommandAttemptFlag = Byte
+
+	/** The client has not previously attempted to send the command to any participant. */
+	final val FIRST_ATTEMPT: CommandAttemptFlag = 0
+
+	/** The client previously sent the command to a different participant, which responded with a redirect instruction. */
+	final val REDIRECTED: CommandAttemptFlag = 1
+
+	/** The client previously sent the command to a different participant, which either failed or rejected the request. */
+	final val FALLBACK: CommandAttemptFlag = 2
 
 	//// STANDALONE DATA TYPES
 
@@ -277,14 +288,13 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * It must be called within the [[sequencer]].
 			 *
 			 * @param command The command issued by the client for state-machine execution.
-			 * @param isFallback True if the client previously attempted to send this command to a different participant,
-			 *                   which either failed or rejected the request.
+			 * @param attemptFlag Indicates the outcome of the client's previous attempt to send this command.
 			 * @return A [[sequencer.Task]] that yields one of:
 			 *         - The state-machine's response to the client.
 			 *         - A [[RedirectTo]] message instructing the client to contact the current leader.
 			 *         - An [[Unable]] message indicating that this participant cannot currently reach consensus.
 			 */
-			def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient]
+			def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient]
 
 			/**
 			 * This method is invoked by this cluster when another participant calls [[howAreYou]].
@@ -889,7 +899,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					_ <- updatesState
 					result <- {
 						val currentBehaviorOrdinal = currentBehavior.ordinal
-						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, false)
+						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, FIRST_ATTEMPT)
 						else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
 					}
 				} yield result
@@ -915,7 +925,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				// workspace = null // commented after commenting setMessagesListener(null), because, otherwise, all usages of `workspace` in the MessageListener methods would require null check.  Uncomment this only if the `setMessagesLister(null)` line is also uncommented.
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
 				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
@@ -956,7 +966,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
 				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
@@ -987,7 +997,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 		}
@@ -1012,7 +1022,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 		}
@@ -1031,10 +1041,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				notifyListeners(_.onBecameFollower(previous, currentTerm, leaderId))
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
-				if isFallback then updatesStateAndThenCallsOnCommandFromClient(command)
-				else sequencer.Task_successful(RedirectTo(leaderId))
+				if attemptFlag == FIRST_ATTEMPT then sequencer.Task_successful(RedirectTo(leaderId))
+				else updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 		}
 
@@ -1077,7 +1087,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				failedReplicationsLoopSchedule = Maybe.empty
 			}
 
-			override def onCommandFromClient(command: ClientCommand, isFallback: Boolean): sequencer.Task[ResponseToClient] = {
+			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
 
 				val clientId = clientIdOf(command)
