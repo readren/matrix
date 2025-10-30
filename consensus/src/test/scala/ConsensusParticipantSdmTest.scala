@@ -425,7 +425,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		object machine extends StateMachine {
 			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {
-				assert(command.value == index)
+				assert(command.value == index, s"command=$command, index=$index")
 
 				// TODO add delay
 				sequencer.Task_mine { () =>
@@ -707,7 +707,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						val otherNode = net.getNode(nodeIndex)
 						otherNode.sequencer.execute {
 							val commitedRecordsMemory = commitedRecordsByNodeIndex(nodeIndex)
-							for commitedRecordIndex <- commitedRecordsMemory.indices do {
+							for commitedRecordIndex <- commitedRecordsMemory.indices if commitedRecordIndex < thisNodeRecords.size do {
 								val commitedRecord = commitedRecordsMemory(commitedRecordIndex)
 								val storedRecord = thisNodeRecords(commitedRecordIndex)
 								if storedRecord != commitedRecord then promise.tryFailure(new AssertionError(s"The record $commitedRecord commited by ${otherNode.myId} at index ${commitedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))
@@ -718,8 +718,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = {
 					val commitedRecordsMemory = commitedRecordsByNodeIndex(net.indexOf(node.myId))
-					val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
 					if commitedRecordsMemory.size < current then {
+						val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
 						commitedRecordsMemory.addAll(newCommitedRecords)
 					}
 				}
@@ -738,7 +738,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("special sample") {
 		val receiverIndex = 1
-		val net = new Net(clusterSize = 20, randomnessSeed = 0, requestFailurePercentage = 0, responseFailurePercentage = 0, stimulusSettlingTime = 1)
+		val net = new Net(clusterSize = 20, randomnessSeed = 0, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 1)
 		scribe.info(s"Begin: clusterSize=${net.clusterSize}, receiverIndex=$receiverIndex, netRandomnessSeed=${net.randomnessSeed}")
 
 		testAllInvariants(net, receiverIndex, numberOfCommandsToSend = 10)
@@ -892,8 +892,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				new node.DefaultNotificationListener() {
 					override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = {
 						val commitedRecordsMemory = commitedRecordsByNodeIndex(net.indexOf(node.myId))
-						val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
 						if commitedRecordsMemory.size < current then {
+							val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
 							commitedRecordsMemory.addAll(newCommitedRecords)
 						}
 					}
@@ -905,7 +905,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							val otherNode = net.getNode(nodeIndex)
 							otherNode.sequencer.execute {
 								val commitedRecordsMemory = commitedRecordsByNodeIndex(nodeIndex)
-								for commitedRecordIndex <- commitedRecordsMemory.indices do {
+								for commitedRecordIndex <- commitedRecordsMemory.indices if commitedRecordIndex < thisNodeRecords.size do {
 									val commitedRecord = commitedRecordsMemory(commitedRecordIndex)
 									val storedRecord = thisNodeRecords(commitedRecordIndex)
 									if storedRecord != commitedRecord then promise.tryFailure(new AssertionError(s"The record $commitedRecord commited by ${otherNode.myId} at index ${commitedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))

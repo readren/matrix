@@ -6,7 +6,7 @@ import readren.sequencer.{Doer, MilliDuration, SchedulingExtension}
 import java.util
 import java.util.Comparator
 import scala.annotation.tailrec
-import scala.collection.IndexedSeq as GenIndexedSeq
+import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
 import scala.math.Ordering.Implicits.infixOrderingOps
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
@@ -587,6 +587,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		private val notificationListeners: java.util.WeakHashMap[NotificationListener, None.type] = new util.WeakHashMap()
 
+		private val howAreYouRequestOnTheWayByParticipant: mutable.Map[ParticipantId, sequencer.Commitment[StateInfo]] = mutable.Map.empty
+
 		{
 			initialListeners.foreach(notificationListeners.put(_, None))
 			currentBehavior.onEnter(STOPPED)
@@ -635,6 +637,97 @@ trait ConsensusParticipantSdm { thisModule =>
 			currentBehavior
 		}
 
+
+		private def buildMyStateInfo: StateInfo = {
+			val currentBehaviorOrdinal = currentBehavior.ordinal
+			if currentBehaviorOrdinal <= STARTING then StateInfo(0, currentBehaviorOrdinal, 0, 0)
+			else {
+				val termAtCommitIndex = workspace.getRecordTermAt(commitIndex)
+				StateInfo(currentTerm, currentBehaviorOrdinal, termAtCommitIndex, commitIndex)
+			}
+		}
+
+		private inline def updatesState: sequencer.Task[Unit] =
+			updatesState(null, null)
+
+
+		private def updatesState(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Task[Unit] = {
+			assert(sequencer.isInSequence)
+			if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
+			for {
+				myVote <- decideMyVote(inquirerId, inquirerInfo).toTask
+				_ <- updatesState(myVote)
+			} yield ()
+		}
+
+		private def updatesState(myVote: Vote[ParticipantId]): sequencer.Task[Unit] = {
+			assert(sequencer.isInSequence)
+			if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
+			val workspace = thisConsensusParticipant.workspace.asInstanceOf[WS]
+			if myVote.term > currentTerm then currentTerm = myVote.term
+
+			if myVote.reachableCandidatesCount == currentParticipants.length then {
+				if myVote.candidateId == boundParticipantId then become(Leader())
+				else become(Follower(myVote.candidateId))
+				workspace.setCurrentTerm(currentTerm)
+				storage.saves(workspace)
+			} else if myVote.reachableCandidatesCount < smallestMajority then {
+				become(Isolated)
+				workspace.setCurrentTerm(currentTerm)
+				storage.saves(workspace)
+			} else {
+				val myStateInfo = buildMyStateInfo
+				val inquires = for replierId <- otherParticipants yield replierId.chooseALeader(boundParticipantId, myStateInfo)
+				for {
+					replies <- sequencer.Duty_sequenceTasksToArray(inquires).toTask
+					_ <- updateState(myVote, replies)
+				} yield ()
+			}
+		}
+
+		private def updateState(myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]]): sequencer.Task[Unit] = {
+			var myVoteIsStale = false
+			var votesMatchingMyVoteCount = 1 // includes my vote
+			for case Success(replierVote) <- votesFromOthers do {
+				if replierVote.term > currentTerm then {
+					currentTerm = replierVote.term
+					myVoteIsStale = true
+				}
+				if replierVote.candidateId == myVote.candidateId && replierVote.reachableCandidatesCount >= smallestMajority then votesMatchingMyVoteCount += 1
+			}
+			if myVoteIsStale || votesMatchingMyVoteCount < smallestMajority then become(Candidate)
+			else if myVote.candidateId == boundParticipantId then become(Leader())
+			else become(Follower(myVote.candidateId))
+
+			workspace.setCurrentTerm(currentTerm)
+			storage.saves(workspace.asInstanceOf[WS])
+		}
+
+
+		/** Updates the state and [[Behavior]] of this [[ConsensusParticipant]] and then returns the [[sequencer.Task]] returned by the [[Behavior.onCommandFromClient]] method applied to the updated [[Behavior]].
+		 * @return a [[sequencer.Task]] returned by [[Behavior.onCommandFromClient]] applied to the updated [[Behavior]] */
+		protected def updatesStateAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.Task[ResponseToClient] = {
+			assert(isInSequence)
+			for {
+				_ <- updatesState
+				result <- {
+					val currentBehaviorOrdinal = currentBehavior.ordinal
+					if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, FIRST_ATTEMPT)
+					else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
+				}
+			} yield result
+		}
+
+		extension [T](task: sequencer.Task[T]) {
+			def triggerExposingFailures(): Unit = {
+				task.trigger(true) {
+					case Success(_) => // do nothing
+					case Failure(e) => scribe.error(s"$boundParticipantId: Unexpected error:", e)
+				}
+			}
+		}
+
+
 		/**
 		 * Abstract base class for consensus behavior states.
 		 *
@@ -644,7 +737,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *
 		 * All behavior methods are executed within the sequencer thread to ensure thread safety.
 		 */
-		private sealed abstract class Behavior extends MessagesListener {
+		private sealed abstract class Behavior extends MessagesListener { thisBehavior =>
 			/** The ordinal corresponding to this [[Behavior]] */
 			val ordinal: BehaviorOrdinal
 
@@ -653,14 +746,6 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Called by [[become]] before transitioning to another behavior. */
 			def onLeave(): Unit = ()
 
-			def buildMyStateInfo: StateInfo = {
-				val currentBehaviorOrdinal = currentBehavior.ordinal
-				if currentBehaviorOrdinal <= STARTING then StateInfo(0, ordinal, 0, 0)
-				else {
-					val termAtCommitIndex = workspace.getRecordTermAt(commitIndex)
-					StateInfo(currentTerm, currentBehaviorOrdinal, termAtCommitIndex, commitIndex)
-				}
-			}
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): StateInfo = {
 				assert(isInSequence)
@@ -835,84 +920,6 @@ trait ConsensusParticipantSdm { thisModule =>
 				appliesCommitedCommands.trigger(true) { _ => decoupledCommandsApplierIsRunning = false }
 			}
 
-			protected def updatesState: sequencer.Task[Unit] = {
-				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
-				for {
-					myVote <- decideMyVote(null, null).toTask
-					_ <- updatesState(myVote)
-				} yield ()
-			}
-
-			protected def updatesState(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Unit] = {
-				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
-				for {
-					myVote <- decideMyVote(inquirerId, inquirerInfo).toTask
-					_ <- updatesState(myVote)
-				} yield ()
-			}
-
-			protected def updatesState(myVote: Vote[ParticipantId]): sequencer.Task[Unit] = {
-				if currentBehavior.ordinal < ISOLATED then return sequencer.Task_unit
-				val workspace = thisConsensusParticipant.workspace.asInstanceOf[WS]
-				if myVote.term > currentTerm then currentTerm = myVote.term
-
-				if myVote.reachableCandidatesCount == currentParticipants.length then {
-					if myVote.candidateId == boundParticipantId then become(Leader())
-					else become(Follower(myVote.candidateId))
-					workspace.setCurrentTerm(currentTerm)
-					storage.saves(workspace)
-				} else if myVote.reachableCandidatesCount < smallestMajority then {
-					become(Isolated)
-					workspace.setCurrentTerm(currentTerm)
-					storage.saves(workspace)
-				} else {
-					val myStateInfo = buildMyStateInfo
-					val inquires = for replierId <- otherParticipants yield replierId.chooseALeader(boundParticipantId, myStateInfo)
-					for {
-						replies <- sequencer.Duty_sequenceTasksToArray(inquires).toTask
-						saveResult <- {
-							var myVoteIsStale = false
-							var votesMatchingMyVoteCount = 1 // includes my vote
-							for case Success(replierVote) <- replies do {
-								if replierVote.term > currentTerm then {
-									currentTerm = replierVote.term
-									myVoteIsStale = true
-								}
-								if replierVote.candidateId == myVote.candidateId && replierVote.reachableCandidatesCount >= smallestMajority then votesMatchingMyVoteCount += 1
-							}
-							if myVoteIsStale || votesMatchingMyVoteCount < smallestMajority then become(Candidate)
-							else if myVote.candidateId == boundParticipantId then become(Leader())
-							else become(Follower(myVote.candidateId))
-
-							workspace.setCurrentTerm(currentTerm)
-							storage.saves(workspace)
-						}
-					} yield saveResult
-				}
-			}
-
-			/** Updates the state and [[Behavior]] of this [[ConsensusParticipant]] and then returns the [[sequencer.Task]] returned by the [[Behavior.onCommandFromClient]] method applied to the updated [[Behavior]].
-			 * @return a [[sequencer.Task]] returned by [[Behavior.onCommandFromClient]] applied to the updated [[Behavior]] */
-			protected def updatesStateAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.Task[ResponseToClient] = {
-				assert(isInSequence)
-				for {
-					_ <- updatesState
-					result <- {
-						val currentBehaviorOrdinal = currentBehavior.ordinal
-						if currentBehaviorOrdinal >= FOLLOWER then currentBehavior.onCommandFromClient(command, FIRST_ATTEMPT)
-						else sequencer.Task_successful(Unable(currentBehaviorOrdinal, otherParticipants))
-					}
-				} yield result
-			}
-
-			extension [T](task: sequencer.Task[T]) {
-				def triggerExposingFailures(): Unit = {
-					task.trigger(true) {
-						case Success(_) => // do nothing
-						case Failure(e) => scribe.error(s"$boundParticipantId: Unexpected error:", e)
-					}
-				}
-			}
 		}
 
 		private case class Stopped(motive: Throwable | Null) extends Behavior {
@@ -1224,6 +1231,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *         - a failure if the [[sequencer.Task]] returned by the participant's [[ClusterParticipant.MessagesListener.onAppendRecords]] method completed with failure, or there was a [[ClusterParticipant]] related failure.
 			 */
 			private def appendsRecordsToParticipant(destinationParticipantIndex: Int, until: RecordIndex): sequencer.Task[Boolean] = {
+				assert(sequencer.isInSequence)
+
 				val destinationParticipantId = otherParticipants(destinationParticipantIndex)
 				val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(destinationParticipantIndex)
 				assert(until >= indexOfNextRecordToSend)
@@ -1291,32 +1300,51 @@ trait ConsensusParticipantSdm { thisModule =>
 			val howAreYouQuestions: IndexedSeq[sequencer.Task[StateInfo]] =
 				for otherParticipantId <- otherParticipants yield {
 					if otherParticipantId == inquirerId then sequencer.Task_successful(inquirerInfo)
-					else otherParticipantId.howAreYou(this.currentTerm)
+					else askHowIsAnotherIfNotAlready(otherParticipantId)
 				}
-			var borrame: List[CandidateInfo] = Nil
-			val x = for replies <- sequencer.Duty_sequenceTasksToArray(howAreYouQuestions) yield {
-				var laterCurrentTerm = this.currentTerm
-				var chosenCandidate = CandidateInfo(boundParticipantId, this.currentBehavior.buildMyStateInfo)
-				borrame = chosenCandidate :: borrame //TODO delete line
-				var reachableCandidatesCounter = 1 // myself
-				for replierIndex <- replies.indices do {
-					val replierId = otherParticipants(replierIndex)
-					replies(replierIndex) match {
-						case Success(replierInfo) =>
-							reachableCandidatesCounter += 1
-							if replierInfo.currentTerm > laterCurrentTerm then {
-								laterCurrentTerm = replierInfo.currentTerm
-							}
-							borrame = CandidateInfo(replierId, replierInfo) :: borrame //TODO delete line
-							chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
+			var borrame: List[CandidateInfo] = Nil //TODO delete line
+			val decidesMyVote = //TODO delete line
+				for replies <- sequencer.Duty_sequenceTasksToArray(howAreYouQuestions) yield {
+					var laterCurrentTerm = this.currentTerm
+					var chosenCandidate = CandidateInfo(boundParticipantId, buildMyStateInfo)
+					borrame = chosenCandidate :: borrame //TODO delete line
+					var reachableCandidatesCounter = 1 // myself
+					for replierIndex <- replies.indices do {
+						val replierId = otherParticipants(replierIndex)
+						replies(replierIndex) match {
+							case Success(replierInfo) =>
+								reachableCandidatesCounter += 1
+								if replierInfo.currentTerm > laterCurrentTerm then {
+									laterCurrentTerm = replierInfo.currentTerm
+								}
+								borrame = CandidateInfo(replierId, replierInfo) :: borrame //TODO delete line
+								chosenCandidate = chosenCandidate.getWinnerAgainst(CandidateInfo(replierId, replierInfo))
 
-						case Failure(e) =>
-							scribe.debug(s"$boundParticipantId: `$replierId.howAreYou($currentTerm)` failed while deciding vote with: $e")
+							case Failure(e) =>
+								scribe.debug(s"$boundParticipantId: `$replierId.howAreYou($currentTerm)` failed while deciding vote with: $e")
+						}
 					}
+					Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
 				}
-				Vote(laterCurrentTerm, chosenCandidate.id, reachableCandidatesCounter, chosenCandidate.info.ordinal)
-			}
-			x.andThen(chosen => scribe.debug(s"$boundParticipantId: decideMyVote($inquirerId, $inquirerInfo): chosen=$chosen, among: $borrame")) //TODO delete line
+			decidesMyVote.andThen(chosen => scribe.debug(s"$boundParticipantId: decideMyVote($inquirerId, $inquirerInfo): chosen=$chosen, among: $borrame")) //TODO delete line
+		}
+
+		/** @return a [[sequencer.Task]] that yields the response to the "how are you" question to a specified participant.
+		 *         If such a question is on the way, yields the response of already done question. */
+		private def askHowIsAnotherIfNotAlready(otherParticipantId: ParticipantId): sequencer.Task[StateInfo] = {
+			howAreYouRequestOnTheWayByParticipant.getOrElseUpdate(
+				otherParticipantId,
+				{
+					val commitment = sequencer.Commitment[StateInfo]()
+					commitment
+						.completeWith(
+							otherParticipantId.howAreYou(currentTerm)
+								.andThen(_ => howAreYouRequestOnTheWayByParticipant.remove(otherParticipantId)),
+							true
+						)()
+					commitment
+				}
+			)
 		}
 
 		/**
