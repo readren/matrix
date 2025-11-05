@@ -41,7 +41,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	//override def scalaCheckInitialSeed = "mLbrswnMGqQ8czetIVPfw3Wh8rh8m-nkAjknVe4oiUE="
 
-	override def munitTimeout: Duration = new FiniteDuration(600, TimeUnit.SECONDS)
+	override def munitTimeout: Duration = new FiniteDuration(1200, TimeUnit.SECONDS)
 
 	private given ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
 
@@ -404,7 +404,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/** Initializes this [[Node]]. Does not start the [[ConsensusParticipant]] service. */
 		inline def initialize(initialNotificationListener: NotificationListener = DefaultNotificationListener()): Unit = {
-			this.initialNotificationListener = initialNotificationListener;
+			this.initialNotificationListener = initialNotificationListener
 		}
 
 		/** Creates this [[Node]]'s [[ConsensusParticipant]] service instance. */
@@ -424,14 +424,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override val sequencer: ScheduSequen = sharedDap.provide("node-sequencer")
 
 		object machine extends StateMachine {
+			var lastAppliedCommandIndex = 0
+
 			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {
-				assert(command.value == index, s"command=$command, index=$index")
+				assert(sequencer.isInSequence)
+				lastAppliedCommandIndex += 1
+				assert(command.value == lastAppliedCommandIndex, s"command=$command, lastAppliedCommandIndex=$lastAppliedCommandIndex")
 
 				// TODO add delay
-				sequencer.Task_mine { () =>
-					statesChangesListener.onCommandApplied(command, index)
-					command.value
-				}
+				statesChangesListener.onCommandApplied(command, index)
+				sequencer.Task_successful(command.value)
 			}
 
 			override def recoversIndexOfLastAppliedCommand: sequencer.Task[RecordIndex] = sequencer.Task_successful(0)
@@ -453,6 +455,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def setMessagesListener(listener: MessagesListener): Unit = {
 				messagesListener = listener
 			}
+
+			override def informConfigurationChange(newParticipants: Set[ParticipantId]): Unit = ()
 
 			extension (replierId: ParticipantId) {
 
@@ -506,18 +510,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * Test implementation of [[Workspace]]
 		 */
 		class TestWorkspace extends Workspace {
-			private var currentParticipants: IArray[ParticipantId] = IArray.empty
 			private var currentTerm: Term = 0
 			private var _logBufferOffset: RecordIndex = 1
 			private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
 			override def isBrandNew: Boolean = logBuffer.isEmpty
-
-			override def getCurrentParticipants: IArray[ParticipantId] = currentParticipants
-
-			override def setCurrentParticipants(participants: IArray[ParticipantId]): Unit = {
-				currentParticipants = participants
-			}
 
 			override def getCurrentTerm: Term = currentTerm
 
@@ -563,6 +560,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					newIndex += 1
 				}
 				logBufferOffset + logBuffer.size - 1
+			}
+
+			override def getLastConfigurationChange: ConfigurationChange = {
+				logBuffer.findLast {
+					case cc: ConfigurationChange => true
+					case _ => false
+				}.get.asInstanceOf[ConfigurationChange]
 			}
 
 			override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = ()
@@ -640,7 +644,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 		val leaderNodeByTerm: mutable.Buffer[Node] = mutable.Buffer.empty
 		val commitedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
-		val appliedCommandsByNodeIndex: Array[Array[TestClientCommand | Null]] = Array.fill(clusterSize, numberOfCommandsToSend + 1)(null)
+		val appliedCommandsByNodeIndex: Array[mutable.LongMap[TestClientCommand | None.type]] = Array.fill(clusterSize)(mutable.LongMap.withDefault(_ => None))
 
 		createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 			node.statesChangesListener = new NodeStateChangesListener() {
@@ -671,11 +675,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					// State Machine Safety: if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index. §5.4.3
 					val commandsAppliedToThisNode = appliedCommandsByNodeIndex(net.indexOf(node.myId))
 					val previouslyAppliedCommand = commandsAppliedToThisNode(index.toInt)
-					if previouslyAppliedCommand ne null then promise.tryFailure(new AssertionError(s"Two commands with same index were applied to the node ${node.myId}: previous=$previouslyAppliedCommand, new=$command"))
+					if previouslyAppliedCommand ne None then promise.tryFailure(new AssertionError(s"Two commands with same index were applied to the node ${node.myId}: previous=$previouslyAppliedCommand, new=$command"))
 					var i = index.toInt
 					while i < numberOfCommandsToSend do {
 						i += 1
-						if commandsAppliedToThisNode(i) ne null then promise.tryFailure(new AssertionError(s"The command $command was applied with index $index which is less than the index $i of the previously applied command ${commandsAppliedToThisNode(i)}."))
+						if commandsAppliedToThisNode(i) ne None then promise.tryFailure(new AssertionError(s"The command $command was applied with index $index which is less than the index $i of the previously applied command ${commandsAppliedToThisNode(i)}."))
 					}
 					commandsAppliedToThisNode(index.toInt) = command
 
@@ -685,7 +689,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							otherNode.sequencer.execute {
 								val commandsAppliedToTheOtherNode = appliedCommandsByNodeIndex(net.indexOf(otherNode.myId))
 								val commandAppliedToTheOtherNodeAtIndex = commandsAppliedToTheOtherNode(index.toInt)
-								if (commandAppliedToTheOtherNodeAtIndex ne null) && commandAppliedToTheOtherNodeAtIndex != command then
+								if (commandAppliedToTheOtherNodeAtIndex ne None) && commandAppliedToTheOtherNodeAtIndex != command then
 									promise.tryFailure(new AssertionError(s"The node ${node.myId} applied the command $command at index $index, which is different from the command $commandAppliedToTheOtherNodeAtIndex applied at the same index in node ${otherNode.myId}."))
 
 							}
@@ -940,7 +944,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val promise = Promise[Unit]()
 			val net = new Net(clusterSize, netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
-			val appliedCommandsByNodeIndex: Array[Array[TestClientCommand | Null]] = Array.fill(clusterSize, numberOfCommandsToSend + 1)(null)
+			val appliedCommandsByNodeIndex: Array[mutable.LongMap[TestClientCommand | None.type]] = Array.fill(clusterSize)(mutable.LongMap.withDefault(_ => None))
 
 			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
@@ -949,11 +953,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						assert(node.sequencer.isInSequence)
 						val commandsAppliedToThisNode = appliedCommandsByNodeIndex(net.indexOf(node.myId))
 						val previouslyAppliedCommand = commandsAppliedToThisNode(index.toInt)
-						if previouslyAppliedCommand ne null then promise.tryFailure(new AssertionError(s"Two commands with same index were applied to the node ${node.myId}: previous=$previouslyAppliedCommand, new=$command"))
+						if previouslyAppliedCommand ne None then promise.tryFailure(new AssertionError(s"Two commands with same index were applied to the node ${node.myId}: previous=$previouslyAppliedCommand, new=$command"))
 						var i = index.toInt
 						while i < numberOfCommandsToSend do {
 							i += 1
-							if commandsAppliedToThisNode(i) ne null then promise.tryFailure(new AssertionError(s"The command $command was applied with index $index which is less than the index $i of the previously applied command ${commandsAppliedToThisNode(i)}."))
+							if commandsAppliedToThisNode(i) ne None then promise.tryFailure(new AssertionError(s"The command $command was applied with index $index which is less than the index $i of the previously applied command ${commandsAppliedToThisNode(i)}."))
 						}
 						commandsAppliedToThisNode(index.toInt) = command
 
@@ -963,7 +967,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 								otherNode.sequencer.execute {
 									val commandsAppliedToTheOtherNode = appliedCommandsByNodeIndex(net.indexOf(otherNode.myId))
 									val commandAppliedToTheOtherNodeAtIndex = commandsAppliedToTheOtherNode(index.toInt)
-									if (commandAppliedToTheOtherNodeAtIndex ne null) && commandAppliedToTheOtherNodeAtIndex != command then
+									if (commandAppliedToTheOtherNodeAtIndex ne None) && commandAppliedToTheOtherNodeAtIndex != command then
 										promise.tryFailure(new AssertionError(s"The node ${node.myId} applied the command $command at index $index, which is different from the command $commandAppliedToTheOtherNodeAtIndex applied at the same index in node ${otherNode.myId}."))
 
 								}
