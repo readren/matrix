@@ -86,8 +86,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val randomnessSeed: Long = 0,
 		requestFailurePercentage: Int = 10,
 		responseFailurePercentage: Int = 10,
+		configChangeBeforeRequestDelivered_probability: Float = 0.05,
+		configChangeBeforeResponseDelivered_probability: Float = 0.05,
+		configChangeAfterResponseDelivered_probability: Float = 0.05,
 		stimulusSettlingTime: Int = 5
 	) {
+		val nodesIds: IndexedSeq[Id] = (0 until clusterSize).map(i => s"p-$i")
 
 		/** Threshold for the number of traveling messages enqueued before one is delivered, even if the [[stimulusSettlingTime]] has not yet elapsed.
 		 * When this threshold is reached, a single message is selected pseudo-randomly and delivered, allowing the system to progress without waiting for full settling.
@@ -136,7 +140,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		//// The following members are the infrastructure of the communication between nodes of this net.
+		//// The following members implement the communication between nodes of this net.
 
 		private type RequestId = (global: Int, channel: Int)
 
@@ -208,9 +212,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						val responseChannelIsFailing = responseChannel.isFailing
 						assert(requestChannelIsFailing == responseChannelIsFailing)
 
-						scribe.trace(s"$inquirerId >- $replierId: $requestId:$requestDescription as $inquirerRole while there were $numberOfTravelingMessages messages on the way")
+						scribe.trace(s"$inquirerId >- $replierId: $requestId:$requestDescription, sent as $inquirerRole, $numberOfTravelingMessages messages on the way")
 
-						// Determine the fate of all the stages of this RPC here, in the first stage.
+						// Determine the fate of this RPC before processing it.
 						val requestIsCursed = requestChannelIsFailing || responseChannelIsFailing || random.nextInt(100) < requestFailurePercentage
 						val responseIsCursed = requestIsCursed || random.nextInt(100) < responseFailurePercentage
 						if !requestChannelIsFailing && (requestIsCursed || responseIsCursed) then {
@@ -218,11 +222,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							requestChannel.markAsFailing(failureDurationSqrt)
 							responseChannel.markAsFailing(failureDurationSqrt)
 						}
+
+						// Determine the fate of configuration changes during the different phases of this RPC.
+						injectConfigurationNoise(configChangeBeforeRequestDelivered_probability)
+
+						// Perform the RPC
 						val replierNode = getNode(replierId)
 						val requestingDuty =
 							if requestIsCursed then {
 								netSequencer.Duty_mine[Unit] { () =>
 									covenant.fulfill((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId))()
+									injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
 								}
 							} else {
 								netSequencer.Duty_foreign(replierNode.sequencer) {
@@ -230,11 +240,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 										for reply <- call(replierNode).toDutyHardy yield reply -> nameOf(replierNode.participant.getBehaviorOrdinal)
 									}
 								}.map { case reply -> replierRole =>
-									scribe.trace(s"$inquirerId -> $replierId: $requestId:$requestDescription as $replierRole")
+									scribe.trace(s"$inquirerId -> $replierId: $requestId:$requestDescription, received as $replierRole")
 									val response =
 										if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
 										else reply
-									val respondingDuty = netSequencer.Duty_mine[Unit](() => covenant.fulfill((response, requestId))())
+									val respondingDuty = netSequencer.Duty_mine[Unit] { () =>
+										covenant.fulfill((response, requestId))()
+										injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
+									}
 									responseChannel.enqueue(respondingDuty)
 								}
 							}
@@ -259,7 +272,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 					netSequencer.Task_fromDuty(covenant.map {
 						case (response, requestId) =>
-							scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, leaving $numberOfTravelingMessages messages on the way")
+							// TODO consider moving this to the line after calling `covenant.fullfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
+							scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
 							response
 					})
 
@@ -283,14 +297,79 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 			alternatives(random.between(0, alternatives.size))
 		}
+
+		//// The following members correspond to the mechanism that produces configuration changes. ////
+
+		/** Counts how many times the [[TestClientCommand]] was sent. */
+		private var commandsSentByClients_count = 0
+		/** Counts how many times the [[injectConfigurationNoise]] method was invoked */
+		private var configNoiseInjection_count = 0
+		/** Counts how many times the [[injectConfigurationNoise]] method was invoked since the last [[TestClientCommand]] was sent. */
+		private var configNoiseInjectionsSinceLastClientCommand_count = 2 * clusterSize * clusterSize // Initialized with an estimation
+		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
+		val initialConfig: IArray[Boolean] = IArray.unsafeFromArray(Array.fill(clusterSize)(random.nextBoolean()))
+		private var lastProposedConfig: IArray[Boolean] = initialConfig
+
+
+		/** Should be called when the client simulator sends a command to a consensus-participant, before it is received. */
+		def onClientCommandSent(): Unit = {
+			numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = configNoiseInjectionsSinceLastClientCommand_count
+			configNoiseInjectionsSinceLastClientCommand_count = 0
+			commandsSentByClients_count += 1
+		}
+
+		private def injectConfigurationNoise(changeProbability: Float): Unit = {
+			assert(netSequencer.isInSequence)
+			determineNewConfig(changeProbability).foreach { newConfig =>
+				val configChangeRequestingTaskByNodeIndex =
+					for node <- nodeByIndex yield netSequencer.Task_foreign(node.sequencer)(
+						node.sequencer.Task_ownFlat(() =>
+							node.clusterParticipant.messagesListener.onConfigurationChangeRequest(configNoiseInjection_count.toString, newConfig)
+						)
+					)
+				for configChangeReplies <- netSequencer.Duty_sequenceTasksToArray(configChangeRequestingTaskByNodeIndex) yield {
+					if !configChangeReplies.exists(r => r.isSuccess && r.get) then scribe.debug(s"Net: the configuration change request #$configNoiseInjection_count was not applied: ${configChangeReplies.mkString("[", ", ", "]")}")
+				}
+			}
+		}
+
+		private def determineNewConfig(changeProbability: Float): Maybe[Set[Id]] = {
+			assert(netSequencer.isInSequence)
+			configNoiseInjection_count += 1
+			configNoiseInjectionsSinceLastClientCommand_count += 1
+			val numberOfConfigNoiseInjectionsPerClientCommand = configNoiseInjection_count / commandsSentByClients_count
+			val adjustedProbability = changeProbability / numberOfConfigNoiseInjectionsPerClientCommand
+			var atLeastOneToggle = false
+			val newConfig = IArray.unsafeFromArray(Array.tabulate[Boolean](clusterSize) { i =>
+				val isToggled = random.nextFloat() < adjustedProbability
+				atLeastOneToggle |= isToggled
+				lastProposedConfig(i) ^ isToggled
+			})
+			if atLeastOneToggle then {
+				lastProposedConfig = newConfig
+				Maybe.some(nodesIncludedIn(newConfig).toSet)
+			} else Maybe.empty
+		}
+
+		def nodesIncludedIn(config: IArray[Boolean]): Iterable[Id] = {
+			val includedNodes = Iterable.newBuilder[Id]
+			var nodeIndex = 0
+			while nodeIndex < clusterSize do {
+				if config(nodeIndex) then includedNodes.addOne(nodesIds(nodeIndex))
+				nodeIndex += 1
+			}
+			includedNodes.result()
+		}
 	}
 
 	/**
 	 * Simulates a client.
 	 * @param net The network to use.
-	 * @param initialReceiverIndex The initial receiver index. */
-	private class Client[N <: Net](id: String, val net: N, initialReceiverIndex: Int) {
-		private var receiverIndex: Int = initialReceiverIndex
+	 * @param startWithHighestPriorityParticipant determines from with side of the known participants queue to start the attempts to send commands. */
+	private class Client[N <: Net](clientId: String, val net: N, startWithHighestPriorityParticipant: Boolean) {
+		private var knownParticipants: IndexedSeq[Id] = IndexedSeq.from(net.nodesIncludedIn(net.initialConfig))
+		private var targetParticipant: Node = net.getNode(if startWithHighestPriorityParticipant then knownParticipants.head else knownParticipants.last)
+		private val alreadyTriedParticipants: mutable.Set[Id] = mutable.Set.empty
 
 		/**
 		 * Sends a command to a [[Node]] of the net.
@@ -298,46 +377,50 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * If the target [[Node]] responds with a [[RedirectTo]] the target [[Node]] is updated to the redirected [[Node]] and following commands are sent to the new target [[Node]].
 		 * If the target [[Node]] responds with an [[Unable]] the target [[Node]] is updated to the next [[Node]] of the [[Net]] and the command is retried to it.
 		 * If the target [[Node]] responds with a [[Processed]] the command is considered processed and the target [[Node]] is not updated.
-		 * @param command The command to send.
-		 * @param attemptFlag Whether this is the first attempt, a redirect, or a fallback.
+		 * @param commandPayload The payload of the command to send.
+		 * @param attemptFlag tells the participant that will receive the command whether this is the first attempt, a redirect, or a fallback.
 		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
-		def sendsCommand(command: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT, retriesCounter: Int = 0): net.netSequencer.Task[Boolean] = {
-			if net.clusterSize == 0 then return net.netSequencer.Task_successful(false)
-			if receiverIndex < 0 then receiverIndex = net.clusterSize - 1
-			val receiverNode = net.getNode(receiverIndex)
-			scribe.info(s"Client: About to send command:$command, attemptFlag:$attemptFlag, retriesCounter:$retriesCounter, to:${receiverNode.myId}")
+		def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Task[Boolean] = {
+			if knownParticipants.isEmpty then return net.netSequencer.Task_successful(false)
+			val receiverNode = targetParticipant
+			scribe.info(s"Client: Sent command:$commandPayload, attemptFlag:$attemptFlag, to:${receiverNode.myId}")
+			net.onClientCommandSent()
 
-			def retry(): receiverNode.sequencer.Task[Boolean] = {
-				receiverIndex -= 1
-				if retriesCounter > net.clusterSize then receiverNode.sequencer.Task_successful(false)
-				else sendsCommand(command, FALLBACK, retriesCounter + 1).onBehalfOf(receiverNode.sequencer)
+			def retry(): net.netSequencer.Task[Boolean] = {
+				alreadyTriedParticipants.addOne(targetParticipant.myId)
+				knownParticipants.find(p => !alreadyTriedParticipants.contains(p)).fold {
+					net.netSequencer.Task_successful(false)
+				} { chosen =>
+					targetParticipant = net.getNode(chosen)
+					sendsCommand(commandPayload, FALLBACK)
+				}
 			}
 
-			receiverNode.sequencer.Task_ownFlat { () =>
-				val receiverBehavior = receiverNode.participant.getBehaviorOrdinal
-				receiverNode.clusterParticipant.messagesListener.onCommandFromClient(TestClientCommand(command, id), attemptFlag)
-					.transformWith[Boolean] {
-						case Success(response) =>
-							response match {
-								case receiverNode.Processed(index, content) =>
-									scribe.info(s"Client: command `$command` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
-									receiverNode.sequencer.Task_successful(true)
-								case receiverNode.RedirectTo(leaderId) =>
-									scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$command` to the leader $leaderId.")
-									receiverIndex = net.indexOf(leaderId)
-									sendsCommand(command, REDIRECTED).onBehalfOf(receiverNode.sequencer)
-								case receiverNode.Unable(behaviorOrdinal, otherParticipants) =>
-									scribe.info(s"Client: the participant ${receiverNode.myId}(role:$receiverBehavior) is unable (retries=$retriesCounter) to process the command `$command`.")
-									retry()
-								case receiverNode.InconsistentState(m) =>
-									scribe.info(s"Client: the participant ${receiverNode.myId}(role:$receiverBehavior) internal state become inconsistent. Detected when the command `$command` was processed.")
-									throw new NotImplementedError()
-							}
-						case Failure(e) =>
-							scribe.info(s"Client: the participant ${receiverNode.myId} failed (retries=$retriesCounter) to respond to the command `$command`:", e)
+			net.netSequencer.Task_foreign(receiverNode.sequencer)(receiverNode.sequencer.Task_ownFlat { () =>
+				receiverNode.clusterParticipant.messagesListener.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
+			}).transformWith[Boolean] {
+				case Success(response) =>
+					response match {
+						case receiverNode.Processed(index, content) =>
+							scribe.info(s"Client: command `$commandPayload` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
+							alreadyTriedParticipants.clear()
+							net.netSequencer.Task_successful(true)
+						case receiverNode.RedirectTo(leaderId) =>
+							scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
+							targetParticipant = net.getNode(leaderId)
+							sendsCommand(commandPayload, REDIRECTED)
+						case receiverNode.Unable(behaviorOrdinal, otherParticipants) =>
+							scribe.info(s"Client: the participant ${receiverNode.myId} is unable to process the command `$commandPayload`.")
+							knownParticipants = otherParticipants.appended(targetParticipant.myId)
 							retry()
+						case receiverNode.InconsistentState(m) =>
+							scribe.info(s"Client: the participant ${receiverNode.myId} internal state become inconsistent. Detected when the command `$commandPayload` was processed.")
+							throw new NotImplementedError()
 					}
-			}.onBehalfOf(net.netSequencer)
+				case Failure(e) =>
+					scribe.info(s"Client: the participant ${receiverNode.myId} failed to respond to the command `$commandPayload`:", e)
+					retry()
+			}
 		}
 
 		def sendsCommandsUntil(predicate: (commandIndex: Int) => Boolean, maxRetries: Int = 9): net.netSequencer.Task[Unit] = {
@@ -456,12 +539,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				messagesListener = listener
 			}
 
-			override def informConfigurationChange(newParticipants: Set[ParticipantId]): Unit = ()
+			override def onConfigurationChanged(requestId: ConfigChangeRequestId, includedParticipants: Set[ParticipantId]): Unit = {
+				scribe.trace(s"$boundParticipantId: onConfigurationChanged called with requestId: $requestId, participants: ${includedParticipants.mkString("[", ", ", "]")}")
+			}
 
 			extension (replierId: ParticipantId) {
 
 
-				def howAreYou(inquirerTerm: Term): sequencer.Task[StateInfo] = {
+				override def howAreYou(inquirerTerm: Term): sequencer.Task[StateInfo] = {
 					boundParticipantId.rpc[StateInfo](
 						replierId,
 						s"HowAreYou(inquirerTerm:$inquirerTerm)"
@@ -470,7 +555,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
+				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
 					boundParticipantId.rpc[Vote[ParticipantId]](
 						replierId,
 						s"ChooseALeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
@@ -479,7 +564,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
+				override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
 					boundParticipantId.rpc[AppendResult](
 						replierId,
 						s"AppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm;$prevLogTerm, records:$records, leaderCommit:$leaderCommit, termAtLeaderCommit:$termAtLeaderCommit)"
@@ -603,26 +688,21 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
 
 			override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = scribe.info(s"$myId: commitIndex changed from $previous to $current")
-		}
-	}
 
-	/**
-	 * Helper to create participant ids.
-	 */
-	private def createIds(size: Int): IndexedSeq[Id] = {
-		(0 until size).map(i => s"p-$i")
+			override def onConfigurationChangeApplied(currentBehavior: BehaviorOrdinal, currentTerm: Term, change: ConfigurationChange): Unit = scribe.info(s"$myId: configuration change applied: currentBehavior=$currentBehavior, currentTerm=$currentTerm, configChange=$change")
+		}
 	}
 
 
 	/** Helper to create and initialize [[Node]]s.
 	 * @param net the [[Net]] where the created [[Node]] instances will be added.
-	 * @param clusterSize the number of [[Node]]s to create.
 	 * @param weakReferencesHolder a collection to which the created instances of [[NotificationListener]] are added in order to avoid being garbage-collected.
 	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor. */
-	private def createsAndInitializesNodes[N <: Net](net: N, clusterSize: Int, weakReferencesHolder: mutable.Buffer[AnyRef])(notificationListenerBuilder: (node: Node) => node.NotificationListener): Unit = {
-		val ids = createIds(clusterSize)
-		for id <- ids do {
-			val node = Node(id, ids.toSet, net)
+	private def createsAndInitializesNodes[N <: Net](net: N, weakReferencesHolder: mutable.Buffer[AnyRef])(notificationListenerBuilder: (node: Node) => node.NotificationListener): Unit = {
+
+		val initialParticipants = net.nodesIncludedIn(net.initialConfig).toSet
+		for id <- net.nodesIds do {
+			val node = Node(id, initialParticipants, net)
 			net.addNode(node)
 			val nl = notificationListenerBuilder(node)
 			weakReferencesHolder.addOne(nl)
@@ -638,7 +718,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		net.netSequencer.Duty_sequenceToArray(starters)
 	}
 
-	private def testAllInvariants(net: Net, receiverIndex: Int, numberOfCommandsToSend: Int = 20): Future[Unit] = {
+	private def testAllInvariants(net: Net, startWithHighestPriorityParticipant: Boolean, numberOfCommandsToSend: Int = 20): Future[Unit] = {
 		val promise = Promise[Unit]()
 		val clusterSize = net.clusterSize
 		val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
@@ -646,7 +726,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val commitedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
 		val appliedCommandsByNodeIndex: Array[mutable.LongMap[TestClientCommand | None.type]] = Array.fill(clusterSize)(mutable.LongMap.withDefault(_ => None))
 
-		createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+		createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 			node.statesChangesListener = new NodeStateChangesListener() {
 				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
 					// "Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3"
@@ -732,7 +812,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		val checks = for {
 			_ <- startsAllNodes(net)
-			client = Client[net.type]("A", net, receiverIndex)
+			client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 			_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 				.toDuty(promise.tryFailure)
 		} yield promise.tryComplete(Success(()))
@@ -741,41 +821,40 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	}
 
 	test("special sample") {
-		val receiverIndex = 1
-		val net = new Net(clusterSize = 20, randomnessSeed = 0, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 1)
-		scribe.info(s"Begin: clusterSize=${net.clusterSize}, receiverIndex=$receiverIndex, netRandomnessSeed=${net.randomnessSeed}")
+		val startWithHighestPriorityParticipant = false
+		val net = new Net(clusterSize = 5, randomnessSeed = -4515092198012648896L, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 5)
+		scribe.info(s"Begin: clusterSize=${net.clusterSize}, initialConfig=${net.initialConfig.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=${net.randomnessSeed}")
 
-		testAllInvariants(net, receiverIndex, numberOfCommandsToSend = 10)
+		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend = 10)
 	}
 
 	test("All invariants must comply") {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
-			Gen.choose(2, 7).flatMap(n => Gen.choose(0, n - 1).map(m => (n, m))),
+			Gen.choose(2, 7),
+			Gen.oneOf(true, false),
 			Gen.long
-		) { (t, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = t
-			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
-			val net = new Net(clusterSize, netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 5)
-			testAllInvariants(net, receiverIndex, numberOfCommandsToSend)
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 5)
+			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfig.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
+			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
 		}
 	}
 
 	test("Election Safety: at most one leader can be elected in a given term. §5.2".ignore) {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
-			Gen.choose(2, 5).flatMap(n => Gen.choose(0, n - 1).map(m => (n, m))),
+			Gen.choose(2, 5),
+			Gen.oneOf(true, false),
 			Gen.long
-		) { (t, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = t
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
-
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
 			val promise = Promise[Unit]()
-			val net = new Net(clusterSize, netRandomnessSeed)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfig.mkString("[", ", ", "]")} , startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 			val leaderNodeByTerm: mutable.Buffer[Node] = mutable.Buffer.empty
 
-			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
 						if leaderNodeByTerm.size < term then leaderNodeByTerm.addOne(node)
@@ -786,7 +865,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			val checks = for {
 				_ <- startsAllNodes(net)
-				client = Client[net.type]("A", net, receiverIndex)
+				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 					.toDuty(promise.tryFailure)
 			} yield promise.tryComplete(Success(()))
@@ -798,17 +877,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3".ignore) {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
-			Gen.long,
-		) { (clusterConf, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = clusterConf
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
+			Gen.choose(2, 5),
+			Gen.oneOf(true, false),
+			Gen.long
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 
 			val promise = Promise[Unit]()
-			val net = new Net(clusterSize, netRandomnessSeed)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
 						if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
@@ -819,7 +898,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			val checks: net.netSequencer.Task[Unit] = for {
 				_ <- startsAllNodes(net).toTask
-				client = Client[net.type]("A", net, receiverIndex)
+				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
 
@@ -832,17 +911,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		inline val numberOfCommandsToSend = 10
 
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
-			Gen.long,
-		) { (clusterConf, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = clusterConf
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
+			Gen.choose(2, 5),
+			Gen.oneOf(true, false),
+			Gen.long
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 
 			val promise = Promise[Unit]()
-			val net = new Net(clusterSize, netRandomnessSeed)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 
-			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 					override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
 						assert(record.asInstanceOf[CommandRecord[TestClientCommand]].command.value == index) // TODO remove or adapt to work when snapshots and configurations changes are added.
@@ -868,7 +947,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			val checks: net.netSequencer.Task[Unit] = for {
 				_ <- startsAllNodes(net).toTask
-				client = Client[net.type]("A", net, receiverIndex)
+				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
 
@@ -881,18 +960,18 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		inline val numberOfCommandsToSend = 10
 
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
-			Gen.long,
-		) { (clusterConf, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = clusterConf
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
+			Gen.choose(2, 5),
+			Gen.oneOf(true, false),
+			Gen.long
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 
 			val promise = Promise[Unit]()
-			val net = new Net(clusterSize, netRandomnessSeed)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 			val commitedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
 
-			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = {
 						val commitedRecordsMemory = commitedRecordsByNodeIndex(net.indexOf(node.myId))
@@ -922,7 +1001,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			val checks: net.netSequencer.Task[Unit] = for {
 				_ <- startsAllNodes(net).toTask
-				client = Client[net.type]("A", net, receiverIndex)
+				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
 
@@ -935,18 +1014,18 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		inline val numberOfCommandsToSend = 10
 
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 5).flatMap(clusterSize => Gen.choose(0, clusterSize - 1).map(receiverIndex => (clusterSize, receiverIndex))),
+			Gen.choose(2, 5),
+			Gen.oneOf(true, false),
 			Gen.long
-		) { (clusterConf, netRandomnessSeed) =>
-			val (clusterSize, receiverIndex) = clusterConf
-			scribe.info(s"\nBegin: clusterSize=$clusterSize, receiverIndex=$receiverIndex, netRandomnessSeed=$netRandomnessSeed")
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			scribe.info(s"\nBegin: clusterSize=$clusterSize, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 
 			val promise = Promise[Unit]()
-			val net = new Net(clusterSize, netRandomnessSeed)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 			val appliedCommandsByNodeIndex: Array[mutable.LongMap[TestClientCommand | None.type]] = Array.fill(clusterSize)(mutable.LongMap.withDefault(_ => None))
 
-			createsAndInitializesNodes(net, clusterSize, weakReferencesHolder) { node =>
+			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
 
 					override def onCommandApplied(command: node.ClientCommand, index: RecordIndex): Unit = {
@@ -981,7 +1060,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			val checks: net.netSequencer.Task[Unit] = for {
 				_ <- startsAllNodes(net).toTask
-				client = Client[net.type]("A", net, receiverIndex)
+				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
 

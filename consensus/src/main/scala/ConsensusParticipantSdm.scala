@@ -23,6 +23,8 @@ object ConsensusParticipantSdm {
 	 * Zero means "before first election". */
 	final type Term = Int
 
+	final type ConfigChangeRequestId = String
+
 	/** The type of behavior ids. */
 	final type BehaviorOrdinal = Byte
 	final val STOPPED: BehaviorOrdinal = 0
@@ -99,9 +101,9 @@ object ConsensusParticipantSdm {
 
 	sealed trait ConfigurationChange extends Record
 
-	private[consensus] case class ConfigurationChangeOldNew[P <: AnyRef](override val term: Term, oldParticipants: Set[P], newParticipants: Set[P]) extends ConfigurationChange
+	private[consensus] case class ConfigurationChangeOldNew[P <: AnyRef](override val term: Term, requestId: ConfigChangeRequestId, oldParticipants: Set[P], newParticipants: Set[P]) extends ConfigurationChange
 
-	private[consensus] case class ConfigurationChangeNew[P <: AnyRef](override val term: Term, newParticipants: Set[P]) extends ConfigurationChange
+	private[consensus] case class ConfigurationChangeNew[P <: AnyRef](override val term: Term, requestId: ConfigChangeRequestId, newParticipants: Set[P]) extends ConfigurationChange
 
 }
 
@@ -276,13 +278,14 @@ trait ConsensusParticipantSdm { thisModule =>
 		 */
 		def getInitialParticipants: Set[ParticipantId]
 
-		/** Notifies this [[ClusterParticipant]] that the [[ConsensusParticipant]] now expects connectivity with the given set of participants.
+		/** Called by the bounded [[ConsensusParticipant]] to notify that its configuration has changed and now expects connectivity with the given set of participants.
 		 *
 		 * This method is invoked upon application of a [[ConfigurationChange]]-typed [[Record]].
+		 * A call to [[MessagesListener.onConfigurationChangeRequest]] causes two [[ConfigurationChange]] records to be applied and, therefore, two calls tho this method per involved [[ConsensusParticipant]] service.   
 		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the configuration has not changed.
-		 * @param newParticipants The set of participants that the consensus layer expects to be reachable.
+		 * @param includedParticipants The set of participants that the consensus layer expects to be reachable.
 		 */
-		def informConfigurationChange(newParticipants: Set[ParticipantId]): Unit
+		def onConfigurationChanged(requestId: ConfigChangeRequestId, includedParticipants: Set[ParticipantId]): Unit
 
 		/** Defines the listener that a [[ConsensusParticipant]] creates and registers with its bound [[ClusterParticipant]].
 		 *
@@ -342,12 +345,19 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult]
 
-			/** This method is invoked by this [[ClusterParticipant]] service when the set of participants that conform the cluster changes.
-			 * @param newParticipants the identifiers of the new set of consensus participants.
+			/** This [[ClusterParticipant]] should call this method whenever the set of consensus-participants has forcefully changed (i.e: a cluster-member included in the current consensus-participants-set went down) or is about to change (i.e: a node intended to be part of consensus-participants-set joined the cluster, or is going to leave the cluster for maintenance).
+			 * To improve availability during planned cluster-membership transitions, the manager of the planed change should do the following before proceeding with the change:
+			 *		1 call this method on every consensus-participant service,
+			 *		2 wait until either:
+			 *			- the returned task yields true for any of the consensus-participants,
+			 *			- or the [[onConfigurationChanged]] is called in any of the consensus-participants.
+			 *
+			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onConfigurationChanged]] method of each of the [[ClusterParticipant]] instances bounded to the involved [[ConsensusParticipant]] services.  	
+			 * @param newParticipants the identifiers of the participants that are going to seek consensus from now on.
 			 * @return a [[sequencer.Task]] that yields true/false if the [[ConsensusParticipant]] is/isn't either:
-			 *         - currently the leader or a follower and already has the given configuration;
+			 *         - currently the leader or a follower that already has the given configuration;
 			 *         - or currently the leader and was able to commit the joint configuration change. */
-			def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean]
+			def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean]
 		}
 
 		/**
@@ -378,7 +388,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			/**
 			 * Request the destination participant to append records.
 			 * The implementation should make, somehow, the destination participant's [[MessagesListener.onAppendRecords]] to be called with the same parameter values, and return what it returns.
-			 * Called within the [[sequencer]] thread.
+			 *
+			 * This method is called within the [[sequencer]].
 			 * @param inquirerTerm The term of the participant that is asking.
 			 * @param prevLogIndex the [[RecordIndex]] of the [[Record]] after which the records should be appended.
 			 * @param prevLogTerm the expected [[Term]] of the [[Record]] at `prevLogIndex`.
@@ -479,6 +490,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		def onLeft(left: BehaviorOrdinal, term: Term): Unit
 
 		def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit
+
+		def onConfigurationChangeApplied(currentBehavior: BehaviorOrdinal, currentTerm: Term, cc: ConfigurationChange): Unit
 	}
 
 	/**
@@ -503,6 +516,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
 
 		override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = ()
+
+		override def onConfigurationChangeApplied(currentBehavior: BehaviorOrdinal, currentTerm: Term, cc: ConfigurationChange): Unit = ()
 	}
 
 
@@ -682,13 +697,14 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		private def updateStateKnowingMyVote(myVote: Vote[ParticipantId]): sequencer.Duty[Unit] = {
-			assert(sequencer.isInSequence)
+			assert(isInSequence)
 			for {
 				_ <- startingCompletedCovenant
 				_ <- {
 					if currentBehavior.ordinal == STOPPED then sequencer.Duty_unit
 					else {
 						if myVote.term > currentTerm then {
+							assert(isInSequence) // TODO delete line
 							currentTerm = myVote.term
 						}
 
@@ -774,6 +790,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): StateInfo = {
 				assert(isInSequence)
 				if inquirerTerm > currentTerm && ordinal >= ISOLATED then {
+					assert(isInSequence) // TODO delete line
 					currentTerm = inquirerTerm
 					// Enqueue the execution of the update-process. Note that it will be executed later and therefore will not affect the returned [[StateInfo]] (which may be outdated).
 					updateState().triggerAndForget(true)
@@ -844,12 +861,12 @@ trait ConsensusParticipantSdm { thisModule =>
 						updateState(inquirerId, inquirerInfo).triggerAndForget(true) // TODO: analyze what happens if this updateState causes to become the leader, preferably with a test.
 					}
 
-					assert(inquirerTerm == currentTerm)
+					assert(inquirerTerm == currentTerm, s"$inquirerTerm == $currentTerm")
 					// Append any new entry not already in the log resolving conflicts.
 					val lastAppendedRecordIndex = workspace.appendResolvingConflicts(records, prevRecordIndex + 1)
 
 					// Apply configuration changes if any.					
-					applyConfigChangesIfAny(records)
+					applyLastConfigChangeLocallyIfAny(records)
 
 					// Update the commitIndex
 					val previousCommitIndex = commitIndex
@@ -867,32 +884,33 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			/** Applies the most recent [[ConfigurationChange]]-typed [[Record]] from the given sequence to update the current configuration.
+			/** Finds the last [[ConfigurationChange]]-typed [[Record]] in the given sequence and, if some is found, applies it locally.
 			 *
-			 * Scans the records in reverse order and applies the first encountered configuration change.
+			 * Scans the records in reverse order and locally applies the first encountered configuration change.
 			 */
-			private def applyConfigChangesIfAny(records: GenIndexedSeq[Record]): Unit = {
+			private def applyLastConfigChangeLocallyIfAny(records: GenIndexedSeq[Record]): Unit = {
 				var index = records.size
 				while index > 0 do {
 					index -= 1
 					records(index) match {
 						case cc: ConfigurationChange =>
-							applyConfigChange(cc)
+							applyConfigChangeLocally(cc)
 							return
 						case _ => // do nothing	
 					}
 				}
 			}
 
-			protected def applyConfigChange(configChange: ConfigurationChange): Unit = {
+			protected def applyConfigChangeLocally(configChange: ConfigurationChange): Unit = {
 				configChange match {
 					case cc: ConfigurationChangeOldNew[ParticipantId] @unchecked =>
 						currentConfig = JointConf(IArray.unsafeFromArray(cc.oldParticipants.toArray.sorted), cc.newParticipants)
-						cluster.informConfigurationChange(cc.oldParticipants.union(cc.newParticipants))
+						cluster.onConfigurationChanged(cc.requestId, cc.oldParticipants.union(cc.newParticipants))
 					case cc: ConfigurationChangeNew[ParticipantId] @unchecked =>
 						currentConfig = RegularConf(IArray.unsafeFromArray(cc.newParticipants.toArray.sorted))
-						cluster.informConfigurationChange(cc.newParticipants)
+						cluster.onConfigurationChanged(cc.requestId, cc.newParticipants)
 				}
+				notifyListeners(_.onConfigurationChangeApplied(currentBehavior.ordinal, currentTerm, configChange))
 			}
 
 			/** Applies commited [[CommandRecord]]s decoupled. */
@@ -959,7 +977,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] =
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] =
 				sequencer.Task_false
 
 		}
@@ -983,9 +1001,10 @@ trait ConsensusParticipantSdm { thisModule =>
 						// TODO consider the stateMachineNeedsRestart flag
 						if loadedWorkspace.isBrandNew then {
 							loadedWorkspace.setCurrentTerm(0)
-							loadedWorkspace.appendRecord(new ConfigurationChangeNew[ParticipantId](0, cluster.getInitialParticipants))
+							loadedWorkspace.appendRecord(new ConfigurationChangeNew[ParticipantId](0, "Initial-Config", cluster.getInitialParticipants))
 						}
 						workspace = loadedWorkspace
+						assert(isInSequence) // TODO delete line
 						currentTerm = loadedWorkspace.getCurrentTerm
 						currentConfig = loadedWorkspace.getLastConfigurationChange match {
 							case cc: ConfigurationChangeNew[ParticipantId] @unchecked =>
@@ -1018,11 +1037,11 @@ trait ConsensusParticipantSdm { thisModule =>
 				sequencer.Task_successful(Unable(ordinal, otherParticipants))
 			}
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
 				assert(isInSequence)
 				for {
 					_ <- startingCompletedCovenant.toTask
-					isAble <- currentBehavior.onConfigurationChangeRequest(newParticipants)
+					isAble <- currentBehavior.onConfigurationChangeRequest(requestId, newParticipants)
 				} yield isAble
 			}
 		}
@@ -1056,11 +1075,11 @@ trait ConsensusParticipantSdm { thisModule =>
 				updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
 				for {
 					_ <- updateState().toTask
 					isAble <-
-						if currentBehavior.ordinal == LEADER then currentBehavior.onConfigurationChangeRequest(newParticipants)
+						if currentBehavior.ordinal == LEADER then currentBehavior.onConfigurationChangeRequest(requestId, newParticipants)
 						else if currentBehavior.ordinal == FOLLOWER && currentConfig.participants.toSet == newParticipants then sequencer.Task_true
 						else sequencer.Task_false
 				} yield isAble
@@ -1092,8 +1111,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] =
-				Isolated.onConfigurationChangeRequest(newParticipants)
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] =
+				Isolated.onConfigurationChangeRequest(requestId, newParticipants)
 		}
 
 		/**
@@ -1116,8 +1135,8 @@ trait ConsensusParticipantSdm { thisModule =>
 				else updatesStateAndThenCallsOnCommandFromClient(command)
 			}
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
-				Isolated.onConfigurationChangeRequest(newParticipants)
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
+				Isolated.onConfigurationChangeRequest(requestId, newParticipants)
 			}
 		}
 
@@ -1156,7 +1175,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				// If the last configuration change record is to a joint one, start the second phase of the configuration change.
 				workspace.getLastConfigurationChange match {
 					case jointConf: ConfigurationChangeOldNew[ParticipantId] @unchecked =>
-						startConfigChangeSecondPhase(jointConf.newParticipants).trigger(true) {
+						startConfigChangeSecondPhase(jointConf.requestId, jointConf.newParticipants).trigger(true) {
 							case Success(isReplicated) =>
 								if !isReplicated && currentBehavior.ordinal > ISOLATED then become(Isolated)
 							case Failure(e) =>
@@ -1174,14 +1193,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 
-			override def onConfigurationChangeRequest(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
+			override def onConfigurationChangeRequest(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
 				if newParticipants == currentConfig.participants.toSet then return sequencer.Task_true
 
 				// start the first phase of the configuration change
-				val ccOldNew = new ConfigurationChangeOldNew[ParticipantId](currentTerm, currentParticipants.toSet, newParticipants)
+				val ccOldNew = new ConfigurationChangeOldNew[ParticipantId](currentTerm, requestId, currentParticipants.toSet, newParticipants)
 				workspace.appendRecord(ccOldNew)
 
-				applyConfigChange(ccOldNew)
+				applyConfigChangeLocally(ccOldNew)
 
 				for {
 					sufficientOthersUpdated <- attemptToUpdateOtherParticipantsLogs().toTask
@@ -1191,7 +1210,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							for {
 								_ <- saveWorkspace()
 								_ <- {
-									if sufficientOthersUpdated && (currentBehavior eq this) then startConfigChangeSecondPhase(newParticipants)
+									if sufficientOthersUpdated && (currentBehavior eq this) then startConfigChangeSecondPhase(requestId, newParticipants)
 									else sequencer.Task_false
 								}
 							} yield ()
@@ -1203,10 +1222,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Starts the second phase of a configuration change.
 			 * @param newParticipants the identifiers of the participants of the new configuration.
 			 * @return  a [[sequencer.Task]] that yields true/false if the [[ConfigurationChangeNew]] [[Record]] was/wasn't commited (replicated to a majority of the given participants). */
-			private def startConfigChangeSecondPhase(newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
-				val ccNew = new ConfigurationChangeNew[ParticipantId](currentTerm, newParticipants)
+			private def startConfigChangeSecondPhase(requestId: ConfigChangeRequestId, newParticipants: Set[ParticipantId]): sequencer.Task[Boolean] = {
+				val ccNew = new ConfigurationChangeNew[ParticipantId](currentTerm, requestId, newParticipants)
 				workspace.appendRecord(ccNew)
-				applyConfigChange(ccNew)
+				applyConfigChangeLocally(ccNew)
 
 				for {
 					sufficientOthersUpdated <- attemptToUpdateOtherParticipantsLogs().toTask
@@ -1218,37 +1237,52 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
+			private val lastResponseCommitmentByClientId: mutable.Map[ClientId, sequencer.Commitment[ResponseToClient]] = mutable.Map.emtpy
+
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
 
 				val clientId = clientIdOf(command)
 				val indexOfLastAppendedCommandFromClient = workspace.indexOfLastAppendedCommandFrom(clientId)
 
-				if indexOfLastAppendedCommandFromClient == 0 then acceptNewCommand(command)
+				// I this is the first command received from the client, proceed normally (append, replicate, apply)
+				if indexOfLastAppendedCommandFromClient == 0 then acceptNewCommand(clientId, command)
+				// else, check if the command was received before:
 				else {
+					// @formatter:off
 					workspace.getRecordAt(indexOfLastAppendedCommandFromClient) match {
-						case CommandRecord[ClientCommand@unchecked] (term, lastClientCommand) =>
-					if clientCommandOrdering.gt (command, lastClientCommand) then acceptNewCommand (command)
-					else {
-						// Obtain the response applying the command again, assuming the state-machine is idempotent.
-					for smr <- machine.appliesClientCommand (indexOfLastAppendedCommandFromClient, command)
-					yield Processed (indexOfLastAppendedCommandFromClient, smr)
-					}
+						case CommandRecord[ClientCommand@unchecked](term, lastClientCommand) =>
+							val comparison = clientCommandOrdering.compare(command, lastClientCommand)
+							// if the command is newer than the last received from the same client, proceed normally (append, replicate, apply).
+							if comparison > 0 then acceptNewCommand(clientId, command)
+							// If the command was committed — and thus already applied — simply query the state machine for the result it produced during application and return that same result again, assuming the state-machine is idempotent
+							else if indexOfLastAppendedCommandFromClient <= commitIndex then for smr <- machine.appliesClientCommand(indexOfLastAppendedCommandFromClient, command) yield Processed(indexOfLastAppendedCommandFromClient, smr)
+							// if the command wasn't commited and is the same as the last received from the same client, then:
+							else if comparison == 0 then {
+								// If the previous call with this command was received during the current term but was not commited, then another call of this method with the same arguments is in progress.
+								if term == currentTerm then lastResponseCommitmentByClientId(clientId)
+								else ???
+							} else ???
 
 						case _ =>
 							sequencer.Task_successful(InconsistentState(s"For client $clientId, the last known log-entry index ($indexOfLastAppendedCommandFromClient) does not point to a record of the expected type."))
 					}
+					// @formatter:on
 				}
 			}
 
-			/** TODO Analyze the alternative of returning a Duty that yields a variant of [[Unable]] that details the failure when something fails. */ 
-			private def acceptNewCommand(command: ClientCommand): sequencer.Task[ResponseToClient] = {
+
+			/** TODO Analyze the alternative of returning a Duty that yields a variant of [[Unable]] that details the failure when something fails. */
+			private def acceptNewCommand(clientId: ClientId, command: ClientCommand): sequencer.Task[ResponseToClient] = {
 				// append the command to the log buffer
 				val commandRecord = CommandRecord(currentTerm, command)
 				val recordIndex = workspace.firstEmptyRecordIndex
 				workspace.appendRecord(commandRecord)
 
-				for {
+				val responseCommitment = sequencer.Commitment[ResponseToClient]()
+				lastResponseCommitmentByClientId.update(clientId, responseCommitment)
+
+				val replicatesThenSavesThenApplies = for {
 					sufficientOthersUpdated <- attemptToUpdateOtherParticipantsLogs().toTask
 					_ <- saveWorkspace()
 					rtc <- {
@@ -1266,6 +1300,8 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}: sequencer.Task[ResponseToClient]
 				} yield rtc
+
+				responseCommitment.completeWith(replicatesThenSavesThenApplies, true)()
 			}
 
 			/**
@@ -1369,6 +1405,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						// If the term (according to the target) is greater than the current term (according to this participant), then the leader has changed. So:
 						else if appendResult.term > currentTerm then {
 							// update the current term and start the state-update process
+							assert(isInSequence) // TODO delete line
 							currentTerm = appendResult.term
 							updateState().triggerAndForget(true)
 							// Yield a successful result to avoid the retry loop below.
@@ -1502,6 +1539,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				var votesMatchingMyVoteCount = 1 // includes my vote
 				for case Success(replierVote) <- votesFromOthers do {
 					if replierVote.term > currentTerm then {
+						assert(isInSequence) // TODO delete line
 						currentTerm = replierVote.term
 						workspace.setCurrentTerm(currentTerm)
 						myVoteIsStale = true
@@ -1628,6 +1666,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								vote = s.value
 								// if the term is stale then: update it, clear the counters, and break both loops.
 								if vote.term > currentTerm then {
+									assert(isInSequence) // TODO delete line
 									currentTerm = vote.term
 									oldParticipantsVotesMatchingMyVote = 0
 									newParticipantsVotesMatchingMyVote = 0
