@@ -1,7 +1,7 @@
 package readren.sequencer
 
 import readren.common.{Maybe, castTo, deriveToString}
-import Doer.{successUnit, successTrue, successFalse}
+import Doer.{successFalse, successTrue, successUnit}
 
 import scala.annotation.{tailrec, threadUnsafe}
 import scala.collection.IterableFactory
@@ -52,7 +52,7 @@ abstract class AbstractDoer extends Doer
  * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
  * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the duty will never complete. The same occurs with all routines received by [[Duty]] operations. This is one of the main differences with [[Task]] operation.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
- * @define isWithinDoSiThEx indicates whether the caller is certain that this method is being executed within the $DoSiThEx. If there is no such certainty, the caller should set this parameter to `false` (or don't specify a value). This flag is useful for those [[Task]]s whose first action can or must be executed in the DoSiThEx, as it informs them that they can immediately execute said action synchronously. This method is thread-safe when this parameter value is false.
+ * @define isWithinDoSiThEx indicates whether the call to this method is within this [[Doer]]'s sequential executor. If there is no such certainty the call site should either, not specify a value in order to use the default (which is the result of [[Doer.isInSequence]]), or specify `false` to force deferred execution.
  */
 trait Doer { thisDoer =>
 
@@ -102,7 +102,7 @@ trait Doer { thisDoer =>
 	private[sequencer] inline def reportFailurePortal(cause: Throwable): Unit = reportFailure(cause)
 
 	/**
-	 * Queues the execution of the specified procedure in the task-queue of this $DoSiThEx. See [[Doer.executeSequentially]]
+	 * Queues an execution of the specified procedure in the task-queue of this $DoSiThEx. See [[Doer.executeSequentially]]
 	 * If the call is executed by the DoSiThEx the [[Runnable]]'s execution will not start until the DoSiThEx completes its current execution and gets free to start a new one.
 	 *
 	 * All the deferred actions preformed by the [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
@@ -151,8 +151,8 @@ trait Doer { thisDoer =>
 	 * While path-dependent type checking is valuable for enforcing this contract, it has a drawback: the compiler's type-path checks are overly strict, requiring compatible singleton types for references, whereas we only need to verify that the [[Duty]] instances correspond to the same [[Doer]].
 	 * As a result, the compiler may flag type errors in cases where the contract is not violated, which is undesirable.
 	 * The [[castTypePath()]] method mitigates these false positives.
-	 * 
-	 * CAUTION: Unlike [[Task]], [[Duty]] does NOT support failures. And unlike [[Task]], the call to routines received by its operations is not guarded with a try-catch. Therefore, unlike [[Task]], any unhandled exception thrown during the execution of a [[Duty]] will break the expected flow and the duty will never complete.
+	 *
+	 * CAUTION: Unlike [[Task]], [[Duty]] does NOT support failures. And unlike [[Task]], the invocation of function operands received by its operations is not guarded with a try-catch. Therefore, unlike [[Task]], any unhandled exception thrown during an execution of a [[Duty]] will break the expected flow and the duty will never complete.
 	 * It is recommended to use [[Task]] instead of [[Duty]] unless efficiency is a concern.
 	 *
 	 * @tparam A the type of result obtained when executing this duty.
@@ -187,10 +187,10 @@ trait Doer { thisDoer =>
 		private[sequencer] inline final def engagePortal(onComplete: A => Unit): Unit = engage(onComplete)
 
 		/**
-		 * Triggers the execution of this [[Duty]].
+		 * Triggers an execution of this [[Duty]].
 		 *
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onComplete called when the execution of this duty completes.
+		 * @param onComplete called when the triggered execution completes.
 		 * Must not throw non-fatal exceptions: `onComplete` must either terminate normally or fatally, but never with a non-fatal exception.
 		 * Note that if it terminates abruptly the `onComplete` will never be called.
 		 * $isExecutedByDoSiThEx
@@ -199,7 +199,7 @@ trait Doer { thisDoer =>
 			${ DoerMacros.triggerImpl('isWithinDoSiThEx, 'thisDoer, 'thisDuty, 'onComplete) }
 		}
 
-		/** Triggers the execution of this [[Task]] ignoring the result.
+		/** Triggers an execution of this [[Task]] ignoring the result.
 		 *
 		 * $threadSafe
 		 *
@@ -208,9 +208,8 @@ trait Doer { thisDoer =>
 		inline final def triggerAndForget(isWithinDoSiThEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSiThEx)(_ => {})
 
-
 		/**
-		 * Triggers this [[Duty]] and processes its result once it is completed for its side effects.
+		 * Triggers and execution of this [[Duty]] and processes its result once it is completed for its side effects.
 		 * Is equivalent to {{{trigger(isInSequence)(consumer)}}}
 		 * @param consumer called with this task result when it completes. $isExecutedByDoSiThEx $notGuarded
 		 */
@@ -219,7 +218,7 @@ trait Doer { thisDoer =>
 		/**
 		 * Transforms this [[Duty]] by applying the given function to the result.
 		 * ===Detailed behavior===
-		 * Creates a [[Duty]] that, when executed, will trigger the execution of this duty and apply `f` to its result.
+		 * Creates a [[Duty]] that, when executed, will trigger an execution of this duty and apply `f` to its result.
 		 *
 		 * $threadSafe
 		 *
@@ -235,8 +234,8 @@ trait Doer { thisDoer =>
 		 * Composes this [[Duty]] with a second one that is built from the result of this one.
 		 * ===Detailed behavior===
 		 * Creates a [[Duty]] that, when executed, it will:
-		 *		- Trigger the execution of this task and applies the `taskBBuilder` function to its result.
-		 *		- Then triggers the execution of the built duty and completes with its result.
+		 *		- Trigger an execution of this duty and applies the `taskBBuilder` function to its result.
+		 *		- Then triggers an execution of the built duty and completes with its result.
 		 *
 		 * $threadSafe
 		 *
@@ -254,7 +253,7 @@ trait Doer { thisDoer =>
 		 * It's worth mentioning that the side-effecting function is executed before triggering the next duty in the chain.
 		 * ===Detailed description===
 		 * Returns a duty that, when executed, it will:
-		 *		- trigger the execution of this duty,
+		 *		- trigger an execution of this duty,
 		 *		- then apply the received function to this duty's result,
 		 *		- and finally complete with the result of this task (ignoring the functions result).
 		 *
@@ -267,12 +266,12 @@ trait Doer { thisDoer =>
 		/** Wraps this [[Duty]] into a [[Task]].
 		 * Together with [[Task.toDuty]] this method allow to mix duties and task in the same chain.
 		 * ===Detailed behavior===
-		 * Creates a [[Task]] that, when executed, triggers the execution of this [[Duty]] and completes with its result, which will always be successful.
+		 * Creates a [[Task]] that, when executed, triggers an execution of this [[Duty]] and completes with its result, which will always be successful.
 		 * @return a [[Task]] whose result is the result of this task wrapped inside a [[Success]]. */
 		inline final def toTask: Task[A] = new Duty_ToTask(thisDuty)
 
 		/**
-		 * Triggers the execution of this [[Task]] and returns a [[Future]] containing its result wrapped inside a [[Success]].
+		 * Triggers an execution of this [[Task]] and returns a [[Future]] containing its result wrapped inside a [[Success]].
 		 *
 		 * Is equivalent to {{{ transform(Success.apply).toFuture(isWithinDoSiThEx) }}}
 		 *
@@ -375,7 +374,7 @@ trait Doer { thisDoer =>
 	 * ===Detailed behavior===
 	 * Creates a duty that, when executed:
 	 *		- evaluates the `supplier` within the $DoSiThEx;
-	 *		- then triggers the execution of the returned Duty;
+	 *		- then triggers an execution of the returned Duty;
 	 *		- finally completes with the result of executed duty.
 	 *
 	 * $$threadSafe
@@ -399,11 +398,11 @@ trait Doer { thisDoer =>
 
 	/**
 	 * Creates a [[Duty]] that yields the result of applying the bifunction `f` to what the provided duties yield.
-	 * When executed, simultaneously triggers the execution of two duties and returns their results combined by the provided function.
+	 * When executed, simultaneously triggers and execution of each duty and returns their results combined by the provided function.
 	 * Given the single-thread nature of [[Doer]] this operation only has sense when the provided duties involve foreign duties/tasks or alien duties/tasks.
 	 * ===Detailed behavior===
 	 * Creates a new [[Duty]] that, when executed:
-	 *		- triggers the execution of both: `dutyA` and `dutyB`
+	 *		- triggers an execution for both: `dutyA` and `dutyB`
 	 *		- when both are completed, completes with the value that results of applying the function `f` to their results.
 	 *
 	 * $threadSafe
@@ -417,7 +416,7 @@ trait Doer { thisDoer =>
 		new Duty_Combined(dutyA, dutyB, f)
 
 	/**
-	 * Creates a [[Duty]] that, when executed, simultaneously triggers the execution of all the [[Duty]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
+	 * Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Duty]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
 	 * This overload is only convenient for very small lists. For large ones it is not efficient and also may cause stack-overflow when the task is executed.
 	 * Use the other overload for large lists or other kind of iterables.
 	 *
@@ -446,7 +445,7 @@ trait Doer { thisDoer =>
 	}
 
 	/**
-	 * Creates a [[Duty]] that, when executed, simultaneously triggers the execution of all the [[Duty]]s in the received iterable, and completes with a collection containing their results in the same order.
+	 * Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Duty]]s in the received iterable, and completes with a collection containing their results in the same order.
 	 * This overload accepts any [[Iterable]] and is more efficient than the other (above). Especially for large iterables.
 	 * $threadSafe
 	 *
@@ -536,7 +535,7 @@ trait Doer { thisDoer =>
 	}
 
 	/** A [[Duty]] that, when executed:
-	 *		- triggers the execution of both: `taskA` and `taskB`;
+	 *		- triggers an execution for each: `taskA` and `taskB`;
 	 *		- when both are completed, completes with the result of applying the function `f` to their results.
 	 *
 	 * $threadSafe
@@ -585,8 +584,6 @@ trait Doer { thisDoer =>
 		}
 	}
 
-
-
 	////////////// COVENANT ///////////////
 
 	/** A [[Duty]] that allows to subscribe/unsubscribe consumers of its result. */
@@ -612,8 +609,10 @@ trait Doer { thisDoer =>
 		def isAlreadySubscribed(onComplete: A => Unit): Boolean
 	}
 
-	/** A covenant to complete a [[SubscriptableDuty]].
-	 * The [[SubscriptableDuty]] that this [[Covenant]] promises to fulfill is itself. This duty is completed when this [[Covenant]] is fulfilled, either immediately by calling [[fulfill]], or after the completion of a specified duty by calling [[fulfillWith]].
+	/** A [[SubscriptableDuty]] whose completion is controlled externally..
+	 *
+	 * A [[Covenant]] is itself a [[SubscriptableDuty]], but unlike ordinary duties, its completion is not determined by internal logic.
+	 * Instead, it exposes methods such as [[fulfill]] and [[fulfillWith]] to allow external code to complete it.
 	 *
 	 * [[Covenant]] is to [[Duty]] as [[Commitment]] is to [[Task]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
 	 * */
@@ -622,7 +621,10 @@ trait Doer { thisDoer =>
 		private var firstOnCompleteObserver: (A => Unit) | Null = null
 		private var onCompletedObservers: List[A => Unit] = Nil
 
-		/** The [[SubscriptableDuty]] this [[Covenant]] promises to fulfill. */
+		/** The [[SubscriptableDuty]] whose completion is controlled by this [[Covenant]].
+		 *
+		 * Provided to mimic containment semantics, allowing external code to treat this [[Covenant]] as if it exposed a separate [[SubscriptableDuty]] field.
+		 * @return this [[Covenant]] as a [[SubscriptableDuty]]. */
 		inline def subscriptableDuty: SubscriptableDuty[A] = thisCovenant
 
 		/** CAUTION: Should be called within the $DoSiThEx
@@ -665,21 +667,25 @@ trait Doer { thisDoer =>
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
-		/** Provokes that the [[Duty]] that this [[Covenant]] promises to complete to be completed with the received `result`.
+		/** Completes this [[Covenant]] with the received `result`, unless it is already completed when the subscription is done.
+		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
 		 *
-		 * @param result the result of the [[Duty]] this [[Covenant]] promised to complete . */
-		def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then {
-				assert(isWithinDoSiThEx)
-				fulfillHere(result)(onAlreadyCompleted)
-			}
+		 * @param result the value with which to complete this [[Covenant]].
+		 * @param isWithinDoSiThEx $isWithinDoSiThEx
+		 * @param onAlreadyCompleted invoked if this [[Covenant]] is already completed when the subscription is done. If `isWithinDoSiThEx` is true, the invocation is synchronous and done before this method returns.
+		 * */
+		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+			if isWithinDoSiThEx then fulfillHere(result)(onAlreadyCompleted)
 			else execute(fulfillHere(result)(onAlreadyCompleted))
 			this
 		}
 
-		/** Provokes that the [[Duty]] that this [[Covenant]] promises to complete to be completed with the received `result`.
-		 * CAUTION: Should be called within the $DoSiThEx
-		 * @param result the result of the [[Duty]] this [[Covenant]] promised to complete . */
+		/** Completes this [[Covenant]] with the received `result`, unless it is already completed.
+		 *
+		 * Caution: Should be called within the $DoSiThEx
+		 * @param result the value with which to complete this [[Covenant]].
+		 * @param onAlreadyCompleted invoked if this [[Covenant]] is already completed. The invocation is synchronous and done before this method returns.
+		 * */
 		def fulfillHere(result: A)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
 			oResult.fold {
 				this.oResult = Maybe.some(result)
@@ -693,12 +699,49 @@ trait Doer { thisDoer =>
 			this
 		}
 
-		/** Triggers the execution of the specified [[Duty]] and completes the [[Duty]] that this [[Covenant]] promises to fulfill with the result of the specified duty once it finishes. */
-		def fulfillWith(dutyA: Duty[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
-			if dutyA eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
-			dutyA.trigger(isWithinDoSiThEx)(result => fulfillHere(result)(onAlreadyCompleted))
+		/** Wires this [[Covenant]] to be completed with the result of a [[SubscriptableDuty]].
+		 *
+		 * Arranges this [[Covenant]] to be completed when `fulfillingDuty` completes.
+		 * If this [[Covenant]] is already completed, the `onAlreadyCompleted` callback is invoked.
+		 * If this [[Covenant]] is completed by other means before the `fulfillingDuty` completes, the `onCompletedByOtherMeans` is invoked.
+		 * The invocation of `onAlreadyCompleted` is immediate when both `isWithinDoSiThEx` is true and the `fulfillingDuty` is already completed.
+		 *
+		 * @param fulfillingDuty the [[SubscriptableDuty]] whose result will be used to complete this [[Covenant]].
+		 * @param isWithinDoSiThEx $isWithinDoSiThEx
+		 * @param onCompletedByOtherMeans invoked within this [[Doer]] if this [[Covenant]] is completed by other means before the `fulfillingDuty` completes.
+		 * @param onAlreadyCompleted invoked within this [[Doer]] if this [[Covenant]] is already completed when the subscription is done. The subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
+		 * @throws IllegalArgumentException if `fulfillingDuty` is the same instance as this [[Covenant]].
+		 */
+		def fulfillWith(fulfillingDuty: SubscriptableDuty[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: A => Unit = _ => (), onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+			if fulfillingDuty eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
+			if isWithinDoSiThEx then fulfillHereWith(fulfillingDuty, onCompletedByOtherMeans, onAlreadyCompleted)
+			else execute(fulfillHereWith(fulfillingDuty, onCompletedByOtherMeans, onAlreadyCompleted))
 			this
 		}
+
+
+		private inline def fulfillHereWith(fulfillingDuty: SubscriptableDuty[A], onCompletedByOtherMeans: A => Unit = _ => (), onAlreadyCompleted: A => Unit = _ => ()): Unit = {
+			oResult.fold(
+				fulfillingDuty.subscribe(result => fulfillHere(result)(onCompletedByOtherMeans))
+			)(onAlreadyCompleted)
+		}
+	}
+
+
+	/** Triggers an execution of the given [[Duty]] and returns a [[Covenant]] that will be completed with the result of the triggered execution if it completes before this [[Covenant]] is completed by other means.
+	 *
+	 * This method initiates an execution of the given [[Duty]] and wires its result to a newly created [[Covenant]].
+	 * The returned [[Covenant]] acts as a completion handle for the execution triggered by this method, and can be used to observe or react to its result.
+	 *
+	 * @param duty the [[Duty]] to be triggered.
+	 * @param isWithinDoSiThEx $isWithinDoSiThEx
+	 * @param onCompletedByOtherMeans invoked if the returned [[Covenant]] is completed by other means before the execution of the given [[Duty]] triggered by this method completes.
+	 * @return a [[Covenant]] that will be completed with the result of the execution triggered by this method.
+	 */
+	def Covenant_triggerAndWire[A](duty: Duty[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: A => Unit = (_: A) => ()): Covenant[A] = {
+		val covenant = new Covenant[A]()
+		duty.trigger(isWithinDoSiThEx)(result => covenant.fulfillHere(result)(onCompletedByOtherMeans))
+		covenant
 	}
 
 
@@ -719,7 +762,7 @@ trait Doer { thisDoer =>
 	 */
 	trait Task[+A] extends Duty[Try[A]] { thisTask =>
 
-		/** Triggers the execution of this [[Task]] and returns a [[Future]] of its result.
+		/** Triggers an execution of this [[Task]] and returns a [[Future]] of its result.
 		 *
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
 		 * @return a [[Future]] that will be completed when this [[Task]] is completed.
@@ -730,10 +773,10 @@ trait Doer { thisDoer =>
 			promise.future
 		}
 
-		/** Triggers the execution of this [[Task]] noticing faulty results.
+		/** Triggers an execution of this [[Task]] noticing faulty results.
 		 *
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param errorHandler called when the execution of this task completes with a failure. $isExecutedByDoSiThEx $unhandledErrorsAreReported
+		 * @param errorHandler called when the triggered execution completes with a failure. $isExecutedByDoSiThEx $unhandledErrorsAreReported
 		 */
 		def triggerAndForgetHandlingErrors(errorHandler: Throwable => Unit, isWithinDoSiThEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSiThEx) {
@@ -770,7 +813,7 @@ trait Doer { thisDoer =>
 		/**
 		 * Transform this task by applying the given function to the result. Analogous to [[Future.transform]]
 		 * ===Detailed description===
-		 * Creates a [[Task]] that, when executed, triggers the execution of this task and applies the received `resultTransformer` to its result. If the evaluation finishes:
+		 * Creates a [[Task]] that, when executed, triggers an execution of this task and applies the received `resultTransformer` to its result. If the evaluation finishes:
 		 *		- abruptly, completes with the cause.
 		 *		- normally, completes with the result of the evaluation.
 		 *
@@ -789,9 +832,9 @@ trait Doer { thisDoer =>
 		 * Composes this [[Task]] with a second one that is built from the result of this one. Analogous to [[Future.transformWith]].
 		 * ===Detailed behavior===
 		 * Creates a [[Task]] that, when executed, it will:
-		 *		- Trigger the execution of this task and apply the `taskBBuilder` function to its result. If the evaluation finishes:
+		 *		- Trigger an execution of this task and apply the `taskBBuilder` function to its result. If the evaluation finishes:
 		 *			- abruptly, completes with the cause.
-		 *			- normally with `taskB`, triggers the execution of `taskB` and completes with its result.
+		 *			- normally with `taskB`, triggers an execution of `taskB` and completes with its result.
 		 *
 		 * $threadSafe
 		 *
@@ -805,7 +848,7 @@ trait Doer { thisDoer =>
 		 * Transforms this task by applying the given function to the result if it is successful. Analogous to [[Future.map]].
 		 * See [[recover]] and [[toDuty]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.
 		 * ===Detailed behavior===
-		 * Creates a [[Task]] that, when executed, it will trigger the execution of this task and, if the result is:
+		 * Creates a [[Task]] that, when executed, it will trigger an execution of this task and, if the result is:
 		 *		- `Failure(e)`, completes with that failure.
 		 *		- `Success(a)`, apply `f` to `a` and if the evaluation finishes:
 		 *			- abruptly with `cause`, completes with `Failure(cause)`.
@@ -821,11 +864,11 @@ trait Doer { thisDoer =>
 		 * Composes this [[Task]] with a second one that is built from the result of this one, but only when this one is successful. Analogous to [[Future.flatMap]].
 		 * ===Detailed behavior===
 		 * Creates a [[Task]] that, when executed, it will:
-		 *		- Trigger the execution of this task and if the result is:
+		 *		- Trigger an execution of this task and if the result is:
 		 *			- `Failure(e)`, completes with that failure.
 		 *			- `Success(a)`, applies the `taskBBuilder` function to `a`. If the evaluation finishes:
 		 *				- abruptly, completes with the cause.
-		 *				- normally with `taskB`, triggers the execution of `taskB` and completes with its result.
+		 *				- normally with `taskB`, triggers an execution of `taskB` and completes with its result.
 		 *
 		 * $threadSafe
 		 *
@@ -913,7 +956,7 @@ trait Doer { thisDoer =>
 		 * 		- a [[Success]] or a [[Failure]] for which `pf` is not defined, completes with the same result.
 		 *		- a [[Failure]] for which `pf` is defined, applies `pf` to it and if the evaluation finishes:
 		 *			- abruptly, completes with the cause.
-		 *			- normally returning a [[Task]], triggers the execution of said task and completes with its same result.
+		 *			- normally returning a [[Task]], triggers an execution of said task and completes with its same result.
 		 *
 		 * $threadSafe
 		 *
@@ -1044,7 +1087,7 @@ trait Doer { thisDoer =>
 	 * ===Detailed behavior===
 	 * Creates a task that, when executed, evaluates the `supplier` within the $DoSiThEx. If the evaluation finishes:
 	 *		- abruptly, completes with a [[Failure]] with the cause.
-	 *		- normally, triggers the execution of the returned task and completes with its result.
+	 *		- normally, triggers an execution of the returned task and completes with its result.
 	 *
 	 * $$threadSafe
 	 *
@@ -1075,7 +1118,7 @@ trait Doer { thisDoer =>
 	inline final def Task_alien[A](supplier: () => Future[A]): Task[A] = new Task_Alien(supplier)
 
 	/**
-	 * Creates a [[Task]] that, when executed, triggers the execution the `foreignTask` (a task that belongs to another [[Doer]]) within that [[Doer]]'s $DoSiThEx; and completes with the same result as the foreign task but within this [[Doer]]'s DoSiThEx.
+	 * Creates a [[Task]] that, when executed, triggers an execution of the `foreignTask` (a task that belongs to another [[Doer]]) within that [[Doer]]'s $DoSiThEx; and completes with the result within this [[Doer]]'s DoSiThEx.
 	 * Useful to start a process in a foreign [[Doer]] and access its result as if it were executed sequentially.
 	 *
 	 * $threadSafe
@@ -1088,11 +1131,11 @@ trait Doer { thisDoer =>
 	}
 
 	/**
-	 * Creates a [[Task]] that simultaneously triggers the execution of two tasks and returns their results combined with the received function.
+	 * Creates a [[Task]] that simultaneously triggers an execution for each of two tasks and returns their results combined with the received function.
 	 * Given the single thread nature of [[Doer]] this operation only has sense when the received tasks are a chain of actions that involve timers, foreign, or alien tasks.
 	 * ===Detailed behavior===
 	 * Creates a new [[Task]] that, when executed:
-	 *		- triggers the execution of both: `taskA` and `taskB`
+	 *		- triggers an execution of each: `taskA` and `taskB`
 	 *		- when both are completed, whether normal or abruptly, the function `f` is applied to their results and if the evaluation finishes:
 	 *			- abruptly, completes with a [[Failure]] containing the cause.
 	 *			- normally, completes with the evaluation's result.
@@ -1108,7 +1151,7 @@ trait Doer { thisDoer =>
 		new Task_Combined(taskA, taskB, f)
 
 	/**
-	 * Creates a task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results in the same order.
+	 * Creates a task that, when executed, simultaneously triggers an execution for each [[Task]]s in the received list, and completes with a list containing their results in the same order.
 	 * This overload only accepts [[List]]s and is only convenient when the list is small. For large ones it is not efficient and also may cause stack-overflow when the task is executed.
 	 * Use the other overload for large lists or other kind of iterables.
 	 *
@@ -1142,7 +1185,7 @@ trait Doer { thisDoer =>
 	}
 
 	/**
-	 * Creates a task that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results in the same order if all are successful, or a Failure if anyone is faulty.
+	 * Creates a task that, when executed, simultaneously triggers and execution for each [[Task]]s in the received list, and completes with a list containing their results in the same order if all are successful, or a Failure if anyone is faulty.
 	 * This overload accepts any [[Iterable]] and is more efficient than the other (above). Especially for large iterables.
 	 * $threadSafe
 	 *
@@ -1170,7 +1213,7 @@ trait Doer { thisDoer =>
 
 
 	/**
-	 * Creates a [[Duty]] that, when executed, simultaneously triggers the execution of all the [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
+	 * Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the received list, and completes with a list containing their results, successful or not, in the same order.
 	 *
 	 * $threadSafe
 	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
@@ -1298,7 +1341,8 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Task_Wait[A]](this)
 	}
 
-	/** A [[Task]] that, when executed, triggers the execution of a process in an alien executor and waits its result, successful or not.
+	/** A [[Task]] that yields the resul of [[Future]] produced by a given builder.
+	 * The builder is executed within this [[Doer]] but the process that completes the produced [[Future]] may run in any thread.
 	 * The process executor may be the $DoSiThEx but if that is the intention [[Task_Own]] would be more appropriate.
 	 *
 	 * $onCompleteExecutedByDoSiThEx
@@ -1333,7 +1377,7 @@ trait Doer { thisDoer =>
 	 * A [[Task]] that consumes the results of the received task for its side effects.
 	 * ===Detailed behavior===
 	 * A [[Task]] that, when executed, it will:
-	 *		- trigger the execution of `taskA` and tries to apply the `consumer` to its result. If the evaluation finishes:
+	 *		- trigger an execution of `taskA` and tries to apply the `consumer` to its result. If the evaluation finishes:
 	 *			- abruptly, completes with a [[Failure]] containing the cause.
 	 *			- normally, completes with `Success(())`.
 	 */
@@ -1360,7 +1404,7 @@ trait Doer { thisDoer =>
 	 * Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.
 	 * ===Detailed behavior===
 	 * A [[Task]] that, when executed, it will:
-	 *		- trigger the execution of `taskA` and, if the result is a:
+	 *		- trigger an execution of `taskA` and, if the result is a:
 	 *			- [[Failure]], completes with that failure.
 	 *			- [[Success]], tries to apply the `predicate` to its content. If the evaluation finishes:
 	 *				- abruptly, completes with the cause.
@@ -1396,7 +1440,7 @@ trait Doer { thisDoer =>
 	/**
 	 * A [[Task]] that transform the result of another task.
 	 * ===Detailed description===
-	 * A [[Task]] that, when executed, triggers the execution of the `originalTask` and applies the received `resultTransformer` to its results. If the evaluation finishes:
+	 * A [[Task]] that, when executed, triggers an execution of the `originalTask` and applies the received `resultTransformer` to its results. If the evaluation finishes:
 	 *		- abruptly, completes with the cause.
 	 *		- normally, completes with the result of the evaluation.
 	 *
@@ -1427,14 +1471,14 @@ trait Doer { thisDoer =>
 	 * A [[Task]] that composes two [[Task]]s where the second is build from the result of the first.
 	 * ===Detailed behavior===
 	 * A [[Task]] which, when executed, it will:
-	 *		- Trigger the execution of `taskA` and apply the `taskBBuilder` function to its result. If the evaluation finishes:
+	 *		- Trigger an execution of `taskA` and apply the `taskBBuilder` function to its result. If the evaluation finishes:
 	 *			- abruptly, completes with the cause.
-	 *			- normally with `taskB`, triggers the execution of `taskB` and completes with its result.
+	 *			- normally with `taskB`, triggers an execution of `taskB` and completes with its result.
 	 *
 	 * $threadSafe
 	 *
 	 * @param taskA the task that is executed first.
-	 * @param taskBBuilder a function that receives the result of the execution of `taskA` and builds the task to be executed next. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+	 * @param taskBBuilder a function that receives the result of an execution of `taskA` and builds the task to be executed next. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
 	 */
 	final class Task_TransformWith[+A, +B](taskA: Task[A], taskBBuilder: Try[A] => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
@@ -1453,7 +1497,7 @@ trait Doer { thisDoer =>
 
 
 	/** A [[Task]] that, when executed:
-	 *		- triggers the execution of both: `taskA` and `taskB`;
+	 *		- triggers an execution for each: `taskA` and `taskB`;
 	 *		- when both are completed, whether normal or abruptly, the function `f` is applied to their results and if the evaluation finishes:
 	 *			- abruptly, completes with the cause.
 	 *			- normally, completes with the result.
@@ -1571,29 +1615,34 @@ trait Doer { thisDoer =>
 		def isAlreadySubscribed(onComplete: Try[A] => Unit): Boolean
 	}
 
-	/** A commitment to complete a [[SubscriptableTask]].
-	 * The [[SubscriptableTask]] this [[Commitment]] promises to complete is itself. This task's will complete when this [[Commitment]] is fulfilled or broken. That could be done immediately calling [[fulfill]], [[break]], [[complete]], or in a deferred manner by calling [[completeWith]].
+	/** A [[SubscriptableTask]] whose completion is controlled externally.
 	 *
-	 * Analogous to [[scala.concurrent.Promise]] but for a [[Task]] instead of a [[scala.concurrent.Future]].
-	 * */
+	 * A [[Commitment]] is itself a [[SubscriptableTask]], but unlike ordinary tasks, its completion is not determined by internal logic.
+	 * Instead, it exposes methods such as [[complete]], [[fulfill]], [[break]], and [[completeWith]] to allow external code to complete it.
+	 *
+	 * Analogous to [[scala.concurrent.Promise]] but for [[Task]]s instead of a [[scala.concurrent.Future]]s.
+	 */
 	final class Commitment[A] extends SubscriptableTask[A] { thisCommitment =>
 		private var oResult: Maybe[Try[A]] = Maybe.empty
 		private var firstOnCompleteObserver: (Try[A] => Unit) | Null = null
 		private var onCompletedObservers: List[Try[A] => Unit] = Nil
 
-		/** The [[SubscriptableTask]] this [[Commitment]] promises to fulfill. */
+		/** The [[SubscriptableTask]] whose completion is controlled by this [[Commitment]].
+		 *
+		 * Provided to mimic containment semantics, allowing external code to treat this [[Commitment]] as if it exposed a separate [[SubscriptableTask]] field.
+		 * @return this [[Commitment]] as a [[SubscriptableTask]] */
 		inline def subscriptableTask: SubscriptableTask[A] = thisCommitment
 
 		/** CAUTION: should be called within the $DoSiThEx
 		 * @return true if this [[Commitment]] was either fulfilled or broken; or false if it is still pending. */
-		def isCompleted: Boolean = {
+		inline def isCompleted: Boolean = {
 			assert(isInSequence)
 			oResult.isDefined
 		}
 
 		/** CAUTION: should be called within the $DoSiThEx
 		 * @return true if this [[Commitment]] is still pending; or false if it was completed. */
-		def isPending: Boolean = {
+		inline def isPending: Boolean = {
 			assert(isInSequence)
 			oResult.isEmpty
 		}
@@ -1626,19 +1675,25 @@ trait Doer { thisDoer =>
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
-		/** Provokes that the [[subscriptableTask]] that this [[Commitment]] promises to complete to be completed with the received `result`.
+		/** Completes this [[Commitment]] with the received `result`, unless it is already completed when the subscription is done.
+		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
 		 *
-		 * @param result the result that the [[subscriptableTask]] this [[Commitment]] promised to complete . */
+		 * @param result the value with which to complete this [[Commitment]].
+		 * @param isWithinDoSiThEx $isWithinDoSiThEx
+		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done. If `isWithinDoSiThEx` is true, the invocation is synchronous and done before this method returns.
+		 * */
 		def complete(result: Try[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if isWithinDoSiThEx then completeHere(result)(onAlreadyCompleted)
 			else execute(completeHere(result)(onAlreadyCompleted))
 			thisCommitment
 		}
 
-		/** Provokes that the [[subscriptableTask]] that this [[Commitment]] promises to complete to be completed with the received `result`.
+		/** Completes this [[Commitment]] with the received `result`, unless it is already completed.
 		 *
 		 * Caution: Should be called within the $DoSiThEx
-		 * @param result the result that the [[subscriptableTask]] this [[Commitment]] promised to complete . */
+		 * @param result the value with which to complete this [[Commitment]].
+		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed. The invocation is synchronous and done before this method returns.
+		 * */
 		def completeHere(result: Try[A])(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			assert(isInSequence)
 			oResult.fold {
@@ -1659,24 +1714,80 @@ trait Doer { thisDoer =>
 		}
 
 
-		/** Provokes that the [[subscriptableTask]] this [[Commitment]] promises to complete to be fulfilled (completed successfully) with the received `result`. */
-		def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type =
+		/** Completes this [[Commitment]] with the received `result`, unless it is already completed when the subscription is done.
+		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		 *
+		 * @param result the value with which to complete this [[Commitment]].
+		 * @param isWithinDoSiThEx $isWithinDoSiThEx
+		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done.
+		 * */
+		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if isWithinDoSiThEx then completeHere(Success(result))(onAlreadyCompleted)
-			else complete(Success(result), false)(onAlreadyCompleted)
-
-		/** Provokes that the [[subscriptableTask]] this [[Commitment]] promises to complete to be broken (completed with failure) with the received `cause`. */
-		def break(cause: Throwable, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then completeHere(Failure(cause))(onAlreadyCompleted)
-			else complete(Failure(cause), false)(onAlreadyCompleted)
+			else {
+				execute(completeHere(Success(result))(onAlreadyCompleted))
+				this
+			}
 		}
 
-		/** Programs the completion of the [[subscriptableTask]] this [[Commitment]] promises to complete to be completed with the result of the received [[Task]] when it is completed. */
-		def completeWith(otherTask: Task[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			if otherTask eq thisCommitment then throw new IllegalArgumentException("A Commitment can't be completed with itself")
-			otherTask.trigger(isWithinDoSiThEx)(result => completeHere(result)(onAlreadyCompleted))
-			thisCommitment
+		/** Breaks this [[Commitment]] with the received `excuse`, unless it is already completed when the subscription is done.
+		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		 *
+		 * @param excuse the [[Failure]] with which to break this [[Commitment]].
+		 * @param isWithinDoSiThEx $isWithinDoSiThEx
+		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done.
+		 * */
+		inline def break(excuse: Throwable, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+			if isWithinDoSiThEx then completeHere(Failure(excuse))(onAlreadyCompleted)
+			else {
+				execute(completeHere(Failure(excuse))(onAlreadyCompleted))
+				this
+			}
 		}
+
+		/** Wires this [[Commitment]] to the completion of a [[SubscriptableTask]].
+		 *
+		 * Arranges this [[Commitment]] to be completed when `completingTask` completes, unless it was completed before.
+		 * If this [[Commitment]] is already completed when the subscription is done, the `onAlreadyCompleted` callback is invoked.
+		 * If this [[Commitment]] is completed by other means before the `completingTask` completes, the `onCompletedByOtherMeans` is invoked.
+		 * The invocation of `onAlreadyCompleted` is immediate when both `isWithinDoSiThEx` is true and the `completingTask` is already completed.
+		 * Note that the subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
+		 *
+		 * @param completingTask the [[SubscriptableTask]] whose result will be used to complete this [[Commitment]].
+		 * @param isWithinDoSiThEx informs if this method was called within this [[Doer]].
+		 * @param onCompletedByOtherMeans invoked within this [[Doer]] if this [[Commitment]] is completed by other means before the `completingTask` completes.
+		 * @param onAlreadyCompleted invoked within this [[Doer]] if this [[Commitment]] is already completed when the subscription is done.
+		 * @throws IllegalArgumentException if `completingTask` is the same instance as this [[Commitment]].
+		 */
+		def completeWith(completingTask: SubscriptableTask[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: Try[A] => Unit = _ => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+			if completingTask eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
+			if isWithinDoSiThEx then completeHereWith(completingTask, onCompletedByOtherMeans, onAlreadyCompleted)
+			else execute(completeHereWith(completingTask, onCompletedByOtherMeans, onAlreadyCompleted))
+			this
+		}
+
+		private inline def completeHereWith(fulfillingTask: SubscriptableTask[A], onCompletedByOtherMeans: Try[A] => Unit = _ => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): Unit = {
+			oResult.fold(
+				fulfillingTask.subscribe(result => completeHere(result)(onCompletedByOtherMeans))
+			)(onAlreadyCompleted)
+		}
+
 	}
+
+	/** Triggers the given [[Task]] and returns a [[Commitment]] that will be completed with the result of the triggered execution unless this [[Commitment]] is completed before by other means.
+	 *
+	 * This method triggers an execution of the given [[Task]] and wires its result to a newly created [[Commitment]].
+	 * The returned [[Commitment]] acts as a completion handle for the execution triggered by this method, and can be used to observe or react to its result.
+	 *
+	 * @param task the [[Task]] to be triggered.
+	 * @param isWithinDoSiThEx true if triggering occurs within the current [[Doer]] sequence.
+	 * @return a [[Commitment]] that will be completed with the result of the execution triggered by this method.
+	 */
+	def Commitment_triggerAndWire[A](task: Task[A], isWithinDoSiThEx: Boolean = isInSequence): Commitment[A] = {
+		val commitment = new Commitment[A]()
+		task.trigger(isWithinDoSiThEx)(result => commitment.completeHere(result)())
+		commitment
+	}
+
 
 	//////////////// Flow //////////////////////
 

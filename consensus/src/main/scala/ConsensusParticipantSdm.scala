@@ -993,7 +993,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				val previosStartingCompletedCovenant = startingCompletedCovenant
 				startingCompletedCovenant = sequencer.Covenant()
-				previosStartingCompletedCovenant.fulfillWith(startingCompletedCovenant)
+				previosStartingCompletedCovenant.fulfillWith(startingCompletedCovenant, true)
 				
 				notifyListeners(_.onStarting(previous, currentTerm, isRestart))
 				storage.loads.trigger(true) {
@@ -1237,7 +1237,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			private val lastResponseCommitmentByClientId: mutable.Map[ClientId, sequencer.Commitment[ResponseToClient]] = mutable.Map.emtpy
+			private val lastResponseCommitmentByClientId: mutable.Map[ClientId, sequencer.Commitment[ResponseToClient]] = mutable.Map.empty
 
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Task[ResponseToClient] = {
 				assert(isInSequence)
@@ -1301,7 +1301,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					}: sequencer.Task[ResponseToClient]
 				} yield rtc
 
-				responseCommitment.completeWith(replicatesThenSavesThenApplies, true)()
+				sequencer.Commitment_triggerAndWire(replicatesThenSavesThenApplies, true)
 			}
 
 			/**
@@ -1753,16 +1753,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		private def askHowIsAnotherIfNotAlready(otherParticipantId: ParticipantId): sequencer.Task[StateInfo] = {
 			howAreYouRequestOnTheWayByParticipant.getOrElseUpdate(
 				otherParticipantId,
-				{
-					val commitment = sequencer.Commitment[StateInfo]()
-					commitment
-						.completeWith(
-							otherParticipantId.howAreYou(currentTerm)
-								.andThen(_ => howAreYouRequestOnTheWayByParticipant.remove(otherParticipantId)),
-							true
-						)()
-					commitment
-				}
+				sequencer.Commitment_triggerAndWire(
+					otherParticipantId.howAreYou(currentTerm).andThen(_ => howAreYouRequestOnTheWayByParticipant.remove(otherParticipantId)),
+					true
+				)
 			)
 		}
 

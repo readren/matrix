@@ -892,9 +892,11 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { case ((int, duty), f1, f2) =>
 			// println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]
-			val testedCovenant = doer.Covenant[Int]
+
+			val testedCovenant = doer.Covenant[Int]()
+			val subscriptableDuty = Covenant_triggerAndWire[Int](doer.Duty_delays(1)(_ => int))
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
-			testedCovenant.fulfillWith(duty)()
+			testedCovenant.fulfillWith(subscriptableDuty)
 			promise.future
 		}
 	}
@@ -947,10 +949,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]
-			val testedCommitment = doer.Commitment[Int]
+			val testedCommitment = Commitment[Int]
 			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat)())
 			promise.future
-		}.check(Parameters.default.withMinSuccessfulTests(200))
+		}.check(Parameters.default.withMinSuccessfulTests(500))
 
 	}
 
@@ -969,10 +971,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]
-			val testedCommitment = doer.Commitment[Int]
-			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(task)())
+
+			val testedCommitment = Commitment[Int]()
+			val subscriptableTask = Commitment_triggerAndWire(doer.Task_delays(1)(_ => tryNat))
+			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableTask))
 			promise.future
-		}.check(Parameters.default.withMinSuccessfulTests(200))
+		}.check(Parameters.default.withMinSuccessfulTests(500))
 	}
 
 	private def checksCommitment[DD <: Doer & SchedulingExtension & LoopingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
@@ -1183,29 +1187,33 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// println(s"Begin: delay: $delay, duty: $duty")
 			val schedule = doer.newDelaySchedule(delay)
 			val scheduledDuty = duty.scheduled(schedule)
-			val commitment = Commitment[Unit]()
+
+			val promise = Promise[Unit]()
+
+			given Promise[Unit] = promise
+
 			var wasCanceled = false
 			var hasCompleted = false
 			scheduledDuty.trigger() { _ =>
 				hasCompleted = true
 				if wasCanceled then {
-					commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}"))()
+					break(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
 				}
 				// println(s"-----> wasCanceled: $wasCanceled, schedule: $schedule")
 			}
 			val cancelsAndWaits = for {
 				_ <- Task_mine[Unit] { () =>
-					assert(!doer.isCanceled(schedule) || hasCompleted, "The schedule got canceled before canceling it")
+					if doer.isCanceled(schedule) && !hasCompleted then break("The schedule got canceled before canceling it")
 					//					if !doer.isActive(schedule) && !hasCompleted then commitment.break(new AssertionError("The schedule got canceled before canceling it"))()
 					doer.cancel(schedule)
 					wasCanceled = true
-					assert(doer.isCanceled(schedule))
+					if !doer.isCanceled(schedule) then break("The schedule remains not canceled after being canceled.")
 				}
 				_ <- doer.Task_sleeps(delay)
 
 			} yield () // println("cancelsAndWaits completed successfully")
-			commitment.completeWith(cancelsAndWaits)(x => println("was already completed with x"))
-			commitment.toFuture()
+			cancelsAndWaits.trigger()(promise.tryComplete(_))
+			promise.future
 		}
 	}
 
@@ -1217,14 +1225,17 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
 			val scheduledDuty = duty.scheduled(schedule)
-			val commitment = Commitment[Unit]()
+			val promise = Promise[Unit]()
+
+			given Promise[Unit] = promise
+
 			doer.cancel(schedule)
 			scheduledDuty.trigger() { _ =>
-				commitment.break(new AssertionError(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}"))()
+				break(s"The duty completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
 			}
-			assert(doer.isCanceled(schedule))
-			commitment.completeWith(doer.Task_sleeps(delay + 1))()
-			commitment.toFuture()
+			if !doer.isCanceled(schedule) then break("The schedule says it is not canceled despite it was.")
+			doer.schedule(doer.newDelaySchedule(1))(_ => promise.trySuccess(()))
+			promise.future
 		}
 	}
 
