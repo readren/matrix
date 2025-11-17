@@ -585,7 +585,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Zero means "before the first election".
 		 * Should be reflected in the [[Workspace]].
 		 * */
-		private var currentTerm: Term = 0
+		private var currentTerm: Term = 0 // TODO changes to this variable are not being persisted when no record is appended. Analyze if that is a problem, and if it is, persist them it in a way invulnerable to concurrences. Note that persisting it only makes sense if a crash after interacting with other participants with this variable updated only in memory would cause an inconsistency. 
 
 		/** The index of the highest entry known to be committed according to this participant.
 		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
@@ -601,7 +601,12 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** The current behavior of this participant. */
 		private var currentBehavior: Behavior = Starting(false, stateMachineNeedsRestart)
 
-		private var startingCompletedCovenant: sequencer.Covenant[Boolean] = sequencer.Covenant().fulfillHere(false)()
+		/** A reference to a [[sequencer.Covenant]] that is created during the [[Starting]] behavior, which is completed when the leaving the startup process completes.
+		 * In a restart, the old instance is wired to complete if the new one does.
+		 * // TODO I don't like this reference being a var. It adds race conditions in situations that occur rarely. Analyze making it a val which would stop supporting restarts, or remove this variable at all. */
+		private var startingCompletedCovenant: sequencer.Covenant[Boolean] = sequencer.Covenant_ready(false)
+
+		private var lastPersistenceCompletedCovenant: sequencer.Covenant[Try[Unit]] = sequencer.Covenant_ready(Doer.successUnit)
 
 		/** Memorices the schedule that is currently scheduled. Needed to cancel the schedule when becoming a new behavior. */
 		private var currentSchedule: Maybe[sequencer.Schedule] = Maybe.empty
@@ -610,6 +615,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		private val notificationListeners: java.util.WeakHashMap[NotificationListener, None.type] = new util.WeakHashMap()
 
+		/** //TODO clear this map when the [[currentTerm]] is updated */
 		private val howAreYouRequestOnTheWayByParticipant: mutable.Map[ParticipantId, sequencer.Commitment[StateInfo]] = mutable.Map.empty
 
 		{
@@ -633,9 +639,6 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** @return the ordinal of the current behavior. */
 		inline def getBehaviorOrdinal: BehaviorOrdinal = currentBehavior.ordinal
-
-		/** @return the current term. */
-		inline def getTerm: Term = currentTerm
 
 		/** Stops this [[ConsensusParticipant]] instance.
 		 * Should be called within the [[sequencer]]. */
@@ -678,10 +681,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
+		/** Updates the [[currentBehavior]] and [[currentTerm]] */
 		private inline def updateState(): sequencer.Duty[Unit] =
 			updateState(null, null)
 
 
+		/** Updates the [[currentBehavior]] and [[currentTerm]], already knowing the [[StateInfo]] of a single other participant, which saves a call to [[ClusterParticipant.howAreYou]].. */
 		private def updateState(inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.Duty[Unit] = {
 			assert(sequencer.isInSequence)
 			for {
@@ -696,6 +701,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			} yield ()
 		}
 
+		/** Updates the [[currentBehavior]] and [[currentTerm]], already having the result of [[currentConfig.decideMyVote]]. */
 		private def updateStateKnowingMyVote(myVote: Vote[ParticipantId]): sequencer.Duty[Unit] = {
 			assert(isInSequence)
 			for {
@@ -991,6 +997,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				if workspace ne null then workspace.release()
 				workspace = null
 
+				// update the startingCompletedCovenant to refer to a new covenant, making the old one to complete if the new does.
 				val previosStartingCompletedCovenant = startingCompletedCovenant
 				startingCompletedCovenant = sequencer.Covenant()
 				previosStartingCompletedCovenant.fulfillWith(startingCompletedCovenant, true)
@@ -1256,10 +1263,13 @@ trait ConsensusParticipantSdm { thisModule =>
 							// if the command is newer than the last received from the same client, proceed normally (append, replicate, apply).
 							if comparison > 0 then acceptNewCommand(clientId, command)
 							// If the command was committed — and thus already applied — simply query the state machine for the result it produced during application and return that same result again, assuming the state-machine is idempotent
-							else if indexOfLastAppendedCommandFromClient <= commitIndex then for smr <- machine.appliesClientCommand(indexOfLastAppendedCommandFromClient, command) yield Processed(indexOfLastAppendedCommandFromClient, smr)
+							else if indexOfLastAppendedCommandFromClient <= commitIndex then {
+								for smr <- machine.appliesClientCommand(indexOfLastAppendedCommandFromClient, command) yield Processed(indexOfLastAppendedCommandFromClient, smr)
+								// TODO analyze if `attemptToUpdateOtherParticipantsLogs` should be called when the term of the CommandRecord is less than the current term to rush the replication to participants that were lagging in the previous term.
+							}
 							// if the command wasn't commited and is the same as the last received from the same client, then:
 							else if comparison == 0 then {
-								// If the previous call with this command was received during the current term but was not commited, then another call of this method with the same arguments is in progress.
+								// If the previous call with this sane command was received during the current term but was not commited, then another call to this method with the same command is in progress, so, return what it will return.
 								if term == currentTerm then lastResponseCommitmentByClientId(clientId)
 								else ???
 							} else ???
@@ -1541,7 +1551,6 @@ trait ConsensusParticipantSdm { thisModule =>
 					if replierVote.term > currentTerm then {
 						assert(isInSequence) // TODO delete line
 						currentTerm = replierVote.term
-						workspace.setCurrentTerm(currentTerm)
 						myVoteIsStale = true
 					}
 					if replierVote.candidateId == myVote.candidateId && currentConfig.reachedAMajority(replierVote) then votesMatchingMyVoteCount += 1

@@ -4,7 +4,7 @@ import readren.common.{Maybe, castTo, deriveToString}
 import Doer.{successFalse, successTrue, successUnit}
 
 import scala.annotation.{tailrec, threadUnsafe}
-import scala.collection.IterableFactory
+import scala.collection.{IterableFactory, mutable}
 import scala.compiletime.erasedValue
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.reflect.ClassTag
@@ -616,10 +616,17 @@ trait Doer { thisDoer =>
 	 *
 	 * [[Covenant]] is to [[Duty]] as [[Commitment]] is to [[Task]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
 	 * */
-	final class Covenant[A] extends SubscriptableDuty[A] { thisCovenant =>
-		private var oResult: Maybe[A] = Maybe.empty
+	final class Covenant[A] private[Doer](fixedResult: Maybe[A]) extends SubscriptableDuty[A] { thisCovenant =>
+		private var oResult: Maybe[A] = fixedResult
 		private var firstOnCompleteObserver: (A => Unit) | Null = null
 		private var onCompletedObservers: List[A => Unit] = Nil
+
+		def this() = this(Maybe.empty)
+
+		inline def maybeResult: Maybe[A] = {
+			assert(isInSequence)
+			oResult
+		}
 
 		/** The [[SubscriptableDuty]] whose completion is controlled by this [[Covenant]].
 		 *
@@ -667,66 +674,86 @@ trait Doer { thisDoer =>
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
-		/** Completes this [[Covenant]] with the received `result`, unless it is already completed when the subscription is done.
-		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled at the time the fulfillment is performed.
 		 *
-		 * @param result the value with which to complete this [[Covenant]].
+		 * Fulfillment is performed:
+		 * - Synchronously (before this method returns) if `isWithinDoSiThEx` is true.
+		 * - Asynchronously as soon as possible otherwise.
+		 *
+		 * This method delegates to [[fulfillHere]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.
+		 *
+		 * @param result the value to complete this [[Covenant]] with.
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onAlreadyCompleted invoked if this [[Covenant]] is already completed when the subscription is done. If `isWithinDoSiThEx` is true, the invocation is synchronous and done before this method returns.
-		 * */
-		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then fulfillHere(result)(onAlreadyCompleted)
-			else execute(fulfillHere(result)(onAlreadyCompleted))
-			this
+		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Covenant]] was already completed.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onCompleted: (A, Boolean) => Unit = (_, _) => ()): this.type = {
+			if isWithinDoSiThEx then fulfillHere(result)(onCompleted)
+			else {
+				execute(fulfillHere(result)(onCompleted))
+				this
+			}
 		}
 
-		/** Completes this [[Covenant]] with the received `result`, unless it is already completed.
+
+		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled.
 		 *
-		 * Caution: Should be called within the $DoSiThEx
-		 * @param result the value with which to complete this [[Covenant]].
-		 * @param onAlreadyCompleted invoked if this [[Covenant]] is already completed. The invocation is synchronous and done before this method returns.
-		 * */
-		def fulfillHere(result: A)(onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+		 * This method must be called from within this [[Doer]]'s sequential executor.
+		 *
+		 * If this [[Covenant]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If it is already fulfilled, the provided `result` is ignored.
+		 *
+		 * @param result the value to fulfill this [[Covenant]] with.
+		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the final result and a boolean indicating whether this [[Covenant]] was already fulfilled.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		def fulfillHere(result: A)(onCompleted: (A, Boolean) => Unit = (_, _) => ()): this.type = {
 			oResult.fold {
 				this.oResult = Maybe.some(result)
+				onCompleted(result, false)
 				this.onCompletedObservers.foreach(_(result))
 				this.onCompletedObservers = Nil // Clean the observers list to help the garbage collector.
 				if firstOnCompleteObserver ne null then {
 					firstOnCompleteObserver(result)
 					firstOnCompleteObserver = null // Clean the observers list to help the garbage collector.
 				}
-			}(onAlreadyCompleted)
+			}(previousResult => onCompleted(previousResult, true))
 			this
 		}
 
 		/** Wires this [[Covenant]] to be completed with the result of a [[SubscriptableDuty]].
 		 *
-		 * Arranges this [[Covenant]] to be completed when `fulfillingDuty` completes.
-		 * If this [[Covenant]] is already completed, the `onAlreadyCompleted` callback is invoked.
-		 * If this [[Covenant]] is completed by other means before the `fulfillingDuty` completes, the `onCompletedByOtherMeans` is invoked.
-		 * The invocation of `onAlreadyCompleted` is immediate when both `isWithinDoSiThEx` is true and the `fulfillingDuty` is already completed.
+		 * Arranges this [[Covenant]] to be fulfilled if `fulfillingDuty` completes, unless it was fulfilled before.
+		 * Always one, and only one, of the two callback is invoked:
+		 *		- `onAlreadyCompleted` if this [[Covenant]] was already fulfilled when the subscription is done.
+		 *		- `onCompletedLater` if this [[Covenant]] is fulfilled after the subscription is done.
+		 * The subscription is synchronic if `isWithinDoSiThEx` is true, and asynchronic ASAP otherwise.
 		 *
 		 * @param fulfillingDuty the [[SubscriptableDuty]] whose result will be used to complete this [[Covenant]].
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onCompletedByOtherMeans invoked within this [[Doer]] if this [[Covenant]] is completed by other means before the `fulfillingDuty` completes.
-		 * @param onAlreadyCompleted invoked within this [[Doer]] if this [[Covenant]] is already completed when the subscription is done. The subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
+		 * @param onCompletedLater invoked (within this [[Doer]]) when this [[Covenant]] is fulfilled, but only if that happens after the subscription is done. The boolean parameter tells whenever this [[Covenant]] was already completed when `fulfillingDuty` completes. `false` means the completión was due to the completion of `fulfillingDuty`. `true` means the completion was due to other means.
+		 * @param onAlreadyCompleted invoked (within this [[Doer]]) if this [[Covenant]] was already fulfilled when the subscription is done. The subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
 		 * @throws IllegalArgumentException if `fulfillingDuty` is the same instance as this [[Covenant]].
 		 */
-		def fulfillWith(fulfillingDuty: SubscriptableDuty[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: A => Unit = _ => (), onAlreadyCompleted: A => Unit = _ => ()): this.type = {
+		def fulfillWith(fulfillingDuty: SubscriptableDuty[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedLater: (A, Boolean) => Unit = (_, _) => (), onAlreadyCompleted: A => Unit = _ => ()): this.type = {
 			if fulfillingDuty eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
-			if isWithinDoSiThEx then fulfillHereWith(fulfillingDuty, onCompletedByOtherMeans, onAlreadyCompleted)
-			else execute(fulfillHereWith(fulfillingDuty, onCompletedByOtherMeans, onAlreadyCompleted))
+			if isWithinDoSiThEx then fulfillHereWith(fulfillingDuty, onCompletedLater, onAlreadyCompleted)
+			else execute(fulfillHereWith(fulfillingDuty, onCompletedLater, onAlreadyCompleted))
 			this
 		}
 
-
-		private inline def fulfillHereWith(fulfillingDuty: SubscriptableDuty[A], onCompletedByOtherMeans: A => Unit = _ => (), onAlreadyCompleted: A => Unit = _ => ()): Unit = {
+		private inline def fulfillHereWith(fulfillingDuty: SubscriptableDuty[A], onCompletedLater: (A, Boolean) => Unit = (_, _) => (), onAlreadyCompleted: A => Unit = _ => ()): Unit = {
 			oResult.fold(
-				fulfillingDuty.subscribe(result => fulfillHere(result)(onCompletedByOtherMeans))
+				fulfillingDuty.subscribe(result => fulfillHere(result)(onCompletedLater))
 			)(onAlreadyCompleted)
 		}
 	}
 
+
+	/** Creates an already fulfilled [[Covenant]].
+	 * @param immediateResult the immediate result that this [[Covenant]] yields. */
+	def Covenant_ready[A](immediateResult: A): Covenant[A] =
+		Covenant(Maybe.some(immediateResult))
 
 	/** Triggers an execution of the given [[Duty]] and returns a [[Covenant]] that will be completed with the result of the triggered execution if it completes before this [[Covenant]] is completed by other means.
 	 *
@@ -735,13 +762,157 @@ trait Doer { thisDoer =>
 	 *
 	 * @param duty the [[Duty]] to be triggered.
 	 * @param isWithinDoSiThEx $isWithinDoSiThEx
-	 * @param onCompletedByOtherMeans invoked if the returned [[Covenant]] is completed by other means before the execution of the given [[Duty]] triggered by this method completes.
+	 * @param onFulfilled invoked when the returned [[Covenant]] is fulfilled. The boolean parameters tells whenever it was already fulfilled before the execution triggered by this method of given [[Duty]] completes or not.
 	 * @return a [[Covenant]] that will be completed with the result of the execution triggered by this method.
 	 */
-	def Covenant_triggerAndWire[A](duty: Duty[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: A => Unit = (_: A) => ()): Covenant[A] = {
+	def Covenant_triggerAndWire[A](duty: Duty[A], isWithinDoSiThEx: Boolean = isInSequence, onFulfilled: (A, Boolean) => Unit = (_: A, _: Boolean) => ()): Covenant[A] = {
 		val covenant = new Covenant[A]()
-		duty.trigger(isWithinDoSiThEx)(result => covenant.fulfillHere(result)(onCompletedByOtherMeans))
+		duty.trigger(isWithinDoSiThEx)(result => covenant.fulfillHere(result)(onFulfilled))
 		covenant
+	}
+
+	/** A causal fence that serializes non-failing state transitions with visibility-only semantics.
+	 *
+	 * Built on [[Duty]] and [[Covenant]], this fence ensures that each update observes the latest visible state, and that all updates are fulfilled in causal order.
+	 * Speculative updates may be rolled back before becoming visible.
+	 *
+	 * All updates are non-failing: even rolled-back updates fulfill with the prior state.
+	 */
+	class CausalVisibilityFence[A](initialState: A) {
+		private var lastCommittedCovenant: Covenant[A] = Covenant_ready(initialState)
+		private var lastEnqueuedCovenant: Covenant[A] = lastCommittedCovenant
+
+		/** Provides rollback capability for speculative updates.
+		 *
+		 * Used within [[advanceSpeculatively]] to discard an in-flight update before it becomes visible.
+		 * Rollback is only effective if invoked before the update is committed.
+		 * Rollback is always non-failing and fulfills the update with the previous state.
+		 * The returned [[SubscriptableDuty]] completes with the same state that becomes visible.
+		 */
+		trait RollbackAccessor {
+			/** Attempts to roll back the speculative update, restoring the previous visible state.
+			 *
+			 * The rollback is applied if "invoked" before the update it targets has completed.
+			 * The quotes around "invoked" reflect that, when `isWithinDoSiThEx` is false, the rollback attempt is scheduled asynchronously and may race with the update's completion.
+			 *
+			 * Regardless of timing, the [[SubscriptableDuty]] originally returned by [[advanceSpeculatively]] is fulfilled:
+			 * - With the previous state if rollback succeeds
+			 * - With the committed state if rollback was too late
+			 *
+			 * The callback receives the resulting state and a flag indicating whether rollback was applied (`false`) or too late (`true`).
+			 *
+			 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late
+			 * @return the [[SubscriptableDuty]] originally returned by [[advanceSpeculatively]], now fulfilled with either the committed or rolled-back state
+			 */
+			def rollback(isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (A, Boolean) => Unit = (_, _) => ()): SubscriptableDuty[A]
+		}
+
+		/** Returns a [[SubscriptableDuty]] that yields the state which will become visible when the last enqueued update in flight — at the time of this call — completes.
+		 *
+		 * This represents the causal anchor for the subsequent transition: the state that the next update will be causally anchored to.
+		 * The returned [[SubscriptableDuty]] may or may not be fulfilled yet.
+		 *
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor.
+		 * @return a [[SubscriptableDuty]] yielding the state that will become visible when the update in flight - as of this call - completes.
+		 */
+		def causalAnchor(isWithinDoSiThEx: Boolean = isInSequence): SubscriptableDuty[A] = {
+			if isWithinDoSiThEx then lastEnqueuedCovenant
+			else {
+				val wrapper = Covenant[A]()
+				execute(wrapper.fulfillWith(lastEnqueuedCovenant, true))
+				wrapper
+			}
+		}
+
+
+		/** The state to which the most recent step transitioned into.
+		 *
+		 * Rolled-back transitions yield the previous state.
+		 *
+		 * Must be called within this [[Doer]].
+		 *
+		 * @return the last transition result.
+		 */
+		inline def committedNow: A = lastCommittedCovenant.maybeResult.get
+
+		/** Returns a [[SubscriptableDuty]] that yields the currently visible state.
+		 *
+		 * This reflects the state to which the most recent step transitioned into.
+		 * Rolled-back transitions yield the previous state.
+		 *
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableDuty]] yielding the currently visible state.
+		 */
+		def committedAsync(isWithinDoSiThEx: Boolean = isInSequence): SubscriptableDuty[A] = {
+			if isWithinDoSiThEx then lastCommittedCovenant
+			else {
+				val wrapper = Covenant[A]()
+				execute(wrapper.fulfillHere(committedNow)())
+				wrapper
+			}
+		}
+
+		/** Advances the state with a non-speculative update.
+		 *
+		 * The updater function is defined with a second parameter of type `Null` to match the internal speculative signature,
+		 * allowing reuse without introducing an extra closure. Rollback is not supported in this method.
+		 *
+		 * @param stateUpdater a function that computes the next state from the current one; the second argument is always `null`
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableDuty]] that yields the updated state
+		 */
+		def advance(stateUpdater: (A, Null) => Duty[A], isWithinDoSiThEx: Boolean = isInSequence): SubscriptableDuty[A] = {
+			val suAdapter = stateUpdater.asInstanceOf[(A, RollbackAccessor | Null) => Duty[A]]
+			if isWithinDoSiThEx then step(suAdapter, false)
+			else {
+				val covenant = Covenant[A]()
+				execute(covenant.fulfillWith(step(suAdapter, false), true))
+				covenant
+			}
+		}
+
+		/** Advances the state with a rollback-aware speculative update.
+		 *
+		 * The provided [[RollbackAccessor]] allows the update to be withdrawn before it becomes visible.
+		 * All updates fulfill successfully, even when rolled back.
+		 *
+		 * @param stateUpdater a function that computes the next state from the current one, with rollback control
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableDuty]] that yields the updated or rolled-back state
+		 */
+		def advanceSpeculatively(stateUpdater: (A, RollbackAccessor) => Duty[A], isWithinDoSiThEx: Boolean = isInSequence): SubscriptableDuty[A] = {
+			if isWithinDoSiThEx then step(stateUpdater, true)
+			else {
+				val covenant = Covenant[A]()
+				execute(covenant.fulfillWith(step(stateUpdater, true), true))
+				covenant
+			}
+		}
+
+		/** Internal method that performs the actual state transition.
+		 *
+		 * Handles both speculative and non-speculative updates depending on the `isSpeculative` flag.
+		 * The rollback accessor is instantiated only when needed to avoid unnecessary allocations.
+		 */
+		private def step(stateUpdater: (A, RollbackAccessor | Null) => Duty[A], isSpeculative: Boolean): SubscriptableDuty[A] = {
+			val previousStepCovenant = lastEnqueuedCovenant
+			val thisStepCovenant = Covenant[A]()
+			lastEnqueuedCovenant = thisStepCovenant
+
+			previousStepCovenant.subscribe { previousState =>
+				val rba =
+					if isSpeculative then new RollbackAccessor {
+						override def rollback(isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (A, Boolean) => Unit): SubscriptableDuty[A] =
+							thisStepCovenant.fulfill(previousState, isWithinDoSiThEx)(onCompleted)
+					} else null
+				stateUpdater(previousState, rba).trigger(true) { newState =>
+					lastCommittedCovenant = thisStepCovenant
+					thisStepCovenant.fulfillHere(newState)()
+				}
+			}
+			thisStepCovenant
+		}
 	}
 
 
@@ -1622,10 +1793,17 @@ trait Doer { thisDoer =>
 	 *
 	 * Analogous to [[scala.concurrent.Promise]] but for [[Task]]s instead of a [[scala.concurrent.Future]]s.
 	 */
-	final class Commitment[A] extends SubscriptableTask[A] { thisCommitment =>
-		private var oResult: Maybe[Try[A]] = Maybe.empty
+	final class Commitment[A] private[Doer](fixedResult: Maybe[Try[A]]) extends SubscriptableTask[A] { thisCommitment =>
+		private var oResult: Maybe[Try[A]] = fixedResult
 		private var firstOnCompleteObserver: (Try[A] => Unit) | Null = null
 		private var onCompletedObservers: List[Try[A] => Unit] = Nil
+
+		def this() = this(Maybe.empty)
+
+		inline def maybeResult: Maybe[Try[A]] = {
+			assert(isInSequence)
+			oResult
+		}
 
 		/** The [[SubscriptableTask]] whose completion is controlled by this [[Commitment]].
 		 *
@@ -1675,29 +1853,43 @@ trait Doer { thisDoer =>
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
 		}
 
-		/** Completes this [[Commitment]] with the received `result`, unless it is already completed when the subscription is done.
-		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed at the time the completion is performed.
 		 *
-		 * @param result the value with which to complete this [[Commitment]].
+		 * Completion is performed:
+		 * - Synchronously (before this method returns) if `isWithinDoSiThEx` is true.
+		 * - Asynchronously as soon as possible otherwise.
+		 *
+		 * This method delegates to [[completeHere]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.
+		 *
+		 * @param result the value to complete this [[Commitment]] with.
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done. If `isWithinDoSiThEx` is true, the invocation is synchronous and done before this method returns.
-		 * */
-		def complete(result: Try[A], isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then completeHere(result)(onAlreadyCompleted)
-			else execute(completeHere(result)(onAlreadyCompleted))
-			thisCommitment
+		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		inline def complete(result: Try[A], isWithinDoSiThEx: Boolean = isInSequence)(onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
+			if isWithinDoSiThEx then completeHere(result)(onCompleted)
+			else {
+				execute(completeHere(result)(onCompleted))
+				thisCommitment
+			}
 		}
 
-		/** Completes this [[Commitment]] with the received `result`, unless it is already completed.
+		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed.
 		 *
-		 * Caution: Should be called within the $DoSiThEx
-		 * @param result the value with which to complete this [[Commitment]].
-		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed. The invocation is synchronous and done before this method returns.
-		 * */
-		def completeHere(result: Try[A])(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		 * This method must be called from within this [[Doer]]'s sequential executor.
+		 *
+		 * If this [[Commitment]] is not yet completed, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If it is already completed, the provided `result` is ignored.
+		 *
+		 * @param result the value to complete this [[Commitment]] with.
+		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the final result and a boolean indicating whether this [[Commitment]] was already completed.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		def completeHere(result: Try[A])(onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
 			assert(isInSequence)
 			oResult.fold {
 				oResult = Maybe.some(result)
+				onCompleted(result, false)
 				onCompletedObservers.foreach(_(result))
 				onCompletedObservers = Nil // unbind the observers list to help the garbage collector
 				if firstOnCompleteObserver ne null then {
@@ -1705,7 +1897,7 @@ trait Doer { thisDoer =>
 					firstOnCompleteObserver = null // unbind the observer reference to help the garbage collector
 				}
 			} { value =>
-				try onAlreadyCompleted(value)
+				try onCompleted(value, true)
 				catch {
 					case NonFatal(cause) => reportPanicException(cause)
 				}
@@ -1713,65 +1905,80 @@ trait Doer { thisDoer =>
 			thisCommitment
 		}
 
-
-		/** Completes this [[Commitment]] with the received `result`, unless it is already completed when the subscription is done.
-		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		/** Fulfills this [[Commitment]] with the given `result`, unless it has already been completed at the time the fulfillment is performed.
 		 *
-		 * @param result the value with which to complete this [[Commitment]].
+		 * Fulfillment is performed:
+		 * - Synchronously (before this method returns) if `isWithinDoSiThEx` is true.
+		 * - Asynchronously as soon as possible otherwise.
+		 *
+		 * This method delegates to [[completeHere]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.
+		 *
+		 * @param result the value to complete this [[Commitment]] with.
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done.
-		 * */
-		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then completeHere(Success(result))(onAlreadyCompleted)
+		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		inline def fulfill(result: A, isWithinDoSiThEx: Boolean = isInSequence)(onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
+			if isWithinDoSiThEx then completeHere(Success(result))(onCompleted)
 			else {
-				execute(completeHere(Success(result))(onAlreadyCompleted))
+				execute(completeHere(Success(result))(onCompleted))
 				this
 			}
 		}
 
-		/** Breaks this [[Commitment]] with the received `excuse`, unless it is already completed when the subscription is done.
-		 * Note that the subscription is synchronic when `isWithinDoSiThEx` is true, and asynchronic otherwise.
+		/** Breaks this [[Commitment]] with the given `excuse`, unless it has already been completed at the time the fulfillment is performed.
 		 *
-		 * @param excuse the [[Failure]] with which to break this [[Commitment]].
+		 * Fulfillment is performed:
+		 * - Synchronously (before this method returns) if `isWithinDoSiThEx` is true.
+		 * - Asynchronously as soon as possible otherwise.
+		 *
+		 * This method delegates to [[completeHere]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.
+		 *
+		 * @param excuse the [[Failure]] to break this [[Commitment]] with.
 		 * @param isWithinDoSiThEx $isWithinDoSiThEx
-		 * @param onAlreadyCompleted invoked if this [[Commitment]] is already completed when the subscription is done.
-		 * */
-		inline def break(excuse: Throwable, isWithinDoSiThEx: Boolean = isInSequence)(onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
-			if isWithinDoSiThEx then completeHere(Failure(excuse))(onAlreadyCompleted)
+		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
+		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 */
+		inline def break(excuse: Throwable, isWithinDoSiThEx: Boolean = isInSequence)(onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
+			if isWithinDoSiThEx then completeHere(Failure(excuse))(onCompleted)
 			else {
-				execute(completeHere(Failure(excuse))(onAlreadyCompleted))
+				execute(completeHere(Failure(excuse))(onCompleted))
 				this
 			}
 		}
 
 		/** Wires this [[Commitment]] to the completion of a [[SubscriptableTask]].
 		 *
-		 * Arranges this [[Commitment]] to be completed when `completingTask` completes, unless it was completed before.
-		 * If this [[Commitment]] is already completed when the subscription is done, the `onAlreadyCompleted` callback is invoked.
-		 * If this [[Commitment]] is completed by other means before the `completingTask` completes, the `onCompletedByOtherMeans` is invoked.
-		 * The invocation of `onAlreadyCompleted` is immediate when both `isWithinDoSiThEx` is true and the `completingTask` is already completed.
-		 * Note that the subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
+		 * Arranges this [[Commitment]] to be completed if `completingTask` completes, unless it was completed before.
+		 * Always one, and only one, of the two callback is invoked:
+		 *		- `onAlreadyCompleted` if this [[Commitment]] was already completed when the subscription is done.
+		 *		- `onCompletedLater` if this [[Commitment]] is completed after the subscription is done.
+		 * The subscription is synchronic if `isWithinDoSiThEx` is true, and asynchronic ASAP otherwise.
 		 *
 		 * @param completingTask the [[SubscriptableTask]] whose result will be used to complete this [[Commitment]].
 		 * @param isWithinDoSiThEx informs if this method was called within this [[Doer]].
-		 * @param onCompletedByOtherMeans invoked within this [[Doer]] if this [[Commitment]] is completed by other means before the `completingTask` completes.
-		 * @param onAlreadyCompleted invoked within this [[Doer]] if this [[Commitment]] is already completed when the subscription is done.
+		 * @param onCompletedLater invoked (within this [[Doer]]) when this [[Commitment]] is completed, but only if that happens after the subscription is done. The boolean parameter tells whenever this [[Commitment]] was already completed when `completingTask` completes. `false` means the completión was due to the completion of `completingTask`. `true` means the completion was due to other means.
+		 * @param onAlreadyCompleted invoked (within this [[Doer]]) if this [[Commitment]] was already fulfilled when the subscription is done. The subscription is immediate when `isWithinDoSiThEx` is true, and deferred otherwise.
 		 * @throws IllegalArgumentException if `completingTask` is the same instance as this [[Commitment]].
 		 */
-		def completeWith(completingTask: SubscriptableTask[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedByOtherMeans: Try[A] => Unit = _ => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		def completeWith(completingTask: SubscriptableTask[A], isWithinDoSiThEx: Boolean = isInSequence, onCompletedLater: (Try[A], Boolean) => Unit = (_, _) => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
 			if completingTask eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
-			if isWithinDoSiThEx then completeHereWith(completingTask, onCompletedByOtherMeans, onAlreadyCompleted)
-			else execute(completeHereWith(completingTask, onCompletedByOtherMeans, onAlreadyCompleted))
+			if isWithinDoSiThEx then completeHereWith(completingTask, onCompletedLater, onAlreadyCompleted)
+			else execute(completeHereWith(completingTask, onCompletedLater, onAlreadyCompleted))
 			this
 		}
 
-		private inline def completeHereWith(fulfillingTask: SubscriptableTask[A], onCompletedByOtherMeans: Try[A] => Unit = _ => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): Unit = {
+		private inline def completeHereWith(completingTask: SubscriptableTask[A], onCompletedLater: (Try[A], Boolean) => Unit = (_, _) => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): Unit = {
 			oResult.fold(
-				fulfillingTask.subscribe(result => completeHere(result)(onCompletedByOtherMeans))
+				completingTask.subscribe(result => completeHere(result)(onCompletedLater))
 			)(onAlreadyCompleted)
 		}
-
 	}
+
+	/** Creates a [[Commitment]] that is already completed.
+	 * @param immediateResult the immediate result that this [[Commitment]] yields. */
+	def Commitment_ready[A](immediateResult: Try[A]): Commitment[A] =
+		Commitment(Maybe.some(immediateResult))
 
 	/** Triggers the given [[Task]] and returns a [[Commitment]] that will be completed with the result of the triggered execution unless this [[Commitment]] is completed before by other means.
 	 *
@@ -1780,14 +1987,177 @@ trait Doer { thisDoer =>
 	 *
 	 * @param task the [[Task]] to be triggered.
 	 * @param isWithinDoSiThEx true if triggering occurs within the current [[Doer]] sequence.
+	 * @param onCompleted invoked when the returned [[Commitment]] is completed. The boolean parameters tells whenever it was already completed before the execution triggered by this method of the given [[Task]] completes or not.
 	 * @return a [[Commitment]] that will be completed with the result of the execution triggered by this method.
 	 */
-	def Commitment_triggerAndWire[A](task: Task[A], isWithinDoSiThEx: Boolean = isInSequence): Commitment[A] = {
+	def Commitment_triggerAndWire[A](task: Task[A], isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_: Try[A], _: Boolean) => ()): Commitment[A] = {
 		val commitment = new Commitment[A]()
-		task.trigger(isWithinDoSiThEx)(result => commitment.completeHere(result)())
+		task.trigger(isWithinDoSiThEx)(result => commitment.completeHere(result)(onCompleted))
 		commitment
 	}
 
+
+	/** A causal durability fence that serializes state transitions with rollback-aware semantics and durability guarantees.
+	 *
+	 * Each call to [[advance]] or [[advanceSpeculatively]] attempts a state transition causally anchored to the previous one — regardless of whether that step succeeded or failed.
+	 * Transitions are executed sequentially and complete the [[SubscriptableTask]] returned by the corresponding call.
+	 * If the previous step failed, the new transition is skipped and the corresponding [[SubscriptableTask]] is completed with the same failure.
+	 * Only successful transitions update the committed state.
+	 *
+	 * This fence ensures:
+	 *   - Causal sequencing of state transitions
+	 *   - Durability semantics via [[Task]] and [[Commitment]]
+	 *   - Speculative updates with rollback capability
+	 *   - Deterministic fulfillment of the [[SubscriptableTask]] returned by each call
+	 *   - Visibility is only advanced on successful completion
+	 *
+	 * @param initialState the initial state, already visible and committed
+	 */
+	class CausalDurabilityFence[A](initialState: Try[A]) {
+		private var lastCommittedCommitment: Commitment[A] = Commitment_ready(initialState)
+		private var lastEnqueuedCommitment: Commitment[A] = lastCommittedCommitment
+
+		/** Provides rollback capability for speculative updates.
+		 *
+		 * A [[RollbackAccessor]] is passed to speculative state transitions to allow them to cancel themselves before becoming visible.
+		 * Rollback is only effective if invoked before the update is committed.
+		 * If rollback is invoked too late, the accessor still complete the [[SubscriptableTask]] with the committed state
+		 * and signals that rollback was ineffective.
+		 */
+		trait RollbackAccessor {
+			/** Attempts to roll back the speculative update, restoring the previous visible state.
+			 *
+			 * The rollback is applied if "invoked" before the update it targets has completed.
+			 * The quotes around "invoked" reflect that, when `isWithinDoSiThEx` is false, the rollback attempt is scheduled asynchronously and may race with the update's completion.
+			 *
+			 * Regardless of timing, the [[SubscriptableTask]] originally returned by [[advanceSpeculatively]] is fulfilled:
+			 * - With the previous state if rollback succeeds
+			 * - With the committed state if rollback was too late
+			 *
+			 * The callback receives the resulting state and a flag indicating whether rollback was applied (`false`) or too late (`true`).
+			 *
+			 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late
+			 * @return the [[SubscriptableTask]] originally returned by [[advanceSpeculatively]], now fulfilled with either the committed or rolled-back state
+			 */
+			def rollback(isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): SubscriptableTask[A]
+		}
+
+		/** Returns a [[SubscriptableTask]] that yields the state which will become visible when the last enqueued update in flight — at the time of this call — completes.
+		 *
+		 * This represents the causal anchor for the subsequent transition: the state that the next update will be causally anchored to.
+		 * The returned [[SubscriptableTask]] may or may not be fulfilled yet.
+		 *
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableTask]] yielding the state that will become visible when the update in flight at the time of this call completes
+		 */
+		def causalAnchor(isWithinDoSiThEx: Boolean = isInSequence): SubscriptableTask[A] = {
+			if isWithinDoSiThEx then lastEnqueuedCommitment
+			else {
+				val wrapper = Commitment[A]()
+				execute(wrapper.completeWith(lastEnqueuedCommitment, true))
+				wrapper
+			}
+		}
+
+		/** The state to which the most recent step transitioned into, or a [[Failure]] if the transition failed.
+		 *
+		 * Rolled-back transitions yield the previous state.
+		 *
+		 * Must be called within this [[Doer]].
+		 *
+		 * @return the last transition result
+		 */
+		inline def committedNow: Try[A] = lastCommittedCommitment.maybeResult.get
+
+		/** Returns a [[SubscriptableTask]] that yields the currently visible state or failure.
+		 *
+		 * This reflects the state to which the most recent step transitioned into, or a [[Failure]] if the transition failed.
+		 * Rolled-back transitions yield the previous state.
+		 *
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableTask]] yielding the currently visible state or failure.
+		 */
+		def committedAsync(isWithinDoSiThEx: Boolean = isInSequence): SubscriptableTask[A] = {
+			if isWithinDoSiThEx then lastCommittedCommitment
+			else {
+				val wrapper = Commitment[A]()
+				execute(wrapper.completeWith(lastCommittedCommitment, true))
+				wrapper
+			}
+		}
+
+		/** Attempts a deterministic state transition anchored to the previous enqueued step.
+		 *
+		 * If the previous step failed, this transition is skipped and the [[SubscriptableTask]] corresponding to this call is completed with the same failure. Only successful transitions update the committed state.
+		 *
+		 * @param stateUpdater a function that computes the next state from the current one
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableTask]] that will be fulfilled with the new state once the update completes, or the previous failure due to which the update was skipped.
+		 */
+		def advance(stateUpdater: (A, Null) => Task[A], isWithinDoSiThEx: Boolean = isInSequence): SubscriptableTask[A] = {
+			val suAdapter = stateUpdater.asInstanceOf[(A, RollbackAccessor | Null) => Task[A]]
+			if isWithinDoSiThEx then step(suAdapter, false)
+			else {
+				val commitment = Commitment[A]()
+				execute(commitment.completeWith(step(suAdapter, false), true))
+				commitment
+			}
+		}
+
+
+		/** Attempts a speculative state transition anchored to the previous one.
+		 *
+		 * If the previous step failed, this transition is skipped and the returned [[SubscriptableTask]] is completed with the same failure.
+		 * If rollback is invoked before visibility, the update is canceled and the previous state is kept.
+		 * Only successful transitions update the committed state.
+		 *
+		 * @param stateUpdater a function that computes the next state from the current one, with rollback capability
+		 * @param isWithinDoSiThEx whether the caller is executing within the Doer's sequential executor
+		 * @return a [[SubscriptableTask]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped.
+		 */
+		def advanceSpeculatively(stateUpdater: (A, RollbackAccessor) => Task[A], isWithinDoSiThEx: Boolean = isInSequence): SubscriptableTask[A] = {
+			if isWithinDoSiThEx then step(stateUpdater, true)
+			else {
+				val covenant = Commitment[A]()
+				execute(covenant.completeWith(step(stateUpdater, true), true))
+				covenant
+			}
+		}
+
+		/** Internal method that performs the actual state transition.
+		 *
+		 * Handles both deterministic and speculative updates depending on the `isSpeculative` flag.
+		 * If the previous step failed, the update is not executed and the [[SubscriptableTask]] corresponding to this step
+		 * is completed with the same failure. The rollback accessor is instantiated only when needed to avoid unnecessary allocations.
+		 * Only successful transitions update the committed state.
+		 *
+		 * @param stateUpdater the transition function, optionally accepting a [[RollbackAccessor]]
+		 * @param isSpeculative whether the update is speculative and may be rolled back
+		 * @return a [[SubscriptableTask]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped.
+		 */
+		private def step(stateUpdater: (A, RollbackAccessor | Null) => Task[A], isSpeculative: Boolean): SubscriptableTask[A] = {
+			val previousStepCommitment = lastEnqueuedCommitment
+			val thisStepCommitment = Commitment[A]()
+			lastEnqueuedCommitment = thisStepCommitment
+
+			previousStepCommitment.subscribe {
+				case Success(previousState) =>
+					val rba =
+						if isSpeculative then new RollbackAccessor {
+							override def rollback(isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit): SubscriptableTask[A] =
+								thisStepCommitment.fulfill(previousState, isWithinDoSiThEx)(onCompleted)
+						} else null
+					stateUpdater(previousState, rba).trigger(true) { thisStepResult =>
+						lastCommittedCommitment = thisStepCommitment
+						thisStepCommitment.completeHere(thisStepResult)()
+					}
+				case Failure(e) =>
+					thisStepCommitment.break(e, true)()
+			}
+			thisStepCommitment
+		}
+	}
 
 	//////////////// Flow //////////////////////
 

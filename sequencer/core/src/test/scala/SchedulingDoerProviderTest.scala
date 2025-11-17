@@ -156,13 +156,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// UNDER DEVELOPMENT
 
-	test("Duty_schedules: Should execute supplier repeatedly for periodic schedules (fixed-delay)") {
+	test("joker") {
 		// Test with fixed-delay schedule
 		// Verify supplier is called multiple times with delay between completions
 		// Verify each result is yielded
+		true
 	}
-
-
 
 	////////// DOER INFRASTRUCTURE ////////
 
@@ -906,7 +905,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		import doer.*
 		val subscriptionAwareCovenant = doer.Covenant[Int]
-		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)()
+		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)((y, b) => if b then break(s"`subscriptionAwareCovenant` was already  fulfilled with $y"))
 		val checks = for {
 			_ <- Duty_mine { () =>
 				if testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
@@ -999,7 +998,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// The commitment that the `completionObserver` will see the completion of the `testedCommitment`.
 		val completionSeenCommitment = doer.Commitment[Int]
 		val completionObserver: Try[Int] => Unit =
-			x => completionSeenCommitment.complete(x)(y => println(s"`subscriptionAwareCommitment` was already completed with $y"))
+			x => completionSeenCommitment.complete(x)((y, b) => if b then break(s"`subscriptionAwareCommitment` was already completed with $y"))
 
 		// The task that checks what this test verifies.
 		val checks: doer.Task[Unit] = {
@@ -1042,6 +1041,307 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 		}
 	}
+
+	//// CAUSAL VISIBILITY FENCE
+
+	test("CausalVisibilityFence: `advance` should fulfill with updated state and preserve causal sequencing") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
+			// println(s"initial: $initial")
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence: CausalVisibilityFence[Int] = CausalVisibilityFence(initial)
+
+			val checks: Duty[Unit] = for {
+				expectedUpdate <- updater(initial)
+				anchorBefore <- fence.causalAnchor(true)
+				committedBefore <- fence.committedAsync(true)
+				update <- fence.advance { (a, _) =>
+					if a != initial then break(s"The first state received by the updates mismatch")
+					updater(a)
+				}
+				committedAfter <- fence.committedAsync(true)
+			} yield {
+				// println(s"yield: expectedUpdate: $expectedUpdate, anchor: $anchor, commitedBefore: $committedBefore, update: $update, committedAfter: $committedAfter")
+				if committedBefore != initial then break("Initial committed state mismatch")
+				else if anchorBefore != initial then break("Anchor did not reflect initial state")
+				else if update != expectedUpdate then break("The committed state yield by the `advance` method does not match the expected")
+				else if committedAfter != expectedUpdate then break("The committed state yield by the `commitedAsync` method does not match expected.")
+				else promise.trySuccess(())
+			}
+
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
+	test("CausalVisibilityFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalVisibilityFence(initial)
+
+			val checks = for {
+				anchor <- fence.causalAnchor()
+				committedBefore <- fence.committedAsync()
+				state <- fence.advanceSpeculatively { (a, rba) =>
+					if a != initial then break("Speculative update received wrong anchor")
+					updater(a).andThen { _ =>
+						rba.rollback(
+							true,
+							(v, wasTooLate) =>
+								if wasTooLate then break("Rollback was too late")
+								else if v != initial then break("Rollback did not restore initial state")
+						)
+					}
+				}
+				committedAfter <- fence.committedAsync()
+			} yield {
+				if anchor != initial then break("Anchor mismatch")
+				else if committedBefore != initial then break("Initial committed state mismatch")
+				else if committedAfter != initial then break("Rollback did not restore committed state")
+				else promise.trySuccess(())
+			}
+
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
+	test("CausalVisibilityFence: rollback after commit should be ignored") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: String, updater: String => Duty[String]) =>
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalVisibilityFence[String](initial)
+
+			val checks = for {
+				state <- fence.advanceSpeculatively { (a, rba) =>
+					updater(a)
+						.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
+						// ensure `rollback` is called after the duty returned by stateUpdater is fulfilled.
+						.andThen { x =>
+							doer.execute {
+								rba.rollback(true, (v, wasTooLate) =>
+									if wasTooLate then promise.trySuccess(())
+									else break("Rollback should have been rejected")
+								)
+							}
+						}
+				}
+			} yield {
+				if state eq initial then break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$state`")
+			}
+
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
+	test("CausalVisibilityFence: multiple stepped advances should serialize and commit in order") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalVisibilityFence[Int](initial)
+
+			def loop(expectedState: Int, repetition: Int): Unit = {
+				if repetition == 9 then promise.trySuccess(())
+				else {
+					fence.advanceSpeculatively { (previousState, rba) =>
+						if previousState != expectedState then break(s"repetition #$repetition mismatch")
+						updater(previousState)
+					}.trigger(false)(newState => loop(newState, repetition + 1))
+				}
+			}
+
+			loop(initial, 0)
+			promise.future
+		}
+	}
+
+	test("CausalVisibilityFence: multiple simultaneous advances should serialize and commit in order") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalVisibilityFence[Int](initial)
+			val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => updater(previousState) }
+
+			def loop(previousState: Int, repetition: Int): Duty[List[Int]] = {
+				if repetition > 9 then Duty_ready(Nil)
+				else for {
+					nextState <- updater(previousState)
+					followingStates <- loop(nextState, repetition + 1)
+				} yield nextState :: followingStates
+			}
+
+			val expectedResultsDuty = loop(initial, 0)
+
+			val checks = for {
+				actualResults <- Duty_sequenceToArray(actualSteps)
+				expectedResults <- expectedResultsDuty
+			} yield {
+				// println(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
+				if actualResults.toList != expectedResults then break(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
+				else promise.trySuccess(())
+			}
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
+	//// CAUSAL DURABILITY FENCE
+
+	test("CausalDurabilityFence: `advance` should skip transition if failed, or commit updated state if successful") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Try[Int], updater: Int => Task[Int]) =>
+			// println(s"initial: $initial")
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence: CausalDurabilityFence[Int] = CausalDurabilityFence(initial)
+
+			fence.causalAnchor(false).trigger(false) { anchorBefore =>
+				if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
+			}
+
+			fence.committedAsync(false).trigger(false) { commitedBefore =>
+				if !(commitedBefore ==== initial) then break("Commited state before transition and previous state mismatch")
+			}
+
+			fence.advance { (previousState, _) =>
+				initial match {
+					case Failure(e) => break("A transition from a failed fence wasn't skipped")
+					case Success(initialState) => if previousState != initialState then break("Previous and initial state mismatch")
+				}
+				updater(previousState)
+			}.trigger(false) { actualState =>
+				initial match {
+					case failure: Failure[Int] =>
+						if !(actualState ==== failure) then break("A transition attempt when the fence is failed changed the fence's failure")
+						else promise.trySuccess(())
+					case Success(initialState) =>
+						updater(initialState).trigger(true) { expectedState =>
+							if !(actualState ==== expectedState) then break("Actual and expected state mismatch")
+
+							fence.committedAsync(true).trigger(true) { stateAfter =>
+								if stateAfter ==== expectedState then promise.trySuccess(())
+								else break("Commited state after transition is not the expected")
+							}
+						}
+				}
+			}
+
+			promise.future
+		}
+	}
+
+	test("CausalDurabilityFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Task[Int]) =>
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalDurabilityFence(Success(initial))
+
+			val checks = for {
+				anchor <- fence.causalAnchor().toDutyHardy
+				committedBefore <- fence.committedAsync().toDutyHardy
+				state <- fence.advanceSpeculatively { (previousState, rba) =>
+					if previousState != initial then break("Speculative update received wrong previous state")
+					updater(previousState).andThen { expectedResult =>
+						rba.rollback(
+							true,
+							(v, wasTooLate) =>
+								if wasTooLate then break("Rollback was too late")
+								else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
+						)
+					}
+				}.toDutyHardy
+				committedAfter <- fence.committedAsync().toDutyHardy
+			} yield {
+				if !(anchor ==== Success(initial)) then break("Initial anchor mismatch")
+				else if !(committedBefore ==== Success(initial)) then break("Initial committed state mismatch")
+				else if !(state ==== Success(initial)) then break("Rollback did not restore committed state")
+				else if !(committedAfter ==== Success(initial)) then break("Commited after did not match commited state")
+				else promise.trySuccess(())
+			}
+
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
+	test("CausalDurabilityFence: rollback after commit should be ignored") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		PropF.forAllNoShrinkF { (initial: String, updater: String => Task[String]) =>
+			println(s"Begin: initial=$initial")
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			val fence = CausalDurabilityFence[String](Success(initial))
+
+			val checks = for {
+				actualResult <- fence.advanceSpeculatively { (a, rba) =>
+					println(s"updater called")
+					updater(a)
+						.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
+						.andThen { x =>
+							println(s"updater about to complete")
+							// ensure `rollback` is called after the task returned by stateUpdater is fulfilled.
+							doer.execute {
+								println(s"about to rollback")
+								rba.rollback(true, (actualResult, wasTooLate) =>
+									if wasTooLate then promise.trySuccess(())
+									else break("Rollback should have been ignored")
+								)
+							}
+						}
+				}.toDutyHardy
+			} yield {
+				println(s"transition done")
+				actualResult match {
+					case Success(actualState) if actualState eq initial => break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$actualResult`")
+					case _ => // do nothing
+				}
+			}
+
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
 
 	//// SCHEDULING ////
 
