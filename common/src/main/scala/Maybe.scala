@@ -2,6 +2,7 @@ package readren.common
 
 import scala.compiletime.asMatchable
 
+/** TODO: try defining it as `opaque type Maybe[+A] = A | Null` instead. */
 final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 
 	inline def isEmpty: Boolean = value eq null

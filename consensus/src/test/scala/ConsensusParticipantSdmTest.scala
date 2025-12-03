@@ -48,7 +48,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	/** Id of a [[Node]]. Implements [[ConsensusParticipantSdm.ParticipantId]]. */
 	private type Id = String
 
-	private def nameOf(ordinal: BehaviorOrdinal): String = {
+	private def nameOf(ordinal: RoleOrdinal): String = {
 		ordinal match {
 			case STOPPED => "STOPPED"
 			case STARTING => "STARTING"
@@ -193,14 +193,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Task]]. The function is called within the replier's [[Node.sequencer]].
 			 * @return a [[netSequencer.Task]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
 			 * @throws RuntimeException if this [[Net]] does not contain the [[Node]]s identified with `inquirerId` and `replierId`. */
-			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Task[R]): netSequencer.Task[R] = {
+			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Duty[R]): netSequencer.Task[R] = {
 
 				if true then {
 					val inquirerIndex = indexOf(inquirerId)
 					val replierIndex = indexOf(replierId)
 					val inquirerNode = getNode(inquirerIndex)
 					assert(inquirerNode.sequencer.isInSequence)
-					val inquirerRole = nameOf(inquirerNode.participant.getBehaviorOrdinal)
+					val inquirerRole = nameOf(inquirerNode.participant.getRoleOrdinal)
 					val covenant = netSequencer.Covenant[(Try[R], RequestId)]()
 					netSequencer.execute {
 						lastProcessTimeoutSchedule.foreach(netSequencer.cancel)
@@ -237,13 +237,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							} else {
 								netSequencer.Duty_foreign(replierNode.sequencer) {
 									replierNode.sequencer.Duty_mineFlat { () =>
-										for reply <- call(replierNode).toDutyHardy yield reply -> nameOf(replierNode.participant.getBehaviorOrdinal)
+										for reply <- call(replierNode) yield reply -> nameOf(replierNode.participant.getRoleOrdinal)
 									}
 								}.map { case reply -> replierRole =>
 									scribe.trace(s"$inquirerId -> $replierId: $requestId:$requestDescription, received as $replierRole")
 									val response =
 										if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
-										else reply
+										else Success(reply)
 									val respondingDuty = netSequencer.Duty_mine[Unit] { () =>
 										covenant.fulfill((response, requestId))()
 										injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
@@ -280,9 +280,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				} else {
 					/// Simple implementation that always succeeds and adds no randomness
 					val replierNode = getNode(replierId)
-					replierNode.sequencer.Task_ownFlat[R] { () =>
+					replierNode.sequencer.Duty_mineFlat[R] { () =>
 						call(replierNode)
-					}.onBehalfOf(netSequencer)
+					}.onBehalfOf(netSequencer).toTask
 				}
 			}
 		}
@@ -321,14 +321,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private def injectConfigurationNoise(changeProbability: Float): Unit = {
 			assert(netSequencer.isInSequence)
 			determineNewConfig(changeProbability).foreach { newConfig =>
-				val configChangeRequestingTaskByNodeIndex =
-					for node <- nodeByIndex yield netSequencer.Task_foreign(node.sequencer)(
-						node.sequencer.Task_ownFlat(() =>
+				// For each node, create a duty that request a configuration change to the same newConfig.
+				val configChangeRequestingDutyByNodeIndex =
+					for node <- nodeByIndex yield netSequencer.Duty_foreign(node.sequencer)(
+						node.sequencer.Duty_mineFlat(() =>
 							node.clusterParticipant.messagesListener.onConfigurationChangeRequest(configNoiseInjection_count.toString, newConfig)
 						)
 					)
-				for configChangeReplies <- netSequencer.Duty_sequenceTasksToArray(configChangeRequestingTaskByNodeIndex) yield {
-					if !configChangeReplies.exists(r => r.isSuccess && r.get) then scribe.debug(s"Net: the configuration change request #$configNoiseInjection_count was not applied: ${configChangeReplies.mkString("[", ", ", "]")}")
+				// trigger all those duties in their respective node's sequencer
+				for configChangeReplies <- netSequencer.Duty_sequenceToArray(configChangeRequestingDutyByNodeIndex) do {
+					scribe.debug(s"Net: the configuration change request #$configNoiseInjection_count sent to each node completed with: ${configChangeReplies.zipWithIndex.mkString("[", ", ", "]")}")
 				}
 			}
 		}
@@ -380,46 +382,40 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param commandPayload The payload of the command to send.
 		 * @param attemptFlag tells the participant that will receive the command whether this is the first attempt, a redirect, or a fallback.
 		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
-		def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Task[Boolean] = {
-			if knownParticipants.isEmpty then return net.netSequencer.Task_successful(false)
+		def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Duty[Boolean] = {
+			if knownParticipants.isEmpty then return net.netSequencer.Duty_false
 			val receiverNode = targetParticipant
 			scribe.info(s"Client: Sent command:$commandPayload, attemptFlag:$attemptFlag, to:${receiverNode.myId}")
 			net.onClientCommandSent()
 
-			def retry(): net.netSequencer.Task[Boolean] = {
+			def retry(): net.netSequencer.Duty[Boolean] = {
 				alreadyTriedParticipants.addOne(targetParticipant.myId)
 				knownParticipants.find(p => !alreadyTriedParticipants.contains(p)).fold {
-					net.netSequencer.Task_successful(false)
+					net.netSequencer.Duty_false
 				} { chosen =>
 					targetParticipant = net.getNode(chosen)
 					sendsCommand(commandPayload, FALLBACK)
 				}
 			}
 
-			net.netSequencer.Task_foreign(receiverNode.sequencer)(receiverNode.sequencer.Task_ownFlat { () =>
+			net.netSequencer.Duty_foreign(receiverNode.sequencer)(receiverNode.sequencer.Duty_mineFlat { () =>
 				receiverNode.clusterParticipant.messagesListener.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
-			}).transformWith[Boolean] {
-				case Success(response) =>
-					response match {
-						case receiverNode.Processed(index, content) =>
-							scribe.info(s"Client: command `$commandPayload` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
-							alreadyTriedParticipants.clear()
-							net.netSequencer.Task_successful(true)
-						case receiverNode.RedirectTo(leaderId) =>
-							scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
-							targetParticipant = net.getNode(leaderId)
-							sendsCommand(commandPayload, REDIRECTED)
-						case receiverNode.Unable(behaviorOrdinal, otherParticipants) =>
-							scribe.info(s"Client: the participant ${receiverNode.myId} is unable to process the command `$commandPayload`.")
-							knownParticipants = otherParticipants.appended(targetParticipant.myId)
-							retry()
-						case receiverNode.InconsistentState(m) =>
-							scribe.info(s"Client: the participant ${receiverNode.myId} internal state become inconsistent. Detected when the command `$commandPayload` was processed.")
-							throw new NotImplementedError()
-					}
-				case Failure(e) =>
-					scribe.info(s"Client: the participant ${receiverNode.myId} failed to respond to the command `$commandPayload`:", e)
+			}).flatMap[Boolean] {
+				case receiverNode.Processed(index, content) =>
+					scribe.info(s"Client: command `$commandPayload` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
+					alreadyTriedParticipants.clear()
+					net.netSequencer.Duty_true
+				case receiverNode.RedirectTo(leaderId) =>
+					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
+					targetParticipant = net.getNode(leaderId)
+					sendsCommand(commandPayload, REDIRECTED)
+				case receiverNode.Unable(roleOrdinal, otherParticipants) =>
+					scribe.info(s"Client: the participant ${receiverNode.myId} is unable to process the command `$commandPayload`.")
+					knownParticipants = (otherParticipants + targetParticipant.myId).toIndexedSeq
 					retry()
+				case receiverNode.InconsistentState(m) =>
+					scribe.info(s"Client: the participant ${receiverNode.myId} internal state become inconsistent. Detected when the command `$commandPayload` was processed.")
+					throw new NotImplementedError()
 			}
 		}
 
@@ -429,7 +425,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				if predicate.apply(commandIndex) then net.netSequencer.Task_unit
 				else if retriesCounter > maxRetries then net.netSequencer.Task_failed(new AssertionError("The cluster got stuck unable to progress"))
 				else for {
-					wasProcessed <- sendsCommand(commandIndex)
+					wasProcessed <- sendsCommand(commandIndex).toTask
 					_ <- {
 						if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
 						else sendCommandLoop(commandIndex, retriesCounter + 1)
@@ -449,8 +445,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param index the [[RecordIndex]] of the first overwritten entry.
 		 * @param firstReplacedRecord the first stored [[Record]] that is removed.
 		 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
-		 * @param behaviorOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
-		def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+		 * @param roleOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
+		def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = ()
 
 		/** Called when a [[Record]] is appended to the log buffer. */
 		def onRecordAppended(record: Record, index: RecordIndex): Unit = ()
@@ -471,7 +467,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override type ClientId = String
 
 		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
-			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = ()
+			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = ()
 		}
 
 		private var initialNotificationListener: NotificationListener = new DefaultNotificationListener()
@@ -491,9 +487,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates this [[Node]]'s [[ConsensusParticipant]] service instance. */
-		def starts(stateMachineNeedsRestart: Boolean = false): sequencer.Duty[Unit] = {
+		def starts: sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
-				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe), stateMachineNeedsRestart)
+				_participant = ConsensusParticipant(clusterParticipant, storage, machine, List(initialNotificationListener, notificationScribe))
 			}
 		}
 
@@ -509,17 +505,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		object machine extends StateMachine {
 			var lastAppliedCommandIndex = 0
 
-			override def appliesClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Task[StateMachineResponse] = {
+			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.LatchedDuty[StateMachineResponse] = {
 				assert(sequencer.isInSequence)
 				lastAppliedCommandIndex += 1
 				assert(command.value == lastAppliedCommandIndex, s"command=$command, lastAppliedCommandIndex=$lastAppliedCommandIndex")
 
 				// TODO add delay
 				statesChangesListener.onCommandApplied(command, index)
-				sequencer.Task_successful(command.value)
+				sequencer.LatchedDuty_ready(command.value)
 			}
 
-			override def recoversIndexOfLastAppliedCommand: sequencer.Task[RecordIndex] = sequencer.Task_successful(0)
+			override def recoverIndexOfLastAppliedCommand: sequencer.LatchedDuty[RecordIndex] = sequencer.LatchedDuty_ready(0)
 		}
 
 		override def isEager: Boolean = false
@@ -535,12 +531,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def getInitialParticipants: Set[ParticipantId] = initialParticipants
 
-			override def setMessagesListener(listener: MessagesListener): Unit = {
+			override def setMessagesListener(listener: MessagesListener | Null): Unit = {
 				messagesListener = listener
 			}
 
-			override def onConfigurationChanged(requestId: ConfigChangeRequestId, includedParticipants: Set[ParticipantId]): Unit = {
-				scribe.trace(s"$boundParticipantId: onConfigurationChanged called with requestId: $requestId, participants: ${includedParticipants.mkString("[", ", ", "]")}")
+			override def onConfigurationChanged(change: ConfigChange): Unit = {
+				scribe.trace(s"$boundParticipantId: onConfigurationChanged called with `$change`")
 			}
 
 			extension (replierId: ParticipantId) {
@@ -551,7 +547,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"HowAreYou(inquirerTerm:$inquirerTerm)"
 					) { replierNode =>
-						replierNode.sequencer.Task_successful(replierNode.clusterParticipant.messagesListener.onHowAreYou(boundParticipantId, inquirerTerm))
+						replierNode.clusterParticipant.messagesListener.onHowAreYou(boundParticipantId, inquirerTerm)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -560,7 +556,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"ChooseALeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
 					) { replier =>
-						replier.clusterParticipant.messagesListener.onChooseALeader(inquirerId, inquirerInfo).toTask
+						replier.clusterParticipant.messagesListener.onChooseALeader(inquirerId, inquirerInfo)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -573,6 +569,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 			}
+
+			/** The implementation should return the identifiers of the participants that this [[ClusterParticipant]] optimistically suspect are members of the consensus set, excluding the bound one.
+			 * This method is called when the [[ConsensusParticipant]] that is [[STARTING]] or [[STOPPED]] has to respond [[Unable]] to a client. */
+			override def getOtherProbableParticipant: Set[Id] = ???
 		}
 
 		/**
@@ -581,11 +581,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		object storage extends Storage {
 			private[ConsensusParticipantSdmTest] var memory: WS = TestWorkspace()
 
-			override val loads: sequencer.Task[WS] = sequencer.Task_successful(memory) // TODO add a delay
+			override def load: sequencer.LatchedDuty[Try[WS]] = sequencer.LatchedDuty_ready(Success(memory)) // TODO add a delay
 
-			override def saves(workspace: WS): sequencer.Task[Unit] = {
+			override def save(workspace: WS): sequencer.LatchedDuty[Try[Unit]] = {
 				memory = workspace
-				sequencer.Task_unit // TODO add a delay
+				sequencer.LatchedDuty_ready(Doer.successUnit) // TODO add a delay
 			}
 		}
 
@@ -613,7 +613,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def getRecordAt(index: RecordIndex): Record = logBuffer((index - logBufferOffset).toInt)
 
-			override def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = {
+			def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = {
 				val fromIndex = (from - logBufferOffset).toInt
 				val untilIndex = (until - logBufferOffset).toInt
 				logBuffer.slice(fromIndex, untilIndex)
@@ -625,7 +625,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				statesChangesListener.onRecordAppended(record, index)
 			}
 
-			override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): RecordIndex = {
+			override def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): Unit = {
 				var storedIndex = (from - logBufferOffset).toInt
 				var newIndex = 0
 				var conflictFound = false
@@ -637,21 +637,20 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}
 				}
 				if conflictFound then {
-					statesChangesListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getBehaviorOrdinal)
+					statesChangesListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getRoleOrdinal)
 					logBuffer.takeInPlace(storedIndex)
 				}
 				while newIndex < records.size do {
 					appendRecord(records(newIndex))
 					newIndex += 1
 				}
-				logBufferOffset + logBuffer.size - 1
 			}
 
-			override def getLastConfigurationChange: ConfigurationChange = {
+			override def topConfigChange: ConfigChange = {
 				logBuffer.findLast {
-					case cc: ConfigurationChange => true
+					case cc: ConfigChange => true
 					case _ => false
-				}.get.asInstanceOf[ConfigurationChange]
+				}.get.asInstanceOf[ConfigChange]
 			}
 
 			override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = ()
@@ -665,31 +664,36 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				if index == -1 then 0 else index + _logBufferOffset
 			}
 
+			override def indexOfTopConfigChange: RecordIndex =
+				logBuffer.lastIndexWhere(_.isInstanceOf[ConfigChange])
+
+			override def indexOf(clientCommand: TestClientCommand): RecordIndex = 0
+
 			override def release(): Unit = ()
 		}
 
 		object notificationScribe extends NotificationListener {
-			override def onStarting(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}starting...")
+			override def onStarting(previous: RoleOrdinal, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}starting...")
 
-			override def onStarted(previous: BehaviorOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}started.")
+			override def onStarted(previous: RoleOrdinal, term: Term, isRestart: Boolean): Unit = scribe.info(s"$myId: ${if isRestart then "re" else ""}started.")
 
-			override def onBecameStopped(previous: BehaviorOrdinal, term: Term, motive: Throwable | Null): Unit =
+			override def onBecameStopped(previous: RoleOrdinal, term: Term, motive: Throwable | Null): Unit =
 				if motive eq null then scribe.info(s"$myId: became stopped from ${nameOf(previous)} during term $term because `stop` was called.")
 				else scribe.info(s"$myId: became stopped from ${nameOf(previous)} during term $term because:", motive)
 
-			override def onBecameIsolated(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from ${nameOf(previous)} during term $term.")
+			override def onBecameIsolated(previous: RoleOrdinal, term: Term): Unit = scribe.info(s"$myId: became isolated from ${nameOf(previous)} during term $term.")
 
-			override def onBecameCandidate(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became candidate from ${nameOf(previous)} during term $term.")
+			override def onBecameCandidate(previous: RoleOrdinal, term: Term): Unit = scribe.info(s"$myId: became candidate from ${nameOf(previous)} during term $term.")
 
-			override def onBecameFollower(previous: BehaviorOrdinal, term: Term, leaderId: Id): Unit = scribe.info(s"$myId: became follower of $leaderId from ${nameOf(previous)} during term $term")
+			override def onBecameFollower(previous: RoleOrdinal, term: Term, leaderId: Id): Unit = scribe.info(s"$myId: became follower of $leaderId from ${nameOf(previous)} during term $term")
 
-			override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = scribe.info(s"$myId: became leader of term $term from ${nameOf(previous)}")
+			override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = scribe.info(s"$myId: became leader of term $term from ${nameOf(previous)}")
 
-			override def onLeft(left: BehaviorOrdinal, term: Term): Unit = ()
+			override def onLeft(left: RoleOrdinal, term: Term): Unit = ()
 
 			override def onCommitIndexChange(previous: RecordIndex, current: RecordIndex): Unit = scribe.info(s"$myId: commitIndex changed from $previous to $current")
 
-			override def onConfigurationChangeApplied(currentBehavior: BehaviorOrdinal, currentTerm: Term, change: ConfigurationChange): Unit = scribe.info(s"$myId: configuration change applied: currentBehavior=$currentBehavior, currentTerm=$currentTerm, configChange=$change")
+			override def onConfigurationChangeApplied(currentRole: RoleOrdinal, currentTerm: Term, change: ConfigChange): Unit = scribe.info(s"$myId: configuration change applied: currentBehavior=$currentRole, currentTerm=$currentTerm, configChange=$change")
 		}
 	}
 
@@ -713,7 +717,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	private def startsAllNodes(net: Net): net.netSequencer.Duty[Array[Unit]] = {
 		val starters = for nodeIndex <- 0 until net.clusterSize yield {
 			val node = net.getNode(nodeIndex)
-			node.starts(false).onBehalfOf(net.netSequencer)
+			node.starts.onBehalfOf(net.netSequencer)
 		}
 		net.netSequencer.Duty_sequenceToArray(starters)
 	}
@@ -728,9 +732,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 			node.statesChangesListener = new NodeStateChangesListener() {
-				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
+				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = {
 					// "Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3"
-					if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
+					if roleOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
 				}
 
 				override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
@@ -779,7 +783,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 			new node.DefaultNotificationListener() {
-				override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
+				override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 					// Election Safety: at most one leader can be elected in a given term. §5.2
 					if leaderNodeByTerm.size < term then leaderNodeByTerm.addOne(node)
 					else if leaderNodeByTerm(term - 1) ne node then promise.tryFailure(new AssertionError(s"Node ${node.myId} became leader at term $term despite node ${leaderNodeByTerm(term - 1).myId} was a leader of the same term before"))
@@ -856,7 +860,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
-					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
+					override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 						if leaderNodeByTerm.size < term then leaderNodeByTerm.addOne(node)
 						else if leaderNodeByTerm(term - 1) ne node then promise.tryFailure(new AssertionError(s"Node ${node.myId} became leader at term $term despite node ${leaderNodeByTerm(term - 1).myId} was a leader of the same term before"))
 					}
@@ -889,8 +893,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				node.statesChangesListener = new NodeStateChangesListener() {
-					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, behaviorOrdinal: BehaviorOrdinal): Unit = {
-						if behaviorOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
+					override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = {
+						if roleOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
 					}
 				}
 				node.DefaultNotificationListener()
@@ -981,7 +985,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						}
 					}
 
-					override def onBecameLeader(previous: BehaviorOrdinal, term: Term): Unit = {
+					override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, node.storage.memory.firstEmptyRecordIndex)
 						// check that the log of the leader contains the records previously commited by all participants
 						for nodeIndex <- 0 until clusterSize do {

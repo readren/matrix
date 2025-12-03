@@ -908,9 +908,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)((y, b) => if b then break(s"`subscriptionAwareCovenant` was already  fulfilled with $y"))
 		val checks = for {
 			_ <- Duty_mine { () =>
-				if testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
+				if testedCovenant.isSubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 				testedCovenant.subscribe(subscriptionOnCompleteCallBack)
-				if !testedCovenant.isAlreadySubscribed(subscriptionOnCompleteCallBack) && testedCovenant.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
+				if !testedCovenant.isSubscribed(subscriptionOnCompleteCallBack) && testedCovenant.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done")
 				if !testedCovenant.isPending then break("`isPending` returned false despite no fulfillment was done")
 				if testedCovenant.isCompleted then break("`isCompleted` returned true despite no fulfillment was done")
 			}
@@ -1004,9 +1004,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val checks: doer.Task[Unit] = {
 			Task_ownFlat(() => f2(nat)).transformWith { f2AtNatResult =>
 				Task_ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
-					if testedCommitment.isAlreadySubscribed(completionObserver) then break("`isAlreadySubscribed` returned true despite no subscription was done")
+					if testedCommitment.isSubscribed(completionObserver) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 					testedCommitment.subscribe(completionObserver)
-					if !testedCommitment.isAlreadySubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done and the commitment is still pending.")
+					if !testedCommitment.isSubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done and the commitment is still pending.")
 					if !testedCommitment.isPending && completeWasNotCalled then break("`isPending` returned false despite no completion was done")
 					if testedCommitment.isCompleted && completeWasNotCalled then break("`isCompleted` returned true despite no completion was done")
 					testedCommitment.transformWith { testedCommitmentOutcome =>
@@ -1054,17 +1054,17 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence: CausalVisibilityFence[Int] = CausalVisibilityFence(initial)
+			val fence: CausalFence[Int] = CausalFence(initial)
 
 			val checks: Duty[Unit] = for {
 				expectedUpdate <- updater(initial)
-				anchorBefore <- fence.causalAnchor(true)
-				committedBefore <- fence.committedAsync(true)
+				anchorBefore <- fence.causalAnchor(true).intoDuty
+				committedBefore <- fence.committed(true).intoDuty
 				update <- fence.advance { (a, _) =>
 					if a != initial then break(s"The first state received by the updates mismatch")
-					updater(a)
-				}
-				committedAfter <- fence.committedAsync(true)
+					Covenant_triggerAndWire(updater(a))
+				}.intoDuty
+				committedAfter <- fence.committed(true).intoDuty
 			} yield {
 				// println(s"yield: expectedUpdate: $expectedUpdate, anchor: $anchor, commitedBefore: $committedBefore, update: $update, committedAfter: $committedAfter")
 				if committedBefore != initial then break("Initial committed state mismatch")
@@ -1088,23 +1088,23 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalVisibilityFence(initial)
+			val fence = CausalFence(initial)
 
 			val checks = for {
 				anchor <- fence.causalAnchor()
-				committedBefore <- fence.committedAsync()
+				committedBefore <- fence.committed()
 				state <- fence.advanceSpeculatively { (a, rba) =>
 					if a != initial then break("Speculative update received wrong anchor")
-					updater(a).andThen { _ =>
+					Covenant_triggerAndWire(updater(a).andThen { _ =>
 						rba.rollback(
 							true,
 							(v, wasTooLate) =>
 								if wasTooLate then break("Rollback was too late")
 								else if v != initial then break("Rollback did not restore initial state")
 						)
-					}
+					})
 				}
-				committedAfter <- fence.committedAsync()
+				committedAfter <- fence.committed()
 			} yield {
 				if anchor != initial then break("Anchor mismatch")
 				else if committedBefore != initial then break("Initial committed state mismatch")
@@ -1126,21 +1126,23 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalVisibilityFence[String](initial)
+			val fence = CausalFence[String](initial)
 
 			val checks = for {
 				state <- fence.advanceSpeculatively { (a, rba) =>
-					updater(a)
-						.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
-						// ensure `rollback` is called after the duty returned by stateUpdater is fulfilled.
-						.andThen { x =>
-							doer.execute {
-								rba.rollback(true, (v, wasTooLate) =>
-									if wasTooLate then promise.trySuccess(())
-									else break("Rollback should have been rejected")
-								)
+					Covenant_triggerAndWire(
+						updater(a)
+							.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
+							// ensure `rollback` is called after the duty returned by primaryStateUpdater is fulfilled.
+							.andThen { x =>
+								doer.execute {
+									rba.rollback(true, (v, wasTooLate) =>
+										if wasTooLate then promise.trySuccess(())
+										else break("Rollback should have been rejected")
+									)
+								}
 							}
-						}
+					)
 				}
 			} yield {
 				if state eq initial then break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$state`")
@@ -1160,14 +1162,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalVisibilityFence[Int](initial)
+			val fence = CausalFence[Int](initial)
 
 			def loop(expectedState: Int, repetition: Int): Unit = {
 				if repetition == 9 then promise.trySuccess(())
 				else {
 					fence.advanceSpeculatively { (previousState, rba) =>
 						if previousState != expectedState then break(s"repetition #$repetition mismatch")
-						updater(previousState)
+						Covenant_triggerAndWire(updater(previousState))
 					}.trigger(false)(newState => loop(newState, repetition + 1))
 				}
 			}
@@ -1186,8 +1188,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalVisibilityFence[Int](initial)
-			val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => updater(previousState) }
+			val fence = CausalFence[Int](initial)
+			val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => Covenant_triggerAndWire(updater(previousState)) }
 
 			def loop(previousState: Int, repetition: Int): Duty[List[Int]] = {
 				if repetition > 9 then Duty_ready(Nil)
@@ -1214,7 +1216,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// CAUSAL DURABILITY FENCE
 
-	test("CausalDurabilityFence: `advance` should skip transition if failed, or commit updated state if successful") {
+	test("CausalStuckableFence: `advance` should skip transition if failed, or commit updated state if successful") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1224,13 +1226,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence: CausalDurabilityFence[Int] = CausalDurabilityFence(initial)
+			val fence: CausalStuckableFence[Int] = CausalStuckableFence(initial)
 
 			fence.causalAnchor(false).trigger(false) { anchorBefore =>
 				if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
 			}
 
-			fence.committedAsync(false).trigger(false) { commitedBefore =>
+			fence.committed(false).trigger(false) { commitedBefore =>
 				if !(commitedBefore ==== initial) then break("Commited state before transition and previous state mismatch")
 			}
 
@@ -1239,7 +1241,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					case Failure(e) => break("A transition from a failed fence wasn't skipped")
 					case Success(initialState) => if previousState != initialState then break("Previous and initial state mismatch")
 				}
-				updater(previousState)
+				Maybe.some(Commitment_triggerAndWire(updater(previousState)))
 			}.trigger(false) { actualState =>
 				initial match {
 					case failure: Failure[Int] =>
@@ -1249,7 +1251,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						updater(initialState).trigger(true) { expectedState =>
 							if !(actualState ==== expectedState) then break("Actual and expected state mismatch")
 
-							fence.committedAsync(true).trigger(true) { stateAfter =>
+							fence.committed(true).trigger(true) { stateAfter =>
 								if stateAfter ==== expectedState then promise.trySuccess(())
 								else break("Commited state after transition is not the expected")
 							}
@@ -1261,7 +1263,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalDurabilityFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
+	test("CausalStuckableFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1270,23 +1272,25 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalDurabilityFence(Success(initial))
+			val fence = CausalStuckableFence(Success(initial))
 
 			val checks = for {
 				anchor <- fence.causalAnchor().toDutyHardy
-				committedBefore <- fence.committedAsync().toDutyHardy
+				committedBefore <- fence.committed().toDutyHardy
 				state <- fence.advanceSpeculatively { (previousState, rba) =>
 					if previousState != initial then break("Speculative update received wrong previous state")
-					updater(previousState).andThen { expectedResult =>
-						rba.rollback(
-							true,
-							(v, wasTooLate) =>
-								if wasTooLate then break("Rollback was too late")
-								else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
-						)
-					}
+					Maybe.some(Commitment_triggerAndWire(
+						updater(previousState).andThen { expectedResult =>
+							rba.rollback(
+								true,
+								(v, wasTooLate) =>
+									if wasTooLate then break("Rollback was too late")
+									else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
+							)
+						}
+					))
 				}.toDutyHardy
-				committedAfter <- fence.committedAsync().toDutyHardy
+				committedAfter <- fence.committed().toDutyHardy
 			} yield {
 				if !(anchor ==== Success(initial)) then break("Initial anchor mismatch")
 				else if !(committedBefore ==== Success(initial)) then break("Initial committed state mismatch")
@@ -1300,7 +1304,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalDurabilityFence: rollback after commit should be ignored") {
+	test("CausalStuckableFence: rollback after commit should be ignored") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1310,24 +1314,26 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = CausalDurabilityFence[String](Success(initial))
+			val fence = CausalStuckableFence[String](Success(initial))
 
 			val checks = for {
 				actualResult <- fence.advanceSpeculatively { (a, rba) =>
 					println(s"updater called")
-					updater(a)
-						.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
-						.andThen { x =>
-							println(s"updater about to complete")
-							// ensure `rollback` is called after the task returned by stateUpdater is fulfilled.
-							doer.execute {
-								println(s"about to rollback")
-								rba.rollback(true, (actualResult, wasTooLate) =>
-									if wasTooLate then promise.trySuccess(())
-									else break("Rollback should have been ignored")
-								)
+					Maybe.some(Commitment_triggerAndWire(
+						updater(a)
+							.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
+							.andThen { x =>
+								println(s"updater about to complete")
+								// ensure `rollback` is called after the task returned by primaryStateUpdater is fulfilled.
+								doer.execute {
+									println(s"about to rollback")
+									rba.rollback(true, (actualResult, wasTooLate) =>
+										if wasTooLate then promise.trySuccess(())
+										else break("Rollback should have been ignored")
+									)
+								}
 							}
-						}
+					))
 				}.toDutyHardy
 			} yield {
 				println(s"transition done")
