@@ -2,10 +2,8 @@ package readren.common
 
 import scribe.*
 import scribe.file.*
-import scribe.filter.Filter
 import scribe.format.*
 import scribe.format.FormatBlock.{ClassAndMethodName, ColumnNumber, LineNumber}
-import scribe.handler.LogHandler
 import scribe.modify.LogModifier
 import scribe.output.{LogOutput, TextOutput}
 

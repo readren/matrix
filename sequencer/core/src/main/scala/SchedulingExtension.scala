@@ -180,7 +180,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				if maxRetries > 0 then retriedOnTimeout(limit, maxRetries - 1)
 				else Duty_ready(Maybe.empty)
 			} { r =>
-				Duty_Ready(Maybe.some(r))
+				Duty_ready(Maybe.some(r))
 			})
 		}
 	}

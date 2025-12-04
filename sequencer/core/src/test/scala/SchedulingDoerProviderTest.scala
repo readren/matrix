@@ -1042,9 +1042,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	//// CAUSAL VISIBILITY FENCE
+	//// CAUSAL FENCE
 
-	test("CausalVisibilityFence: `advance` should fulfill with updated state and preserve causal sequencing") {
+	test("CausalFence: `advance` should fulfill with updated state and preserve causal sequencing") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1056,15 +1056,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val fence: CausalFence[Int] = CausalFence(initial)
 
-			val checks: Duty[Unit] = for {
-				expectedUpdate <- updater(initial)
-				anchorBefore <- fence.causalAnchor(true).intoDuty
-				committedBefore <- fence.committed(true).intoDuty
+			val checks: LatchedDuty[Unit] = for {
+				expectedUpdate <- Covenant_triggerAndWire(updater(initial))
+				anchorBefore <- fence.causalAnchor(true)
+				committedBefore <- fence.committed(true)
 				update <- fence.advance { (a, _) =>
 					if a != initial then break(s"The first state received by the updates mismatch")
 					Covenant_triggerAndWire(updater(a))
-				}.intoDuty
-				committedAfter <- fence.committed(true).intoDuty
+				}
+				committedAfter <- fence.committed(true)
 			} yield {
 				// println(s"yield: expectedUpdate: $expectedUpdate, anchor: $anchor, commitedBefore: $committedBefore, update: $update, committedAfter: $committedAfter")
 				if committedBefore != initial then break("Initial committed state mismatch")
@@ -1072,6 +1072,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				else if update != expectedUpdate then break("The committed state yield by the `advance` method does not match the expected")
 				else if committedAfter != expectedUpdate then break("The committed state yield by the `commitedAsync` method does not match expected.")
 				else promise.trySuccess(())
+				()
 			}
 
 			checks.triggerAndForget()
@@ -1079,7 +1080,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalVisibilityFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
+	test("CausalFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1117,7 +1118,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalVisibilityFence: rollback after commit should be ignored") {
+	test("CausalFence: rollback after commit should be ignored") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1153,7 +1154,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalVisibilityFence: multiple stepped advances should serialize and commit in order") {
+	test("CausalFence: multiple stepped advances should serialize and commit in order") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1179,7 +1180,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("CausalVisibilityFence: multiple simultaneous advances should serialize and commit in order") {
+	test("CausalFence: multiple simultaneous advances should serialize and commit in order") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -1214,7 +1215,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	//// CAUSAL DURABILITY FENCE
+	//// CAUSAL STUCKABLE FENCE
 
 	test("CausalStuckableFence: `advance` should skip transition if failed, or commit updated state if successful") {
 		val generators = getGenerators
