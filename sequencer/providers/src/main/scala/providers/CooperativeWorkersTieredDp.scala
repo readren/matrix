@@ -67,7 +67,10 @@ abstract class CooperativeWorkersTieredDp(
 		new TieredDoerImpl(tag, false)
 	}
 
-	override def currentDoer: Maybe[TieredDoerFacade] = super.currentDoer.asInstanceOf[Maybe[TieredDoerFacade]]
+	def provide(tag: Tag, withHighPriority: Boolean): TieredDoerFacade = {
+		startAllWorkersIfNotAlready()
+		new TieredDoerImpl(tag, withHighPriority)
+	}
 
-	def provide(tag: Tag, withHighPriority: Boolean): TieredDoerFacade = new TieredDoerImpl(tag, withHighPriority)
+	override def currentDoer: Maybe[TieredDoerFacade] = super.currentDoer.asInstanceOf[Maybe[TieredDoerFacade]]
 }

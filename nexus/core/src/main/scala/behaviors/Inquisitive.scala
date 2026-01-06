@@ -81,7 +81,7 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 		pendingQuestions.getOrElse(answer.toQuestion, null) match {
 			case covenant: agent.doer.Covenant[A] =>
 				pendingQuestions.subtractOne(answer.toQuestion)
-				covenant.fulfill(answer)()
+				covenant.fulfill(answer)
 				Continue
 			case null =>
 				unaskedAnswersBehavior.handle(answer)

@@ -54,7 +54,7 @@ class IncommunicableDelegate(override val owner: ParticipantService, override va
 			myReplacement.initializeStateBasedOn(this)
 			// notify
 			owner.getMembershipScopedBehavior.onPeerCommunicabilityChange(myReplacement, this.communicationStatus)
-			Maybe.some(myReplacement)
+			Maybe(myReplacement)
 		} else Maybe.empty
 	}
 

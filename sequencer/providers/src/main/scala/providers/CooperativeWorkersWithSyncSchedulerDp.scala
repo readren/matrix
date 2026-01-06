@@ -33,6 +33,11 @@ object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSch
 }
 
 
+/** Adds scheduling features to the [[CooperativeWorkersDp]].
+ * The scheduling information is operated by the current thread by means of atomic and synchronization primitives.
+ * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
+ * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
+ */
 abstract class CooperativeWorkersWithSyncSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
@@ -40,8 +45,11 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
 ) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
-	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
+	/**
+	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed.
+	 * IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	private class ScheduleImpl(val owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {
+		/** Memorizes the serial number produced when this [[ScheduleImpl]] instance was activated (applied to [[SchedulingDoerImpl.scheduleSequentially]]). */
 		val activationSerial: AtomicLong = AtomicLong(Long.MaxValue)
 
 		override def wasActivated: Boolean = activationSerial.get() != Long.MaxValue
@@ -58,25 +66,28 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		/** Executes the routine associated to this [[ScheduleImpl]] */
 		inline def execute(): Unit = runnable.run()
 
+		/** Adds this [[ScheduleImpl]] instance to the [[priorityQueue]] at the specified time. */
 		def program(scheduledTime: MilliTime): Unit = {
 			this.scheduledTime = scheduledTime
-			thisProvider synchronized {
+			val previousPriorityQueueSize = thisProvider synchronized {
+				val previousSize = priorityQueue.size
 				priorityQueue.add(this)
 				earliestScheduledTime = priorityQueue.peek.scheduledTime
+				previousSize
 			}
+			if previousPriorityQueueSize == 0 then wakeUpAWorkerIfAllSleeping()
 		}
 
 		override def toString: String =
-			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, $interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
+			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
 	}
 
 	/** The priority queue used to memorize the [[ScheduleImpl]] instances and sort them by its next scheduled-time. */
 	private val priorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
 
-	/** Memorizes the earliest scheduled-time of all the [[ScheduleImpl]] instances.
-	 * The only purpose of this variable is to improve efficiency by minimizing calls to [[priorityQueue.peek]].
-	 * Updates should occur within synchronized sections to avoid race conditions.
-	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed. */
+	/** Memorizes the earliest scheduled-time of all the [[ScheduleImpl]] instances or [[clock.MaxValue]] if the [[priorityQueue]] is empty.
+	 * The only purpose of this variable is to improve efficiency by minimizing synchronized accesses to [[priorityQueue.peek]].
+	 * Updates should occur within synchronized sections to avoid race conditions. */
 	@volatile private var earliestScheduledTime: MilliTime = clock.MaxValue
 
 
@@ -143,7 +154,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		 * If called near a scheduled-time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
 		 * If called within the [[Thread]] assigned to this [[Doer]], it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
 		override def cancelAll(): Unit = {
-			activationSerialAtLastCancelAll = lastActivationSerial.get
+			activationSerialAtLastCancelAll = lastActivationSerial.get // after this line is executed, no routine of already activated schedules belonging to this SchedulingDoerImpl is executed.
 			thisProvider synchronized {
 				var index = priorityQueue.size
 				while index > 0 do {
@@ -169,10 +180,17 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
-	override def lull(worker: Worker): Unit = {
-		val durationUntilEarliestScheduledTime = earliestScheduledTime - clock.currentTimeRoundedDown
-		if durationUntilEarliestScheduledTime > 0 then worker.wait(durationUntilEarliestScheduledTime)
-		else skippedLullsCounter += 1
+	override def lull(worker: Worker, numberOfNonSleepingWorkers: Int): Unit = {
+		if numberOfNonSleepingWorkers > 0 then worker.wait()
+		else {
+			val est = earliestScheduledTime
+			if est == clock.MaxValue then worker.wait()
+			else {
+				val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
+				if durationUntilEarliestScheduledTime > 0 then worker.wait(durationUntilEarliestScheduledTime)
+				else skippedLullsCounter += 1
+			}
+		}
 	}
 
 	override def pollNextDoer(): DoerImpl | Null = {

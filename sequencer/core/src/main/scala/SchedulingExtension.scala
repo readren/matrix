@@ -180,7 +180,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				if maxRetries > 0 then retriedOnTimeout(limit, maxRetries - 1)
 				else Duty_ready(Maybe.empty)
 			} { r =>
-				Duty_ready(Maybe.some(r))
+				Duty_ready(Maybe(r))
 			})
 		}
 	}
@@ -267,7 +267,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					if failedAttempts >= maxRetries then Duty_ready(Maybe.empty)
 					else loop(failedAttempts + 1)
 				} { a =>
-					Duty_ready(Maybe.some(a))
+					Duty_ready(Maybe(a))
 				})
 		}
 
@@ -324,10 +324,8 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class TimeLimitedDuty[A](duty: (A => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractDuty[Maybe[A]] {
 		override def engage(onComplete: Maybe[A] => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule => s
-				case _ => newDelaySchedule(limit1)
-			}
+
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			var hasElapsed = false
 			var hasCompleted = false
 			schedule(timer) { _ =>
@@ -341,7 +339,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				if (!hasElapsed) {
 					cancel(timer)
 					hasCompleted = true
-					onComplete(Maybe.some(a))
+					onComplete(Maybe(a))
 				}
 			}
 		}
@@ -352,10 +350,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class DelayedSupplierDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => A) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
-				case _ => newDelaySchedule(limit1)
-			}
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => onComplete(supplier(timer)))
 		}
 	}
@@ -365,10 +360,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class DelayedSupplierFlatDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Duty[A]) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
-				case _ => newDelaySchedule(limit1)
-			}
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
 		}
 	}
@@ -468,7 +460,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				if maxRetries > 0 then reattemptedOnTimeout(limit, maxRetries - 1)
 				else Task_successful(Maybe.empty)
 			} { r =>
-				Task_successful(Maybe.some(r))
+				Task_successful(Maybe(r))
 			})
 		}
 	}
@@ -555,7 +547,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					if failedAttempts >= maxRetries then Task_successful(Maybe.empty)
 					else loop(failedAttempts + 1)
 				} { a =>
-					Task_successful(Maybe.some(a))
+					Task_successful(Maybe(a))
 				})
 		}
 
@@ -642,10 +634,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class TimeLimitedTask[A](upChain: (Try[A] => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractTask[Maybe[A]] {
 		override def engage(onComplete: Try[Maybe[A]] => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
-				case _ => newDelaySchedule(limit1)
-			}
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			var hasElapsed = false
 			var hasCompleted = false
 			schedule(timer) { _ =>
@@ -660,7 +649,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					cancel(timer)
 					hasCompleted = true
 					tryA match {
-						case Success(a) => onComplete(Success(Maybe.some(a)))
+						case Success(a) => onComplete(Success(Maybe(a)))
 						case f: Failure[A] => onComplete(f.castTo[Maybe[A]])
 					}
 				}
@@ -673,10 +662,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
-				case _ => newDelaySchedule(limit1)
-			}
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => onComplete(supplier(timer)))
 		}
 	}
@@ -686,10 +672,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 */
 	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			val timer: Schedule = limit2 match {
-				case s: Schedule @unchecked => s
-				case _ => newDelaySchedule(limit1)
-			}
+			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
 		}
 	}

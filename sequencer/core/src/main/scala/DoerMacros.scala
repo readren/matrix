@@ -16,7 +16,7 @@ object DoerMacros {
 				new Runnable {
 					override def run(): Unit = $dutyExpr.engagePortal($onCompleteExpr)
 
-					override def toString: String = s"{ ${$dutyExpr.toString}${$sourceInfo}"
+					override def toString: String = s"${$dutyExpr.toString}${$sourceInfo}"
 				}
 			}
 		}
@@ -24,7 +24,7 @@ object DoerMacros {
 		isWithinDoSiThExExpr.value match {
 			case Some(isWithinDoSiThEx) =>
 				if isWithinDoSiThEx then '{
-					assert($doerExpr.isInSequence, s"The current thread does not correspond to this doer: this=${$doerExpr}, current=${$doerExpr.current}")
+					$doerExpr.checkWithin()
 					$dutyExpr.engagePortal($onCompleteExpr)
 				}
 				else '{ $doerExpr.executeSequentially($runnable) }
@@ -32,7 +32,7 @@ object DoerMacros {
 			case None =>
 				'{
 					if $isWithinDoSiThExExpr then {
-						assert($doerExpr.isInSequence, s"The current thread does not correspond to this doer: this=${$doerExpr}, current=${$doerExpr.current}")
+						$doerExpr.checkWithin()
 						$dutyExpr.engagePortal($onCompleteExpr)
 					}
 					else $doerExpr.executeSequentially($runnable)

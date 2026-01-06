@@ -3,7 +3,7 @@ package readren.common
 import scala.compiletime.asMatchable
 
 /** TODO: try defining it as `opaque type Maybe[+A] = A | Null` instead. */
-final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
+final class Maybe[+A](val value: AnyRef | Null) extends AnyVal {
 
 	inline def isEmpty: Boolean = value eq null
 
@@ -25,11 +25,17 @@ final class Maybe[+A](private val value: AnyRef | Null) extends AnyVal {
 	inline def fold[B](inline ifEmpty: => B)(inline f: A => B): B =
 		if isEmpty then ifEmpty else f(value.asInstanceOf[A])
 
+	inline def orElse[B >: A](maybeB: Maybe[B]): Maybe[B] =
+		if isEmpty then maybeB else this
+
 	inline def getOrElse[B >: A](default: B): B =
 		if isEmpty then default else value.asInstanceOf[A]
 
 	inline def exists(inline predicate: A => Boolean): Boolean =
 		isDefined && predicate(value.asInstanceOf[A])
+
+	inline def is(other: AnyRef): Boolean =
+		this.value eq other
 
 	inline def isEqualTo[A1>:A](other: Maybe[A1])(using CanEqual[A, A1]): Boolean = {
 		other.fold(this.isEmpty)(this.contains)
@@ -67,7 +73,7 @@ object Maybe {
 		else new Maybe(aRef)
 
 	def liftPartialFunction[A, B](pf: PartialFunction[A, B]): A => Maybe[B] =
-		(a: A) => if pf.isDefinedAt(a) then some(pf.apply(a)) else empty
+		(a: A) => if pf.isDefinedAt(a) then Maybe.some(pf.apply(a)) else empty
 
 	given [A, B] => CanEqual[A, B] => CanEqual[Maybe[A], Maybe[B]] = CanEqual.derived
 }

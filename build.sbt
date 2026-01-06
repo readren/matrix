@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.7.3"
+ThisBuild / scalaVersion := "3.7.4"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",
@@ -22,7 +22,7 @@ ThisBuild / scalacOptions ++= Seq(
 //	"-deprecation",
 	"-feature",
 	"-explain",
-	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
+	//	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 )
 
 lazy val common = (project in file("common"))

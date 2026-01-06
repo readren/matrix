@@ -266,7 +266,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	private def acceptClientConnections(serverChannel: AsynchronousServerSocketChannel): Unit = {
 		try serverChannel.accept(null, new CompletionHandler[AsynchronousSocketChannel, Null]() {
 			override def completed(channel: AsynchronousSocketChannel, attachment: Null): Unit = {
-				val oClientAddress = try Maybe.some(channel.getRemoteAddress) catch {
+				val oClientAddress = try Maybe(channel.getRemoteAddress) catch {
 					case NonFatal(_) => Maybe.empty
 				}
 				val channelId = ChannelId(ACCEPTED, oClientAddress)
@@ -313,7 +313,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 		assert(delegateByAddress.contains(peerContactAddress))
 		connectTo(peerContactAddress) {
 			case Success(channel) =>
-				val oChannelLocalAddress = try Maybe.some(channel.getLocalAddress) catch {
+				val oChannelLocalAddress = try Maybe(channel.getLocalAddress) catch {
 					case NonFatal(_) => Maybe.empty
 				}
 				val channelId = ChannelId(INITIATED, oChannelLocalAddress)
@@ -322,7 +322,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
 					if relievedConnectingDelegate eq currentDelegate then {
-						val oPeerContactAddress = Maybe.some(peerContactAddress)
+						val oPeerContactAddress = Maybe(peerContactAddress)
 						val receiver = buildReceiverFor(channel, () => oPeerContactAddress, channelId)
 						relievedConnectingDelegate.replaceMyselfWithACommunicableDelegate(channel, receiver, channelId)
 							.get.startConversationAsClient(isReconnection)
@@ -334,7 +334,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 						} else {
 							scribe.warn(s"$myAddress: Closing the brand-new connection to $peerContactAddress that I had initiated recently, because the situation changed.")
 						}
-						closeDiscardedChannelGracefully(channel, buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId), channelId)
+						closeDiscardedChannelGracefully(channel, buildTransmitterFor(channel, Maybe(peerContactAddress), channelId), channelId)
 					}
 				}
 			case Failure(exc) =>

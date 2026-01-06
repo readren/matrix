@@ -34,7 +34,7 @@ class SequentialUnboundedFifo[M](owner: ActantCore[M, ?]) extends Inqueue[M], In
 	override def withdraw(): Maybe[M] = {
 		doer.checkWithin()
 		if queue.isEmpty then Maybe.empty
-		else Maybe.some(queue.pollFirst())
+		else Maybe(queue.pollFirst())
 	}
 
 	override def maybeNonEmpty: Boolean = {

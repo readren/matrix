@@ -4,7 +4,7 @@ import munit.ScalaCheckEffectSuite
 
 class MaybeTest extends ScalaCheckEffectSuite {
 	test("A Maybe, when not empty, should behave as non-empty") {
-		val oneMaybe: Maybe[1] = Maybe.some(1)
+		val oneMaybe: Maybe[1] = Maybe(1)
 		assert(oneMaybe.isDefined)
 	}
 	test("A Maybe, when empty, should behave as empty") {
@@ -13,7 +13,7 @@ class MaybeTest extends ScalaCheckEffectSuite {
 		assert(Maybe[String](null).isEmpty)
 	}
 	test("Maybe.some(x).get should return x") {
-		assert(Maybe.some(7).get == 7)
-		assert(Maybe.some("seven").get == "seven")
+		assert(Maybe(7).get == 7)
+		assert(Maybe("seven").get == "seven")
 	}
 }

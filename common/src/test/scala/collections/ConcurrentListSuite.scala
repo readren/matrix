@@ -1,9 +1,11 @@
-package readren.common.common.collections
+package readren.common
+package collections
+
+import collections.ConcurrentList
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import readren.common.collections.ConcurrentList
 
 import java.util.concurrent.locks.LockSupport
 import java.util.concurrent.{ConcurrentHashMap, Executors}

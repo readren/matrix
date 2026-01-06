@@ -9,10 +9,12 @@ import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer
 
+import java.util
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.compiletime.uninitialized
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.Duration
 import scala.concurrent.{Future, Promise}
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
@@ -38,6 +40,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	private var sharedGeneratorsFixture: Fixture[GeneratorsForDoerTests[D]] = uninitialized
 
 	@volatile private var observingSession: Int = 0
+
+	/** Executions that start more than this number or nanos after [[SchedulingExtension.cancelAll]] was called outside the [[Doer]]'s thread will fail the test. */
+	protected val schedulerMaximumToleratedNanosBetweenCancellationAndExecution: Long
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	protected def buildDoerProvider: DP
@@ -78,6 +83,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 
 	//// Suite lifecycle ////
+
+	override val munitTimeout: Duration = scala.concurrent.duration.Duration(240, "seconds")
 
 	/**
 	 * Creates instances of the classes under test that can be re-used by many test.
@@ -160,10 +167,239 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// Test with fixed-delay schedule
 		// Verify supplier is called multiple times with delay between completions
 		// Verify each result is yielded
+		val generators = getGenerators
+		import generators.given
+
 		true
 	}
 
+	/**
+	 * Test invariants of [[CausalFence]] ensuring that synchronous consumers of the [[LatchedDuty]] returned by [[advance]] observe the up‑to‑date state deterministically.
+	 *
+	 * Unique checks in this test:
+	 *  - Consumers subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *
+	 *  - A consumer subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *
+	 *  - Game‑changing invariant: Immediately after an [[advance]] call, there are no other advances in flight except the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *
+	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
+	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
+	 */
+	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using hoping duties") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		def buildDuty(serial: Int, hops: Int): Duty[Int] = {
+			if hops <= 0 then Duty_ready(serial)
+			else Covenant[Int]().fulfillWith(buildDuty(serial, hops - 1), false)
+		}
+
+		val initialState = (0, 0)
+		PropF.forAllF(
+			for {
+				swarmSizeMinusOne <- Gen.choose(1, 9)
+				hopsHead <- Gen.choose(0, 9)
+				hopsTail <- Gen.listOfN(99, Gen.choose(0, 9))
+			} yield (swarmSizeMinusOne, hopsHead, hopsTail)
+		) { (swarmSizeMinusOne: Int, hopsHead: Int, hopsTail: List[Int]) =>
+			val hopsList = hopsHead :: hopsTail
+			val topSerial = hopsList.size
+			val swarmSize = Math.min(1 + swarmSizeMinusOne, topSerial)
+
+			println(s"Begin: swarmSize=$swarmSize, topSerial=$topSerial, hopsList=$hopsList")
+
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			type PrimaryState = (pathId: Int, serial: Int)
+
+			val fence = CausalFence[PrimaryState](initialState)
+			var derivedSerial: Int = 0
+			var advanceCallSerial = 0
+
+			def path(pathId: Int): LatchedDuty[PrimaryState] = {
+				val advanceName = s"advance${advanceCallSerial}${advanceCallSerial + 1}"
+				advanceCallSerial += 1
+				for {
+					nextState <- {
+						fence.advanceIf(
+							(previous, _) => {
+								if previous.serial >= topSerial then Maybe.empty
+								else {
+									val commitedAtStart = fence.committedState
+									val duty = buildDuty(previous.serial + 1, hopsList(previous.serial))
+										.map(newSerial => (pathId, newSerial))
+										.andThen { nextState =>
+											if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
+										}
+									Maybe.some(duty)
+								}
+							},
+							isInSequence
+						)
+					}
+					anchoredState <- {
+						val committedState = fence.committedState
+						if nextState.pathId != pathId && nextState.serial < topSerial then break(s"A consumer subscribed to the LatchedDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchedDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						else derivedSerial = nextState.serial
+						fence.causalAnchor()
+					}
+					latestState <- {
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						fence.causalChainTail()
+					}
+					recursiveState <- {
+						if nextState.serial < topSerial then path(pathId)
+						else fence.committed(true)
+					}
+				} yield recursiveState
+			}
+
+			val swarm: Seq[LatchedDuty[PrimaryState]] = Seq.tabulate(swarmSize) { n => path(n) }
+			val checks = for array <- Duty_sequenceToArray(swarm) yield promise.trySuccess(())
+			checks.triggerAndForget()
+
+			promise.future
+		}
+
+	}
+
+
+	/**
+	 * Test invariants of [[CausalFence]] ensuring that synchronous consumers of the [[LatchedDuty]] returned by [[advance]] observe the up‑to‑date state deterministically.
+	 *
+	 * Unique checks in this test:
+	 *  - Consumers subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *
+	 *  - A consumer subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *
+	 *  - Game‑changing invariant: Immediately after an [[advance]] call, there are no other advances in flight except the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *
+	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
+	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
+	 */
+	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		val topSerial = 99
+		val initialState = (0, 0)
+		PropF.forAllF(Gen.choose(1, 9)) { (swarmSize: Int) =>
+			println(s"Begin: swarmSize=$swarmSize")
+
+			val promise = Promise[Unit]
+
+			given Promise[Unit] = promise
+
+			type PrimaryState = (pathId: Int, serial: Int)
+
+			val fence = CausalFence[PrimaryState](initialState)
+			var derivedSerial: Int = 0
+
+			def path(pathId: Int): LatchedDuty[PrimaryState] = {
+				for {
+					nextState <- {
+						fence.advance(
+							(previous, _) => {
+								val commitedAtStart = fence.committedState
+								val dutyGenerator: Gen[Duty[Int]] = genDuty(previous.serial + 1)
+								val randomDuty: Duty[Int] = dutyGenerator.sample.get
+								val delay = Gen.choose(-1, 1).sample.get
+								val duty = if delay > 0 then randomDuty.delayed(delay) else randomDuty
+								duty.map(newSerial => (pathId, newSerial))
+									.andThen { nextState =>
+										if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
+									}
+							},
+							isInSequence
+						)
+					}
+					anchoredState <- {
+						if nextState.pathId != pathId then break(s"A consumer subscribed to the LatchedDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: $pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchedDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=${fence.committedState}")
+						else derivedSerial = nextState.serial
+						fence.causalAnchor()
+					}
+					latestState <- {
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						fence.causalChainTail()
+					}
+					followingState <- {
+						if nextState.serial <= topSerial then path(pathId)
+						else fence.committed(true)
+					}
+				} yield {
+					if followingState.serial != fence.committedState.serial then break(s"followingState=$followingState, commited=${fence.committedState}")
+					followingState
+				}
+			}
+
+			val swarm: Seq[LatchedDuty[PrimaryState]] = Seq.tabulate(swarmSize) { n => path(n) }
+			val checks = for array <- Duty_sequenceToArray(swarm) yield promise.trySuccess(())
+			checks.triggerAndForget()
+			promise.future
+		}
+	}
+
 	////////// DOER INFRASTRUCTURE ////////
+
+	test("`Doer.execute` executes in a decoupled manner.") {
+		val generators = getGenerators
+		import generators.{*, given}
+
+		val promise = Promise[Unit]
+
+		given Promise[Unit] = promise
+
+		var mutable = 1
+
+		val duty = Duty_mine { () =>
+			println("start")
+
+			def m12(): Unit = {
+				println("executing 12")
+				if mutable != 1 then break(s"An execute was not decoupled 1: mutable=$mutable")
+				mutable = 2
+			}
+
+			execute(m12())
+
+			inline def m23(): Unit = {
+				println("executing 23")
+				if mutable != 2 then break(s"An execute was not decoupled 2: mutable=$mutable")
+				mutable = 3
+			}
+
+			execute(m23())
+
+			def m34(): Unit = {
+				println("executing 34")
+				if mutable != 3 then break(s"An execute was not decoupled 3: mutable=$mutable")
+				mutable = 4
+			}
+
+			execute(m34())
+
+			def end(): Unit = {
+				println("executing end")
+				if mutable != 4 then break(s"An execute was not decoupled 4: mutable=$mutable")
+				promise.trySuccess(())
+			}
+
+			execute(end())
+			if mutable != 1 then break(s"An execute was not decoupled 0: mutable=$mutable")
+
+			println("completed")
+		}
+
+		duty.triggerAndForget(false)
+		promise.future
+	}
 
 	test("Doer should execute tasks sequentially") {
 		val doer = getSharedDoer
@@ -602,9 +838,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- check("flatMap", duty.flatMap(_ => duty))
 				_ <- check("andThen", duty.andThen(_ => ()))
 				_ <- check("toTask", duty.toTask)
-				_ <- check("repeatedUntilSome", duty.repeatedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty })
+				_ <- check("repeatedUntilSome", duty.repeatedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty })
 				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomInt) else Maybe.empty))
+				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty))
 				_ <- check("repeatedWhileUndefined", duty.repeatedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
 			} yield ()
 		}
@@ -853,10 +1089,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- check("transformWith", task1.transformWith(_ => task2))
 				_ <- check("recover", task1.recover { case x if randomBool => randomInt })
 				_ <- check("recoverWith", task1.recoverWith { case x if randomBool => task2 })
-				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome { (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome { (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
 				_ <- check("reiteratedHardyUntilDefined", task1.reiteratedHardyUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe.some(randomTryInt) else Maybe.empty))
+				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty))
 				_ <- check("reiteratedWhileUndefined", task1.reiteratedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
 			} yield ()
 		}
@@ -873,7 +1109,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			val testedCovenant = doer.Covenant[Int]
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
-			testedCovenant.fulfill(int)()
+			testedCovenant.fulfill(int)
 			promise.future
 		}
 	}
@@ -905,7 +1141,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		import doer.*
 		val subscriptionAwareCovenant = doer.Covenant[Int]
-		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x)((y, b) => if b then break(s"`subscriptionAwareCovenant` was already  fulfilled with $y"))
+		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x, true, (y, b) => if b == Doer.ANOTHER_BEFORE then break(s"`subscriptionAwareCovenant` was already  fulfilled with $y"))
 		val checks = for {
 			_ <- Duty_mine { () =>
 				if testedCovenant.isSubscribed(subscriptionOnCompleteCallBack) then break("`isAlreadySubscribed` returned true despite no subscription was done")
@@ -949,7 +1185,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]
 			val testedCommitment = Commitment[Int]
-			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat)())
+			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat))
 			promise.future
 		}.check(Parameters.default.withMinSuccessfulTests(500))
 
@@ -998,7 +1234,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// The commitment that the `completionObserver` will see the completion of the `testedCommitment`.
 		val completionSeenCommitment = doer.Commitment[Int]
 		val completionObserver: Try[Int] => Unit =
-			x => completionSeenCommitment.complete(x)((y, b) => if b then break(s"`subscriptionAwareCommitment` was already completed with $y"))
+			x => completionSeenCommitment.complete(x, true, (y, b) => if b then break(s"`subscriptionAwareCommitment` was already completed with $y"))
 
 		// The task that checks what this test verifies.
 		val checks: doer.Task[Unit] = {
@@ -1058,7 +1294,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val checks: LatchedDuty[Unit] = for {
 				expectedUpdate <- Covenant_triggerAndWire(updater(initial))
-				anchorBefore <- fence.causalAnchor(true)
+				anchorBefore <- fence.causalAnchor()
 				committedBefore <- fence.committed(true)
 				update <- fence.advance { (a, _) =>
 					if a != initial then break(s"The first state received by the updates mismatch")
@@ -1099,8 +1335,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					Covenant_triggerAndWire(updater(a).andThen { _ =>
 						rba.rollback(
 							true,
-							(v, wasTooLate) =>
-								if wasTooLate then break("Rollback was too late")
+							(v, rollbackApplication) =>
+								if rollbackApplication == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
 								else if v != initial then break("Rollback did not restore initial state")
 						)
 					})
@@ -1137,8 +1373,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 							// ensure `rollback` is called after the duty returned by primaryStateUpdater is fulfilled.
 							.andThen { x =>
 								doer.execute {
-									rba.rollback(true, (v, wasTooLate) =>
-										if wasTooLate then promise.trySuccess(())
+									rba.rollback(true, (v, rollbackApplication) =>
+										if rollbackApplication == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
 										else break("Rollback should have been rejected")
 									)
 								}
@@ -1229,7 +1465,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val fence: CausalStuckableFence[Int] = CausalStuckableFence(initial)
 
-			fence.causalAnchor(false).trigger(false) { anchorBefore =>
+			fence.causalAnchor().trigger(false) { anchorBefore =>
 				if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
 			}
 
@@ -1242,7 +1478,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					case Failure(e) => break("A transition from a failed fence wasn't skipped")
 					case Success(initialState) => if previousState != initialState then break("Previous and initial state mismatch")
 				}
-				Maybe.some(Commitment_triggerAndWire(updater(previousState)))
+				Maybe(Commitment_triggerAndWire(updater(previousState)))
 			}.trigger(false) { actualState =>
 				initial match {
 					case failure: Failure[Int] =>
@@ -1280,7 +1516,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				committedBefore <- fence.committed().toDutyHardy
 				state <- fence.advanceSpeculatively { (previousState, rba) =>
 					if previousState != initial then break("Speculative update received wrong previous state")
-					Maybe.some(Commitment_triggerAndWire(
+					Maybe(Commitment_triggerAndWire(
 						updater(previousState).andThen { expectedResult =>
 							rba.rollback(
 								true,
@@ -1320,7 +1556,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val checks = for {
 				actualResult <- fence.advanceSpeculatively { (a, rba) =>
 					println(s"updater called")
-					Maybe.some(Commitment_triggerAndWire(
+					Maybe(Commitment_triggerAndWire(
 						updater(a)
 							.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
 							.andThen { x =>
@@ -1471,13 +1707,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				startMilli = System.currentTimeMillis()
 				scheduledResult <- duty.scheduled(schedule)
 			} yield {
-				if scheduledResult != directResult then commitment.break(new AssertionError(s"the scheduled result differs from the original"))()
+				if scheduledResult != directResult then commitment.break(new AssertionError(s"the scheduled result differs from the original"))
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * counter + initialDelay
-				if actualDelay < expectedDelay then commitment.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))()
+				if actualDelay < expectedDelay then commitment.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
 				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				if counter == repetitions then {
-					commitment.fulfill(())()
+					commitment.fulfill(())
 					doer.cancel(schedule)
 				} else counter += 1
 			}
@@ -1581,111 +1817,96 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// Doer wide cancellation ////
 
-	test("Scheduling Duty: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
+	test("Scheduling: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
 		val generators = getGenerators
 		import generators.{*, given}
 		val maxDuration = 5
 		PropF.forAllNoShrinkF(
 			Gen.nonEmptyListOf(for {
-				int <- intGen
-				upChain <- genDuty(int)
 				schedule <- genSchedule(doer, maxDuration)
-			} yield (int, upChain, schedule)),
+			} yield schedule),
 			Gen.choose(1, maxDuration)
-		) { (samples: List[(int: Int, duty: Duty[Int], schedule: doer.Schedule)], cancelDelay: Int) =>
-			// println(s"Begin: cancelDelay: $cancelDelay, samples: $samples")
+		) { (samples: List[doer.Schedule], cancelDelay: Int) =>
+			println(s"Begin: cancelDelay: $cancelDelay, samples: $samples")
 
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
 			var cancelAllWasCalled = false
-			// Create many duties that, when completed, check if they complete after `cancelAll` was called; and schedule them with different schedules.
-			val duties: List[doer.Duty[Int]] =
-				for sample <- samples yield {
-					var cancelledBeforeActivation = false
-					val scheduledDuty = sample.duty
-						.andThen(_ => cancelledBeforeActivation = cancelAllWasCalled)
-						.scheduled(sample.schedule)
-					scheduledDuty.andThen { r =>
-						if cancelAllWasCalled && !cancelledBeforeActivation then break(s"A duty completed despite all were cancelled: duty: ${sample.duty}, schedule: ${sample.schedule}, isActive=${doer.wasActivated(sample.schedule)}")
-						else if r != sample.int then break(s"The duty completed with an unexpected result: $r instead of ${sample.int}")
+			// Activate all the sample schedules and check if their routine is executed after `cancelAll` was called.
+			doer.execute {
+				for sample <- samples do {
+					doer.schedule(sample) { s =>
+						if cancelAllWasCalled then break(s"A schedule's routine was executed despite `cancelAll` was cancelled: schedule: $sample, isActive=${doer.wasActivated(sample)}")
 					}
 				}
-			doer.Duty_sequenceToArray(duties).triggerAndForget()
+			}
 
-			// With another Doer instance, create a task that calls `cancelAll` within the duty's doer's thread and wait enough time for the duties to complete before fulfilling the commitment.
+			// With another Doer instance, schedule the execution of `doer.cancelAll` within the doer and wait enough time for the routines be executed before considering the test as passed.
 			val otherDoer = buildDoer("other")
-			val waits = for {
-				_ <- otherDoer.Duty_delays(cancelDelay) { _ =>
-					doer.execute {
-						doer.cancelAll()
-						cancelAllWasCalled = true
-					}
+			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
+				doer.execute {
+					doer.cancelAll()
+					cancelAllWasCalled = true
+					otherDoer.schedule(otherDoer.newDelaySchedule(maxDuration))(_ => promise.trySuccess(()))
 				}
-				_ <- otherDoer.Duty_delays(maxDuration) { _ =>
-					promise.trySuccess(())
-				}
-			} yield ()
-			waits.triggerAndForget()
+			}
 
 			promise.future
 		}
 	}
 
-	test("Scheduling Duty: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
+	test("Scheduling: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
 		val generators = getGenerators
 		import generators.{*, given}
 		val maxDelay = 5
 		PropF.forAllNoShrinkF(
-			dutyArbitrary[Int].arbitrary,
 			Gen.choose(1, maxDelay),
 			Gen.nonEmptyListOf(Gen.choose(1, maxDelay))
-		) { (upChain: Duty[Int], cancelDelay: Int, delays: List[Int]) =>
-			// println(s"Begin: upChain: $upChain, delays: $delays")
+		) { (cancelDelay: Int, delays: List[Int]) =>
+			// println(s"Begin: cancelDelay: $cancelDelay, delays: $delays")
 
 			val promise = Promise[Unit]
 
 			given Promise[Unit] = promise
 
 			@volatile var cancelAllWasCalled = false
-
-			// Create many duties that check if they complete after `cancelAll` was called, and schedule them to execute with a fixed rate of 1 millisecond but after different delays.
-			var startNanoTime: Long = 0
 			@volatile var cancelNanoTime: Long = 0
-			val duties: List[doer.Duty[Int]] =
-				for delayMillis <- delays yield {
-					val schedule = doer.newFixedRateSchedule(delayMillis, 1)
-					var executionsCounter = 0
-					upChain.andThen { _ => startNanoTime = System.nanoTime() }
-						.scheduled(schedule)
-						.andThen { _ =>
-							val expectedExecutionNanoTime = startNanoTime + delayMillis * 1_000_000
-							// cancelAll was called, the schedule was activated before the cancel (plus measure error), and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
-							if cancelAllWasCalled && (cancelNanoTime > startNanoTime + 200_000) && (executionsCounter > 0 || math.abs(cancelNanoTime - expectedExecutionNanoTime) > 2_000) then {
-								val distanceBetweenCancellationAndExpectedExecutionMicros = (cancelNanoTime - expectedExecutionNanoTime) / 1000
-								val distanceBetweenCancellationAndActivationMicros = (cancelNanoTime - startNanoTime) / 1000
-								val message = s"A duty completed despite all were cancelled: upChain: $upChain, executionsCounter: $executionsCounter, distanceBetweenCancellationAndExpectedExecutionInMicros: $distanceBetweenCancellationAndExpectedExecutionMicros, distanceBetweenCancellationAndActivationMicros: $distanceBetweenCancellationAndActivationMicros, delay: $delayMillis, cancelTime: $cancelNanoTime, expectedExecutionTime: $expectedExecutionNanoTime, completed duty's schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
-								break(message)
-							}
-							executionsCounter += 1
-						}
-				}
-			doer.Duty_sequenceToArray(duties).triggerAndForget()
+			@volatile var maxDistanceBetweenCancellationAndExecutionInNanos: Long = 0
 
-			// With another Doer instance, create a task that calls `cancelAll` after a delay and then wait enough time for the duties to complete before fulfilling the commitment.
+			for delayMillis <- delays do {
+				val schedule = doer.newFixedRateSchedule(delayMillis, 1)
+				var executionsCounter = 0
+				val activationNanoTime: Long = System.nanoTime()
+				doer.schedule(schedule) { s =>
+					val actualExecutionNanoTime = System.nanoTime()
+					if cancelAllWasCalled then {
+						val distanceBetweenCancellationAndExecutionInNanos = actualExecutionNanoTime - cancelNanoTime
+						if distanceBetweenCancellationAndExecutionInNanos > maxDistanceBetweenCancellationAndExecutionInNanos then maxDistanceBetweenCancellationAndExecutionInNanos = distanceBetweenCancellationAndExecutionInNanos
+						// if cancelAll was called and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
+						if distanceBetweenCancellationAndExecutionInNanos > schedulerMaximumToleratedNanosBetweenCancellationAndExecution then {
+							val message = s"A schedule's routine was executed despite cancelAll was called: previousExecutionsCounter: $executionsCounter, distanceBetweenCancellationAndExecutionInMicros: ${distanceBetweenCancellationAndExecutionInNanos / 1_000}, delay: $delayMillis, cancelTime: $cancelNanoTime, schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
+							break(message)
+						}
+					}
+					executionsCounter += 1
+				}
+			}
+
+			// With another Doer instance, schedule the execution of `doer.cancelAll` outside the doer and wait enough time for the routines be executed before considering the test as passed.
 			val otherDoer = buildDoer("other")
-			val cancelsAllAfterADelayAndThenWaitsEnough = for {
-				_ <- otherDoer.Duty_delays(cancelDelay) { _ =>
-					doer.cancelAll()
-					cancelNanoTime = System.nanoTime()
-					cancelAllWasCalled = true
-				}
-				_ <- otherDoer.Duty_delays(maxDelay + 1) { _ =>
+			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
+				cancelNanoTime = System.nanoTime()
+				cancelAllWasCalled = true
+				doer.cancelAll()
+				otherDoer.schedule(otherDoer.newDelaySchedule(maxDelay)) { _ =>
 					promise.trySuccess(())
+					if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println("No executions after cancellation: VERY GOOD")
+					else println(s"maxDistanceBetweenCancellationAndExecutionInMicros = ${maxDistanceBetweenCancellationAndExecutionInNanos / 1_000}")
 				}
-			} yield ()
-			cancelsAllAfterADelayAndThenWaitsEnough.triggerAndForget()
+			}
+
 			promise.future
 		}
 	}
