@@ -964,7 +964,7 @@ trait Doer { thisDoer =>
 	 * Each state transition attempt is causally anchored to the previous one, ensuring that each update observes the latest committed state, and that all updates are fulfilled in causal order.
 	 * Speculative updates may be rolled back before becoming visible.
 	 *
-	 * Core idea: CausalFence[A] is a causal sequencing primitive. It maintains a single tail covenant ([[lastEnqueuedCovenant]]) that represents the latest step in a causal chain. Each [[advance]] and [[causalAnchor]] call enqueues a new [[Covenant]], chained to the previous one.
+	 * Core idea: CausalFence[A] is a causal sequencing primitive. It maintains a queue of state updaters implemented with a chain of [[Covenant]]s, whose tail is [[lastEnqueuedCovenant]]. The tail represents the latest step in a causal chain. Each [[advance]] and [[causalAnchor]] call enqueues a new [[Covenant]], chained to the previous one with a subscription to its completion.
 	 *
 	 * This fence provides **causal fulfillment semantics**:
 	 * - Each transition yields a committed, visible state. Rolled-back transitions fulfill with the previous state.
@@ -975,11 +975,11 @@ trait Doer { thisDoer =>
 	 * Fundamental Invariants
 	 * - Single updater invariant: At most one `primaryStateUpdater` (the function passed to [[advance]]) is in progress at a time. Subsequent advances wait until the previous one completes.
 	 * - Advance ordering invariant: The `primaryStateUpdater` passed to [[advance]] runs after all consumers that subscribed to the previous [[Covenant]] in the queue (via earlier [[advance]] or [[causalAnchor]]) have completed their synchronous part.
-	 * - Anchor freshness invariant: - A consumer subscribed to [[causalAnchor]] observes the same state that a `primaryStateUpdater`` would receive if [[advance]] were invoked at that moment. Ordering is guaranteed relative to the last completed advance at subscription time, but not relative to advances invoked later.
+	 * - Anchor freshness invariant: - A consumer subscribed to [[causalAnchor]] observes the same state that a `primaryStateUpdater` would receive if [[advance]] were invoked at that moment. Ordering is guaranteed relative to the last completed advance at subscription time, but not relative to advances invoked later.
 	 * - Rollback integrity invariant: For speculative advances, derived updates must not be composed into the primary updater, otherwise rollback semantics are broken.
 	 *
 	 * Invariants related to derived state:
-	 * - Game-changing invariant: Immediately after an [[advance]] or [[causalAnchor]] call, there are no pending advances other than the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is a fresh tail.  Any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the covenant fulfills, that consumer sees the up‑to‑date state deterministically. This invariant eliminates the race where another [[advance]] could sneak in and publish a newer state before or while the synchronous consumer runs. The consumer is deterministically ordered before any updater that follows in the causal chain.
+	 * - Game-changing invariant: Immediately after an [[advance]] or [[causalAnchor]] call, there are no pending advances other than the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is a fresh tail. Any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the covenant fulfills, that consumer sees the up‑to‑date state deterministically. This invariant eliminates the race where another [[advance]] could sneak in and publish a newer state before or while the synchronous consumer runs. The consumer is deterministically ordered before any updater that follows in the causal chain.
 	 * - Anchor specificity invariant: Derived updates that require strict ordering relative to a particular primary transition must anchor to that transition’s [[Covenant]] (the one returned by [[advance]]), not to a generic tail snapshot (as the returned by [[causalAnchor]]).
 	 * - Deterministic derived ordering invariant: When derived updates have dependencies, their execution order must be enforced by anchoring the dependent update and deriving prerequisites synchronously from the anchored state, or by composing into the primary updater if not speculative.
 	 * - Rollback integrity invariant: No derived side-effect may commit externally during a speculative advance before the primary step is safely committed; otherwise rollback can leave the system in an inconsistent state.
@@ -1018,6 +1018,9 @@ trait Doer { thisDoer =>
 			 */
 			def rollback(isWithinDoSiThEx: Boolean = isInSequence, onCompleted: (A, RollbackApplication) => Unit = (_, _) => ()): LatchedDuty[A]
 		}
+
+		/** @return true if the queue of primary state updaters is empty. */
+		inline def isEmpty: Boolean = lastEnqueuedCovenant eq lastCommittedCovenant
 
 		/** Provides the tail of the causal chain at call time.
 		 *
@@ -1198,9 +1201,6 @@ trait Doer { thisDoer =>
 		 * The update is applied synchronously and always fulfills with a committed state:
 		 * - The [[primaryStateUpdater]] is applied to the previous state.
 		 * - The resulting state is committed immediately.
-		 *
-		 * Rollback machinery is not required because the update is synchronous and may be canceled
-		 * by returning [[Maybe.empty]].
 		 *
 		 * @param primaryStateUpdater a total function that produces the next state from the current one
 		 * @return a [[LatchedDuty]] that is always fulfilled with the committed state

@@ -44,15 +44,15 @@ extension [A](array: IArray[A]) {
 		counter
 	}
 
-	inline def foldLeftWithIndex[B](initial: B)(inline f: (accumulator: B, elem: A, index: Int) => B): B = {
+	inline def foldLeftWithIndex[B](initial: B)(inline f: (carry: B, elem: A, index: Int) => B): B = {
 		val length = array.length
 		var index = 0
-		var accumulator = initial
+		var carry = initial
 		while index < length do {
-			accumulator = f(accumulator, array(index), index)
+			carry = f(carry, array(index), index)
 			index += 1
 		}
-		accumulator
+		carry
 	}
 
 	inline def forallWithIndex(inline predicate: (elem: A, index: Int) => Boolean): Boolean = {

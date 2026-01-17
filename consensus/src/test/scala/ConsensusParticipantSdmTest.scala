@@ -4,6 +4,7 @@ import ConsensusParticipantSdm.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
+import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer.Doer
@@ -40,7 +41,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override def withId(id: String): LogModifier = this
 	}))
 
-	override def scalaCheckInitialSeed = "mLbrswnMGqQ8czetIVPfw3Wh8rh8m-nkAjknVe4oiUE="
+	override def scalaCheckTestParameters: Parameters = super.scalaCheckTestParameters.withMinSuccessfulTests(500)
+
+	//	override def scalaCheckInitialSeed = "mLbrswnMGqQ8czetIVPfw3Wh8rh8m-nkAjknVe4oiUE="
 
 	override def munitTimeout: Duration = new FiniteDuration(1200, TimeUnit.SECONDS)
 
@@ -93,7 +96,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * This value represents the square root of the intended failure duration, due to the underlying probability distribution:
 		 * the actual duration is sampled as the square of a uniform random variable.
 		 */
-		private def failureMaxDurationSqrt = lastProposedConfigMask.count(_ == true)
+		private def failureMaxDurationSqrt = Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size)
 
 		/** All the mutable variables used by this [[Net]] instance are accessed within this [[ScheduSequen]]. */
 		val netSequencer: ScheduSequen = sharedDap.provide("net-sequencer")
@@ -123,13 +126,29 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			indexById(id)
 		}
 
-		def stop(): Unit = {
-			for i <- 0 until clusterSize do {
-				val node = getNode(i)
-				node.sequencer.execute {
-					if !node.isDown then node.participant.stops.triggerAndForget(true)
-				}
+		def startsAllNodes: netSequencer.Duty[Array[Unit]] = {
+			val starters = for nodeIndex <- 0 until clusterSize yield {
+				val node = getNode(nodeIndex)
+				node.startsIfNotRunning(true).onBehalfOf(netSequencer)
 			}
+			netSequencer.Duty_sequenceToArray(starters)
+		}
+
+		/** Stops all the running [[Node]]s and clears all [[Channel]]s used to simulate the TCP communication between them. */
+		def stop(): Unit = {
+			val nodesStoppers = for i <- 0 until clusterSize yield {
+				val node = getNode(i)
+				val stopsNode = node.sequencer.Duty_mineFlat(() => if node.isDown then node.sequencer.Duty_unit else node.participant.stops)
+				netSequencer.Duty_foreign(node.sequencer)(stopsNode)
+			}
+			netSequencer.Duty_sequenceToArray(nodesStoppers)
+				.andThen { _ =>
+					numberOfTravelingMessages = 0
+					for i <- 0 until clusterSize do {
+						for j <- 0 until clusterSize do channelBySenderByReceiver(i)(j).clear()
+					}
+				}
+				.triggerAndForget()
 		}
 
 		//// The following members implement the communication between nodes of this net.
@@ -177,6 +196,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				assert(netSequencer.isInSequence)
 				lastGlobalRequestId <= failingUntil
 			}
+
+			inline def clear(): Unit = queue.clear()
 		}
 
 		private val random = new Random(randomnessSeed)
@@ -228,16 +249,18 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						val requestId = requestChannel.nextRequestId
 						val requestChannelIsFailing = requestChannel.isFailing
 						val responseChannelIsFailing = responseChannel.isFailing
-						assert(requestChannelIsFailing == responseChannelIsFailing)
 
 						scribe.trace(s"$inquirerId >- $replierId: $requestId:$requestDescription, sent as $inquirerRole, $numberOfTravelingMessages messages on the way")
 
 						// Determine the fate of this RPC before processing it.
-						val requestIsCursed = requestChannelIsFailing || responseChannelIsFailing || random.nextInt(100) < requestFailurePercentage
-						val responseIsCursed = requestIsCursed || random.nextInt(100) < responseFailurePercentage
-						if !requestChannelIsFailing && (requestIsCursed || responseIsCursed) then {
+						val requestIsCursed = requestChannelIsFailing || random.nextInt(100) < requestFailurePercentage
+						val responseIsCursed = responseChannelIsFailing || random.nextInt(100) < responseFailurePercentage
+						if !requestChannelIsFailing && requestIsCursed then {
 							val failureDurationSqrt = random.nextInt(failureMaxDurationSqrt)
 							requestChannel.markAsFailing(failureDurationSqrt)
+						}
+						if !responseChannelIsFailing && responseIsCursed then {
+							val failureDurationSqrt = random.nextInt(failureMaxDurationSqrt)
 							responseChannel.markAsFailing(failureDurationSqrt)
 						}
 
@@ -338,7 +361,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			else IArray.fill(clusterSize)(true)
 		}
 		private var lastProposedConfigMask: ConfigMask = initialConfigMask
-
+		private var activeConfigChange: ConfigChange[Id] = StableConfigChange(0, "", 0, nodesIncludedIn(initialConfigMask), nodesIncludedIn(initialConfigMask))
 
 		/** Should be called when the client simulator sends a command to a consensus-participant, before it is received.
 		 * Needed to allow the [[Net]] to count the number of commands sent, which is required to adjust the configuration noise probability. */
@@ -399,11 +422,21 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		def onActiveConfigChanged(change: ConfigChange[Id]): Unit = {
-			for nodeIndex <- 0 until clusterSize do {
-				val node = this.getNode(nodeIndex)
-				if change.newParticipants.contains(node.myId) then {
-					node.startsIfNotRunning(false).triggerAndForget(node.sequencer.isInSequence)
+			netSequencer.execute {
+				activeConfigChange = change
+				for nodeIndex <- 0 until clusterSize do {
+					val node = this.getNode(nodeIndex)
+					if change.newParticipants.contains(node.myId) then {
+						node.startsIfNotRunning(false).triggerAndForget(false)
+					}
 				}
+			}
+		}
+
+		/** TODO consider removing this. It is responsibility of the [[ConsensusParticipant]] to coordinate the stop of the participants. */
+		def onNodeStopped(node: Node): Unit = {
+			netSequencer.execute {
+				if activeConfigChange.isActive(node.myId) then node.startsIfNotRunning(false).triggerAndForget(false)
 			}
 		}
 	}
@@ -554,7 +587,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def startsIfNotRunning(isSeed: Boolean): sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
 				if isDown || participant.getRoleOrdinal == STOPPED then {
-					scribe.info(s"node: about to create the participant $myId")
+					scribe.info(s"node-$myId: about to create the consensus participant service")
 					_participant = ConsensusParticipant(clusterParticipant, storage, machine, isSeed, List(initialNotificationListener, notificationScribe))
 				}
 			}
@@ -616,10 +649,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onActiveConfigChanged(change: ConfigChange[ParticipantId], roleOrdinal: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"cluster-$boundParticipantId: onConfigurationChanged called by a ${RoleOrdinal_nameOf(roleOrdinal)} with `$change`.")
-				if roleOrdinal == LEADER then {
-					net.onActiveConfigChanged(change)
-				}
-
+				if roleOrdinal == LEADER then net.onActiveConfigChanged(change)
 			}
 
 			extension (replierId: ParticipantId) {
@@ -661,6 +691,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onStopped(motive: Try[String]): Unit = {
 				scribe.info(s"cluster-$myId: `onStopped` was called with motive=$motive")
 				thisNode._participant = null
+				net.onNodeStopped(thisNode)
 			}
 		}
 
@@ -880,14 +911,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 	}
 
-	private def startsAllNodes(net: Net): net.netSequencer.Duty[Array[Unit]] = {
-		val starters = for nodeIndex <- 0 until net.clusterSize yield {
-			val node = net.getNode(nodeIndex)
-			node.startsIfNotRunning(true).onBehalfOf(net.netSequencer)
-		}
-		net.netSequencer.Duty_sequenceToArray(starters)
-	}
-
 	private def testAllInvariants(net: Net, startWithHighestPriorityParticipant: Boolean, numberOfCommandsToSend: Int = 20): Future[Unit] = {
 		val promise = Promise[Unit]()
 		val clusterSize = net.clusterSize
@@ -981,13 +1004,18 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		val checks = for {
-			_ <- startsAllNodes(net)
+			_ <- net.startsAllNodes
 			client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 			_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted, 20)
 				.toDuty(promise.tryFailure)
 		} yield promise.tryComplete(Success(()))
 		checks.triggerAndForget(false)
 		promise.future.andThen(_ => net.stop())
+	}
+
+	test("assertions are enabled") {
+		println(ConsensusParticipantSdm.assertionsEnabled)
+		if ConsensusParticipantSdm.assertionsEnabled then Future.successful(()) else Future.failed(new RuntimeException(""))
 	}
 
 	test("special sample") {
@@ -1015,8 +1043,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		inline val numberOfCommandsToSend = 30
 		val clusterSize = 4
 		val startWithHighestPriorityParticipant = false
-		val netRandomnessSeed = -3859169019281652741L
-		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 20)
+		val netRandomnessSeed = -7262415526330146842L
+		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
 	}
@@ -1057,7 +1085,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks = for {
-				_ <- startsAllNodes(net)
+				_ <- net.startsAllNodes
 				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 					.toDuty(promise.tryFailure)
@@ -1090,7 +1118,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- startsAllNodes(net).toTask
+				_ <- net.startsAllNodes.toTask
 				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -1139,7 +1167,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- startsAllNodes(net).toTask
+				_ <- net.startsAllNodes.toTask
 				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -1193,7 +1221,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- startsAllNodes(net).toTask
+				_ <- net.startsAllNodes.toTask
 				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))
@@ -1252,7 +1280,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			val checks: net.netSequencer.Task[Unit] = for {
-				_ <- startsAllNodes(net).toTask
+				_ <- net.startsAllNodes.toTask
 				client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
 				_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted)
 			} yield promise.tryComplete(Success(()))

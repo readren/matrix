@@ -186,7 +186,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
 	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
 	 */
-	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using hoping duties") {
+	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using hoping duties (much faster than the version that uses random delays)") {
 		val generators = getGenerators
 		import generators.{*, given}
 
@@ -199,6 +199,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		PropF.forAllF(
 			for {
 				swarmSizeMinusOne <- Gen.choose(1, 9)
+				// The head and tail of hopsList are generated separately to ensure the list is non-empty even when scalacheck is shrinking the sample.
 				hopsHead <- Gen.choose(0, 9)
 				hopsTail <- Gen.listOfN(99, Gen.choose(0, 9))
 			} yield (swarmSizeMinusOne, hopsHead, hopsTail)
@@ -282,7 +283,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
 	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
 	 */
-	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically") {
+	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using random delays (very slow)") {
 		val generators = getGenerators
 		import generators.{*, given}
 
