@@ -877,7 +877,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def onRetiring(term: Term): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is retiring because it was excluded. It leaded the term $term.")
+				scribe.info(s"scribe-$myId: is retiring because it was excluded. Its final term is $term.")
 			}
 
 			override def onRoleLeft(left: RoleOrdinal, term: Term): Unit = ()
@@ -1041,9 +1041,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 4
+		val clusterSize = 5
 		val startWithHighestPriorityParticipant = false
-		val netRandomnessSeed = -7262415526330146842L
+		val netRandomnessSeed = -2199913421065827505L
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
