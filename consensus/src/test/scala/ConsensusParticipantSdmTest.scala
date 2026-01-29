@@ -1041,9 +1041,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 4
-		val startWithHighestPriorityParticipant = true
-		val netRandomnessSeed = -4237846683743807525L
+		val clusterSize = 5
+		val startWithHighestPriorityParticipant = false
+		val netRandomnessSeed = -8982314301743664355L
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
@@ -1056,7 +1056,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			Gen.oneOf(true, false),
 			Gen.long
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
-			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 5)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 1)
 			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
 		}
