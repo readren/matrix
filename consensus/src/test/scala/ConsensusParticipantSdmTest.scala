@@ -96,7 +96,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * This value represents the square root of the intended failure duration, due to the underlying probability distribution:
 		 * the actual duration is sampled as the square of a uniform random variable.
 		 */
-		private def failureMaxDurationSqrt = Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size)
+		private def failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size))
 
 		/** All the mutable variables used by this [[Net]] instance are accessed within this [[ScheduSequen]]. */
 		val netSequencer: ScheduSequen = sharedDap.provide("net-sequencer")
@@ -1041,9 +1041,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 5
-		val startWithHighestPriorityParticipant = false
-		val netRandomnessSeed = -2199913421065827505L
+		val clusterSize = 4
+		val startWithHighestPriorityParticipant = true
+		val netRandomnessSeed = -4237846683743807525L
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
