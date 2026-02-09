@@ -397,17 +397,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			assert(netSequencer.isInSequence)
 			val numberOfConfigNoiseInjectionsPerClientCommand = configNoiseInjection_count / commandsSentByClients_count
 			val adjustedProbability = changeProbabilityBetweenClientCommands / numberOfConfigNoiseInjectionsPerClientCommand
-			var atLeastOneToggle = false
-			val newConfigMask = IArray.unsafeFromArray(Array.tabulate[Boolean](clusterSize) { i =>
-				val isToggled = random.nextFloat() < adjustedProbability
-				atLeastOneToggle |= isToggled
-				lastProposedConfigMask(i) ^ isToggled
-			})
-			if atLeastOneToggle && newConfigMask.contains(true) then {
-				val result = (lastProposedConfigMask, newConfigMask)
-				lastProposedConfigMask = newConfigMask
-				Maybe(result)
-			} else Maybe.empty
+			if random.nextFloat() >= adjustedProbability then Maybe.empty
+			else {
+				val newConfigMask = IArray.unsafeFromArray(Array.fill[Boolean](clusterSize)(random.nextBoolean))
+				if newConfigMask.contains(true) then {
+					val oldConfigMask = lastProposedConfigMask
+					lastProposedConfigMask = newConfigMask
+					Maybe((oldConfigMask, newConfigMask))
+				} else Maybe.empty
+			}
 		}
 
 		/** Gets the [[Id]]s of the [[Node]]s included in the provided configuration mask. */
@@ -655,13 +653,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			extension (replierId: ParticipantId) {
 
 
-				override def howAreYou(inquirerTerm: Term): sequencer.Task[StateInfo] = {
+				override def howAreYou(inquirerInfo: StateInfo): sequencer.Task[StateInfo] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[StateInfo](
 						replierId,
-						s"HowAreYou(inquirerTerm:$inquirerTerm)"
+						s"HowAreYou(inquirerInfo=$inquirerInfo)"
 					) { replierNode =>
-						replierNode.clusterParticipant.delegate.onHowAreYou(boundParticipantId, inquirerTerm)
+						replierNode.clusterParticipant.delegate.onHowAreYou(boundParticipantId, inquirerInfo)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -1041,9 +1039,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 5
-		val startWithHighestPriorityParticipant = false
-		val netRandomnessSeed = -8982314301743664355L
+		val clusterSize = 3
+		val startWithHighestPriorityParticipant = true
+		val netRandomnessSeed = 4326203398922213591L
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)

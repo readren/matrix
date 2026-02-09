@@ -28,6 +28,7 @@ object ConsensusParticipantSdm {
 	 * Starts from 1.
 	 * Zero means "before first election". */
 	final type Term = Int
+	final type Ballot = Int
 
 	final type ConfigChangeRequestId = String
 
@@ -39,7 +40,6 @@ object ConsensusParticipantSdm {
 	final val JOINING: RoleOrdinal = 3
 	final val ISOLATED: RoleOrdinal = 4
 	final val HANDING_OFF: RoleOrdinal = 5
-	final val CANDIDATE: RoleOrdinal = 6
 	final val FOLLOWER: RoleOrdinal = 7
 	final val PROMOTING: RoleOrdinal = 8
 	final val LEADER: RoleOrdinal = 9
@@ -52,7 +52,6 @@ object ConsensusParticipantSdm {
 			case JOINING => "JOINING"
 			case ISOLATED => "ISOLATED"
 			case HANDING_OFF => "HANDING_OFF"
-			case CANDIDATE => "CANDIDATE"
 			case FOLLOWER => "FOLLOWER"
 			case PROMOTING => "PROMOTING"
 			case LEADER => "LEADER"
@@ -113,11 +112,12 @@ object ConsensusParticipantSdm {
 	 * @param reachableCandidatesOfOldConf The number of candidates of the current or old set of participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was stopped.
 	 * @param reachableCandidatesOfNewConf The number of candidates new the new set or participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was stopped.
 	 * @param votedRole The role of the voted candidate.
+	 * @param ballot the election round to which this [[Vote]] belongs to, or zero to indicate this [[Vote]] is blank.
 	 */
-	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, votedRole: RoleOrdinal) {
+	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, votedRole: RoleOrdinal, ballot: Ballot) {
 		if assertionsEnabled then assert(votedRole != PROMOTING)
 
-		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, votedRole=${RoleOrdinal_nameOf(votedRole)}"
+		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, votedRole=${RoleOrdinal_nameOf(votedRole)}, ballot=$ballot)"
 	}
 
 	/** The result of an append operation.
@@ -138,20 +138,19 @@ object ConsensusParticipantSdm {
 	}
 
 	/**
-	 * Knows all the information about a candidate necessary by participants to decide their own role and which to vote in a leader election.
-	 * The response to a "how are you" question from a participant to another.
+	 * The information about a participant that is relevant for elections (deciding the [[Role]] of each participant).
+	 * This information is exposed not only on demand by calling [[ConsensusParticipantSdm.ClusterParticipant.howAreYou]] but also proactively in some questions.
 	 * @param currentTerm The term of the participant that is answering.
-	 * @param ordinal The role of the participant that is answering.
+	 * @param ordinal The role of the participant that is answering. TODO change name to rolePriority and type to Priority = Byte.
 	 * @param termAtCommitIndex The term of the last commited record in the log of the participant that is answering.
 	 * @param commitIndex The index of the last commited record in the log of the participant that is answering.
+	 * @param ballot the election round to which this [[StateInfo]] belongs to.
 	 */
-	final case class StateInfo(currentTerm: Term, ordinal: RoleOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex) {
+	final case class StateInfo(currentTerm: Term, ordinal: RoleOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex, ballot: Ballot) {
 		if assertionsEnabled then assert(ordinal != PROMOTING && currentTerm >= termAtCommitIndex)
 
-		override def toString: String = s"StateInfo(@$currentTerm, ${RoleOrdinal_nameOf(ordinal)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex)"
+		override def toString: String = s"StateInfo(@$currentTerm, ${RoleOrdinal_nameOf(ordinal)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex, ballot=$ballot)"
 	}
-
-	final val nullStateInfo = StateInfo(0, STOPPED, 0, 0)
 
 	//// LOG RECORD
 
@@ -177,8 +176,18 @@ object ConsensusParticipantSdm {
 		override def isActive(participantId: P): Boolean = newParticipants.contains(participantId) || oldParticipants.contains(participantId)
 	}
 
-	private[consensus] final case class StableConfigChange[P <: AnyRef](override val term: Term, override val requestId: ConfigChangeRequestId, previousChangeTerm: Term, override val oldParticipants: Set[P], override val newParticipants: Set[P]) extends ConfigChange[P] {
+	private[consensus] final case class StableConfigChange[P <: AnyRef](override val term: Term, override val requestId: ConfigChangeRequestId, coupleTerm: Term, override val oldParticipants: Set[P], override val newParticipants: Set[P]) extends ConfigChange[P] {
 		override def isActive(participantId: P): Boolean = newParticipants.contains(participantId)
+
+		/** @return true if the provided [[ConfigChange]] is the [[TransitionalConfigChange]] corresponding to this [[StableConfigChange]]. */
+		def isCoupleOf(cc: ConfigChange[P]): Boolean = {
+			cc match {
+				case tcc: TransitionalConfigChange[P] => tcc.term == coupleTerm && tcc.requestId == requestId && tcc.newParticipants == newParticipants && tcc.oldParticipants == oldParticipants
+				case _: StableConfigChange[P] => false
+			}
+		}
+
+		def recreateCouple: TransitionalConfigChange[P] = TransitionalConfigChange(coupleTerm, requestId, oldParticipants, newParticipants)
 	}
 }
 
@@ -429,10 +438,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[howAreYou]].
-			 * @param inquirerTerm The term of the participant that called [[howAreYou]].
+			 * @param inquirerInfo The [[StateInfo]] of the participant that called [[howAreYou]].
 			 * @return The state information of the destination participant.
 			 */
-			def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): sequencer.LatchedDuty[StateInfo]
+			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[StateInfo]
 
 			/**
 			 * This method is invoked by this cluster when another participant calls [[chooseALeader]].
@@ -494,10 +503,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * Asks the destination participant how it is doing.
 			 * The implementation should make, somehow, the destination participant's [[Delegate.onHowAreYou]] to be called, and return what it returns.
 			 * Called within the [[sequencer]] thread.
-			 * @param inquirerTerm The term of the participant that is asking.
+			 * @param inquirerInfo The term of the participant that is asking.
 			 * @return A [[sequencer.Task]] that yields the state information of the destination participant.
 			 */
-			def howAreYou(inquirerTerm: Term): sequencer.Task[StateInfo]
+			def howAreYou(inquirerInfo: StateInfo): sequencer.Task[StateInfo]
 
 			/**
 			 * Request the destination participant to choose a leader.
@@ -570,7 +579,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * */
 		def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): Unit
 
-		/** Should be called whenever the [[ConsensusParticipant.lastAppliedCommandIndex]] changes to allow this [[Workspace]] to release the storage used to memorize the records that are pending to be applied to the [[StateMachine]]. */
+		/** Should be called whenever the [[ConsensusParticipant.highestAppliedCommandIndex]] changes to allow this [[Workspace]] to release the storage used to memorize the records that are pending to be applied to the [[StateMachine]]. */
 		def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit
 
 		/** Should return the index of the last [[CommandRecord]] in the log whose [[ClientId]] is the provided one, or zero if none. */
@@ -749,10 +758,14 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** The index of the highest entry known to be committed according to this participant.
 		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
-		 * This also commits all preceding records in the leader’s log, including records created by previous leaders. */
+		 * This also commits all preceding records in the leader’s log, including records created by previous leaders.
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * */
 		private var commitIndex: RecordIndex = 0
 
-		/** The index of the [[CommandRecord]] with the highest index whose command was successfully applied to the [[StateMachine]] of this [[ConsensusParticipant]]. */
+		/** The index of the [[CommandRecord]] with the highest index whose command was successfully applied to the [[StateMachine]] of this [[ConsensusParticipant]].
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * */
 		private var highestAppliedCommandIndex: RecordIndex = 0
 
 		/** The current role of this [[ConsensusParticipant]].
@@ -761,16 +774,31 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** The current, not causally anchored, [[Configuration]] of this [[ConsensusParticipant]].
 		 * To obtain a causally anchored [[Configuration]] use [[StatefulRole.deriveConfigurationFrom]] instead.
-		 * This variable is updated by the [[StatefulRole.deriveConfigurationFrom]] method. */
+		 * This variable is updated by the [[StatefulRole.deriveConfigurationFrom]] method.
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * */
 		private var currentConfig: Configuration = NoConfig
 
 		/** Knows the [[RetireeAgent]]s corresponding to the participant that were excluded from the configuration and potentially have not received the appends to notice it can leave. */
 		private val retireeAgentByParticipantId: mutable.Map[ParticipantId, RetireeAgent] = mutable.Map.empty
 
-		/** A reference to a [[sequencer.Covenant]] that is created during the [[Starting]] role, which is completed when the leaving the startup process completes.
-		 * In a restart, the old instance is wired to complete if the new one does.
-		 * // TODO I don't like this reference being a var. It adds race conditions in situations that occur rarely. Analyze making it a val which would stop supporting restarts, or remove this variable at all. */
-		//		private var startingCompletedCovenant: sequencer.Covenant[Boolean] = sequencer.Covenant_ready(false)
+		/** The current election round.
+		 * Should be bumped whenever the part of the state of this participant that is exposed in questions to other participants (term and commitIndex as of this writing) changes.
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * */
+		private var currentBallot: Ballot = 1
+
+		/** Stores the last [[StateInfo]] instance returned by [[Role.buildMyStateInfo]]
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * */
+		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(0, STARTING, 0, 0, 0)
+
+		/** Memorizes the [[StateInfo]] of the other participants during an election round.
+		 * Contained instances' [[StateInfo.ballot]] field should match the [[currentBallot]].
+		 * Entry values are never overwritten with a [[StateInfo]] instance with equal or lower [[StateInfo.ballot]].
+		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
+		 * TODO make values be [[Covenant]]s of [[StateInfo]] so that received questions that include a [[StateInfo]] fulfill the howAreYou questions done by this participant. */
+		private val convergingParticipantStates: java.util.Map[ParticipantId, StateInfo] = new java.util.HashMap()
 
 		/** Memorices the schedule that is currently scheduled. Needed to cancel the schedule when transitioning to a non-equivalent [[Role]] instance. */
 		private var currentSchedule: Maybe[sequencer.Schedule] = Maybe.empty
@@ -785,8 +813,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def compare(a: ParticipantId, b: ParticipantId): Int = ordering.compare(a, b)
 		}
 
-		private val coalescedHowAreYou = sequencer.CoalescedQuery[(otherParticipantId: ParticipantId, term: Term), StateInfo](params =>
-			sequencer.Commitment_triggerAndWire(params.otherParticipantId.howAreYou(params.term))
+		private val coalescedHowAreYou = sequencer.CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo](params =>
+			sequencer.Commitment_triggerAndWire(params.otherParticipantId.howAreYou(params.stateInfo))
 		)
 
 		{
@@ -835,15 +863,20 @@ trait ConsensusParticipantSdm { thisModule =>
 			currentRole
 		}
 
-		extension [T](task: sequencer.Task[T]) {
-			private def triggerExposingFailures(): Unit = {
-				task.trigger(true) {
-					case Success(_) => // do nothing
-					case Failure(e) => scribe.error(s"$boundParticipantId: Unexpected error:", e)
-				}
-			}
+		private inline def startNewBallot(): Unit = {
+			currentBallot += 1
+			convergingParticipantStates.clear()
 		}
 
+		private def updateConvergingStates(seenParticipant: ParticipantId, seenStateInfo: StateInfo): Unit = {
+			if seenStateInfo.ballot > currentBallot then {
+				currentBallot = seenStateInfo.ballot
+				convergingParticipantStates.clear()
+				convergingParticipantStates.put(seenParticipant, seenStateInfo)
+			} else if seenStateInfo.ballot == currentBallot && !convergingParticipantStates.containsKey(seenParticipant) then {
+				convergingParticipantStates.put(seenParticipant, seenStateInfo)
+			}
+		}
 
 		/**
 		 * Abstract base class for the consensus participant behaviors at each role.
@@ -859,6 +892,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** The ordinal corresponding to this [[Role]] */
 			val ordinal: RoleOrdinal
 
+			@threadUnsafe lazy val blankVote: Vote[ParticipantId] = Vote(0, boundParticipantId, 0, 0, ordinal, 0)
+			@threadUnsafe lazy val yieldsBlankVote: sequencer.LatchedDuty[Vote[ParticipantId]] = sequencer.LatchedDuty_ready(blankVote)
+
 			def isEquivalentTo(other: Role): Boolean
 
 			/** Called by [[become]] after the previous [[Role]]'s [[Role.onLeave]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
@@ -873,8 +909,23 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			def getCommittedPrimaryState: PrimaryState = Inaccessible
 
-			def buildMyStateInfo(primaryState: PrimaryState): StateInfo =
-				StateInfo(0, currentRole.ordinal, 0, 0)
+			/** Returns a [[StateInfo]] that reflects the current state of the bounded participant; and, if the returned value differs from the one returned in the previous call (stored in [[stateInfoExposedInLastInteraction]]), bumps the [[currentBallot]] and clears the [[convergingParticipantStates]]. */
+			def buildMyStateInfo(primaryState: PrimaryState): StateInfo = buildStatelessInfo()
+
+			/** Returns a [[StateInfo]] that indicates disability to participate; and, if the returned value differs from [[stateInfoExposedInLastInteraction]], bumps the [[currentBallot]] and clears the [[convergingParticipantStates]]. */
+			protected def buildStatelessInfo(): StateInfo = {
+				val rememberedInfo = stateInfoExposedInLastInteraction
+				val newInfo =
+					if rememberedInfo.currentTerm == 0 && rememberedInfo.ordinal == ordinal && rememberedInfo.termAtCommitIndex == 0 && rememberedInfo.commitIndex == 0 then {
+						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(0, ordinal, 0, 0, currentBallot)
+					} else {
+						currentBallot += 1
+						convergingParticipantStates.clear()
+						StateInfo(0, ordinal, 0, 0, currentBallot)
+					}
+				stateInfoExposedInLastInteraction = newInfo
+				newInfo
+			}
 
 			/**
 			 * Asks the other participants how they are and decides which should be the leader based on their answers.
@@ -883,27 +934,22 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *
 			 * @param primaryState0 a causally anchored [[PrimaryState]]
 			 * @param isExclusionConsidered instructs if the [[Vote]] decision criteria must consider if the bounded participant is or isn't included in the active [[Configuration]]. If `true` and the bounded participant is excluded, a blank vote is yielded.
-			 * @param inquirerId the id of the participant of which this participant already knows its [[StateInfo]] (because it sent it to this participant along the request this participant is currently responding) or null if this participant does not know the [[StateInfo]] of anyone else. Note that this parameter is not necessarily needed. Its only purpose is to improve efficiency by saving a query of already known information.
-			 * @param inquirerInfo the [[StateInfo]] of the inquirer if `inquirerId` is not null. Note that this parameter is not necessarily needed. Its only purpose is to improve efficiency by saving a query of already known information.
 			 * @return A [[sequencer.LatchedDuty]] that yields a [[Vote]] with the chosen leader.
 			 */
-			def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
-				sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, ordinal))
+			def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, blankVoteIfRoleChanges: Boolean): sequencer.LatchedDuty[Vote[ParticipantId]] = {
+				yieldsBlankVote
 			}
 
-			/** Updates the state and [[Role]] of this [[ConsensusParticipant]] and then returns the [[sequencer.Duty]] returned by the [[Role.onCommandFromClient]] method applied to the updated [[Role]].
-			 * @return a [[sequencer.Duty]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
-			def updatesRoleAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.LatchedDuty[ResponseToClient] = {
-				sequencer.LatchedDuty_ready(Unable(ordinal, cluster.getOtherProbableParticipant))
-			}
-
-			override def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): sequencer.LatchedDuty[StateInfo] = {
-				sequencer.LatchedDuty_ready(StateInfo(0, ordinal, 0, 0))
+			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[StateInfo] = {
+				checkWithin()
+				updateConvergingStates(inquirerId, inquirerInfo)
+				sequencer.LatchedDuty_ready(buildStatelessInfo())
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
 				checkWithin()
-				sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, ordinal))
+				updateConvergingStates(inquirerId, inquirerInfo)
+				yieldsBlankVote
 			}
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchedDuty[AppendResult] = {
@@ -917,7 +963,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param primaryStateFence the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances. */
 		private abstract class StatefulRole(val primaryStateFence: sequencer.CausalFence[PrimaryState]) extends Role {
 
-			type TermRef = IntRef
+			private type TermRef = IntRef
 			/** The default argument for the [[updateTermIfLessThan]] method's second parameter.
 			 * It is private and defined in the same class as the [[primaryStateFence]] to ensure that the contained [[Term]] variable reflects the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[LatchedDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
 			protected final val defaultPreviousTermRef: TermRef = new TermRef(0)
@@ -930,19 +976,34 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override final def buildMyStateInfo(primaryState: PrimaryState): StateInfo = {
 				primaryState match {
-					case Inaccessible => StateInfo(0, ordinal, 0, 0)
-					case accessible: Accessible => StateInfo(accessible.currentTerm, ordinal, accessible.getRecordTermAt(commitIndex), commitIndex)
+					case Inaccessible =>
+						buildStatelessInfo()
+
+					case accessible: Accessible =>
+						val rememberedInfo = stateInfoExposedInLastInteraction
+						val termAtCommitIndex = accessible.getRecordTermAt(commitIndex)
+						val newInfo =
+							if rememberedInfo.currentTerm == primaryState.currentTerm && rememberedInfo.ordinal == ordinal && rememberedInfo.termAtCommitIndex == termAtCommitIndex && rememberedInfo.commitIndex == commitIndex then {
+								if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(accessible.currentTerm, ordinal, termAtCommitIndex, commitIndex, currentBallot)
+							} else {
+								currentBallot += 1
+								convergingParticipantStates.clear()
+								StateInfo(accessible.currentTerm, ordinal, termAtCommitIndex, commitIndex, currentBallot)
+							}
+						stateInfoExposedInLastInteraction = newInfo
+						newInfo
 				}
 			}
 
-			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
+			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, blankVoteIfRoleChanges: Boolean): sequencer.LatchedDuty[Vote[ParticipantId]] = {
 				checkWithin()
 
 				val config0 = deriveConfigurationFrom(primaryState0)
 				// If this participant is not included in the current configuration
-				if isExclusionConsidered && !config0.allParticipants.contains(boundParticipantId) then sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, ordinal))
+				if isExclusionConsidered && !config0.allParticipants.contains(boundParticipantId) then yieldsBlankVote
 				else {
-					val howAreYouQuestions0 = askHowOtherParticipantsAre(config0.allOtherParticipants, primaryState0.currentTerm, inquirerId, inquirerInfo)
+					val myStateInfo0 = buildMyStateInfo(primaryState0)
+					val howAreYouQuestions0 = askHowOtherParticipantsAre(config0.allOtherParticipants, myStateInfo0, convergingParticipantStates)
 					for {
 						howAreYouAnswers0 <- sequencer.LatchedDuty_sequenceTasksToArray(howAreYouQuestions0, true)
 						primaryState1 <- {
@@ -955,31 +1016,51 @@ trait ConsensusParticipantSdm { thisModule =>
 							updateTermIfLessThan(highestTermSeen)
 						}
 						myVote <- {
-							currentRole match {
+							// Update the convergingParticipantStates (by filling the missing entries with the StateInfo instances in the answers), and count the failed answers.
+							val numberOfFailedAnswers = IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(0) { (failedAnswersCounter, answer, participantIndex) =>
+								val participantId = config0.allOtherParticipants(participantIndex)
+								answer match {
+									case Success(info) =>
+										updateConvergingStates(participantId, info)
+										failedAnswersCounter
+
+									case _: Failure[StateInfo] =>
+										if convergingParticipantStates.containsKey(participantId) then failedAnswersCounter
+										else failedAnswersCounter + 1
+								}
+							}
+
+							if blankVoteIfRoleChanges && currentRole != this then currentRole.yieldsBlankVote
+							else currentRole match {
 								case sf: StatefulRole =>
 									val config1 = deriveConfigurationFrom(primaryState1)
 									// if the bounded participant is excluded and its exclusion is considered, yield a blank vote.
-									if isExclusionConsidered && !config1.allParticipants.contains(boundParticipantId) then sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, currentRole.ordinal))
-									// else, if the active configuration didn't change while waiting the responses to the howAreYou questions, decide the vote based on the responses.
-									else if config1 eq config0 then sequencer.LatchedDuty_ready(config1.decideMyVote(currentRole.buildMyStateInfo(primaryState1), IArray.unsafeFromArray(howAreYouAnswers0)))
-									// else, ignore the responses and ask again.
+									if isExclusionConsidered && !config1.allParticipants.contains(boundParticipantId) then currentRole.yieldsBlankVote
+									// ask again if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot.
+									else if (config1 ne config0) || convergingParticipantStates.size + numberOfFailedAnswers < config0.allOtherParticipants.length then {
+										scribe.trace(s"$boundParticipantId: Deciding my vote again due to ${if config1 ne config0 then "a concurrent configuration change" else "an obsolete answer"}, isExclusionConsidered=$isExclusionConsidered")
+										// TODO analyze if convergingParticipantStates should be cleared here.
+										sf.decideMyVote(primaryState1, isExclusionConsidered, blankVoteIfRoleChanges)
+									}
+									// else, decide the vote based on the responses.	
 									else {
-										scribe.trace(s"$boundParticipantId: Deciding my vote again due to a concurrent configuration change: isExclusionConsidered=$isExclusionConsidered, inquirerId=$inquirerId, inquirerInfo=$inquirerInfo")
-										sf.decideMyVote(primaryState1, isExclusionConsidered, inquirerId, inquirerInfo)
+										sequencer.LatchedDuty_ready(config1.decideMyVote(currentRole.buildMyStateInfo(primaryState1), convergedParticipantStates(config1)))
 									}
 
 								case _ =>
-									sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, currentRole.ordinal))
+									currentRole.yieldsBlankVote
 							}
-
 						}
 					} yield myVote
 				}
 			}
 
-			override def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): sequencer.LatchedDuty[StateInfo] = {
+			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[StateInfo] = {
 				checkWithin()
-				for primaryState1 <- updateTermIfLessThan(inquirerTerm) yield currentRole.buildMyStateInfo(primaryState1)
+				for primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm) yield {
+					updateConvergingStates(inquirerId, inquirerInfo)
+					currentRole.buildMyStateInfo(primaryState1)
+				}
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
@@ -988,7 +1069,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				for {
 					// if the term is stale, update it persistently before interacting with other participants so that they see this participant with its updated and persisted state.
 					primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm, term0Ref)
-					myVote <- currentRole.decideMyVote(primaryState1, true, inquirerId, inquirerInfo)
+					myVote <- {
+						updateConvergingStates(inquirerId, inquirerInfo)
+						currentRole.decideMyVote(primaryState1, true, false)
+					}
 				} yield myVote
 			}
 
@@ -1025,7 +1109,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *         - `success` is true if, and only if, all the following are true when the appending was processed (specifically, when this participant's `primaryStateFence` was crossed):
 			 *         		- the [[PrimaryState]] is valid;
 			 *         		- `inquirerTerm >= currentTerm`;
-			 *         		- the role is either ISOLATED, CANDIDATE, or FOLLOWER;
+			 *         		- the role is either ISOLATED or FOLLOWER;
 			 *         		- the term of the log record at `prevRecordIndex` is equal to `prevRecordTerm`;
 			 *         - `term = max(inquirerTerm, currentTerm)` when the appending was processed (causal fence crossed).
 			 *         - `roleOrdinal` tells which was the role of this participant when the appending was processed (causal fence crossed).
@@ -1073,13 +1157,13 @@ trait ConsensusParticipantSdm { thisModule =>
 							val response = AppendResult(primaryState1.currentTerm, successOrIndexForNextAttempt, currentRole.ordinal)
 							// At this point the primary state is already updated and the response already determined. All the following actions are causally-anchored derived-state updates.
 
+							val previousCommitIndex = commitIndex
 							if primaryUpdateResult.appendSuccess then {
 								// Update the commitIndex
-								val previousCommitIndex = commitIndex
 								commitIndex = if leaderCommit < accessible1.firstEmptyRecordIndex then leaderCommit else accessible1.firstEmptyRecordIndex - 1
 								// if the commitIndex is bumped then:
 								if commitIndex != previousCommitIndex then {
-									// notify the chang
+									// notify the change
 									notifyListeners(_.onCommitIndexChanged(previousCommitIndex, commitIndex))
 									// start the "apply commited commands" process if it isn't already started.
 									if !decoupledCommandsApplierIsRunning then startApplyingCommitedCommands(accessible1)
@@ -1127,11 +1211,13 @@ trait ConsensusParticipantSdm { thisModule =>
 									_ <- machine.applyClientCommand(indexOfCommandToApply, command.command)
 									_ <- {
 										highestAppliedCommandIndex = indexOfCommandToApply
+										primaryState.informAppliedCommandIndex(indexOfCommandToApply)
 										applyCommitedCommandsLoop()
 									}
 								} yield ()
 							case _ =>
 								highestAppliedCommandIndex = indexOfCommandToApply
+								primaryState.informAppliedCommandIndex(indexOfCommandToApply)
 								applyCommitedCommandsLoop()
 						}
 					}
@@ -1144,6 +1230,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							index <- machine.recoverIndexOfLastAppliedCommand
 							_ <- {
 								highestAppliedCommandIndex = index
+								primaryState.informAppliedCommandIndex(index)
 								applyCommitedCommandsLoop()
 							}
 						} yield ()
@@ -1152,7 +1239,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/** @inheritdoc
-			 * Calls to this method are dispatched here when the [[Role]] is either [[Isolated]], [[Candidate]], or [[Follower]]. */
+			 * Calls to this method are dispatched here when the [[Role]] is either [[Isolated]] or [[Follower]]. */
 			override def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId]): sequencer.LatchedDuty[ConfigChangeResponse] = {
 				if assertionsEnabled then assert(currentRole.ordinal != PROMOTING)
 				for {
@@ -1192,15 +1279,15 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				/**
 				 * @param stateAtRequest the [[PrimaryState]] when the [[howAreYou]] calls were done. Needed to notice if the [[PrimaryState]] mutates during the decision of this participant [[Vote]]. */
-				def updateRoleKnowingMyVote(stateAtRequest: PrimaryState, currentState: PrimaryState, myVote: Vote[ParticipantId]): sequencer.LatchedDuty[Unit] = {
+				def updateRoleKnowingMyVote(stateAtRequest: PrimaryState, currentState1: PrimaryState, myVote: Vote[ParticipantId]): sequencer.LatchedDuty[Unit] = {
 					if assertionsEnabled then {
 						assert(isInSequence)
-						assert(myVote.term == currentState.currentTerm)
+						assert(myVote.term == currentState1.currentTerm || myVote.ballot == 0, s"myVote=$myVote, currentTerm=${currentState1.currentTerm}")
 					}
 
 					// scribe.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) was called") // TODO delete line
 					if currentRole ne this then sequencer.LatchedDuty_unit
-					else currentState match {
+					else currentState1 match {
 						case accessible1: Accessible =>
 							val config1 = deriveConfigurationFrom(accessible1)
 							// scribe.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - configChange=${config1.correspondingConfigChange}") // TODO delete line
@@ -1208,7 +1295,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							// If all the participants successfully answered the howAreYou RPC, then:
 							if config1.reachedAll(myVote) then {
 								if myVote.votedId == boundParticipantId then {
-									if currentState eq stateAtRequest then {
+									if currentState1 eq stateAtRequest then {
 										become(Promoting(accessible1.currentTerm, primaryStateFence))
 										sequencer.LatchedDuty_unit
 									}
@@ -1233,9 +1320,9 @@ trait ConsensusParticipantSdm { thisModule =>
 								else if currentRole.ordinal >= PROMOTING then sequencer.LatchedDuty_unit
 								// If the vote is for myself and I am not leading, decide based on everyone’s votes.
 								else {
-									val myStateInfo = buildMyStateInfo(accessible1)
-									// scribe.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - myStateInfo=$myStateInfo") // TODO delete line
-									val inquires = for replierId <- config1.allOtherParticipants yield replierId.chooseALeader(boundParticipantId, myStateInfo)
+									val myStateInfo1 = currentRole.buildMyStateInfo(accessible1)
+									// scribe.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - myStateInfo1=$myStateInfo1") // TODO delete line
+									val inquires = for replierId <- config1.allOtherParticipants yield replierId.chooseALeader(boundParticipantId, myStateInfo1)
 									for {
 										replies <- sequencer.LatchedDuty_sequenceTasksToArray(inquires, true)
 										primaryState2 <- {
@@ -1256,16 +1343,50 @@ trait ConsensusParticipantSdm { thisModule =>
 												case accessible2: Accessible =>
 													if assertionsEnabled then assert(myVote.term == accessible2.currentTerm || (myVote.term < accessible2.currentTerm && currentRole.ordinal < PROMOTING))
 
-													val newRole =
-														if myVote.term < accessible2.currentTerm then Candidate(primaryStateFence) // TODO Can this happen? And if so, why become candidate?
-														else deriveConfigurationFrom(accessible2).determineRole(accessible2, primaryStateFence, myVote, replies)
-													if newRole.ordinal == PROMOTING && (accessible2 ne stateAtRequest) then {
-														scribe.trace(s"$boundParticipantId: updating role again due to concurrent primary-state mutation.")
+													val highestBallotSeenInVotes = IArray.unsafeFromArray(replies).foldLeftWithIndex(currentBallot)((highestBallot, reply, _) => reply match {
+														case Success(replierVote) => if replierVote.ballot > highestBallot then replierVote.ballot else highestBallot
+														case _: Failure[Vote[ParticipantId]] => highestBallot
+													})
+													if highestBallotSeenInVotes > currentBallot then {
+														currentBallot = highestBallotSeenInVotes
+														convergingParticipantStates.clear()
+														scribe.trace(s"$boundParticipantId: updating role again due a higher ballot seen in votes.")
+														// TODO consider the inclusion of the StateInfo in Vote in order to save howAreYou calls to participants for which the StateInfo in the Vote already corresponds to the new ballot. Note that this safe would occur only when restarting the role update due to a higher ballot seen in votes.
 														updateRole(isExclusionConsidered)
-													}
-													else {
-														become(newRole)
+													} else if myVote.term < accessible2.currentTerm then {
+														become(Isolated(primaryStateFence))
 														sequencer.LatchedDuty_unit
+													} else {
+														val config2 = deriveConfigurationFrom(accessible2)
+														val myStateInfo2 = buildMyStateInfo(accessible2)
+														// If, while waiting the responses to the chooseALeader questions, all the missing StateInfo instances (due to failed responses to the howAreYou questions) are received along with questions of those participants, then ignore the Votes and decide the role based solely on all the StateInfo instances.
+														if convergingParticipantStates.size >= config2.allOtherParticipants.length && config2.allOtherParticipants.forallWithIndex { (id, _) => convergingParticipantStates.containsKey(id) } then {
+															val myVote = config2.decideMyVote(myStateInfo2, convergedParticipantStates(config2))
+															if myVote.votedId == boundParticipantId then {
+																if accessible2 eq accessible1 then {
+																	Promoting(accessible1.currentTerm, primaryStateFence)
+																	sequencer.LatchedDuty_unit
+																} else {
+																	scribe.trace(s"$boundParticipantId: updating role again due to concurrent primary-state mutation.")
+																	updateRole(isExclusionConsidered)
+																}
+															} else {
+																become(Follower(accessible1.currentTerm, myVote.votedId, primaryStateFence))
+																sequencer.LatchedDuty_unit
+															}
+														}
+														// If some StateInfo is missing, decide the role based on the Votes.
+														else {
+															val newRole = config2.determineRole(accessible2, primaryStateFence, myVote, replies)
+															if newRole.ordinal == PROMOTING && (accessible2 ne accessible1) then {
+																scribe.trace(s"$boundParticipantId: updating role again due to concurrent primary-state mutation.")
+																updateRole(isExclusionConsidered)
+															}
+															else {
+																become(newRole)
+																sequencer.LatchedDuty_unit
+															}
+														}
 													}
 											}
 										}
@@ -1291,7 +1412,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						else {
 							// scribe.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - primaryState=$primaryState") // TODO delete line
 							for {
-								myVote <- currentRole.decideMyVote(primaryState1, isExclusionConsidered, null, nullStateInfo)
+								myVote <- currentRole.decideMyVote(primaryState1, isExclusionConsidered, true)
 								primaryState2 <- primaryStateFence.causalAnchor()
 								// scribe.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - myVote=$myVote") // TODO delete line
 								_ <- updateRoleKnowingMyVote(primaryState1, primaryState2, myVote)
@@ -1301,20 +1422,24 @@ trait ConsensusParticipantSdm { thisModule =>
 				} yield ()
 			}
 
-			/** Updates the state and [[Role]] of this [[ConsensusParticipant]] and then returns the [[sequencer.LatchedDuty]] returned by the [[Role.onCommandFromClient]] method applied to the updated [[Role]].
+			/** Updates the [[Role]] of this [[ConsensusParticipant]] and then returns the [[sequencer.LatchedDuty]] returned by the [[Role.onCommandFromClient]] method applied to the updated [[Role]].
 			 * @return a [[sequencer.Task]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
-			override final def updatesRoleAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.LatchedDuty[ResponseToClient] = {
-				checkWithin()
+			final def updatesRoleAndThenCallsOnCommandFromClient(command: ClientCommand): sequencer.LatchedDuty[ResponseToClient] = {
+				val initialBallot = currentBallot
+				val convergingStateHash = convergingParticipantStates.hashCode()
+				scribe.trace(s"$boundParticipantId: Updating role from ${RoleOrdinal_nameOf(ordinal)} due to command arrival.")
 				for {
-					_ <- {
-						scribe.trace(s"$boundParticipantId: Updating role from ${RoleOrdinal_nameOf(ordinal)} due to command arrival.")
-						updateRole(true)
-					}
-					primaryState <- primaryStateFence.causalAnchor()
+					_ <- updateRole(true)
 					result <- {
 						val currentRoleOrdinal = currentRole.ordinal
 						if currentRoleOrdinal >= FOLLOWER then currentRole.onCommandFromClient(command, FIRST_ATTEMPT)
-						else sequencer.LatchedDuty_ready(Unable(currentRoleOrdinal, deriveConfigurationFrom(primaryState).otherProbableParticipants))
+						else {
+							if currentRoleOrdinal == ISOLATED && currentBallot == initialBallot && !convergingParticipantStates.isEmpty && convergingStateHash == convergingParticipantStates.hashCode() then {
+								scribe.trace(s"$boundParticipantId: Ballot bumped due to stuckness.")
+								startNewBallot()
+							}
+							for primaryState <- primaryStateFence.causalAnchor() yield Unable(currentRoleOrdinal, deriveConfigurationFrom(primaryState).otherProbableParticipants)
+						}
 					}
 				} yield result
 			}
@@ -1332,18 +1457,19 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				currentPrimaryState match {
 					case accessible: Accessible =>
-						val oldConfig = currentConfig
 						val indexOfTopConfigChange = accessible.indexOfTopConfigChange
 						if indexOfTopConfigChange > 0 then {
-							val desiredConfigChange = accessible.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
+							val oldConfig = currentConfig
+							val desiredConfigChange: ConfigChange[ParticipantId] | Null = accessible.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
 								case stable: StableConfigChange[ParticipantId] @unchecked =>
 									if commitIndex >= indexOfTopConfigChange then stable
-									else oldConfig.correspondingConfigChange
+									else if stable.isCoupleOf(oldConfig.backingConfigChange) then null
+									else stable.recreateCouple
 
 								case transitional: TransitionalConfigChange[ParticipantId] @unchecked =>
 									transitional
 							}
-							if desiredConfigChange != oldConfig.correspondingConfigChange then {
+							if desiredConfigChange != null && desiredConfigChange != oldConfig.backingConfigChange then {
 								val newConfig = Configuration_from(desiredConfigChange)
 								// Update the derived state stored in the `currentRole` instance. Only the Leader role has such state as of this writing.
 								currentRole.onActiveConfigChanged(accessible, oldConfig, newConfig, indexOfTopConfigChange)
@@ -1375,6 +1501,10 @@ trait ConsensusParticipantSdm { thisModule =>
 					},
 					true
 				).andThen(ps => if ps.currentTerm > previousTermRef.elem then onTermBumped(ps))
+			}
+
+			private def convergedParticipantStates(currentConfig: Configuration): IArray[StateInfo] = {
+				IArray.tabulate(currentConfig.allOtherParticipants.size)(participantIndex => convergingParticipantStates.get(currentConfig.allOtherParticipants(participantIndex)))
 			}
 
 			def onTermBumped(primaryState: PrimaryState): Unit = ()
@@ -1418,7 +1548,6 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipantsSet: Set[ParticipantId]): sequencer.LatchedDuty[ConfigChangeResponse] =
 				sequencer.LatchedDuty_ready(UNABLE)
-
 		}
 
 		/** A transitional [[Role]] before [[Stopped]] to which a participant transitions to when a [[StableConfigChange]] that excludes it becomes active.
@@ -1453,6 +1582,10 @@ trait ConsensusParticipantSdm { thisModule =>
 					ListSet.newBuilder[ParticipantId].addAll(newParticipants).addAll(cluster.getOtherProbableParticipant).result()
 				))
 			}
+
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchedDuty[AppendResult] = {
+				become(Starting(false)).onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
+			}
 		}
 
 		/** The behavior when the participant has the [[STARTING]] role. This is a transitory role during which the participant state is initialized.
@@ -1479,8 +1612,8 @@ trait ConsensusParticipantSdm { thisModule =>
 							} else loadedWorkspace.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
 								// If the top configuration change in the log is a stable one, then the previous transitional configuration change rules until the commitIndex crosses the index of top stable one, which is not happening now because the commitIndex is initialized with zero.
 								case stableConfigChange: StableConfigChange[ParticipantId] @unchecked =>
-									// Recreate the previous configuration change with the information about it stored in the top stable one.
-									TransitionalConfigChange(stableConfigChange.previousChangeTerm, stableConfigChange.requestId, stableConfigChange.oldParticipants, stableConfigChange.newParticipants)
+									if commitIndex >= indexOfTopConfigChange then stableConfigChange
+									else stableConfigChange.recreateCouple
 
 								// If the top configuration change in the log is a transitional one, then it rules immediately.
 								case transitionalConfigChange: TransitionalConfigChange[ParticipantId] @unchecked =>
@@ -1492,14 +1625,6 @@ trait ConsensusParticipantSdm { thisModule =>
 							currentConfig = config
 							val primaryState = Accessible(loadedWorkspace)
 							val primaryStateFence = sequencer.CausalFence[PrimaryState](primaryState)
-
-							val previousCommitIndex = commitIndex
-							commitIndex = 0
-							if previousCommitIndex != 0 then notifyListeners(_.onCommitIndexChanged(previousCommitIndex, 0))
-
-							highestAppliedCommandIndex = 0
-							loadedWorkspace.informAppliedCommandIndex(0)
-
 							notifyListeners(_.onStarted(previous.ordinal, primaryState.currentTerm, rulingConfigChange, isSeed))
 							if isSeed then become(Isolated(primaryStateFence))
 							else become(Joining(primaryStateFence))
@@ -1537,18 +1662,16 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** The ordinal corresponding to this [[Role]] */
 			override val ordinal: RoleOrdinal = JOINING
 
-			private val nullVote = sequencer.LatchedDuty_ready(Vote(0, boundParticipantId, 0, 0, ordinal))
-
 			override def onEnter(previous: Role): Unit = {
 				notifyListeners(_.onJoining(previous.ordinal))
 			}
 
-			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
-				nullVote
+			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, blankVoteIfRoleChanges: Boolean): sequencer.LatchedDuty[Vote[ParticipantId]] = {
+				yieldsBlankVote
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
-				nullVote
+				yieldsBlankVote
 			}
 
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchedDuty[ResponseToClient] = {
@@ -1565,7 +1688,6 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * The participant transitions to this state after [[Starting]] or when reachability to other participants drops below [[smallestMajority]].
 		 * This state is abandoned when a majority of the participants are reachable.
 		 * [[Vote]]s cast by participants in this state are ignored.
-		 * TODO consolidate the roles [[Isolated]], [[Candidate]], and [[Follower]] in a single one. Replace the [[HandingOff]] role with a method.
 		 */
 		private class Isolated(psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
 			override val ordinal: RoleOrdinal = ISOLATED
@@ -1587,6 +1709,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchedDuty[ResponseToClient] = {
+				checkWithin()
 				updatesRoleAndThenCallsOnCommandFromClient(command)
 			}
 		}
@@ -1595,7 +1718,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues a updater of the [[PrimaryState.currentTerm]] that sets it to the latest seen term if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
 		 *
 		 * @param endedTerm the [[Term]] that concluded, during which this participant acted as [[Leader]].
-		 * TODO Consider replacing this class with a method that transitions to [[Isolated]] (why not [[Candidate]]) or [[Retiring]] in a synchronous manner, and then enqueues a term update. An alternative would be to add an optional parameter to the new [[Follower]] class that accepts the term to update to in the onEnter.
+		 * TODO Consider replacing this class with a method that transitions to [[Isolated]] or [[Retiring]] in a synchronous manner, and then enqueues a term update. An alternative would be to add an optional parameter to the new [[Follower]] class that accepts the term to update to in the onEnter.
 		 */
 		private final class HandingOff(val endedTerm: Term, latestTermSeen: Term, psf: sequencer.CausalFence[PrimaryState]) extends Isolated(psf) {
 			override val ordinal: RoleOrdinal = HANDING_OFF
@@ -1622,45 +1745,17 @@ trait ConsensusParticipantSdm { thisModule =>
 						// if excluded, become Retiring
 						if !updatedConfig.allParticipants.contains(boundParticipantId) then become(Retiring(accessible.currentTerm, updatedConfig.allParticipants))
 						// else, become Isolated
-						else become(Isolated(primaryStateFence)) // TODO why not candidate?
+						else become(Isolated(primaryStateFence))
 				}
-			}
-		}
-
-
-		/**
-		 * Behavior when the participant has the [[Candidate]] role. Taken when reachability to a majority of the participants is achieved but none of them is in [[Leader]] role.
-		 *
-		 * In this state, the participant participates in leader election and may transition to [[Leader]], [[Follower]], or [[Isolated]] based on his viewpoint of other participants state.
-		 * A new term is started when becoming leader.
-		 * The [[ConsensusParticipant]] behaves exactly the same in [[Isolated]] and [[Candidate]] states. The only goal of the separation is to allow the user to distinguish if a majority of participants is reachable or not.
-		 * TODO consolidate the roles [[Isolated]], [[Candidate]], and [[Follower]] in a single one. Replace the [[HandingOff]] role with a method.
-		 */
-		private final class Candidate(psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
-			override val ordinal: RoleOrdinal = CANDIDATE
-
-			override def onEnter(previous: Role): Unit = {
-				notifyListeners(_.onBecameCandidate(previous.ordinal, getCommittedPrimaryState.currentTerm))
-				if isEager then {
-					val schedule = sequencer.newDelaySchedule(candidateMainLoopInterval)
-					currentSchedule = Maybe(schedule)
-					// schedule the state-update process
-					updateRole(true).scheduled(schedule).triggerAndForget(true)
-				}
-			}
-
-			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchedDuty[ResponseToClient] = {
-				updatesRoleAndThenCallsOnCommandFromClient(command)
 			}
 		}
 
 		/**
 		 * Behavior when the participant has the follower role. Taken when reachability to a majority of the participants is achieved and one of them has the [[Leader]] role and is in a higher or equal term.
 		 *
-		 * In this state, the participant acknowledges the specified leader and may transition to [[Candidate]] if the consensus protocol requires it.
+		 * In this state, the participant acknowledges the specified leader.
 		 *
 		 * @param leaderId The ID of the leader this participant is following
-		 * TODO consolidate the roles [[Isolated]], [[Candidate]], and [[Follower]] in a single one named [[Follower]].
 		 */
 		private final class Follower(val term: Term, val leaderId: ParticipantId, psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
 			override val ordinal: RoleOrdinal = FOLLOWER
@@ -1728,20 +1823,20 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, inquirerId: ParticipantId | Null, inquirerInfo: StateInfo): sequencer.LatchedDuty[Vote[ParticipantId]] = {
+			override def decideMyVote(primaryState0: PrimaryState, isExclusionConsidered: Boolean, blankVoteIfRoleChanges: Boolean): sequencer.LatchedDuty[Vote[ParticipantId]] = {
 				checkWithin()
 				for {
 					_ <- promotionCovenant
 					primaryState1 <- primaryStateFence.causalAnchor()
-					vote <- currentRole.decideMyVote(primaryState1, isExclusionConsidered, inquirerId, inquirerInfo)
+					vote <- currentRole.decideMyVote(primaryState1, isExclusionConsidered, blankVoteIfRoleChanges)
 				} yield vote
 			}
 
-			override def onHowAreYou(inquirerId: ParticipantId, inquirerTerm: Term): sequencer.LatchedDuty[StateInfo] = {
+			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchedDuty[StateInfo] = {
 				checkWithin()
 				for {
 					_ <- promotionCovenant
-					stateInfo <- currentRole.onHowAreYou(inquirerId, inquirerTerm)
+					stateInfo <- currentRole.onHowAreYou(inquirerId, inquirerInfo)
 				} yield stateInfo
 			}
 
@@ -1834,17 +1929,13 @@ trait ConsensusParticipantSdm { thisModule =>
 						(primaryState0, _) => {
 							primaryState0 match {
 								case Inaccessible => Maybe.empty
-								case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.correspondingConfigChange))
+								case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
 							}
 						},
 						true
 					)
 					yield {
-						// if eager replication is set, start the replication in a decoupled manner.
-						if isEager then primaryState1 match {
-							case Inaccessible => illegalStateStop()
-							case accessible1: Accessible => attemptToUpdateOtherParticipantsLogs(accessible1)
-						}
+						startConfigChangeSecondPhase(currentConfig.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
 					}
 				}
 				// if the log contains a ConfigChange record then:
@@ -1873,7 +1964,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @note This rearrangement wouldn't be necessary if maps instead of arrays were used. But considering these two collections are heavily used, efficiency was primed. */
 			override def onActiveConfigChanged(currentPrimaryState: Accessible, oldConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex): Unit = {
 				// Step one. Must be before step two.
-				newConfig.correspondingConfigChange.match {
+				newConfig.backingConfigChange.match {
 					case scc: StableConfigChange[ParticipantId] =>
 						thisLeader.programTheRetirements(currentPrimaryState, oldConfig, scc, indexOfNewConfigChange)
 					case tcc: TransitionalConfigChange[ParticipantId] =>
@@ -1982,6 +2073,7 @@ trait ConsensusParticipantSdm { thisModule =>
 										for {
 											_ <- {
 												scribe.trace(s"$boundParticipantId: Updating role due to insufficient quorum when replicating a TransitionalConfigChange record.")
+												startNewBallot()
 												updateRole(false)
 											}
 											primaryState1 <- primaryStateFence.causalAnchor()
@@ -2091,6 +2183,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								if isSccReplicatedToMajority then sequencer.LatchedDuty_true
 								else {
 									scribe.trace(s"$boundParticipantId: Updating role due to insufficient quorum when replicating a StableConfigChange record.")
+									startNewBallot()
 									for {
 										_ <- updateRole(false)
 										primaryState1 <- primaryStateFence.causalAnchor()
@@ -2119,7 +2212,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									val currentTerm = accessible0.currentTerm
 									if assertionsEnabled then assert(currentTerm == leadedTerm)
 
-									// Do not append the command if excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
+									// Do not append the command if the bounded participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
 									if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
 										if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bounded participant is not present in neither the current nor the desired participants set.
 										primaryStateUpdaterResult = (0, 0, true)
@@ -2203,6 +2296,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														for {
 															_ <- {
 																scribe.trace(s"$boundParticipantId: Updating role due to insufficient quorum when replicating a command record.")
+																startNewBallot()
 																updateRole(false)
 															}
 															response <- currentRole.onCommandFromClient(clientCommand, attemptFlag) // TODO analyze if the attemptFlag should be propagated as is or updated
@@ -2275,7 +2369,7 @@ trait ConsensusParticipantSdm { thisModule =>
 											// Handle the responses. Note that when successful, it update the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
 											handleAppendResponse(accessible1, config1.allOtherParticipants(otherParticipantIndex), otherParticipantIndex, appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 										}
-										scribe.trace(s"$boundParticipantId: append responses to replication #$serialOfReplicationAttempt have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.allOtherParticipants.indices yield s"${config1.allOtherParticipants(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommited_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
+										scribe.trace(s"$boundParticipantId: The append responses of replication #$serialOfReplicationAttempt have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.allOtherParticipants.indices yield s"${config1.allOtherParticipants(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommited_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 										for maybeLastAppendAttemptInfo2 <- retryLaggingLearners(accessible1, config1, appendOutcomes1, indexAfterTopRecordToSend, false, false, serialOfReplicationAttempt)
 											yield {
 												// If the behavior changed while waiting the result or the number of successful appends isn't enough to achieve quorum, return false.
@@ -2403,6 +2497,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *			- the causally anchored [[PrimaryState]],
 			 *			- the active [[Configuration]] derived from it,
 			 *			- and an array of [[AppendOutcome]] values representing the responses to the [[ClusterParticipant.appendRecords]] calls, stored as a parallel array with index correspondence to the [[Configuration.allOtherParticipants]] array of the accompanying [[Configuration]].
+			 *	TODO when `abortIfAnotherReplicationStarts==false`, couple with the appends requests done by the newer replication to avoid repeating requests.
 			 * */
 			private def retryLaggingLearners(
 				accessible1: Accessible,
@@ -2469,7 +2564,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														}
 													}
 												}
-												scribe.trace(s"$boundParticipantId: append responses to replication #$serialOfReplicationAttempt retry have been handled, newOutcomes=${newOutcomes.zip(config2.allOtherParticipants).mkString("[", ", ", "]")}") // TODO delete
+												scribe.trace(s"$boundParticipantId: The append responses to the laggard-retry of replication #$serialOfReplicationAttempt have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config2.allOtherParticipants.indices yield s"${config2.allOtherParticipants(i)}: outcome=${newOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommited_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 												retryLaggingLearners(accessible2, config2, newOutcomes, indexAfterTopRecordSent, untilNoneLags, abortIfAnotherReplicationStarts, serialOfReplicationAttempt)
 										}
 									}
@@ -2569,6 +2664,7 @@ trait ConsensusParticipantSdm { thisModule =>
 												}
 											}
 										}
+										scribe.trace(s"$boundParticipantId: Retrying the appendRecords RPCs to the unreachable participants $unreachableParticipantIds in replication #$serialOfReplicationAttempt")
 										// Execute the tasks, handle the results, and schedule a retry for the still unreachable participants.
 										val commitIndexAtAppendRequest = commitIndex
 										for {
@@ -2580,13 +2676,14 @@ trait ConsensusParticipantSdm { thisModule =>
 												case accessible2: Accessible =>
 													if assertionsEnabled then assert(accessible2.currentTerm == leadedTerm) // because the Leader Role should never bump the term before leaving transitioning to another Role.
 													val config2 = deriveConfigurationFrom(accessible2)
-													val appendResultsSummaries = appendResults.mapWithIndex { (appendResult, resultIndex) =>
+													val appendsOutcomes = appendResults.mapWithIndex { (appendResult, resultIndex) =>
 														val participantId = unreachableParticipantIds(resultIndex)
 														val participantIndex = config2.participantIndexOf(participantId)
 														if participantIndex < 0 then AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION
 														else handleAppendResponse(accessible2, participantId, participantIndex, appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 													}
-													scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendResultsSummaries, indexAfterTopRecordSent, serialOfReplicationAttempt)
+													scribe.trace(s"$boundParticipantId: The append responses to the unreachable-retry of replication #$serialOfReplicationAttempt have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, outcomes=${unreachableParticipantIds.zip(appendsOutcomes)}") // TODO delete
+													scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendsOutcomes, indexAfterTopRecordSent, serialOfReplicationAttempt)
 											}
 										}
 								}
@@ -2620,6 +2717,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onTermBumped(primaryState: PrimaryState): Unit = {
 				scribe.trace(s"$boundParticipantId: About to hand-off due to term bump.")
+				super.onTermBumped(primaryState)
 				val config = deriveConfigurationFrom(primaryState)
 				if config.allParticipants.contains(boundParticipantId) then become(Isolated(primaryStateFence))
 				else become(Retiring(primaryState.currentTerm, config.allParticipants))
@@ -2818,6 +2916,13 @@ trait ConsensusParticipantSdm { thisModule =>
 			inline def indexOf(clientCommand: ClientCommand): RecordIndex =
 				workspace.indexOf(clientCommand)
 
+			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
+			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchedDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchedDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			inline def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = {
+				workspace.informAppliedCommandIndex(appliedCommandIndex)
+			}	
+
 			/** CAUTION: This method mutates of the [[PrimaryState]], so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
 			override def withTermUpdated(newTerm: Term): sequencer.LatchedDuty[PrimaryState] = {
 				val currentTerm = workspace.getCurrentTerm
@@ -2903,7 +3008,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			/** The [[ConfigChange]] that caused this [[Configuration]] and on which it is based.
 			 * A [[ConfigChange]]s is a snapshots, so it contain all the information needed. */
-			val correspondingConfigChange: ConfigChange[ParticipantId]
+			val backingConfigChange: ConfigChange[ParticipantId]
 
 			/** The identifiers of the desired set of participants. */
 			val desiredParticipants: Set[ParticipantId]
@@ -2931,7 +3036,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param howAreYouAnswers the answers to the [[ClusterParticipant.howAreYou]] questions done to the other participants, stored as a parallel array with index correspondence [[allOtherParticipants]].
 			 * @return A task that yields a [[Vote]] with the chosen leader for the current term.
 			 */
-			def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[Try[StateInfo]]): Vote[ParticipantId]
+			def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null]): Vote[ParticipantId]
 
 			/** @return the index of the provided [[ParticipantId]] in the [[allOtherParticipants]]' [[IndexedSeq]] or a negative number if not present.
 			 * @param otherParticipantId the id of the participant to find. */
@@ -2939,7 +3044,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				java.util.Arrays.binarySearch(allOtherParticipants.asInstanceOf[Array[ParticipantId]], otherParticipantId, participantIdComparator)
 			}
 
-			override def toString: String = correspondingConfigChange.toString
+			override def toString: String = backingConfigChange.toString
 		}
 
 		private object NoConfig extends Configuration {
@@ -2949,7 +3054,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val allOtherParticipants: IArray[ParticipantId] =
 				IArray.empty
 
-			override val correspondingConfigChange: ConfigChange[ParticipantId] =
+			override val backingConfigChange: ConfigChange[ParticipantId] =
 				null
 
 			override val desiredParticipants: Set[ParticipantId] =
@@ -2973,8 +3078,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]]): Role =
 				illegalStateStop()
 
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[Try[StateInfo]]): Vote[ParticipantId] =
-				Vote(0, boundParticipantId, 0, 0, currentRole.ordinal)
+			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null]): Vote[ParticipantId] =
+				currentRole.blankVote
 		}
 
 		/** Pure new configuration (`Cnew`).
@@ -2983,13 +3088,13 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Replication and quorum reduce to `Cnew` only.
 		 * Cold-only servers, having seen this entry, shut down.
 		 */
-		private final class StableConfig(override val correspondingConfigChange: StableConfigChange[ParticipantId]) extends Configuration {
-			override val allParticipants: IArray[ParticipantId] = IArray.unsafeFromArray(correspondingConfigChange.newParticipants.toArray.sorted)
+		private final class StableConfig(override val backingConfigChange: StableConfigChange[ParticipantId]) extends Configuration {
+			override val allParticipants: IArray[ParticipantId] = IArray.unsafeFromArray(backingConfigChange.newParticipants.toArray.sorted)
 			private val halfTheNumberOfParticipants = allParticipants.length / 2
 			override val allOtherParticipants: IArray[ParticipantId] = allParticipants.filter(_ != boundParticipantId)
 
 			override val desiredParticipants: Set[ParticipantId] =
-				correspondingConfigChange.newParticipants
+				backingConfigChange.newParticipants
 
 			def otherProbableParticipants: ListSet[ParticipantId] = {
 				ListSet.newBuilder
@@ -3025,12 +3130,12 @@ trait ConsensusParticipantSdm { thisModule =>
 				for case Success(replierVote) <- votesFromOthers do {
 					if replierVote.votedId == myVote.votedId then votesMatchingMyVoteCount += 1
 				}
-				if votesMatchingMyVoteCount <= halfTheNumberOfParticipants then Candidate(primaryStateFence)
+				if votesMatchingMyVoteCount <= halfTheNumberOfParticipants then Isolated(primaryStateFence)
 				else if myVote.votedId == boundParticipantId then Promoting(primaryState.currentTerm, primaryStateFence)
 				else Follower(primaryState.currentTerm, myVote.votedId, primaryStateFence)
 			}
 
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[Try[StateInfo]]): Vote[ParticipantId] = {
+			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null]): Vote[ParticipantId] = {
 				var latestTermSeen = myStateInfo.currentTerm
 				var chosenCandidate = CandidateInfo(boundParticipantId, true, myStateInfo)
 				var borrame = List(chosenCandidate) //TODO delete line
@@ -3039,7 +3144,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				howAreYouAnswers.foreachWithIndex { (reply, replierIndex) =>
 					val replierId = allOtherParticipants(replierIndex)
 					reply match {
-						case Success(replierInfo) =>
+						case null =>
+							scribe.debug(s"$boundParticipantId: `$replierId.howAreYou` failed while deciding vote")
+
+						case replierInfo: StateInfo =>
 							reachableCandidatesCounter += 1
 							if replierInfo.currentTerm > latestTermSeen then {
 								latestTermSeen = replierInfo.currentTerm
@@ -3048,12 +3156,10 @@ trait ConsensusParticipantSdm { thisModule =>
 							borrame = candidateInfo :: borrame //TODO delete line
 							chosenCandidate = chosenCandidate.getWinnerAgainst(candidateInfo)
 
-						case Failure(e) =>
-							scribe.debug(s"$boundParticipantId: `$replierId.howAreYou` failed while deciding vote: $e")
 					}
 				}
-				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): chosen=$chosenCandidate, among: $borrame, config=$correspondingConfigChange") //TODO delete line
-				Vote(latestTermSeen, chosenCandidate.id, reachableCandidatesCounter, 0, chosenCandidate.info.ordinal)
+				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): chosen=$chosenCandidate, among: $borrame, config=$backingConfigChange") //TODO delete line
+				Vote(latestTermSeen, chosenCandidate.id, reachableCandidatesCounter, 0, chosenCandidate.info.ordinal, currentBallot)
 			}
 		}
 
@@ -3064,16 +3170,16 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Elections must also consider both sets.
 		 * Ends when a [[StableConfig]] entry is committed.
 		 */
-		private final class TransitionalConfig(override val correspondingConfigChange: TransitionalConfigChange[ParticipantId]) extends Configuration {
-			private val oldParticipants: Set[ParticipantId] = correspondingConfigChange.oldParticipants
-			private val newParticipants: Set[ParticipantId] = correspondingConfigChange.newParticipants
+		private final class TransitionalConfig(override val backingConfigChange: TransitionalConfigChange[ParticipantId]) extends Configuration {
+			private val oldParticipants: Set[ParticipantId] = backingConfigChange.oldParticipants
+			private val newParticipants: Set[ParticipantId] = backingConfigChange.newParticipants
 			private val halfOfOldParticipants: Int = oldParticipants.size / 2
 			private val halfOfNewParticipants: Int = newParticipants.size / 2
 			override val allParticipants: IArray[ParticipantId] = IArray.unsafeFromArray(newParticipants.union(oldParticipants).toArray.sorted)
 			override val allOtherParticipants: IArray[ParticipantId] = allParticipants.filter(_ != boundParticipantId)
 
 			override val desiredParticipants: Set[ParticipantId] =
-				correspondingConfigChange.newParticipants
+				backingConfigChange.newParticipants
 
 			def otherProbableParticipants: ListSet[ParticipantId] = {
 				ListSet.newBuilder
@@ -3177,13 +3283,12 @@ trait ConsensusParticipantSdm { thisModule =>
 					}
 				}
 
-				if (oldParticipantsVotesMatchingMyVote <= halfOfOldParticipants && oldParticipants.nonEmpty) || (newParticipantsVotesMatchingMyVote + newParticipantsJoining <= halfOfNewParticipants && newParticipants.nonEmpty) then Candidate(primaryStateFence)
+				if (oldParticipantsVotesMatchingMyVote <= halfOfOldParticipants && oldParticipants.nonEmpty) || (newParticipantsVotesMatchingMyVote + newParticipantsJoining <= halfOfNewParticipants && newParticipants.nonEmpty) then Isolated(primaryStateFence)
 				else if myVote.votedId == boundParticipantId then Promoting(primaryState.currentTerm, primaryStateFence)
 				else Follower(primaryState.currentTerm, myVote.votedId, primaryStateFence)
 			}
 
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[Try[StateInfo]]): Vote[ParticipantId] = {
-				var stateInfo = myStateInfo
+			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null]): Vote[ParticipantId] = {
 				var participantId = boundParticipantId
 				var highestTermSeen = myStateInfo.currentTerm
 
@@ -3191,7 +3296,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				var newParticipantsThatAreReachable = 0
 				var isInOldConfig = oldParticipants.contains(participantId)
 				var isInNewConfig = newParticipants.contains(participantId)
-				var chosenCandidate = CandidateInfo(participantId, isInOldConfig, stateInfo)
+				var chosenCandidate = CandidateInfo(participantId, isInOldConfig, myStateInfo)
 				var borrame = List(chosenCandidate) //TODO delete line
 
 				var participantIndex = allOtherParticipants.length
@@ -3205,8 +3310,11 @@ trait ConsensusParticipantSdm { thisModule =>
 					while participantIndex >= 0 && goNext do {
 						participantId = allOtherParticipants(participantIndex)
 						howAreYouAnswers(participantIndex) match {
-							case s: Success[StateInfo] =>
-								stateInfo = s.value
+							case null =>
+								scribe.debug(s"$boundParticipantId: `$participantId.howAreYou` failed while deciding vote")
+								participantIndex -= 1
+
+							case stateInfo: StateInfo =>
 								if stateInfo.currentTerm > highestTermSeen then highestTermSeen = stateInfo.currentTerm
 								isInOldConfig = oldParticipants.contains(participantId)
 								isInNewConfig = newParticipants.contains(participantId)
@@ -3214,15 +3322,11 @@ trait ConsensusParticipantSdm { thisModule =>
 								chosenCandidate = chosenCandidate.getWinnerAgainst(candidateInfo)
 								borrame = candidateInfo :: borrame //TODO delete line
 								goNext = false
-
-							case f: Failure[StateInfo] =>
-								scribe.debug(s"$boundParticipantId: `$participantId.howAreYou` failed while deciding vote: ${f.exception}")
-								participantIndex -= 1
 						}
 					}
 				}
-				val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.ordinal)
-				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): result=$result, among=$borrame, config=$correspondingConfigChange") //TODO delete line
+				val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.ordinal, currentBallot)
+				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): result=$result, among=$borrame, config=$backingConfigChange") //TODO delete line
 				result
 			}
 		}
@@ -3240,18 +3344,19 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/**
 		 * Asks the [[Configuration.allOtherParticipants]] how they are ([[ClusterParticipant.howAreYou]]) in a coalesced manner: If an equivalent question is in flight, reuses the same pending [[sequencer.LatchedDuty]] of the in-flight question; otherwise, a new request is done.
-		 * Note that the excluded this parameter is not necessarily needed. Its only purpose is to improve efficiency by saving a query of already known information.
+		 * Supports the forcing of answers.
 		 *
 		 * @param participantsIds the [[ParticipantId]]s of the target participants.
-		 * @param term the [[Term]] to put in the inquires.
-		 * @param idOfExcludedParticipant an optional [[ParticipantId]] to exclude from the inquires.
-		 * @param excludedParticipantStateInfo the [[StateInfo]] used to fill the entry, corresponding to the excluded participant, in the returned collection.
+		 * @param stateInfo the [[StateInfo]] to put in the inquires.
+		 * @param forcedAnswerByParticipantId the forced answers indexed by [[ParticipantId]].
 		 * @return An [[IndexedSeq]] containing a [[LatchedTask]] for each [[ParticipantId]] in the provided array. Each [[LatchedTask]] element is the one returned by [[ClusterParticipant.howAreYou]] applied to the corresponding [[ParticipantId]] in the provided array, except the corresponding to the provided `idOfExcludedParticipant`, which yield the provided [[StateInfo]].
 		 */
-		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], term: Term, idOfExcludedParticipant: ParticipantId | Null, excludedParticipantStateInfo: StateInfo): IArray[sequencer.LatchedTask[StateInfo]] = {
+		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], stateInfo: StateInfo, forcedAnswerByParticipantId: java.util.Map[ParticipantId, StateInfo]): IArray[sequencer.LatchedTask[StateInfo]] = {
 			participantsIds.mapWithIndex { (participantId, _) =>
-				if participantId == idOfExcludedParticipant then sequencer.LatchedTask_ready(Success(excludedParticipantStateInfo))
-				else coalescedHowAreYou.getOrStart((participantId, term), true)
+				forcedAnswerByParticipantId.get(participantId) match {
+					case null => coalescedHowAreYou.getOrStart((participantId, stateInfo), true)
+					case forcedAnswer: StateInfo => sequencer.LatchedTask_ready(Success(forcedAnswer))
+				}
 			}
 		}
 
@@ -3284,7 +3389,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def toString: String =
-				s"CandidateInfo(participant=$id, currentTerm:${info.currentTerm}, ordinal=${RoleOrdinal_nameOf(info.ordinal)}, termAtCommitIndex=${info.termAtCommitIndex}, commitIndex=${info.commitIndex}, isInOldConfig=$isInOldConfig)"
+				s"CandidateInfo(participant=$id, currentTerm:${info.currentTerm}, ordinal=${RoleOrdinal_nameOf(info.ordinal)}, termAtCommitIndex=${info.termAtCommitIndex}, commitIndex=${info.commitIndex}, ballot=${info.ballot}, isInOldConfig=$isInOldConfig)"
 		}
 
 		//// NOTIFICATIONS
