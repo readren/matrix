@@ -45,7 +45,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	//	override def scalaCheckInitialSeed = "mLbrswnMGqQ8czetIVPfw3Wh8rh8m-nkAjknVe4oiUE="
 
-	override def munitTimeout: Duration = new FiniteDuration(1200, TimeUnit.SECONDS)
+	override def munitTimeout: Duration = new FiniteDuration(6000, TimeUnit.SECONDS)
 
 	private given ExecutionContext = ExecutionContext.fromExecutor(Executors.newFixedThreadPool(4))
 
@@ -1048,9 +1048,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	}
 
 	test("All invariants must comply") {
-		inline val numberOfCommandsToSend = 20
+		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
-			Gen.choose(2, 5),
+			Gen.choose(1, 9),
 			Gen.oneOf(true, false),
 			Gen.long
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>

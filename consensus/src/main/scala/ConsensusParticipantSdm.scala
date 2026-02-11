@@ -32,17 +32,23 @@ object ConsensusParticipantSdm {
 
 	final type ConfigChangeRequestId = String
 
-	/** The ides of the concrete [[Role]] subtypes. */
-	final type RoleOrdinal = Byte
+	/** Type of the identifiers of the concrete [[Role]] subtypes. */
+	opaque final type RoleOrdinal = Byte
 	final val STOPPED: RoleOrdinal = 0
 	final val RETIRING: RoleOrdinal = 1
 	final val STARTING: RoleOrdinal = 2
-	final val JOINING: RoleOrdinal = 3
-	final val ISOLATED: RoleOrdinal = 4
-	final val HANDING_OFF: RoleOrdinal = 5
-	final val FOLLOWER: RoleOrdinal = 7
-	final val PROMOTING: RoleOrdinal = 8
-	final val LEADER: RoleOrdinal = 9
+	final val JOINING: RoleOrdinal = 4
+	final val ISOLATED: RoleOrdinal = 8
+	final val HANDING_OFF: RoleOrdinal = 9
+	final val FOLLOWER: RoleOrdinal = 10
+	final val PROMOTING: RoleOrdinal = 12
+	final val LEADER: RoleOrdinal = 13
+	extension (thisRoleOrdinal: RoleOrdinal) {
+		def <(other: RoleOrdinal): Boolean = thisRoleOrdinal < other
+		def <=(other: RoleOrdinal): Boolean = thisRoleOrdinal <= other
+		def >(other: RoleOrdinal): Boolean = thisRoleOrdinal > other
+		def >=(other: RoleOrdinal): Boolean = thisRoleOrdinal >= other
+	}
 
 	def RoleOrdinal_nameOf(ordinal: RoleOrdinal): String = {
 		ordinal match {
@@ -55,6 +61,28 @@ object ConsensusParticipantSdm {
 			case FOLLOWER => "FOLLOWER"
 			case PROMOTING => "PROMOTING"
 			case LEADER => "LEADER"
+		}
+	}
+
+	/** Type of the identifiers of the election ranks. Each role has a fixed rank. */
+	opaque final type ElectionRank = Byte
+	/** The [[ElectionRank]] of roles that are ineligible, do not participante in elections (vote for themselves with term=0), and don't reduce the quorum threshold. */
+	final val ER_NONE: ElectionRank = STOPPED
+	/** The [[ElectionRank]] of the [[JOINING]] role, which is ineligible and does not participate in elections (votes for itself with term=0), but reduces quorum threshold by one. */
+	final val ER_PRE_CANDIDATE: ElectionRank = JOINING
+	/** The [[ElectionRank]] of the non-leading roles, which are eligible and fully participate in elections. */
+	final val ER_CANDIDATE: ElectionRank = ISOLATED
+	/** The [[ElectionRank]] of the leading roles, which are eligible and fully participate in elections, but should be chosen as leader by all voters provided the [[Term]] it exposes is the highest observed by the voter. */
+	final val ER_LEADING: ElectionRank = PROMOTING
+
+	inline def ElectionRank_from(ordinal: RoleOrdinal): ElectionRank = (ordinal & 0xFC).toByte
+
+	def ElectionRank_nameOf(rank: ElectionRank): String = {
+		rank match {
+			case ER_NONE => "LOW"
+			case ER_PRE_CANDIDATE => "LOW_JOINING"
+			case ER_CANDIDATE => "MEDIUM"
+			case ER_LEADING => "HIGH"
 		}
 	}
 
@@ -111,13 +139,13 @@ object ConsensusParticipantSdm {
 	 * @param votedId The id of the voted candidate.
 	 * @param reachableCandidatesOfOldConf The number of candidates of the current or old set of participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was stopped.
 	 * @param reachableCandidatesOfNewConf The number of candidates new the new set or participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was stopped.
-	 * @param votedRole The role of the voted candidate.
+	 * @param rank The [[ElectionRank]] of the [[Role]] of the voted candidate.
 	 * @param ballot the election round to which this [[Vote]] belongs to, or zero to indicate this [[Vote]] is blank.
 	 */
-	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, votedRole: RoleOrdinal, ballot: Ballot) {
-		if assertionsEnabled then assert(votedRole != PROMOTING)
+	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, rank: ElectionRank, ballot: Ballot) {
+		if assertionsEnabled then assert(rank != PROMOTING)
 
-		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, votedRole=${RoleOrdinal_nameOf(votedRole)}, ballot=$ballot)"
+		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, rank=${ElectionRank_nameOf(rank)}, ballot=$ballot)"
 	}
 
 	/** The result of an append operation.
@@ -138,18 +166,19 @@ object ConsensusParticipantSdm {
 	}
 
 	/**
-	 * The information about a participant that is relevant for elections (deciding the [[Role]] of each participant).
-	 * This information is exposed not only on demand by calling [[ConsensusParticipantSdm.ClusterParticipant.howAreYou]] but also proactively in some questions.
-	 * @param currentTerm The term of the participant that is answering.
-	 * @param ordinal The role of the participant that is answering. TODO change name to rolePriority and type to Priority = Byte.
+	 * Information that a participant exposes about itself for the purpose of leader election.
+	 * Other participants require this data to decide both their vote and their own role.
+	 * This information is exposed not only on demand in the response to the question [[ConsensusParticipantSdm.ClusterParticipant.howAreYou]], but also proactively in some questions.
+	 * @param currentTerm The term of the participant that.
+	 * @param rank The [[ElectionRank]] of the [[ConsensusParticipantSdm.ConsensusParticipant.Role]] of the participant.
 	 * @param termAtCommitIndex The term of the last commited record in the log of the participant that is answering.
 	 * @param commitIndex The index of the last commited record in the log of the participant that is answering.
 	 * @param ballot the election round to which this [[StateInfo]] belongs to.
 	 */
-	final case class StateInfo(currentTerm: Term, ordinal: RoleOrdinal, termAtCommitIndex: Term, commitIndex: RecordIndex, ballot: Ballot) {
-		if assertionsEnabled then assert(ordinal != PROMOTING && currentTerm >= termAtCommitIndex)
+	final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, ballot: Ballot) {
+		if assertionsEnabled then assert(currentTerm >= termAtCommitIndex)
 
-		override def toString: String = s"StateInfo(@$currentTerm, ${RoleOrdinal_nameOf(ordinal)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex, ballot=$ballot)"
+		override def toString: String = s"StateInfo(@$currentTerm, ${ElectionRank_nameOf(rank)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex, ballot=$ballot)"
 	}
 
 	//// LOG RECORD
@@ -245,9 +274,9 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * This ordering is used to determine the relative freshness of commands from the same client.
 	 * Implementations must ensure that:
 	 *
-	 *   - For any two commands `a` and `b` from the same client, if `a` was issued *after* `b`, then `clientCommandOrdering.compare(a, b) > 0`.
+	 *   - For any two commands `a` and `b` from the same client, if `a` is issued *after* `b`, then `clientCommandOrdering.compare(a, b) > 0`.
 	 *   - If `a` and `b` are semantically identical (e.g., same request ID), then `clientCommandOrdering.compare(a, b) == 0`.
-	 *   - If `a` was issued *before* `b`, then `clientCommandOrdering.compare(a, b) < 0`.
+	 *   - If `a` is issued *before* `b`, then `clientCommandOrdering.compare(a, b) < 0`.
 	 *
 	 * The ordering must be consistent and total for commands from the same client.
 	 * Ordering between commands from different clients may be arbitrary or undefined.
@@ -328,7 +357,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	/** The participant is unable to process the command because it is [[ISOLATED]], [[STARTING]], or [[STOPPED]].
 	 * After receiving this response, the client should try again with the [[otherParticipants]] with a flag indicating it is a fallback.
 	 * @param roleOrdinal The role of the participant that is not able to reach consensus.
-	 * @param otherParticipants The identifiers of alternative participants to try. This list is provided as a best effort and may be incomplete or include servers that are stale or unavailable.
+	 * @param otherParticipants The identifiers of alternative participants to try. This list is provided on a best-effort basis and may be incomplete or include servers that are stale or unavailable.
 	 */
 	final case class Unable(roleOrdinal: RoleOrdinal, otherParticipants: ListSet[ParticipantId]) extends ResponseToClient
 
@@ -481,7 +510,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *         [[SUCCESSFULLY_CHANGED]] if the requested change was successfully completed.
 			 *         [[ALREADY_CHANGED]] if the requested change is already done or in progress.
 			 *         [[ALREADY_IN_PROGRESS]] if the participant is currently transitioning to the requested configuration 
-			 *         [[ASK_THE_LEADER]] if none of the the previous bullet is true and the [[ConsensusParticipant]] is a [[FOLLOWER]].
+			 *         [[ASK_THE_LEADER]] if none of the previous bullet is true and the [[ConsensusParticipant]] is a [[FOLLOWER]].
 			 *         [[WAIT_PREVIOUS_CHANGE_TO_COMPLETE]] if the participant is the leader but is currently processing a change to a configuration different from the requested.  
 			 *         [[UNABLE]] if the participant is not able to become neither the [[LEADER]] nor a [[FOLLOWER]]
 			 *         - currently the leader or a follower that already has the desired participants set as the current or scheduled one;
@@ -715,7 +744,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * - No heartbeat mechanism: Elections are triggered by client fallback requests rather than periodic timeouts. Fallback requests are those that are a retry of a previous request sent to a different participant.
 	 * - Deterministic candidate selection: All participants choose the same leader candidate when they have identical knowledge
 	 *   of cluster state, even with partial information about other participants
-	 * - Leader selection criteria (in order of priority): highest current term, is leader or not, highest last record term, longest log, and lexicographically the smallest participant ID.
+	 * - Leader selection criteria (in order of precedence): highest current term, has leading role or not, participates in elections or not, highest commit-index term, highest commit-index, and lexicographically the smallest participant ID.
 	 *
 	 * The election process works as follows:
 	 *
@@ -791,7 +820,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** Stores the last [[StateInfo]] instance returned by [[Role.buildMyStateInfo]]
 		 * CAUTION: this is state derived from the [[PrimaryState]]. Therefore, when the [[currentRole]] is a [[StatefulRole]], this variable should be accessed only within consumers synchronously subscribed to the [[sequencer.LatchedDuty]] returned by the [[sequencer.CausalFence.advance]]-like and [[sequencer.CausalFence.causalAnchor]] methods applied to the [[StatefulRole.primaryStateFence]].
 		 * */
-		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(0, STARTING, 0, 0, 0)
+		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(0, ER_NONE, 0, 0, 0)
 
 		/** Memorizes the [[StateInfo]] of the other participants during an election round.
 		 * Contained instances' [[StateInfo.ballot]] field should match the [[currentBallot]].
@@ -891,8 +920,9 @@ trait ConsensusParticipantSdm { thisModule =>
 		private sealed abstract class Role extends Delegate { thisRole =>
 			/** The ordinal corresponding to this [[Role]] */
 			val ordinal: RoleOrdinal
+			val rank: ElectionRank = ElectionRank_from(ordinal)
 
-			@threadUnsafe lazy val blankVote: Vote[ParticipantId] = Vote(0, boundParticipantId, 0, 0, ordinal, 0)
+			@threadUnsafe lazy val blankVote: Vote[ParticipantId] = Vote(0, boundParticipantId, 0, 0, this.rank, 0)
 			@threadUnsafe lazy val yieldsBlankVote: sequencer.LatchedDuty[Vote[ParticipantId]] = sequencer.LatchedDuty_ready(blankVote)
 
 			def isEquivalentTo(other: Role): Boolean
@@ -916,12 +946,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			protected def buildStatelessInfo(): StateInfo = {
 				val rememberedInfo = stateInfoExposedInLastInteraction
 				val newInfo =
-					if rememberedInfo.currentTerm == 0 && rememberedInfo.ordinal == ordinal && rememberedInfo.termAtCommitIndex == 0 && rememberedInfo.commitIndex == 0 then {
-						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(0, ordinal, 0, 0, currentBallot)
+					if rememberedInfo.currentTerm == 0 && rememberedInfo.rank == this.rank && rememberedInfo.termAtCommitIndex == 0 && rememberedInfo.commitIndex == 0 then {
+						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(0, this.rank, 0, 0, currentBallot)
 					} else {
 						currentBallot += 1
 						convergingParticipantStates.clear()
-						StateInfo(0, ordinal, 0, 0, currentBallot)
+						StateInfo(0, rank, 0, 0, currentBallot)
 					}
 				stateInfoExposedInLastInteraction = newInfo
 				newInfo
@@ -983,12 +1013,12 @@ trait ConsensusParticipantSdm { thisModule =>
 						val rememberedInfo = stateInfoExposedInLastInteraction
 						val termAtCommitIndex = accessible.getRecordTermAt(commitIndex)
 						val newInfo =
-							if rememberedInfo.currentTerm == primaryState.currentTerm && rememberedInfo.ordinal == ordinal && rememberedInfo.termAtCommitIndex == termAtCommitIndex && rememberedInfo.commitIndex == commitIndex then {
-								if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(accessible.currentTerm, ordinal, termAtCommitIndex, commitIndex, currentBallot)
+							if rememberedInfo.currentTerm == primaryState.currentTerm && rememberedInfo.rank == this.rank && rememberedInfo.termAtCommitIndex == termAtCommitIndex && rememberedInfo.commitIndex == commitIndex then {
+								if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(accessible.currentTerm, this.rank, termAtCommitIndex, commitIndex, currentBallot)
 							} else {
 								currentBallot += 1
 								convergingParticipantStates.clear()
-								StateInfo(accessible.currentTerm, ordinal, termAtCommitIndex, commitIndex, currentBallot)
+								StateInfo(accessible.currentTerm, rank, termAtCommitIndex, commitIndex, currentBallot)
 							}
 						stateInfoExposedInLastInteraction = newInfo
 						newInfo
@@ -1310,9 +1340,9 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 							// else, if a majority of the participants successfully answered the howAreYou RPC, then:
 							else if config1.reachedAMajority(myVote) then {
-								// If my vote is for other participant, become follower if the that other is leading and candidate otherwise.
+								// If my vote is for other participant, become follower or isolated depending on the other is leading or not.
 								if myVote.votedId != boundParticipantId then {
-									if myVote.votedRole >= PROMOTING then become(Follower(accessible1.currentTerm, myVote.votedId, primaryStateFence))
+									if myVote.rank == ER_LEADING then become(Follower(accessible1.currentTerm, myVote.votedId, primaryStateFence))
 									else become(Isolated(primaryStateFence))
 									sequencer.LatchedDuty_unit
 								}
@@ -1715,7 +1745,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/** A transitional [[Role]] hosted only while the [[Term]] is bumped after exiting the [[Leader]] [[Role]] due to a later [[Term]] seen.
-		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues a updater of the [[PrimaryState.currentTerm]] that sets it to the latest seen term if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
+		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest seen term if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
 		 *
 		 * @param endedTerm the [[Term]] that concluded, during which this participant acted as [[Leader]].
 		 * TODO Consider replacing this class with a method that transitions to [[Isolated]] or [[Retiring]] in a synchronous manner, and then enqueues a term update. An alternative would be to add an optional parameter to the new [[Follower]] class that accepts the term to update to in the onEnter.
@@ -2366,7 +2396,7 @@ trait ConsensusParticipantSdm { thisModule =>
 										val config1 = deriveConfigurationFrom(accessible1)
 										val appendResponses1 = rearrangeAppendResponses(appendResponses0, config0, config1)
 										val appendOutcomes1 = appendResponses1.mapWithIndex { (appendResponse, otherParticipantIndex) =>
-											// Handle the responses. Note that when successful, it update the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
+											// Handle the responses. Note that when successful, it updates the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
 											handleAppendResponse(accessible1, config1.allOtherParticipants(otherParticipantIndex), otherParticipantIndex, appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 										}
 										scribe.trace(s"$boundParticipantId: The append responses of replication #$serialOfReplicationAttempt have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.allOtherParticipants.indices yield s"${config1.allOtherParticipants(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommited_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
@@ -2441,7 +2471,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					assert(currentConfig eq deriveConfigurationFrom(primaryState))
 				}
 
-				// if the append would be empty, with same `leaderCommit` as a previous successful append, and at least one append to the target was successful since ths participant is the leader, fake a successful response.
+				// if the appending would be empty, with same `leaderCommit` as a previous successful append, and at least one append to the target was successful since ths participant is the leader, fake a successful response.
 				if fromIndex >= untilIndex
 					&& commitIndex == highestRecordIndexKnowToBeCommited_ByParticipantIndex(destinationParticipantIndex)
 					&& highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex) > 0
@@ -2582,7 +2612,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param participantId the identifier of the participant whose response is being handled.
 			 * @param participantIndex the index of the participant in the [[Configuration.allOtherParticipants]] derived from the provided [[PrimaryState]].
 			 * @param appendRequestTerm the term passed to [[ClusterParticipant.appendRecords]] as `inquirerTerm` parameter.
-			 * @param indexAfterTopRecordSent index of the record after the one at the top of the [[IndexedSeq]] of [[Record]]s passed to [[ClusterParticipant.appendRecords]] as argument to the `records` parameter.
+			 * @param indexAfterTopRecordSent index of the record after the one at the top of the [[IndexedSeq]] of [[Record]]s passed to [[ClusterParticipant.appendRecords]] as argument to the parameter named `records`.
 			 * @param appendRequestLeaderCommit the [[commitIndex]] of this [[Leader]] when [[ClusterParticipant.appendRecords]] was called. Must match the value passed to the `leaderCommit` parameter. */
 			private def handleAppendResponse(primaryState: Accessible, participantId: ParticipantId, participantIndex: Int, appendResponse: AppendResponse | Null, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex): AppendOutcome = {
 				if appendResponse == null then AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION
@@ -2985,7 +3015,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *     This behavior begins immediately once the transitional entry is appended to the log.
 		 *     Replication and quorum require majorities across both `Cold` and `Cnew`.
 		 *     Elections must also consider both sets.
-		 *     Transitional behavior remains active until a [[StableConfigChange]] entry is replicated to majority of both `Cold` and `Cnew` ([[commitIndex]] >= indexOfStableConfigChange).
+		 *     Transitional behavior remains active until a [[StableConfigChange]] entry is replicated to a majority of both `Cold` and `Cnew` ([[commitIndex]] >= indexOfStableConfigChange).
 		 *
 		 *	- [[StableConfig]]: Active during non-joint consensus (Cnew).
 		 *     This behavior begins only once the stable entry is committed (i.e. when [[commitIndex]] ≥ indexOfStableConfigChange).
@@ -3159,7 +3189,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					}
 				}
 				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): chosen=$chosenCandidate, among: $borrame, config=$backingConfigChange") //TODO delete line
-				Vote(latestTermSeen, chosenCandidate.id, reachableCandidatesCounter, 0, chosenCandidate.info.ordinal, currentBallot)
+				Vote(latestTermSeen, chosenCandidate.id, reachableCandidatesCounter, 0, chosenCandidate.info.rank, currentBallot)
 			}
 		}
 
@@ -3266,7 +3296,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					if vote.votedId == myVote.votedId then {
 						if oldParticipants.contains(participantId) then oldParticipantsVotesMatchingMyVote += 1
 						if newParticipants.contains(participantId) then newParticipantsVotesMatchingMyVote += 1
-					} else if vote.votedRole == JOINING && newParticipants.contains(vote.votedId) then newParticipantsJoining += 1
+					} else if vote.rank == ER_PRE_CANDIDATE && newParticipants.contains(vote.votedId) then newParticipantsJoining += 1
 					var goNext = true
 					otherParticipantIndex -= 1
 					// navigate to the next successful vote and get it.
@@ -3325,7 +3355,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}
 				}
-				val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.ordinal, currentBallot)
+				val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.rank, currentBallot)
 				scribe.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): result=$result, among=$borrame, config=$backingConfigChange") //TODO delete line
 				result
 			}
@@ -3365,19 +3395,19 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/**
-		 * Knows all the information about a candidate necessary by participants to decide which to vote in a leader election.
+		 * The information about a participant that counts for leader elections.
 		 */
 		private final class CandidateInfo(val id: ParticipantId, val isInOldConfig: Boolean, val info: StateInfo) {
 			/** @return the winner of the competition between this candidate and the other candidate when competing for leadership. The winner is the more up-to-date one.
-			 * The more up-to-date criteria are: greater current term, is [[Leader]] over not, is [[Promoting]] over not, greater last record term, longer log, and lesser [[ParticipantId]], with the left to right priority.
+			 * The more up-to-date criteria are: greater current term, is leading over not, is eligible over not, greater commit-index  term, greater commit-index, and lesser [[ParticipantId]], with the left to right precedence.
 			 */
 			def getWinnerAgainst(other: CandidateInfo): CandidateInfo = {
 				if this.info.currentTerm > other.info.currentTerm then this
 				else if this.info.currentTerm < other.info.currentTerm then other
-				else if this.info.ordinal >= PROMOTING && other.info.ordinal < PROMOTING then this
-				else if this.info.ordinal < PROMOTING && other.info.ordinal >= PROMOTING then other
-				else if this.info.ordinal >= ISOLATED && other.info.ordinal < ISOLATED then this
-				else if this.info.ordinal < ISOLATED && other.info.ordinal >= ISOLATED then other
+				else if this.info.rank == ER_LEADING && other.info.rank != ER_LEADING then this
+				else if this.info.rank != ER_LEADING && other.info.rank == ER_LEADING then other
+				else if this.info.rank == ER_CANDIDATE && other.info.rank != ER_CANDIDATE then this
+				else if this.info.rank != ER_CANDIDATE && other.info.rank == ER_CANDIDATE then other
 				else if this.info.termAtCommitIndex > other.info.termAtCommitIndex then this
 				else if this.info.termAtCommitIndex < other.info.termAtCommitIndex then other
 				else if this.info.commitIndex > other.info.commitIndex then this
@@ -3389,7 +3419,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def toString: String =
-				s"CandidateInfo(participant=$id, currentTerm:${info.currentTerm}, ordinal=${RoleOrdinal_nameOf(info.ordinal)}, termAtCommitIndex=${info.termAtCommitIndex}, commitIndex=${info.commitIndex}, ballot=${info.ballot}, isInOldConfig=$isInOldConfig)"
+				s"CandidateInfo(participant=$id, currentTerm:${info.currentTerm}, rank=${ElectionRank_nameOf(info.rank)}, termAtCommitIndex=${info.termAtCommitIndex}, commitIndex=${info.commitIndex}, ballot=${info.ballot}, isInOldConfig=$isInOldConfig)"
 		}
 
 		//// NOTIFICATIONS
