@@ -20,7 +20,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 	private val sequencer = participantService.sequencer
 	private var oPeerContactAddress: Maybe[ContactAddress] = Maybe.empty
 
-	private val eggReceiver: Receiver = participantService.buildReceiverFor(eggChannel, () => oPeerContactAddress.fold(oEggClientAddress)(Maybe.some), eggChannelId)
+	private val eggReceiver: Receiver = participantService.buildReceiverFor(eggChannel, () => oPeerContactAddress.orElse(oEggClientAddress), eggChannelId)
 
 	def incubate(): Unit = {
 		eggReceiver.receive[Protocol](ProtocolVersion.OF_THIS_PROJECT, config.receiverTimeout, config.timeUnit) {
@@ -28,7 +28,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 				scribe.info(fault.scribeContent(s"${participantService.myAddress}: A connection to me initiated from `${eggChannelId.clientAddress}` which channel $eggChannel was aborted because:")*)
 				abortIncubated(oEggClientAddress)
 			case message: Hello =>
-				oPeerContactAddress = Maybe.some(message.myContactAddress)
+				oPeerContactAddress = Maybe(message.myContactAddress)
 				if participantService.config.acceptedConnectionsFilter.test(message.myContactAddress) then {
 					scribe.debug(s"${participantService.myAddress}: I have received the hello message `$message` from `${message.myContactAddress}` through channel $eggChannelId.")
 					participantService.sequencer.execute(hatch(message))
@@ -49,7 +49,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 	
 	private def hatch(hello: Hello): Unit = {
 		val peerContactAddress = hello.myContactAddress
-		if participantService.isShutDown then abortIncubated(Maybe.some(peerContactAddress))
+		if participantService.isShutDown then abortIncubated(Maybe(peerContactAddress))
 		else {
 			participantService.delegateByAddress.getOrElse(peerContactAddress, null) match {
 				case null =>
@@ -80,7 +80,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 					} else {
 						scribe.info(s"${participantService.myAddress}: The connection initiated by `$peerContactAddress` with channel $eggChannelId that I had accepted, is being discarded to let us continue with the incumbent connection with channel ${incumbentDelegate.channelId} because it has higher priority.")
 						// Keep the current delegate's connection (initiated by me) and discard the brand-new accepted connection.
-						abortIncubated(Maybe.some(peerContactAddress))
+						abortIncubated(Maybe(peerContactAddress))
 					}
 
 				case incommunicableDelegate: IncommunicableDelegate => // Happens if I knew the peer, but we are not fully connected.

@@ -40,7 +40,7 @@ object Inquisitive {
 		 * @param inquisitive The instance of [[Inquisitive]] responsible for managing the interaction. It is the interceptor 
 		 * @return A subscriptable duty of type `SubscriptableDuty[A]`, representing the eventual answer to the question.
 		 */
-		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.SubscriptableDuty[A] = {
+		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.LatchedDuty[A] = {
 			inquisitive.ask(receptor, questionBuilder)
 		}
 	
@@ -81,7 +81,7 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 		pendingQuestions.getOrElse(answer.toQuestion, null) match {
 			case covenant: agent.doer.Covenant[A] =>
 				pendingQuestions.subtractOne(answer.toQuestion)
-				covenant.fulfill(answer)()
+				covenant.fulfill(answer)
 				Continue
 			case null =>
 				unaskedAnswersBehavior.handle(answer)
@@ -96,13 +96,13 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 	 * @tparam Q The type of the `Question`, constrained to match `A`.
 	 * @return A {{{ actant.doer.SubscriptableDuty[A] }}} instance that will be completed when the answer is received.
 	 */
-	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.SubscriptableDuty[A] = {
+	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.LatchedDuty[A] = {
 		assert(agent.doer.isInSequence)
 		val covenant = new agent.doer.Covenant[A]
 		lastQuestionId += 1
 		pendingQuestions.update(lastQuestionId, covenant)
 		val question = questionBuilder(lastQuestionId)
 		receptor.tell(question)
-		covenant.subscriptableDuty
+		covenant.latchedDuty
 	}
 }

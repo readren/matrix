@@ -255,7 +255,7 @@ class CommunicableDelegate(
 			case Delivered =>
 				sequencer.execute {
 					val timeoutSchedule = sequencer.newDelaySchedule(requestExchange.responseTimeout)
-					requestExchange.oTimeoutSchedule = Maybe.some(timeoutSchedule)
+					requestExchange.oTimeoutSchedule = Maybe(timeoutSchedule)
 					requestExchangeByRequestId.put(requestId, requestExchange)
 					sequencer.schedule(timeoutSchedule) { _ =>
 						requestExchangeByRequestId.remove(requestId).foreach { removedExchange =>
@@ -323,8 +323,8 @@ class CommunicableDelegate(
 			sequencer.schedule(sequencer.newDelaySchedule(config.closeDelay)) { _ =>
 				completeChannelClosing()
 			}
-			
-			Maybe.some(myReplacement)
+
+			Maybe(myReplacement)
 		} else Maybe.empty
 	}
 

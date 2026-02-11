@@ -212,6 +212,12 @@ abstract class CooperativeWorkersDp(
 		} else false
 	}
 
+	protected def wakeUpAWorkerIfAllSleeping(): Unit = {
+		if sleepingWorkersCount.get == workers.length then {
+			workers(0).wakeUpIfSleeping(null)
+		}
+	}
+
 	protected open class Worker(val index: Int) extends Runnable { thisWorker =>
 
 		/** The [[Thread]] that executes this worker. */
@@ -303,7 +309,7 @@ abstract class CooperativeWorkersDp(
 			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
 			// If I am the last worker entering this section and another worker's thread is leaving the sleeping state
 			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
-				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the the visibility from workers' threads of elements enqueued into `queuedDoers`.
+				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the visibility from workers' threads of elements enqueued into `queuedDoers`.
 				sleepingWorkersCount.getAndDecrement()
 				refusedTriesToSleepsCounter += 1
 			} else {
@@ -313,7 +319,7 @@ abstract class CooperativeWorkersDp(
 					var isAwakened = false
 					thisWorker.synchronized {
 						isSleeping = true
-						lull(thisWorker)
+						lull(thisWorker, workers.length - sleepingCounter)
 						// if a spurious wakeup occur then act as if the worker was awakened with `wakeUpIfSleeping(null)`, unless it was simultaneously stopped (very unlikely to occur if it is possible at all), in which case act as if the worker was stopped while sleeping.
 						if keepRunning == isSleeping then isSleeping = !keepRunning
 						isAwakened = !isSleeping
@@ -330,11 +336,10 @@ abstract class CooperativeWorkersDp(
 		}
 
 		/** Wakes up this [[Worker]] if it is currently sleeping.
-		 * @param stimulator the [[DoerImpl]] to be assigned to this worker upon awakening,
-		 *                   provided it has not already been assigned to another [[Worker]].
+		 * @param stimulator the [[DoerImpl]] to be assigned to this worker upon awakening. Assumes it has not already been assigned to another [[Worker]].
 		 * @return `true` if this worker was sleeping and has been awakened, otherwise `false`.
 		 */
-		def wakeUpIfSleeping(stimulator: DoerImpl): Boolean = {
+		def wakeUpIfSleeping(stimulator: DoerImpl | Null): Boolean = {
 			if potentiallySleeping then {
 				thisWorker.synchronized {
 					if isSleeping then {
@@ -374,11 +379,13 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
-	/** Called within a synchronization block on the specified [[Worker]]. */
-	protected def lull(worker: Worker): Unit = {
+	/** Puts the specified [[Worker]] to wait until it is awakened.
+	 * Called within a synchronization block on the specified [[Worker]]. */
+	protected def lull(worker: Worker, numberOfNonSleepingWorkers: Int): Unit = {
 		worker.wait() // TODO analyse if the interrupted exception should be handled
 	}
 
+	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
 	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
 
 	protected inline def startAllWorkersIfNotAlready(): Unit = {

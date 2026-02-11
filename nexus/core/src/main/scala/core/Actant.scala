@@ -51,7 +51,7 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 * This duty is the same as the returned by the [[stop]] method.
 	 *
 	 * This method is thread-safe but some methods of the returned [[SubscriptableDuty]] require being called within the [[doer]]. */
-	def stopDuty: doer.SubscriptableDuty[Unit]
+	def stopDuty: doer.LatchedDuty[Unit]
 
 	/** Registers this [[ActantCore]] to be notified with the specified signal when the given `watchedActant` is fully stopped.
 	 *

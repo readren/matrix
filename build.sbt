@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.7.3"
+ThisBuild / scalaVersion := "3.7.4"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",
@@ -22,8 +22,11 @@ ThisBuild / scalacOptions ++= Seq(
 //	"-deprecation",
 	"-feature",
 	"-explain",
-	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
+	//	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 )
+
+ThisBuild / fork := true // required for the "-ea" to work, but the assertions are not enabled anyway in for IntelliJ run configurations, so, can be removed
+ThisBuild / javaOptions ++= Seq("-ea") // intended to enable assertions but is ignored by IntelliJ run configurations, so, can be removed
 
 lazy val common = (project in file("common"))
 	.settings(
@@ -58,8 +61,8 @@ lazy val sequencerProvidersManager = (project in file("sequencer/providers-manag
 
 val AkkaVersion = "2.10.9"
 
-resolvers in ThisBuild += "akka-secure-mvn" at "https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"
-resolvers in ThisBuild += Resolver.url("akka-secure-ivy", url("https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"))(Resolver.ivyStylePatterns)
+ThisBuild / resolvers += "akka-secure-mvn" at "https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"
+ThisBuild / resolvers += Resolver.url("akka-secure-ivy", url("https://repo.akka.io/etrfSax3No5yDclhqKsWorQ2woYHeQyiMUw8j2voy0hIYsT2/secure"))(Resolver.ivyStylePatterns)
 
 lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration"))
 	.dependsOn(sequencerCore, common)

@@ -394,7 +394,7 @@ trait LoopingExtension { thisDoer: Doer =>
 			reiteratedHardyUntilSome((completedCycles, tryA) =>
 				tryA match {
 					case Success(a) => condition(completedCycles, a)
-					case f: Failure[A] => Maybe.some(f.castTo[B])
+					case f: Failure[A] => Maybe(f.castTo[B])
 				},
 				maxRecursionDepthPerExecutor
 			)
@@ -637,7 +637,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					val conditionResult: Maybe[Try[B]] =
 						try condition(completedCycles, tryA)
 						catch {
-							case NonFatal(cause) => Maybe.some(Failure(cause))
+							case NonFatal(cause) => Maybe(Failure(cause))
 						}
 					conditionResult.fold {
 						if (recursionDepth < maxRecursionDepthPerExecutor) {
@@ -684,10 +684,10 @@ trait LoopingExtension { thisDoer: Doer =>
 				val conditionResult: Maybe[Try[B]] =
 					try {
 						condition(completedCycles, lastTaskResult)
-							.fold(Maybe.empty)(b => Maybe.some(Success(b)))
+							.fold(Maybe.empty)(b => Maybe(Success(b)))
 					}
 					catch {
-						case NonFatal(cause) => Maybe.some(Failure(cause))
+						case NonFatal(cause) => Maybe(Failure(cause))
 					}
 
 				conditionResult.fold {

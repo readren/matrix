@@ -7,6 +7,8 @@ import readren.sequencer.SchedulingDoerProviderTest
  */
 class CooperativeWorkersWithSyncSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
+	override val schedulerMaximumToleratedNanosBetweenCancellationAndExecution: Long = 0
+
 	override type DP = CooperativeWorkersWithSyncSchedulerDp
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */

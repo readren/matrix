@@ -48,6 +48,9 @@ abstract class CooperativeWorkersWithAsyncSchedulerDp(
 		val activated: AtomicBoolean = AtomicBoolean(false)
 
 		override def wasActivated: Boolean = activated.get
+
+		override def toString: String =
+			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
 	}
 
 	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, ScheduleImpl](threadFactory)

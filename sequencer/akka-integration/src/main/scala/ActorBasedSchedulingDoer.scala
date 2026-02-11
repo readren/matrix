@@ -43,7 +43,7 @@ object ActorBasedSchedulingDoer {
 				actorBasedDoer.executeSequentially(runnable)
 
 			override def current: Maybe[ActorBasedDoer] =
-				Maybe(ActorBasedDoer.currentDoerThreadLocal.get)
+				Maybe.apply(ActorBasedDoer.currentDoerThreadLocal.get)
 
 			override def reportFailure(cause: Throwable): Unit =
 				actorBasedDoer.reportFailurePortal(cause)

@@ -132,7 +132,7 @@ abstract class ActantCore[U, D <: Doer](
 		doer.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[doer.type](thisActant, doer, serial)
-				oSpawner = Maybe.some(spawner)
+				oSpawner = Maybe(spawner)
 				childrenGates = spawner.childrenView
 				spawner
 			}(alreadyBuiltSpawner => alreadyBuiltSpawner)
@@ -181,7 +181,7 @@ abstract class ActantCore[U, D <: Doer](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: doer.SubscriptableDuty[Unit] = stopCovenant.subscriptableDuty
+	override def stopDuty: doer.LatchedDuty[Unit] = stopCovenant.latchedDuty
 
 	override def watch[CSM <: U](watchedActant: Actant[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
@@ -226,12 +226,12 @@ abstract class ActantCore[U, D <: Doer](
 			// and then, make the subscription
 			if watchedActant.doer eq thisActant.doer then {
 				watchedActant.stopDuty.subscribe(observer)
-				subscriptionCompleted.foreach(_.fulfill((), true)())
+				subscriptionCompleted.foreach(_.fulfill((), true))
 			} else watchedActant.doer.execute {
 				watchedActant.stopDuty.subscribe(observer)
-				subscriptionCompleted.foreach(_.fulfill((), false)())
+				subscriptionCompleted.foreach(_.fulfill((), false))
 			}
-			Maybe.some(observer)
+			Maybe(observer)
 		}
 	}
 
@@ -242,7 +242,7 @@ abstract class ActantCore[U, D <: Doer](
 			isMarkedToStop = true
 			doer.execute(selfStop())
 		}
-		stopCovenant.subscriptableDuty
+		stopCovenant.latchedDuty
 	}
 
 	/**
@@ -261,7 +261,7 @@ abstract class ActantCore[U, D <: Doer](
 			// remove myself form progenitor children
 			progenitor.doer.execute {
 				progenitor.removeChild(thisActant.serial)
-				stopCovenant.fulfill(())()
+				stopCovenant.fulfill(())
 			}
 			// TODO notify parent
 		}
@@ -274,7 +274,7 @@ abstract class ActantCore[U, D <: Doer](
 				spawner.stopsChildren().trigger(true)(_ => stopMe())
 			}
 		}
-		stopCovenant.subscriptableDuty
+		stopCovenant.latchedDuty
 	}
 
 	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {
