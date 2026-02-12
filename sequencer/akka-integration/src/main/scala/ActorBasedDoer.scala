@@ -5,6 +5,7 @@ import akka.actor.typed.*
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import readren.common.Maybe
 import readren.sequencer.AbstractDoer
+import readren.sequencer.Doer.ExecutionSerial
 
 import scala.reflect.Typeable
 
@@ -29,7 +30,7 @@ object ActorBasedDoer {
 		
 		override def executeSequentially(runnable: Runnable): Unit = ctx.self ! Procedure(runnable)
 
-		override def current: Maybe[ActorBasedDoer] = Maybe.apply(currentDoerThreadLocal.get)
+		override def currentlyRunningDoer: Maybe[ActorBasedDoer] = Maybe.apply(currentDoerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = ctx.log.error("""Error occurred while the actor "{}" was executing a Runnable within a Task.""", ctx.self, cause)
 
@@ -43,6 +44,7 @@ object ActorBasedDoer {
 				try {
 					message match {
 						case procedure: Procedure =>
+							doer.executionSequencer += 1
 							procedure.runnable.run()
 							Behaviors.same // TODO: analyze if returning `same` may cause problems in edge cases
 
@@ -55,4 +57,8 @@ object ActorBasedDoer {
 }
 
 /** A [[Doer]], extended with akka-actor related operations, whose DoSiThEx (doer single thread executor) is an akka-actor. */
-abstract class ActorBasedDoer extends AbstractDoer, ActorExtension
+abstract class ActorBasedDoer extends AbstractDoer, ActorExtension {
+	private[akka] var executionSequencer = 0
+
+	override def currentExecutionSerial: ExecutionSerial = executionSequencer
+}

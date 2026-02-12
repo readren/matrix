@@ -914,7 +914,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val clusterSize = net.clusterSize
 		val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 		val leaderNodeByTerm: mutable.Buffer[Node] = mutable.Buffer.empty
-		val commitedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
+		val committedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
 		val appliedCommandsByNodeIndex: Array[mutable.LongMap[TestClientCommand | None.type]] = Array.fill(clusterSize)(mutable.LongMap.withDefault(_ => None))
 
 		createsAndInitializesNodes(net, weakReferencesHolder) { node =>
@@ -977,25 +977,25 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 					// Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4
 					val thisNodeRecords = node.storage.memory.getRecordsBetween(1, node.storage.memory.firstEmptyRecordIndex)
-					// check that the log of the leader contains the records previously commited by all participants
+					// check that the log of the leader contains the records previously committed by all participants
 					for nodeIndex <- 0 until clusterSize do {
 						val otherNode = net.getNode(nodeIndex)
 						otherNode.sequencer.execute {
-							val commitedRecordsMemory = commitedRecordsByNodeIndex(nodeIndex)
-							for commitedRecordIndex <- commitedRecordsMemory.indices if commitedRecordIndex < thisNodeRecords.size do {
-								val commitedRecord = commitedRecordsMemory(commitedRecordIndex)
-								val storedRecord = thisNodeRecords(commitedRecordIndex)
-								if storedRecord != commitedRecord then promise.tryFailure(new AssertionError(s"The record $commitedRecord commited by ${otherNode.myId} at index ${commitedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))
+							val committedRecordsMemory = committedRecordsByNodeIndex(nodeIndex)
+							for committedRecordIndex <- committedRecordsMemory.indices if committedRecordIndex < thisNodeRecords.size do {
+								val committedRecord = committedRecordsMemory(committedRecordIndex)
+								val storedRecord = thisNodeRecords(committedRecordIndex)
+								if storedRecord != committedRecord then promise.tryFailure(new AssertionError(s"The record $committedRecord committed by ${otherNode.myId} at index ${committedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))
 							}
 						}
 					}
 				}
 
 				override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex): Unit = {
-					val commitedRecordsMemory = commitedRecordsByNodeIndex(net.indexOf(node.myId))
-					if commitedRecordsMemory.size < current then {
-						val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
-						commitedRecordsMemory.addAll(newCommitedRecords)
+					val committedRecordsMemory = committedRecordsByNodeIndex(net.indexOf(node.myId))
+					if committedRecordsMemory.size < current then {
+						val newCommittedRecords = node.storage.memory.getRecordsBetween(committedRecordsMemory.size + 1, current)
+						committedRecordsMemory.addAll(newCommittedRecords)
 					}
 				}
 			}
@@ -1188,29 +1188,29 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val promise = Promise[Unit]()
 			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed)
 			val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
-			val commitedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
+			val committedRecordsByNodeIndex: Array[mutable.Buffer[Record]] = Array.fill(clusterSize)(mutable.Buffer.empty)
 
 			createsAndInitializesNodes(net, weakReferencesHolder) { node =>
 				new node.DefaultNotificationListener() {
 					override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex): Unit = {
-						val commitedRecordsMemory = commitedRecordsByNodeIndex(net.indexOf(node.myId))
-						if commitedRecordsMemory.size < current then {
-							val newCommitedRecords = node.storage.memory.getRecordsBetween(commitedRecordsMemory.size + 1, current)
-							commitedRecordsMemory.addAll(newCommitedRecords)
+						val committedRecordsMemory = committedRecordsByNodeIndex(net.indexOf(node.myId))
+						if committedRecordsMemory.size < current then {
+							val newCommittedRecords = node.storage.memory.getRecordsBetween(committedRecordsMemory.size + 1, current)
+							committedRecordsMemory.addAll(newCommittedRecords)
 						}
 					}
 
 					override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 						val thisNodeRecords = node.storage.memory.getRecordsBetween(1, node.storage.memory.firstEmptyRecordIndex)
-						// check that the log of the leader contains the records previously commited by all participants
+						// check that the log of the leader contains the records previously committed by all participants
 						for nodeIndex <- 0 until clusterSize do {
 							val otherNode = net.getNode(nodeIndex)
 							otherNode.sequencer.execute {
-								val commitedRecordsMemory = commitedRecordsByNodeIndex(nodeIndex)
-								for commitedRecordIndex <- commitedRecordsMemory.indices if commitedRecordIndex < thisNodeRecords.size do {
-									val commitedRecord = commitedRecordsMemory(commitedRecordIndex)
-									val storedRecord = thisNodeRecords(commitedRecordIndex)
-									if storedRecord != commitedRecord then promise.tryFailure(new AssertionError(s"The record $commitedRecord commited by ${otherNode.myId} at index ${commitedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))
+								val committedRecordsMemory = committedRecordsByNodeIndex(nodeIndex)
+								for committedRecordIndex <- committedRecordsMemory.indices if committedRecordIndex < thisNodeRecords.size do {
+									val committedRecord = committedRecordsMemory(committedRecordIndex)
+									val storedRecord = thisNodeRecords(committedRecordIndex)
+									if storedRecord != committedRecord then promise.tryFailure(new AssertionError(s"The record $committedRecord committed by ${otherNode.myId} at index ${committedRecordIndex + 1} does not match $storedRecord, the one in the log of the leader ${node.myId}"))
 								}
 							}
 						}

@@ -4,6 +4,7 @@ package providers
 import providers.ShutdownAble
 
 import readren.common.Maybe
+import readren.sequencer.Doer.ExecutionSerial
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -55,10 +56,13 @@ abstract class LeastLoadedFixedWorkerDp(
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends Doer { thisDoer =>
 		override type Tag = String
-		
+
+		private var executionSequencer = 0
+
 		val doSiThEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				doerThreadLocal.set(thisDoer)
+				executionSequencer += 1
 				r.run()
 			}
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
@@ -66,7 +70,9 @@ abstract class LeastLoadedFixedWorkerDp(
 
 		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
 
-		override def current: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
+		override def currentExecutionSerial: ExecutionSerial = executionSequencer
+
+		override def currentlyRunningDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}

@@ -42,7 +42,7 @@ object ActorBasedSchedulingDoer {
 			override def executeSequentially(runnable: Runnable): Unit =
 				actorBasedDoer.executeSequentially(runnable)
 
-			override def current: Maybe[ActorBasedDoer] =
+			override def currentlyRunningDoer: Maybe[ActorBasedDoer] =
 				Maybe.apply(ActorBasedDoer.currentDoerThreadLocal.get)
 
 			override def reportFailure(cause: Throwable): Unit =
@@ -92,4 +92,4 @@ object ActorBasedSchedulingDoer {
 }
 
 /** A [[Doer]], extended with scheduling and akka-actor related operations, whose DoSiThEx (doer single thread executor) is an akka-actor. */
-abstract class ActorBasedSchedulingDoer extends ActorBasedDoer, SchedulingExtension 
+abstract class ActorBasedSchedulingDoer extends ActorBasedDoer, SchedulingExtension  

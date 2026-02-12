@@ -14,6 +14,8 @@ import scala.util.{Failure, Success, Try}
 
 object Doer {
 
+	type ExecutionSerial = Int
+
 	val assertionsEnabled: Boolean = classOf[Doer].desiredAssertionStatus()
 
 	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
@@ -111,26 +113,31 @@ trait Doer { thisDoer =>
 	 * The implementation should be thread-safe.
 	 *
 	 * All the deferred actions preformed by the [[Duty]] and [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
-	 * TODO add a [[Doer]] field that exposes the serial number of the current invocation of [[executeSequentially]]. This will allow users to notice whether something is executed in the same or other to [[executeSequentially]] invocation.
 	 * */
 	def executeSequentially(runnable: Runnable): Unit
 
+	/** The [[ExecutionSerial]] of the most recently executed [[Runnable]] on this [[Doer]].
+	 *
+	 * This serial is incremented immediately before each [[Runnable]] passed to [[executeSequentially]] is run.
+	 * It enables those [[Runnable]]s to observe their relative execution order and distinguish whether two operations occur during the same or different executions.
+	 */
+	def currentExecutionSerial: ExecutionSerial
 
 	/**
 	 * The implementation should return the [[Doer]] instance that the current [[java.lang.Thread]] is currently running if it knows it, or null if it doesn't.
 	 * The implementation should know, at least, if the current [[java.lang.Thread]] corresponds to this [[Doer]], and return this instance in that case. */
-	def current: Maybe[Doer]
+	def currentlyRunningDoer: Maybe[Doer]
 
 	/**
 	 * @return true if the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]]. Calling this method within the thread with which the [[Runnable]]s passed to this instance's [[executeSequentially]] or [[execute]] methods is executed, always returns `true`. */
-	inline def isInSequence: Boolean = current.value eq thisDoer
+	inline def isInSequence: Boolean = currentlyRunningDoer.value eq thisDoer
 
 	/** Asserts that the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] instance for sequential execution of its operations. */
 	inline def checkWithin(): Unit = {
 		if Doer.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg())
 	}
 
-	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${current.fold("unknown")(_.tag)}."
+	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${currentlyRunningDoer.fold("unknown")(_.tag)}."
 
 	/**
 	 * Called by few [[Task]] and most [[Commitment]] operations when an operand function terminates abruptly and the nature of the operation does not allow to propagate the failure to the result.

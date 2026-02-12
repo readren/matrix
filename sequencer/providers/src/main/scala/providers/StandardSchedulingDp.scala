@@ -5,6 +5,7 @@ import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
+import readren.sequencer.Doer.ExecutionSerial
 
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
@@ -61,14 +62,13 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		/** The single-threaded executor for this Doer. */
 		private[StandardSchedulingDp] val doSiThEx = Executors.newSingleThreadScheduledExecutor()
 
-		/** Sequencer for tracking execution order. */
-		private val sequencer: AtomicInteger = new AtomicInteger(0)
+		private var executionSequencer: Int = 0
 
 		override def executeSequentially(runnable: Runnable): Unit = {
-			val id = sequencer.incrementAndGet()
 			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
 			doSiThEx.execute(() => {
 				currentDoerThreadLocal.set(thisDoer)
+				executionSequencer += 1
 				// println(s"queuedForSequentialExecution: pre run; id=$id; thread=${Thread.currentThread().getName}")
 				try {
 					runnable.run()
@@ -86,7 +86,9 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			})
 		}
 
-		override def current: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
+		override def currentExecutionSerial: ExecutionSerial = executionSequencer
+
+		override def currentlyRunningDoer: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
 
 		override def reportFailure(failure: Throwable): Unit = onFailureReported(thisDoer, failure)
 

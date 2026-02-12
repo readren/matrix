@@ -6,6 +6,7 @@ import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
+import readren.sequencer.Doer.ExecutionSerial
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*
@@ -105,12 +106,15 @@ abstract class CooperativeWorkersDp(
 		@volatile protected var firstTaskInQueue: Runnable = null
 		/** Remembers the index of the worker that executed this doer's tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
 		private[CooperativeWorkersDp] var lastTimeWorkerIndex = 0
+		private var executionSequencer: Int = 0 
 
 		override def numOfPendingTasks: Int = taskQueueSize.get
 
 		override def executeSequentially(task: Runnable): Unit = {
 			if enqueueTask(task) && !wakeUpASleepingWorkerIfAny(thisDoer) then enqueueMyself()
 		}
+
+		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
 		/** Enqueues a [[Runnable]] to this [[DoerImpl]] queue.
 		 * @return true if the queue transitioned from empty to non-empty thanx to this call. */
@@ -129,7 +133,7 @@ abstract class CooperativeWorkersDp(
 			queuedDoers.offer(thisDoer)
 		}
 
-		override def current: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
+		override def currentlyRunningDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
 
@@ -142,10 +146,9 @@ abstract class CooperativeWorkersDp(
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerImpl]] is enqueued into the [[queuedDoers]] queue to be assigned to a worker at a later time.
 		 * @param worker the [[Worker]] that called this method and owns the current [[Thread]].
 		 */
-		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Int = {
+		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Unit = {
 			doerThreadLocal.set(thisDoer)
 			if debugEnabled then assert(taskQueueSize.get > 0)
-			var processedTasksCounter: Int = 0
 			var taskQueueSizeIsPositive = true
 			if applyMemoryFence then VarHandle.loadLoadFence()
 			try {
@@ -153,8 +156,8 @@ abstract class CooperativeWorkersDp(
 				firstTaskInQueue = null
 				if task == null then task = taskQueue.poll()
 				while task != null do {
+					executionSequencer += 1
 					task.run()
-					processedTasksCounter += 1
 					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this doer into `queuedDoers` allowing the worst problem to occur: two workers assigned to the same [[DoerImpl]].
 					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
 					task = if taskQueueSizeIsPositive then taskQueue.poll() else null
@@ -182,7 +185,6 @@ abstract class CooperativeWorkersDp(
 				}
 				// Note that, for efficiency, the `doerThreadLocal` entry corresponding to this worker thread is not cleared here as expected because it will be overwritten before anything that could access it is executed. It is overwritten either in the next call to `executePendingTasks` if there is a Doer with pending tasks, in `tryToSleep` if no Doer has visible pending tasks, or in the unhandled exception catcher.
 			}
-			processedTasksCounter
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
@@ -264,7 +266,6 @@ abstract class CooperativeWorkersDp(
 		 * Used for diagnostic only.
 		 * This field is updated exclusively within this worker [[thread]]. */
 		private var completedMainLoopsCounter: Int = 0
-		private var processedTasksCounter: Int = 0
 
 		inline def start(): Unit = thread.start()
 
@@ -281,7 +282,7 @@ abstract class CooperativeWorkersDp(
 					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
 					refusedTriesToSleepsCounter = 0
 					assignedDoer.lastTimeWorkerIndex = this.index
-					processedTasksCounter += assignedDoer.executePendingTasks(thisWorker)
+					assignedDoer.executePendingTasks(thisWorker)
 					completedMainLoopsCounter += 1
 				}
 			}
@@ -375,7 +376,7 @@ abstract class CooperativeWorkersDp(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, processedTaskCounter=$processedTasksCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper ne null}%5b")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper ne null}%5b")
 		}
 	}
 
