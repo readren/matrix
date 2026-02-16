@@ -129,7 +129,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def startsAllNodes: netSequencer.Duty[Array[Unit]] = {
 			val starters = for nodeIndex <- 0 until clusterSize yield {
 				val node = getNode(nodeIndex)
-				node.startsIfNotRunning(true).onBehalfOf(netSequencer)
+				node.startsIfNotRunning(0).onBehalfOf(netSequencer)
 			}
 			netSequencer.Duty_sequenceToArray(starters)
 		}
@@ -419,22 +419,45 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			includedNodes.result()
 		}
 
-		def onActiveConfigChanged(change: ConfigChange[Id]): Unit = {
+		//// Consensus services lifecycle management ////
+
+		private var indexOfActiveConfigChange: RecordIndex = 0
+		private val retiredParticipants: mutable.Set[Id] = mutable.Set.empty
+		private val stoppedParticipants: mutable.Set[Id] = mutable.Set.empty
+
+		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.execute {
+				scribe.trace(s"Net: onActiveConfigChanged($change, index=$changeIndex) was called when retiredParticipants=$retiredParticipants, stoppedParticipants=$stoppedParticipants ")
 				activeConfigChange = change
+				indexOfActiveConfigChange = changeIndex
 				for nodeIndex <- 0 until clusterSize do {
 					val node = this.getNode(nodeIndex)
 					if change.newParticipants.contains(node.myId) then {
-						node.startsIfNotRunning(false).triggerAndForget(false)
+						retiredParticipants.remove(node.myId)
+						stoppedParticipants.remove(node.myId)
+						node.startsIfNotRunning(changeIndex).triggerAndForget(false)
 					}
 				}
 			}
 		}
 
-		/** TODO consider removing this. It is responsibility of the [[ConsensusParticipant]] to coordinate the stop of the participants. */
+		def onRetirementCompleted(retiredParticipantId: Id): Unit = {
+			netSequencer.execute {
+				scribe.trace(s"Net: onRetirementCompleted($retiredParticipantId) was called when indexOfActiveConfigChange=$indexOfActiveConfigChange, retiredParticipants=$retiredParticipants, stoppedParticipants=$stoppedParticipants ")
+				if !activeConfigChange.isActive(retiredParticipantId) then {
+					if stoppedParticipants.remove(retiredParticipantId) then getNode(retiredParticipantId).release()
+					else retiredParticipants.add(retiredParticipantId)
+				}
+			}
+		}
+
+
 		def onNodeStopped(node: Node): Unit = {
 			netSequencer.execute {
-				if activeConfigChange.isActive(node.myId) then node.startsIfNotRunning(false).triggerAndForget(false)
+				scribe.trace(s"Net: onNodeStopped(${node.myId}) was called when indexOfActiveConfigChange=$indexOfActiveConfigChange, retiredParticipants=$retiredParticipants, stoppedParticipants=$stoppedParticipants ")
+				if activeConfigChange.isActive(node.myId) then node.startsIfNotRunning(indexOfActiveConfigChange).triggerAndForget(false)
+				else if retiredParticipants.remove(node.myId) then node.release()
+				else stoppedParticipants.add(node.myId)
 			}
 		}
 	}
@@ -582,12 +605,19 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates the [[ConsensusParticipant]] service instance of this [[Node]]. */
-		def startsIfNotRunning(isSeed: Boolean): sequencer.Duty[Unit] = {
+		def startsIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex): sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
 				if isDown || participant.getRoleOrdinal == STOPPED then {
-					scribe.info(s"node-$myId: about to create the consensus participant service")
-					_participant = ConsensusParticipant(clusterParticipant, storage, machine, isSeed, List(initialNotificationListener, notificationScribe))
-				}
+					scribe.info(s"node-$myId: about to create the consensus participant service due to the configuration change at $indexOfTheIncludingConfigChange")
+					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingConfigChange, List(initialNotificationListener, notificationScribe))
+				} else scribe.info(s"node-$myId: service creation skipped because it is already running with role ${participant.getRoleOrdinal}.")
+			}
+		}
+
+		def release(): Unit = {
+			sequencer.execute {
+				_participant = null
+				scribe.trace(s"node-$myId: consensus service was released")
 			}
 		}
 
@@ -644,10 +674,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				this.delegate = null
 			}
 
-			override def onActiveConfigChanged(change: ConfigChange[ParticipantId], roleOrdinal: RoleOrdinal): Unit = {
+			override def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"cluster-$boundParticipantId: onConfigurationChanged called by a ${RoleOrdinal_nameOf(roleOrdinal)} with `$change`.")
-				if roleOrdinal == LEADER then net.onActiveConfigChanged(change)
+				scribe.info(s"cluster-$boundParticipantId: onConfigurationChanged($change, index=$changeIndex, ${RoleOrdinal_nameOf(roleOrdinal)}) called.")
+				if roleOrdinal == LEADER then net.onActiveConfigChanged(change, changeIndex)
+			}
+
+			override def onRetirementCompleted(retiredParticipantId: Id): Unit = {
+				sequencer.checkWithin()
+				assert(isDown || participant.getRoleOrdinal == LEADER)
+				scribe.info(s"cluster-$boundParticipantId: onRetirementCompleted($retiredParticipantId) called.")
+				net.onRetirementCompleted(retiredParticipantId)
 			}
 
 			extension (replierId: ParticipantId) {
@@ -688,7 +725,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def onStopped(motive: Try[String]): Unit = {
 				scribe.info(s"cluster-$myId: `onStopped` was called with motive=$motive")
-				thisNode._participant = null
 				net.onNodeStopped(thisNode)
 			}
 		}
@@ -823,9 +859,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		object notificationScribe extends NotificationListener {
-			override def onStarting(previous: RoleOrdinal, isSeed: Boolean): Unit = {
+			override def onStarting(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is starting ${if isSeed then "as seed" else "to join"}.")
+				scribe.info(s"scribe-$myId: is starting ${if indexOfTheIncludingConfigChange == 0 then "as seed" else s"to join due to a transitional-configuration-change at $indexOfTheIncludingConfigChange"}.")
 			}
 
 			override def onStarted(previous: RoleOrdinal, term: Term, initialConfigChange: ConfigChange[ParticipantId], isSeed: Boolean): Unit = {
@@ -838,9 +874,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became stopped from ${RoleOrdinal_nameOf(previous)} during term $term because $motive.")
 			}
 
-			override def onJoining(previous: RoleOrdinal): Unit = {
+			override def onJoining(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is catching-up to join.")
+				scribe.info(s"scribe-$myId: is catching-up to join due to a transitional-configuration-change at $indexOfTheIncludingConfigChange.")
 			}
 
 			override def onBecameIsolated(previous: RoleOrdinal, term: Term): Unit = {
@@ -1039,9 +1075,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 3
+		val clusterSize = 5
 		val startWithHighestPriorityParticipant = true
-		val netRandomnessSeed = 4326203398922213591L
+		val netRandomnessSeed = -7579379202953552523L
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
