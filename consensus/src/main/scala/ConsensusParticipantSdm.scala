@@ -152,19 +152,14 @@ object ConsensusParticipantSdm {
 
 	/** The result of an append operation.
 	 * @see [[ConsensusParticipantSdm.ClusterParticipant.appendRecords]] and [[ConsensusParticipantSdm.ClusterParticipant.Delegate.onAppendRecords]].
-	 * @param term The term of the follower that is responding.
-	 * @param successOrIndexForNextAttempt contains the [[RecordIndex]] suggested for the next attempt if either:
-	 *		- the participant that is responding is not ready (Starting or Stopped);
-	 *		- the leader's term is less than the current term of the follower;
-	 *		- or the follower's log does not contain a record at the `prevRecordIndex` whose term is `prevRecordTerm`.
-	 *
-	 * [[Maybe.empty]] otherwise.
-	 * @param roleOrdinal The role of the follower that is responding.
+	 * @param term The term of the follower that is responding. A value greater than the append-request's [[Term]] indicates a rejection, makes the `successOrIndexForNextAttempt` field irrelevant, and, more importantly, indicate that the inquirer has an obsolete state.
+	 * @param successOrIndexForNextAttempt when relevant, a zero value indicates the appending was successful, and a [[RecordIndex]] indicates a rejection due to earlier records needed from the provided index.
+	 * @param roleOrdinal The role of the follower that is responding. A [[STOPPED]] or [[RETIRING]] value indicates a rejection and makes the other fields irrelevant.
 	 */
-	final case class AppendResult(term: Term, successOrIndexForNextAttempt: Maybe[RecordIndex], roleOrdinal: RoleOrdinal) {
+	final case class AppendResult(term: Term, successOrIndexForNextAttempt: RecordIndex, roleOrdinal: RoleOrdinal) {
 		if assertionsEnabled then assert(roleOrdinal != PROMOTING)
 
-		override def toString: String = s"AppendResult(@$term, ${successOrIndexForNextAttempt.fold("accepted")(feri => s"rejected, firstEmptyRecordIndex=$feri")}, ${RoleOrdinal_nameOf(roleOrdinal)}"
+		override def toString: String = s"AppendResult(@$term, ${if successOrIndexForNextAttempt == 0 then "accepted" else s"rejected, firstEmptyRecordIndex=$successOrIndexForNextAttempt"}, ${RoleOrdinal_nameOf(roleOrdinal)}"
 	}
 
 	/**
@@ -436,7 +431,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
 
 
-		/** Called by the leading participant passing the identifier of an excluded participant after receiving a successful [[AppendResult]] to an [[appendRecords]] call whose `leaderCommit` argument is equal or higher than the index of a [[StableConfigChange]] that excluded the provided participant. */
+		/** Called by the leading participant after knowing an excluded follower has commited the [[StableConfigChange]] that excluded it.
+		 * Specifically, after a call to [[appendRecords]] whose `leaderCommit` argument is equal or higher than the index of a [[StableConfigChange]] that excluded the follower returns a successful [[AppendResult]]. */
 		def onRetirementCompleted(retiredParticipantId: ParticipantId): Unit
 
 
@@ -786,7 +782,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private inline val AO_SUCCESS = 0
 		private inline val AO_NEEDS_EARLIER_RECORDS = 1 | AO_IS_LAGGING_MASK
 		private inline val AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION = 2 | AO_IS_LAGGING_MASK
-		private inline val AO_IS_STARTING = 3 | AO_IS_LAGGING_MASK
+		private inline val AO_HAS_HIGHER_TERM = 3
 		private inline val AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION = 4
 		private inline val AO_IS_RETIRING_OR_STOPPING = 5
 		private inline val AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT = 6
@@ -991,7 +987,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchedDuty[AppendResult] = {
 				checkWithin()
-				sequencer.LatchedDuty_ready(AppendResult(0, Maybe(0), ordinal))
+				sequencer.LatchedDuty_ready(AppendResult(0, 1, ordinal))
 			}
 		}
 
@@ -1187,13 +1183,15 @@ trait ConsensusParticipantSdm { thisModule =>
 					primaryState1 match {
 						case Inaccessible =>
 							illegalStateStop()
-							AppendResult(0, Maybe(0), currentRole.ordinal)
+							AppendResult(0, 1, currentRole.ordinal)
 
 						case accessible1: Accessible =>
-							val successOrIndexForNextAttempt =
-								if primaryUpdateResult.appendSuccess then Maybe.empty
-								else if accessible1.firstEmptyRecordIndex < prevRecordIndex then Maybe(accessible1.firstEmptyRecordIndex)
-								else Maybe(prevRecordIndex)
+							val successOrIndexForNextAttempt: RecordIndex =
+								if primaryUpdateResult.appendSuccess then 0
+								else if accessible1.firstEmptyRecordIndex < prevRecordIndex then accessible1.firstEmptyRecordIndex
+								else if prevRecordIndex > 0 then prevRecordIndex
+								else 1
+
 							val response = AppendResult(primaryState1.currentTerm, successOrIndexForNextAttempt, currentRole.ordinal)
 							// At this point the primary state is already updated and the response already determined. All the following actions are causally-anchored derived-state updates.
 
@@ -2490,11 +2488,9 @@ trait ConsensusParticipantSdm { thisModule =>
 					assert(currentConfig eq deriveConfigurationFrom(primaryState))
 				}
 
-				// if the appending would be empty, with same `leaderCommit` as a previous successful append, and at least one append to the target was successful since ths participant is the leader, fake a successful response.
-				if fromIndex >= untilIndex
-					&& commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex)
-					&& highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex) > 0
-				then sequencer.Task_successful(AppendResult(primaryState.currentTerm, Maybe.empty, ISOLATED)) // TODO consider using a fake role ordinal instead of ISOLATED.
+				// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skipp it and fake a successful response.
+				if fromIndex >= untilIndex && commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex)
+				then sequencer.Task_successful(AppendResult(primaryState.currentTerm, 0, ISOLATED)) // TODO consider using a fake role ordinal instead of ISOLATED.
 				else {
 					val previousRecordIndex = fromIndex - 1
 					val recordsToSend = primaryState.getRecordsBetween(fromIndex, untilIndex)
@@ -2641,16 +2637,26 @@ trait ConsensusParticipantSdm { thisModule =>
 
 					case Success(appendResult) =>
 						val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
+
 						// scribe.trace(s"$boundParticipantId: handleAppendResponse@${primaryState.currentTerm} from $participantId requested@$appendRequestTerm, dialog=$appendResponse, indexAfterTopRecordSent=$indexAfterTopRecordSent") // TODO delete line
-						appendResult.successOrIndexForNextAttempt.fold {
-							highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = appendRequestLeaderCommit
-							if indexAfterTopRecordSent > indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexAfterTopRecordSent
-							val indexOfTopRecordSent = indexAfterTopRecordSent - 1
-							if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) then highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = indexOfTopRecordSent
-							AO_SUCCESS
-						} { indexForNextAttempt => // else (if the participant rejected the appending)
-							// If the rejection was because the participant needs earlier records (the previous record's does not exist in its log or its term is not the same as in this participant log then):
-							if appendResult.roleOrdinal >= JOINING && appendResult.term == appendRequestTerm then {
+
+						if appendResult.roleOrdinal <= RETIRING then AO_IS_RETIRING_OR_STOPPING
+						else if appendResult.term > appendRequestTerm then AO_HAS_HIGHER_TERM
+						else {
+							if assertionsEnabled then {
+								assert(appendResult.roleOrdinal >= JOINING) // because the Starting role always defers to other role.
+								assert(appendResult.term == appendRequestTerm) // because the term in replies is always greater than or equal to the term in inquires.
+							}
+
+							// If the appending was successful, update the local knowledge about the participant.
+							if appendResult.successOrIndexForNextAttempt == 0 then {
+								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = appendRequestLeaderCommit
+								if indexAfterTopRecordSent > indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexAfterTopRecordSent
+								val indexOfTopRecordSent = indexAfterTopRecordSent - 1
+								if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) then highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = indexOfTopRecordSent
+								AO_SUCCESS
+							} else { // else the rejection was because the participant needs earlier records (the previous record's does not exist in its log or its term is not the same as in this participant log then):
+								val indexForNextAttempt = appendResult.successOrIndexForNextAttempt
 								// If the record does not predate the snapshot, then decrement the index of the next record to send and return AO_NEEDS_EARLIER_RECORDS so a retry is fired with one more earlier record.
 								if indexForNextAttempt >= primaryState.logBufferOffset then {
 									if indexOfNextRecordToSend > indexForNextAttempt && indexForNextAttempt >= highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) + 1 then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexForNextAttempt
@@ -2664,10 +2670,6 @@ trait ConsensusParticipantSdm { thisModule =>
 									AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT
 								}
 							}
-							// if the rejection was for another reason, yield a hint of the motive.
-							else if appendResult.roleOrdinal <= RETIRING then AO_IS_RETIRING_OR_STOPPING
-							else if appendResult.roleOrdinal == STARTING then AO_IS_STARTING
-							else AO_UNEXPECTED
 						}
 
 					case Failure(e) =>
@@ -2837,29 +2839,32 @@ trait ConsensusParticipantSdm { thisModule =>
 					if retireeAgentByParticipantId.contains(id) then response match {
 						case Success(appendResult) =>
 							// scribe.trace(s"$boundParticipantId: handleAppendResponse@${primaryState.currentTerm} from $participantId requested@$appendRequestTerm, dialog=$appendResponse, indexAfterTopRecordSent=$indexAfterTopRecordSent") // TODO delete line
-							// If the append was successful, then terminate this agent; else:
-							appendResult.successOrIndexForNextAttempt.fold {
+							// If the appending was rejected for an unreversible reason, terminate this agent and scribe a message.
+							if appendResult.roleOrdinal <= RETIRING || appendResult.term != currentState.currentTerm then {
 								removeRetireeAgent(id)
 								onRetirementCompleted(id)
-							} { newIndexOfNextRecordToSend =>
-								// If the rejection was because the retiree needs earlier records
-								if appendResult.roleOrdinal >= JOINING && appendResult.term == currentState.currentTerm then {
-									indexOfNextRecordToSend = newIndexOfNextRecordToSend
-									// if the earlier records are in the potentiallyUnappendedRecords array, then retry the appending including them.
-									if newIndexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord then {
-										primaryStateFence.causalAnchor { (primaryStateAtResponse, _) =>
-											if retireeAgentByParticipantId.contains(id) then primaryStateAtResponse match {
-												case accessible: Accessible => startAppendLoop(accessible)
-												case _ => illegalStateStop()
-											}
+								scribe.warn(s"$boundParticipantId: The replication to retiring participant $id was aborted because its response ($appendResult) tells ${if appendResult.term == currentState.currentTerm then "it is already retired" else "this retiree agent is obsolete"}, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
+							}
+							// Else, if the appending was successful, then terminate this agent and notify ; e
+							else if appendResult.successOrIndexForNextAttempt == 0 then {
+								removeRetireeAgent(id)
+								onRetirementCompleted(id)
+							}
+							// Else, the rejection was because the retiree needs earlier records. So, retry including them.
+							else {
+								if assertionsEnabled then assert(appendResult.roleOrdinal >= JOINING)
+
+								val newIndexOfNextRecordToSend = appendResult.successOrIndexForNextAttempt
+								indexOfNextRecordToSend = newIndexOfNextRecordToSend
+								// if the earlier records are in the potentiallyUnappendedRecords array, then retry the appending including them.
+								if newIndexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord then {
+									primaryStateFence.causalAnchor { (primaryStateAtResponse, _) =>
+										if retireeAgentByParticipantId.contains(id) then primaryStateAtResponse match {
+											case accessible: Accessible => startAppendLoop(accessible)
+											case _ => illegalStateStop()
 										}
-									} else scribe.error(s"$boundParticipantId: This should not happen! The retiring participant $id asks for earlier records than the expected: result=$appendResult, indexOfFirstPotentiallyUnappendedRecord=$indexOfFirstPotentiallyUnappendedRecord, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
-								}
-								// if the rejection was for another reason, terminate this agent.
-								else {
-									removeRetireeAgent(id)
-									scribe.warn(s"$boundParticipantId: The replication to retiring participant $id was aborted because its response ($appendResult) tells ${if appendResult.term == currentState.currentTerm then "it is already retired" else "this retiree agent is obsolete"}, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
-								}
+									}
+								} else scribe.error(s"$boundParticipantId: This should not happen! The retiring participant $id asks for earlier records than the expected: result=$appendResult, indexOfFirstPotentiallyUnappendedRecord=$indexOfFirstPotentiallyUnappendedRecord, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
 							}
 
 						case Failure(e) =>

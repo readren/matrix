@@ -480,7 +480,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param commandPayload The payload of the command to send.
 		 * @param attemptFlag tells the participant that will receive the command whether this is the first attempt, a redirect, or a fallback.
 		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
-		def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Duty[Boolean] = {
+		private def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Duty[Boolean] = {
 			if knownParticipants.isEmpty then return net.netSequencer.Duty_false
 			val receiverNode = targetParticipant
 			scribe.info(s"Client: Sent command:$commandPayload, attemptFlag:$attemptFlag, to:${receiverNode.myId}")
@@ -506,6 +506,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				case receiverNode.RedirectTo(leaderId) =>
 					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
 					targetParticipant = net.getNode(leaderId)
+					// if despite the attempt flag sent to the participant was FALLBACk (which instructs to update the role before responding) it responds with a redirection to an already tried participant, add it to the already tried ones.
+					if attemptFlag == FALLBACK && alreadyTriedParticipants.contains(leaderId) then alreadyTriedParticipants.addOne(targetParticipant.myId)
 					sendsCommand(commandPayload, REDIRECTED)
 				case receiverNode.Unable(roleOrdinal, otherParticipants) =>
 					knownParticipants = otherParticipants + receiverNode.myId
