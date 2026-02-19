@@ -1,0 +1,14 @@
+<State>
+    <highlightingPatterns>
+        <LogHighlightingPattern pattern="^\s*scribe" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-2555970,&quot;darkRgb&quot;:-2555970}" uuid="2e7a8cb5-e2e1-474c-8729-a2d4abd3885c"/>
+        <LogHighlightingPattern pattern="^Net:" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-5317665,&quot;darkRgb&quot;:-5317665}" uuid="8f903d15-2dda-4333-beed-aff35b885e2f"/>
+        <LogHighlightingPattern pattern="^Client:" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-2111538,&quot;darkRgb&quot;:-2111538}" bold="true" uuid="d2a6133b-be93-4739-9569-564b5269fb9e"/>
+        <LogHighlightingPattern pattern="^cluster" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-2118691,&quot;darkRgb&quot;:-2118691}" uuid="6ca614bd-2a38-43c9-8a40-e9c215d0e00b"/>
+        <LogHighlightingPattern pattern="^node" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-2116423,&quot;darkRgb&quot;:-2116423}" bold="true" uuid="3e5fd3e3-a33d-4864-bf93-c3fd6211e325"/>
+        <LogHighlightingPattern pattern="^p-\d+:" formatId="2b03500e-b084-4901-b09b-c8266bd22cec" captureGroup="1" fg="{&quot;lightRgb&quot;:-2236449,&quot;darkRgb&quot;:-2236449}" italic="true" uuid="01dddeb8-ed97-4fbc-9966-475586a43a14"/>
+    </highlightingPatterns>
+    <parsingPatterns>
+        <LogParsingPattern name="consensus" pattern="^(\d+)\s(\w(\w|-)+:?)\s.*$" timePattern="SSS" linePattern="^\d" timeId="0" uuid="2b03500e-b084-4901-b09b-c8266bd22cec"/>
+    </parsingPatterns>
+    <settingsVersion>14</settingsVersion>
+</State>

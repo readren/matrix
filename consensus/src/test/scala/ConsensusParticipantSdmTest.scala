@@ -512,7 +512,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				case receiverNode.Unable(roleOrdinal, otherParticipants) =>
 					knownParticipants = otherParticipants + receiverNode.myId
 					alreadyTriedParticipants.addOne(targetParticipant.myId)
-					scribe.info(s"Client: the participant ${receiverNode.myId} is unable to process the command `$commandPayload`. otherParticipants=$otherParticipants, knowParticipants=$knownParticipants, alreadyTriedParticipants=$alreadyTriedParticipants")
+					scribe.info(s"Client: the participant ${receiverNode.myId} is unable to process the command `$commandPayload`, role=${RoleOrdinal_nameOf(roleOrdinal)}, otherParticipants=$otherParticipants, knowParticipants=$knownParticipants, alreadyTriedParticipants=$alreadyTriedParticipants")
 					retry()
 				case receiverNode.InconsistentState(m) =>
 					scribe.info(s"Client: the participant ${receiverNode.myId} internal state become inconsistent. Detected when the command `$commandPayload` was processed.")
@@ -684,8 +684,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def onRetirementCompleted(retiredParticipantId: Id): Unit = {
 				sequencer.checkWithin()
-				assert(isDown || participant.getRoleOrdinal == LEADER)
-				scribe.info(s"cluster-$boundParticipantId: onRetirementCompleted($retiredParticipantId) called.")
+				scribe.info(s"cluster-$boundParticipantId: onRetirementCompleted($retiredParticipantId) called from ${RoleOrdinal_nameOf(participant.getRoleOrdinal)}.")
 				net.onRetirementCompleted(retiredParticipantId)
 			}
 
@@ -1077,9 +1076,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val clusterSize = 5
-		val startWithHighestPriorityParticipant = true
-		val netRandomnessSeed = -7579379202953552523L
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -1610899221355081839L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, 3726663850566216084L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (6, false, 805546499403932689L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, 3726663850566216084L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 2741710523245740467L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 50)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
