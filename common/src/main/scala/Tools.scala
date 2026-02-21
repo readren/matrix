@@ -72,6 +72,21 @@ extension [A](array: IArray[A]) {
 		exists
 	}
 
+	inline def collectWithIndex[B: ClassTag](inline pf: (element: A, index: Int) => Maybe[B]): IArray[B] = {
+		val length = array.length
+		val intermediateArray = new Array[B](length)
+		var resultSize = 0
+		var index = 0
+		while index < length do {
+			pf(array(index), index).foreach { b =>
+				intermediateArray(resultSize) = b
+				resultSize += 1
+			}
+			index += 1
+		}
+		IArray.unsafeFromArray(Array.copyOf(intermediateArray, resultSize))
+	}
+
 }
 
 
