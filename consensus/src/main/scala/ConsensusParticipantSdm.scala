@@ -1109,7 +1109,7 @@ trait ConsensusParticipantSdm { thisModule =>
 										val myStateInfo1 = currentRole.deriveMyStateInfo(primaryState1)
 										// if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot; then restart (the determination of my vote).
 										if (config1 ne config0) || memorizedParticipantInfos.size + numberOfFailedAnswers < config0.allOtherParticipants.length then {
-											scribe.trace(s"$boundParticipantId: Restarting my vote determination due to ${if config1 ne config0 then "a concurrent configuration change" else "an obsolete answer"}")
+											scribe.trace(s"$boundParticipantId: Restarting my vote determination due to ${if config1 ne config0 then s"a concurrent configuration change (${config0.changeIndex}->${config1.changeIndex})" else s"an obsolete answer, currentBallot=$currentBallot, memorizedInfosSize=${memorizedParticipantInfos.size}, numberOfFailedAnswers=$numberOfFailedAnswers, numberOfRequests=${config1.allOtherParticipants.size}"}")
 											// TODO analyze if memorizedParticipantInfos should be cleared here.
 											sf.determineMyVote(primaryState1, blankVoteIfRoleChanges)
 										}
@@ -1260,7 +1260,10 @@ trait ConsensusParticipantSdm { thisModule =>
 										// Keep the current role otherwise.
 									}
 									// If this participant does not belong to the active configuration, then retire it.
-									else become(Retiring(accessible1.currentTerm, config1.changeIndex, config1.allParticipants))
+									else {
+										if assertionsEnabled then assert(config1.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos configs stable ones.
+										become(Retiring(accessible1.currentTerm, config1.changeIndex, config1.allParticipants))
+									}
 								}
 							}
 							response
@@ -1379,6 +1382,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					// scribe.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - configChange=${config1.correspondingConfigChange}") // TODO delete line
 
 					if !config1.allParticipants.contains(boundParticipantId) then {
+						if assertionsEnabled then assert(config1.isInstanceOf[StableConfig]) // because is required by Retiring. // TODO analyze if the config1 is always a stable one here.
 						become(Retiring(currentState1.currentTerm, config1.changeIndex, config1.allParticipants))
 						sequencer.LatchedDuty_unit
 					}
@@ -1639,6 +1643,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Why is it needed? Because excluded participants depend on the leader to send them the final appends confirming they are safe to quiesce. If this [[Role]] didn't exist, there would be no [[RetirementDriver]]s responsible for that task when the configuration changes to an empty set.
 		 * Since this role must exist for that reason, we also take advantage of its presence to wait the [[RetirementDriver]]s to conclude their job even when the deposing [[ConfigChange]]'s [[ConfigChange.newParticipants]] set is not empty. In this scenario, the job of the [[RetirementDriver]]s of this retiring ex-leader will overlap with the job of the [[RetirementDriver]]s of the new [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].
 		 * @param finalTerm the last [[Term]] during which this participant was active.
+		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
 		 * @param newParticipants the [[StableConfigChange.newParticipants]] of the [[StableConfigChange]] that excluded this participant while it was [[Leader]]. */
 		private final class Retiring(val finalTerm: Term, val excludingConfigIndex: RecordIndex, newParticipants: IArray[ParticipantId]) extends Role {
 			override val ordinal: RoleOrdinal = RETIRING
@@ -1666,11 +1671,11 @@ trait ConsensusParticipantSdm { thisModule =>
 					case tcc: TransitionalConfigChange[ParticipantId] @unchecked => tcc.newParticipants.contains(boundParticipantId)
 					case _ => false
 				}
-				if relativeIndexOfTheIncludingConfigChange < 0 || prevRecordIndex + 1 + relativeIndexOfTheIncludingConfigChange <= excludingConfigIndex then super.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
-				else {
-					become(Starting(prevRecordIndex + 1 + relativeIndexOfTheIncludingConfigChange))
-						.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
-				}
+				if relativeIndexOfTheIncludingConfigChange < 0 || prevRecordIndex + 1 + relativeIndexOfTheIncludingConfigChange <= excludingConfigIndex
+				then sequencer.LatchedDuty_ready(AppendResult(finalTerm, excludingConfigIndex + 1, ordinal))
+				else become(Starting(prevRecordIndex + 1 + relativeIndexOfTheIncludingConfigChange))
+					.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
+
 			}
 
 			override def onQuiescencePermitted(grantorId: ParticipantId, indexOfGrantedStableConfigChange: RecordIndex): Unit = {
@@ -1682,6 +1687,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
+		/** @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement. */
 		private final def Retiring(finalTerm: Term, excludingConfigIndex: RecordIndex, newParticipants: IArray[ParticipantId]): Maybe[Retiring] = {
 			currentRole match {
 				case retiring: Retiring if retiring.finalTerm == finalTerm && retiring.excludingConfigIndex == excludingConfigIndex => Maybe.empty
@@ -2551,8 +2557,9 @@ trait ConsensusParticipantSdm { thisModule =>
 										// TODO: Find a way for the [[RetirementDriver]]s created for those excluded participants (by `deriveConfigurationFrom`) to make use of the discarded responses. The only approach that comes to mind is passing those responses into `deriveConfigurationFrom`.
 										val appendResponses1 = rearrangeAppendResponses(appendResponses0, config0, config1)
 										val appendOutcomes1 = appendResponses1.mapWithIndex { (appendResponse, otherParticipantIndex) =>
+											val otherParticipantId = config1.allOtherParticipants(otherParticipantIndex)
 											// Handle the responses. Note that when successful, it updates the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
-											handleAppendResponse(accessible1, config1.allOtherParticipants(otherParticipantIndex), otherParticipantIndex, appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
+											handleAppendResponse(accessible1.logBufferOffset, otherParticipantId, otherParticipantIndex, config1.isInNew(otherParticipantId), appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 										}
 										scribe.trace(s"$boundParticipantId: The append responses of replication #$serialOfReplicationAttempt until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.allOtherParticipants.indices yield s"${config1.allOtherParticipants(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 										for maybeLastAppendAttemptInfo2 <- retryLaggingLearners(accessible1, config1, appendOutcomes1, indexAfterTopRecordToSend, false, false, serialOfReplicationAttempt)
@@ -2744,7 +2751,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														else {
 															val newRequestIndex = laggingParticipants.indexOf(participantId)
 															assert(newRequestIndex >= 0)
-															handleAppendResponse(accessible2, participantId, participantIndex2, newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
+															handleAppendResponse(accessible2.logBufferOffset, participantId, participantIndex2, config2.isInNew(participantId), newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 														}
 													}
 												}
@@ -2762,14 +2769,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Handles the result of an [[ClusterParticipant.appendRecords]] call.
 			 *
 			 * Updates the [[indexOfNextRecordToSend_ByParticipantIndex]], [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and [[highestRecordIndexKnowToBeCommitted_ByParticipantIndex]] arrays and maps the [[AppendResult]] to an [[AppendOutcome]].
-			 * @param primaryState the current, causally anchored, accessible [[PrimaryState]].
+			 * @param indexOfFirstRecordInMemory the index of the first record that is still memorized in the current [[PrimaryState]] log.
 			 * @param participantId the identifier of the participant whose response is being handled.
 			 * @param participantIndex the index of the participant in the [[Configuration.allOtherParticipants]] derived from the provided [[PrimaryState]].
 			 * @param appendResponse the response from the peer about the appending.
 			 * @param appendRequestTerm the term passed to [[ClusterParticipant.appendRecords]] as `inquirerTerm` parameter.
 			 * @param indexAfterTopRecordSent index of the record after the one at the top of the [[IndexedSeq]] of [[Record]]s passed to [[ClusterParticipant.appendRecords]] as argument to the parameter named `records`.
 			 * @param appendRequestLeaderCommit the [[commitIndex]] of this [[Leader]] when [[ClusterParticipant.appendRecords]] was called. Must match the value passed to the `leaderCommit` parameter. */
-			private def handleAppendResponse(primaryState: Accessible, participantId: ParticipantId, participantIndex: Int, appendResponse: AppendResponse | Null, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex): AppendOutcome = {
+			private def handleAppendResponse(indexOfFirstRecordInMemory: RecordIndex, participantId: ParticipantId, participantIndex: Int, isInNewConfig: Boolean, appendResponse: AppendResponse | Null, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex): AppendOutcome = {
 				appendResponse match {
 					case null =>
 						AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION
@@ -2779,12 +2786,12 @@ trait ConsensusParticipantSdm { thisModule =>
 						// scribe.trace(s"$boundParticipantId: handleAppendResponse@${primaryState.currentTerm} from $participantId requested@$appendRequestTerm, dialog=$appendResponse, indexAfterTopRecordSent=$indexAfterTopRecordSent") // TODO delete line
 
 						if appendResult.roleOrdinal == QUIESCED then AO_IS_QUIESCED
-						else if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING
+						else if !isInNewConfig && appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING
 						else if appendResult.term > appendRequestTerm then AO_HAS_HIGHER_TERM
 						else {
 							if assertionsEnabled then {
-								assert(appendResult.roleOrdinal >= JOINING) // because the Starting role always defers to other role.
-								assert(appendResult.term == appendRequestTerm) // because the term in replies is always greater than or equal to the term in inquires.
+								assert(appendResult.roleOrdinal >= RETIRING) // because the Starting role always defers to other role.
+								assert(appendResult.term == appendRequestTerm || appendResult.roleOrdinal == RETIRING) // because the term in replies is always greater than or equal to the term in inquires.
 							}
 
 							val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
@@ -2804,9 +2811,9 @@ trait ConsensusParticipantSdm { thisModule =>
 								// Clamp the index of the first record to append in the next attempt after the highest record index known to be appended.
 								val indexForNextAttempt = if suggestedIndexForNextAttempt <= highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended + 1 else suggestedIndexForNextAttempt
 								// If the earlier record predates the snapshot, report an error.
-								if indexForNextAttempt < primaryState.logBufferOffset then {
+								if indexForNextAttempt < indexOfFirstRecordInMemory then {
 									// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism if this situation is possible to happen at all (because highestRecordIndexKnownToBeAppended_ByParticipantIndex would always be greater than or equal to the lobBufferOffset).
-									scribe.error(s"$boundParticipantId: Unable to append records to $participantId because its log has inconsistencies at records that predate the last snapshot. They are at indexes less than the logBufferOffset=${primaryState.logBufferOffset}. THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
+									scribe.error(s"$boundParticipantId: Unable to append records to $participantId because its log has inconsistencies at records that predate the last snapshot. They are at indexes less than the logBufferOffset=$indexOfFirstRecordInMemory. THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
 									// return false without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnownToBeAppended_ByParticipantIndex.
 									AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT
 								} else {
@@ -2879,7 +2886,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														val participantId = unreachableParticipantIds(resultIndex)
 														val participantIndex = config2.participantIndexOf(participantId)
 														if participantIndex < 0 then AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION
-														else handleAppendResponse(accessible2, participantId, participantIndex, appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
+														else handleAppendResponse(accessible2.logBufferOffset, participantId, participantIndex, config2.isInNew(participantId), appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 													}
 													scribe.trace(s"$boundParticipantId: The append responses to the unreachable-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, outcomes=${unreachableParticipantIds.zip(appendsOutcomes)}") // TODO delete
 													scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendsOutcomes, indexAfterTopRecordSent, serialOfReplicationAttempt)
@@ -3240,6 +3247,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** The identifiers of the desired set of participants (backing [[ConfigChange.newParticipants]]). */
 			val desiredParticipants: Set[ParticipantId]
 
+			inline def isInNew(participantId: ParticipantId): Boolean = desiredParticipants.contains(participantId)
+
 			/** The set of participants to include in [[Unable]] responses. */
 			def otherProbableParticipants: ListSet[ParticipantId]
 
@@ -3285,7 +3294,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override val desiredParticipants: Set[ParticipantId] = Set.empty
 
-			def otherProbableParticipants: ListSet[ParticipantId] =
+			override def otherProbableParticipants: ListSet[ParticipantId] =
 				cluster.getOtherProbableParticipant
 
 			override def reachedAll(vote: Vote[ParticipantId]): Boolean =

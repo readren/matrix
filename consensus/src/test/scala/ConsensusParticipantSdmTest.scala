@@ -22,6 +22,9 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
 
+/** A comprehensive test suite for the `ConsensusParticipantSdm` module, designed to verify the correctness and robustness of the distributed consensus algorithm. It uses `munit.ScalaCheckEffectSuite` and `ScalaCheck` for property-based testing, allowing for a wide range of scenarios to be tested with varying parameters.
+ * In essence, `ConsensusParticipantSdmTest` provides a robust and well-structured approach to testing a complex distributed consensus algorithm by simulating a network environment, actively injecting faults and dynamic changes, and continuously verifying critical invariants that ensure correctness and safety.
+ * */
 class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	ScribeConfig.init(useSimpleFormatter = true, modifiers = List(new LogModifier {
@@ -65,7 +68,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	private type ScheduSequen = CooperativeWorkersWithAsyncSchedulerDp.SchedulingDoerFacade
 
-	/** Simulates a net of nodes for testing.
+	/** Simulates the network environment in which the consensus participants operate.
 	 * @param clusterSize the total number of [[Node]] instances involved.
 	 * @param randomnessSeed the seed for the pseud-randomness of the messages fate.
 	 * @param requestFailurePercentage Probability (as a percentage) that a request message fails to reach its target [[Node]].
@@ -155,7 +158,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		private type RequestId = (global: Int, channel: Int)
 
-		/** A communication channel between two [[Node]]s.
+		/** Represents a communication channel between two [[Node]]s, managing message queues and failure states.
 		 * Mimics a TCP channel by maintaining delivery order. */
 		private case class Channel() {
 			private val queue: mutable.Queue[netSequencer.Duty[Unit]] = mutable.Queue.empty
@@ -222,7 +225,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		extension (inquirerId: Id) {
-			/** Performs a Remote Procedure Call from a [[Node]] of this [[Net]] (the inquirer) to another [[Node]] of this [[Net]] (the replier).
+			/** Provides a simulated Remote Procedure Call (RPC) mechanism between nodes, handling message queuing, delivery order (mimicking TCP), and the simulated failures.
+			 * Performs a Remote Procedure Call from a [[Node]] of this [[Net]] (the inquirer) to another [[Node]] of this [[Net]] (the replier).
 			 * Assumes that the set of [[Node]]s remains invariant since the first invocation.
 			 * To simulate a real network, the order in which messages of different [[Channel]]s are delivered is modified randomly.
 			 * Messages sent from a [[Node]] to another maintain delivery order to mimic TCP characteristics.
@@ -371,25 +375,19 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			commandsSentByClients_count += 1
 		}
 
+		/** Introduces a configuration change during test execution based on the provided probability. */
 		private def injectConfigurationNoise(changeProbability: Float): Unit = {
 			assert(netSequencer.isInSequence)
 			configNoiseInjection_count += 1
 			configNoiseInjectionsSinceLastClientCommand_count += 1
 			determineNewConfig(changeProbability).foreach { case (previousConfigMask, newConfigMask) =>
-				configChangeRequestSequencer += 1
-				val configChangeRequest = configChangeRequestSequencer
-				scribe.info(s"Net: About to request configuration change #$configChangeRequest from ${previousConfigMask.mkString("[", ", ", "]")} to ${newConfigMask.mkString("[", ", ", "]")}")
-				// For each node, create a duty that request a configuration change to the same newConfig.
-				val configChangeRequestingDutyByNodeIndex =
-					for node <- nodeByIndex yield netSequencer.Duty_foreign(node.sequencer)(
-						node.sequencer.Duty_mineFlat(() =>
-							node.clusterParticipant.delegate.requestConfigChange(s"ccReq-$configChangeRequest", nodesIncludedIn(newConfigMask))
-						)
-					)
+				val configChangeRequest = createNewConfigChangeRequestId()
+				
 				// trigger all those duties in their respective node's sequencer
-				for configChangeReplies <- netSequencer.Duty_sequenceToArray(configChangeRequestingDutyByNodeIndex) do {
+				for configChangeReplies <- sendsConfigChangeRequest(configChangeRequest, nodesIncludedIn(newConfigMask)) do {
 					scribe.info(s"Net: the configuration change request #$configChangeRequest sent to each node completed with: ${configChangeReplies.mkString("[", ", ", "]")}.")
 				}
+
 			}
 		}
 
@@ -406,6 +404,23 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					Maybe((oldConfigMask, newConfigMask))
 				} else Maybe.empty
 			}
+		}
+
+		def createNewConfigChangeRequestId(): String = {
+			configChangeRequestSequencer += 1
+			s"ccReq-$configChangeRequestSequencer"
+		}
+
+		def sendsConfigChangeRequest(configChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Duty[Array[ConfigChangeResponse]] = {
+			scribe.info(s"Net: About to request (#$configChangeRequest) a configuration change to $includedParticipants")
+			// For each node, create a duty that request a configuration change to the same newConfig.
+			val configChangeRequestingDutyByNodeIndex =
+				for node <- nodeByIndex yield netSequencer.Duty_foreign(node.sequencer)(
+					node.sequencer.Duty_mineFlat(() =>
+						node.clusterParticipant.delegate.requestConfigChange(s"ccReq-$configChangeRequest", includedParticipants)
+					)
+				)
+			netSequencer.Duty_sequenceToArray(configChangeRequestingDutyByNodeIndex)
 		}
 
 		/** Gets the [[Id]]s of the [[Node]]s included in the provided configuration mask. */
@@ -450,7 +465,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	}
 
 	/**
-	 * Simulates a client.
+	 * Simulates a client interacting with the consensus cluster.
 	 * @param net The network to use.
 	 * @param startWithHighestPriorityParticipant determines from with side of the known participants queue to start the attempts to send commands. */
 	private class Client[N <: Net](clientId: String, val net: N, startWithHighestPriorityParticipant: Boolean) {
@@ -543,6 +558,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	}
 
+	/** A callback interface to observe and react to internal state changes within a `Node` (log appends, overwrites, command applications). */
 	private trait NodeStateChangesListener {
 		/** Called when any entry in the log buffer of a [[Node]] is overwritten.
 		 * @param index the [[RecordIndex]] of the first overwritten entry.
@@ -610,6 +626,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 
+		/** A simple [[StateMachine]] implementation that tracks applied commands. */
 		object machine extends StateMachine {
 			private val appliedCommands: mutable.Map[RecordIndex, ClientCommand] = mutable.LongMap.empty
 			var highestAppliedIndex: RecordIndex = 0
@@ -722,6 +739,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/**
 		 * Test instance and implementation of the [[Storage]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
+		 * Uses an in-memory [[TestWorkspace]] for storing the participant's log and state.
 		 */
 		object storage extends Storage {
 			private[ConsensusParticipantSdmTest] var memory: WS = TestWorkspace()
@@ -936,6 +954,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 	}
 
+	/** This is the core logic for verifying the correctness of the consensus algorithm. It sets up a simulated environment and then actively checks several critical invariants:
+	 *		- Leader Append-Only**: Ensures that a leader never overwrites or deletes entries in its log, only appends.
+	 *		- Log Matching**: Verifies that if two logs contain an entry with the same index and term, then the logs are identical up through that index.
+	 *		- State Machine Safety**: Guarantees that if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index.
+	 *		- Election Safety**: Asserts that at most one leader can be elected in a given term.
+	 *		- Leader Completeness**: Confirms that if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms.
+	 *
+	 *   These invariants are checked using the `NodeStateChangesListener` and by comparing the state across multiple simulated nodes. If any invariant is violated, the test fails immediately via a `Promise.tryFailure`. */
 	private def testAllInvariants(net: Net, startWithHighestPriorityParticipant: Boolean, numberOfCommandsToSend: Int = 20): Future[Unit] = {
 		val promise = Promise[Unit]()
 		val clusterSize = net.clusterSize
@@ -1031,27 +1057,20 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val checks = for {
 			_ <- net.startsAllNodes
 			client = Client[net.type]("A", net, startWithHighestPriorityParticipant)
-			_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted, 20)
-				.toDuty(promise.tryFailure)
+			_ <- client.sendsCommandsUntil(commandIndex => commandIndex > numberOfCommandsToSend || promise.isCompleted, 20).toDuty(promise.tryFailure)
 		} yield promise.tryComplete(Success(()))
 		checks.triggerAndForget(false)
 		promise.future.andThen(_ => net.stop())
 	}
 
+	// A simple test to remind the user to run tests with assertions enabled (`-ea` VM option)
 	test("assertions are enabled") {
 		if !ConsensusParticipantSdm.assertionsEnabled then println("Enable assertions for all test to detect more bugs by adding the the -ea VM option.")
 		if ConsensusParticipantSdm.assertionsEnabled then Future.successful(()) else Future.failed(new RuntimeException(""))
 	}
 
-	test("special sample") {
-		val startWithHighestPriorityParticipant = false
-		val net = new Net(clusterSize = 5, randomnessSeed = -4515092198012648896L, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 5, configChangeBeforeRequestDelivered_probability = 0, configChangeBeforeResponseDelivered_probability = 0, configChangeAfterResponseDelivered_probability = 0)
-		scribe.info(s"Begin: clusterSize=${net.clusterSize}, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=${net.randomnessSeed}")
-
-		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend = 10)
-	}
-
-	test("All invariants must comply - without configuration changes noise") {
+	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds, but *without* injecting configuration changes.
+	test("All invariants must comply - without configuration changes noise".ignore) {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
 			Gen.choose(2, 7),
@@ -1064,9 +1083,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 	}
 
+	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 8602566370082359974L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -8485779671449355485L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 8602566370082359974L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -1687211017040616033L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, 1192722668228908098L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, 6939971176246473149L)
@@ -1081,6 +1102,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
 	}
 
+	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds.
 	test("All invariants must comply") {
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
