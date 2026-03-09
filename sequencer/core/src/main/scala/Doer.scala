@@ -1432,7 +1432,8 @@ trait Doer { thisDoer =>
 		 * Together with [[Duty.toTask]] this method allow to mix duties and task in the same chain.
 		 *
 		 * @param exceptionHandler the complete function to apply to the result of this task if it is a [[Failure]]. $isExecutedByDoSiThEx */
-		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] = new Task_ToDuty[A, B](thisTask, exceptionHandler)
+		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] =
+			new Task_ToDuty[A, B](thisTask, exceptionHandler)
 
 		/** @return a [[Duty]] that yields the result of this [[Task]]. */
 		final def toDutyHardy: Duty[Try[A]] = new AbstractDuty[Try[A]] {
@@ -2329,7 +2330,6 @@ trait Doer { thisDoer =>
 			subscribe(tryA => sideEffect(tryA))
 			this
 		}
-
 	}
 
 
