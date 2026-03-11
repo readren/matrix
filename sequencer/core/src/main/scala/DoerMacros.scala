@@ -5,7 +5,7 @@ import scala.quoted.{Expr, Quotes, Type}
 object DoerMacros {
 
 
-	def triggerImpl[A: Type](isWithinDoSiThExExpr: Expr[Boolean], doerExpr: Expr[Doer], dutyExpr: Expr[Doer#Duty[A]], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
+	def triggerImpl[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], dutyExpr: Expr[Doer#Duty[A]], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
 		def runnable: Expr[Runnable] = {
@@ -21,9 +21,9 @@ object DoerMacros {
 			}
 		}
 
-		isWithinDoSiThExExpr.value match {
-			case Some(isWithinDoSiThEx) =>
-				if isWithinDoSiThEx then '{
+		isWithinDoSerExExpr.value match {
+			case Some(isWithinDoSerEx) =>
+				if isWithinDoSerEx then '{
 					$doerExpr.checkWithin()
 					$dutyExpr.engagePortal($onCompleteExpr)
 				}
@@ -31,7 +31,7 @@ object DoerMacros {
 
 			case None =>
 				'{
-					if $isWithinDoSiThExExpr then {
+					if $isWithinDoSerExExpr then {
 						$doerExpr.checkWithin()
 						$dutyExpr.engagePortal($onCompleteExpr)
 					}

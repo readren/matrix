@@ -26,7 +26,7 @@ object ActorBasedSchedulingDoer {
 
 	case class FixedDelay(initialDelay: MilliDuration, delay: MilliDuration) extends Plan
 
-	/** A [[Behavior]] factory that provides access to an [[ActorBasedSchedulingDoer]] whose DoSiThEx (doer single thread executor) is the actor corresponding to the provided [[ActorContext]]. */
+	/** A [[Behavior]] factory that provides access to an [[ActorBasedSchedulingDoer]] whose DoSerEx (doer's serial executor) is the actor corresponding to the provided [[ActorContext]]. */
 	def setup[A: Typeable](ctxA: ActorContext[A], timerScheduler: TimerScheduler[A])(frontier: ActorBasedSchedulingDoer => Behavior[A]): Behavior[A] = {
 		val doer = buildActorBasedSchedulingDoer(ctxA.asInstanceOf[ActorContext[Procedure]], timerScheduler.asInstanceOf[TimerScheduler[Procedure]])
 		val behaviorA = frontier(doer)
@@ -91,5 +91,5 @@ object ActorBasedSchedulingDoer {
 	}
 }
 
-/** A [[Doer]], extended with scheduling and akka-actor related operations, whose DoSiThEx (doer single thread executor) is an akka-actor. */
+/** A [[Doer]], extended with scheduling and akka-actor related operations, whose DoSerEx (doer's serial executor) is an akka-actor. */
 abstract class ActorBasedSchedulingDoer extends ActorBasedDoer, SchedulingExtension  

@@ -362,7 +362,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result.
 		 *
-		 * $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 * @return a new [[Task]] that, when executed, repeatedly executes this task and applies the `condition` to the task's result until the function's result is [[Maybe.some]]. The result of this task is the contents of said [[Maybe]] unless any execution of the `taskA` or `condition` terminates abruptly in which case this task result is the cause.
 		 * */
 		inline def reiteratedHardyUntilSome[B](condition: (Int, Try[A]) => Maybe[Try[B]], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
@@ -387,7 +387,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result.
 		 *
-		 * $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 * @return a new [[Task]] that, when executed, repeatedly executes this task and applies the `condition` to the task's result until the function's result is [[Maybe.some]]. The result of this task is the contents of said [[Maybe]] unless any execution of the `taskA` or `condition` terminates abruptly in which case this task result is the cause.
 		 * */
 		inline def reiteratedUntilSome[B](condition: (Int, A) => Maybe[Try[B]], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
@@ -417,7 +417,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * $threadSafe
 		 *
 		 * @param ts0 the value passed as second parameter to `condition` the first time it is evaluated.
-		 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * @tparam S a supertype of `A`
 		 * @tparam B the type of the result of this task.
@@ -439,7 +439,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * $threadSafe
 		 *
 		 * @param ts0 the value passed as second parameter to `condition` the first time it is evaluated.
-		 * @param pf determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+		 * @param pf determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * @tparam S a supertype of `A`
 		 * @tparam B the type of the result of this task.
@@ -615,7 +615,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *			- normally with `some(tryB)`, completes with `tryB`
 	 *			- normally with `empty`, goes back to the first step.
 	 *
-	 * $onCompleteExecutedByDoSiThEx
+	 * $onCompleteExecutedByDoSerEx
 	 *
 	 * @param taskA the task to be repeated.
 	 * @param condition function that decides if the loop continues or not based on:
@@ -624,7 +624,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
 	 *
-	 * $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+	 * $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 	 * */
 	final class Task_ReiterateHardyUntilSome[+A, +B](taskA: Task[A], condition: (Int, Try[A]) => Maybe[Try[B]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
 
@@ -665,11 +665,11 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  	- Normally, returning `some(b)`, completes with `b`.
 	 *  	- Normally, returning `empty`, executes the `taskA` and goes back to the first step replacing `ta0` with the result.
 	 *
-	 * $onCompleteExecutedByDoSiThEx
+	 * $onCompleteExecutedByDoSerEx
 	 *
 	 * @param taskA the task to be repeated
 	 * @param ta0 the value passed as second parameter `condition` the first time it is evaluated.
-	 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+	 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `ta0` if no cycle has been done yet. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * @tparam A the type of the result of the repeated task `taskA`.
 	 * @tparam B the type of the result of this task.
@@ -714,7 +714,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  	- Normally, returning a `Right(taskA)`, executes the `taskA` and goes back to the first step replacing `tryA0` with the result.
 	 *
 	 * @param tryA0 the initial value wrapped in a `Try`, used in the first call to `checkAndBuild`.
-	 * @param checkAndBuild a function that takes the number of already completed cycles and the last task result wrapped in a `Try`, returning an `Either[Try[B], Task[A]]` indicating the next action to perform.	$isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult *
+	 * @param checkAndBuild a function that takes the number of already completed cycles and the last task result wrapped in a `Try`, returning an `Either[Try[B], Task[A]]` indicating the next action to perform.	$isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult *
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_WhileRightReiterateHardy[+A, +B](tryA0: Try[A], checkAndBuild: (Int, Try[A]) => Either[Try[B], Task[A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
@@ -756,10 +756,10 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  			- `Success(Left(tryB))`, completes with `tryB`.
 	 *  			- `Success(Right(a1))`, goes back to the first step replacing `a0` with `a1`.
 	 *
-	 * $onCompleteExecutedByDoSiThEx
+	 * $onCompleteExecutedByDoSerEx
 	 *
 	 * @param a0 the initial value used in the first call to `buildAndCheck`.
-	 * @param buildAndCheck a function that takes the number of already completed cycles and the last task result, returning a new task that yields an `Either[Try[B], A]` indicating the next action to perform. $isExecutedByDoSiThEx $unhandledErrorsArePropagatedToTaskResult
+	 * @param buildAndCheck a function that takes the number of already completed cycles and the last task result, returning a new task that yields an `Either[Try[B], A]` indicating the next action to perform. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_ReiterateUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Task[Either[Try[B], A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {

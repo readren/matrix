@@ -483,7 +483,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							else {
 								val attemptNumber = failedAttempts + 1
 								scribe.trace(s"Net: Attempt #$attemptNumber to shutdown the net failed with ${responses.mkString("[", ", ", "]")}")
-								netSequencer.Duty_delaysFlat(50)(_ => loop(attemptNumber)) // TODO replace the delay with an "on settled" mechanism
+								netSequencer.Duty_delaysFlat(stimulusSettlingTime * clusterSize)(_ => loop(attemptNumber)) // TODO replace the delay with an "on settled" mechanism
 							}
 						}
 					} yield maybeErrorMessage

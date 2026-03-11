@@ -31,11 +31,11 @@ trait ActorExtension { thisActorExtension: Doer =>
 		 * Triggers the execution of this task and sends the result to the `destination`.
 		 *
 		 * @param destination the [[ActorRef]] of the actor to send the result to.
-		 * @param isWithinDoSiThEx $isRunningInDoSiThEx
+		 * @param isWithinDoSerEx tells if the call is within the doer's serial executor.
 		 * @param errorHandler called if the execution of this task completed with failure.
 		 */
-		def triggerAndSend(destination: ActorRef[A], isWithinDoSiThEx: Boolean = isInSequence)(errorHandler: Throwable => Unit): Unit = {
-			task.trigger(isWithinDoSiThEx) {
+		def triggerAndSend(destination: ActorRef[A], isWithinDoSerEx: Boolean = isInSequence)(errorHandler: Throwable => Unit): Unit = {
+			task.trigger(isWithinDoSerEx) {
 				case Success(r) => destination ! r;
 				case Failure(e) => errorHandler(e)
 			}

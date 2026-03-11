@@ -60,7 +60,7 @@ abstract class RoundRobinDp(
 
 		private var executionSequencer = 0
 
-		private[RoundRobinDp] val doSiThEx: ThreadPoolExecutor = {
+		private[RoundRobinDp] val doSerEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				doerThreadLocal.set(thisDoer)
 				executionSequencer += 1
@@ -70,7 +70,7 @@ abstract class RoundRobinDp(
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
 		}
 
-		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
+		override def executeSequentially(runnable: Runnable): Unit = doSerEx.execute(runnable)
 
 		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
@@ -83,13 +83,13 @@ abstract class RoundRobinDp(
 
 	override def shutdown(): Unit = {
 		for doer <- doers do {
-			doer.doSiThEx.shutdown()
+			doer.doSerEx.shutdown()
 		}
 	}
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		// TODO subtract already waited time
-		doers.forall(_.doSiThEx.awaitTermination(timeout, unit))
+		doers.forall(_.doSerEx.awaitTermination(timeout, unit))
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
@@ -97,17 +97,17 @@ abstract class RoundRobinDp(
 		sb.append("<<<\n")
 		for (doer, i) <- doers.zipWithIndex do {
 			sb.append(i).append(") ")
-			sb.append(" queue.size=").append(doer.doSiThEx.getQueue.size)
-			sb.append(", activeCount=").append(doer.doSiThEx.getActiveCount)
-			sb.append(", taskCount=").append(doer.doSiThEx.getTaskCount)
-			sb.append(", completedTaskCount=").append(doer.doSiThEx.getCompletedTaskCount)
+			sb.append(" queue.size=").append(doer.doSerEx.getQueue.size)
+			sb.append(", activeCount=").append(doer.doSerEx.getActiveCount)
+			sb.append(", taskCount=").append(doer.doSerEx.getTaskCount)
+			sb.append(", completedTaskCount=").append(doer.doSerEx.getCompletedTaskCount)
 			// sb.append(", largestPoolSize=").append(info.executor.getLargestPoolSize)
-			sb.append(", isTerminating=").append(doer.doSiThEx.isTerminating)
-			sb.append(", isTerminated=").append(doer.doSiThEx.isTerminated)
-			sb.append(", isShutdown=").append(doer.doSiThEx.isShutdown)
+			sb.append(", isTerminating=").append(doer.doSerEx.isTerminating)
+			sb.append(", isTerminated=").append(doer.doSerEx.isTerminated)
+			sb.append(", isShutdown=").append(doer.doSerEx.isShutdown)
 			sb.append('\n')
 			// info.lastRunnable.foreach(r => sb.append("Last runnable:\n").append(r.toString).append('\n'))
-			totalCompletedTaskCount += doer.doSiThEx.getCompletedTaskCount
+			totalCompletedTaskCount += doer.doSerEx.getCompletedTaskCount
 		}
 		sb.append("totalCompletedTasks=").append(totalCompletedTaskCount)
 		sb.append("\n>>>\n")

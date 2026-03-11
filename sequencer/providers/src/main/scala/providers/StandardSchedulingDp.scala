@@ -60,13 +60,13 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		override type Tag = thisProvider.Tag
 
 		/** The single-threaded executor for this Doer. */
-		private[StandardSchedulingDp] val doSiThEx = Executors.newSingleThreadScheduledExecutor()
+		private[StandardSchedulingDp] val doSerEx = Executors.newSingleThreadScheduledExecutor()
 
 		private var executionSequencer: Int = 0
 
 		override def executeSequentially(runnable: Runnable): Unit = {
 			// println(s"queuedForSequentialExecution: pre execute; id=$id, thread=${Thread.currentThread().getName}; runnable=$runnable")
-			doSiThEx.execute(() => {
+			doSerEx.execute(() => {
 				currentDoerThreadLocal.set(thisDoer)
 				executionSequencer += 1
 				// println(s"queuedForSequentialExecution: pre run; id=$id; thread=${Thread.currentThread().getName}")
@@ -95,7 +95,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		//// SCHEDULING EXTENSION
 
 		sealed abstract class TSchedule {
-			/** This variable's value is changed one time only, from `null` to the [[ScheduledFuture]] reference returned by [[doSiThEx.schedule]] when [[scheduleSequentially]] is called.
+			/** This variable's value is changed one time only, from `null` to the [[ScheduledFuture]] reference returned by [[doSerEx.schedule]] when [[scheduleSequentially]] is called.
 			 * Therefore, there is no need to synchronize access to it from the [[Runnable]] that is created when the value is set.*/
 			private[DoerImpl] var scheduledFuture: ScheduledFuture[?] | Null = null
 			/** This variable's value is changed one time only, from `false` to `true`, when [[cancel]] or [[cancelAll]] is called. */
@@ -145,7 +145,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 										activatedSchedules.remove(schedule)
 									}
 								}
-							doSiThEx.schedule(wrapper, ds.delay, TimeUnit.MILLISECONDS)
+							doSerEx.schedule(wrapper, ds.delay, TimeUnit.MILLISECONDS)
 
 						case frs: TFixedRateSchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
@@ -157,7 +157,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 								}
 
 							}
-							doSiThEx.scheduleAtFixedRate(wrapper, frs.initialDelay, frs.interval, TimeUnit.MILLISECONDS)
+							doSerEx.scheduleAtFixedRate(wrapper, frs.initialDelay, frs.interval, TimeUnit.MILLISECONDS)
 
 						case fds: TFixedDelaySchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
@@ -169,7 +169,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 								}
 
 							}
-							doSiThEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
+							doSerEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
 					}
 					activatedSchedules.add(schedule)
 				}
@@ -208,18 +208,18 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		/** @inheritdoc
 		 * This implementation shutdowns the executor and cleans up resources. */
 		override def shutdown(): Unit = {
-			doSiThEx.shutdown()
+			doSerEx.shutdown()
 			providedDoers.remove(thisDoer)
 		}
 
 		override def awaitTermination(timeout: MilliDuration, unit: TimeUnit): Boolean =
-			doSiThEx.awaitTermination(timeout, unit)
+			doSerEx.awaitTermination(timeout, unit)
 
 		override def diagnose(stringBuilder: StringBuilder): StringBuilder = ??? // TODO
 	}
 
 	override def shutdown(): Unit = {
-		providedDoers.forEach(_.doSiThEx.shutdown())
+		providedDoers.forEach(_.doSerEx.shutdown())
 		providedDoers.clear()
 	}
 
@@ -229,7 +229,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		var lastTerminated = true
 		val iterator = providedDoers.iterator()
 		while lastTerminated && iterator.hasNext do {
-			val executor = iterator.next().doSiThEx
+			val executor = iterator.next().doSerEx
 			if !executor.isTerminated then {
 				val remainingTime = timeoutMillis - (System.currentTimeMillis() - startingTime)
 				lastTerminated =

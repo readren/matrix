@@ -15,7 +15,7 @@ object ActorBasedDoer {
 
 	private[sequencer] case class Procedure(runnable: Runnable)
 
-	/** A [[Behavior]] factory that provides access to an [[ActorBasedDoer]] whose DoSiThEx (doer single thread executor) is the actor corresponding to the provided [[ActorContext]]. */
+	/** A [[Behavior]] factory that provides access to an [[ActorBasedDoer]] whose DoSerEx (doer's serial executor) is the actor corresponding to the provided [[ActorContext]]. */
 	def setup[A: Typeable](ctxA: ActorContext[A])(frontier: ActorBasedDoer => Behavior[A]): Behavior[A] = {
 		val doer: ActorBasedDoer = buildDoer(ctxA.asInstanceOf[ActorContext[Procedure]])
 		val behaviorA = frontier(doer)
@@ -56,7 +56,7 @@ object ActorBasedDoer {
 		}.asInstanceOf[BehaviorInterceptor[A | Procedure, A]]
 }
 
-/** A [[Doer]], extended with akka-actor related operations, whose DoSiThEx (doer single thread executor) is an akka-actor. */
+/** A [[Doer]], extended with akka-actor related operations, whose DoSerEx (doer's serial executor) is an akka-actor. */
 abstract class ActorBasedDoer extends AbstractDoer, ActorExtension {
 	private[akka] var executionSequencer = 0
 

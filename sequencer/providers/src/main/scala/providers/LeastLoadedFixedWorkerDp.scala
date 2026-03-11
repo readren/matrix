@@ -59,7 +59,7 @@ abstract class LeastLoadedFixedWorkerDp(
 
 		private var executionSequencer = 0
 
-		val doSiThEx: ThreadPoolExecutor = {
+		val doSerEx: ThreadPoolExecutor = {
 			val tf: ThreadFactory = (r: Runnable) => threadFactory.newThread { () =>
 				doerThreadLocal.set(thisDoer)
 				executionSequencer += 1
@@ -68,7 +68,7 @@ abstract class LeastLoadedFixedWorkerDp(
 			new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, queueFactory(), tf)
 		}
 
-		override def executeSequentially(runnable: Runnable): Unit = doSiThEx.execute(runnable)
+		override def executeSequentially(runnable: Runnable): Unit = doSerEx.execute(runnable)
 
 		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
@@ -95,7 +95,7 @@ abstract class LeastLoadedFixedWorkerDp(
 		var result: List[ProvidedDoer] = Nil
 
 		for doer <- doers do {
-			val executor = doer.doSiThEx
+			val executor = doer.doSerEx
 			val queueSize = executor.getQueue.size()
 			if queueSize < shortestSize then {
 				result = List(doer)
@@ -108,13 +108,13 @@ abstract class LeastLoadedFixedWorkerDp(
 
 	override def shutdown(): Unit = {
 		for doer <- doers do {
-			doer.doSiThEx.shutdown()
+			doer.doSerEx.shutdown()
 		}
 	}
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		// TODO subtract already waited time
-		doers.forall(_.doSiThEx.awaitTermination(timeout, unit))
+		doers.forall(_.doSerEx.awaitTermination(timeout, unit))
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
@@ -122,7 +122,7 @@ abstract class LeastLoadedFixedWorkerDp(
 		sb.append(this.getClass.getSimpleName)
 		sb.append('\n')
 		for doer <- doers do {
-			val executor = doer.doSiThEx
+			val executor = doer.doSerEx
 			sb.append('\t').append(doer.tag).append(") ")
 			sb.append(" queue.size=").append(executor.getQueue.size)
 			sb.append(", activeCount=").append(executor.getActiveCount)
