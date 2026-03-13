@@ -4,6 +4,7 @@ import Doer.*
 
 import readren.common.{Maybe, castTo, deriveToString}
 
+import java.util
 import scala.annotation.{tailrec, threadUnsafe}
 import scala.collection.{IterableFactory, mutable}
 import scala.compiletime.erasedValue
@@ -71,28 +72,26 @@ abstract class AbstractDoer extends Doer
  *  - Duties and tasks created by different '''Doer''' instances are '''independent''' and may execute concurrently or in any order.
  *
  * == Execution of Routines ==
- * All routines (functions, procedures, predicates, or by-name parameters) passed to the operations of [[Duty]] and [[Task]]
- * (including callbacks like `onComplete`) are also executed sequentially with respect to the duties and tasks enclosed by
- * the same '''Doer''' instance. This ensures that all operations associated with a single '''Doer''' instance maintain sequential
- * consistency, unless explicitly documented otherwise in the method's documentation.
+ * All routines (functions, procedures, predicates, or by-name parameters) passed to the operations of [[Duty]] and [[Task]] (including callbacks like `onComplete`) are also executed sequentially with respect to the duties and tasks enclosed by the same '''Doer''' instance. This ensures that all operations associated with a single '''Doer''' instance maintain sequential consistency, unless explicitly documented otherwise in the method's documentation.
  *
  * == Key Points ==
  * - Sequential execution is '''instance-specific''': Each '''Doer''' instance manages its own sequence of tasks and duties.
  * - Routines passed to tasks and duties (e.g., callbacks) are executed in the same sequential scope as the enclosing '''Doer''' instance.
  * - Tasks and duties across different '''Doer''' instances are '''independent''' and may run concurrently.
  * ==Note:==
- * At the time of writing, almost all the operations and classes in this source file are thread-safe and may function properly on any kind of execution context. The only exceptions are the classes [[CombinedTask]] and [[Commitment]], which could be enhanced to support concurrency. However, given that a design goal was to allow [[Task]] and the functions their operators receive to close over variables in code sections guaranteed to be executed solely by the DoSerEx (doer's single-threaded executor), the effort and cost of making them concurrent would be unnecessary.
+ * At the time of writing, almost all the operations and classes in this source file are thread-safe and may function properly on any kind of execution context. The only exceptions are the classes [[CombinedTask]] and [[Commitment]], which could be enhanced to support concurrency. However, given that a design goal was to allow [[Task]] and the functions their operators receive to close over variables in code sections guaranteed to be executed solely by the DoSerEx (doer's serial executor), the effort and cost of making them concurrent would be unnecessary.
  * See [[Doer.executeSequentially()]].
  *
- * @define DoSerEx DoSerEx (doer's single-thread executor)
+ * @define DoSerEx DoSerEx (doer's serial executor)
  * @define onCompleteExecutedByDoSerEx The `onComplete` callback passed to `engage` is always, with no exception, executed by this $DoSerEx. This is part of the contract of the [[Task]] trait.
  * @define threadSafe This method is thread-safe.
- * @define isExecutedByDoSerEx Executed within the DoSerEx (doer's single-thread executor).
+ * @define isExecutedByDoSerEx Executed within the DoSerEx (doer's serial executor).
  * @define unhandledErrorsArePropagatedToTaskResult The call to this routine is guarded with try-catch. If it throws a non-fatal exception it will be caught and the [[Task]] will complete with a [[Failure]] containing the error.
  * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
  * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the duty will never complete. The same occurs with all routines received by [[Duty]] operations. This is one of the main differences with [[Task]] operation.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
  * @define isWithinDoSerEx indicates whether the call to this method is within this [[Doer]]'s sequential executor. If there is no such certainty the call site should either, not specify a value in order to use the default (which is the result of [[Doer.isInSequence]]), or specify `false` to force deferred execution.
+ * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
  */
 trait Doer { thisDoer =>
 
@@ -107,7 +106,7 @@ trait Doer { thisDoer =>
 	 * Specifies what an instance of [[Doer]] requires to execute its operations.
 	 * Executes the provided [[Runnable]] in the order of submission (after all the ones that were submitted before to this [[Doer]] instance have been completed).
 	 * The implementation should queue all the [[Runnable]]s this method receives while they are being executed sequentially. The thread that executes them can change as long as sequentiality and happens-before relationship are guaranteed.
-	 * From now on the executor of the queued [[Runnable]] instances will be called "the doer's single-thread executor", or DoSerEx for short, despite more than one thread may be involved.
+	 * From now on the executor of the queued [[Runnable]] instances will be called "the doer's serial executor", or DoSerEx for short, despite more than one thread may be involved.
 	 * If the call is executed within the current DoSerEx's [[Thread]], the [[Runnable]]'s execution must not start until the DoSerEx completes its current execution and all the previously queued ones.
 	 * The implementation should not throw non-fatal exceptions.
 	 * The implementation should be thread-safe.
@@ -449,7 +448,7 @@ trait Doer { thisDoer =>
 	/**
 	 * Creates a [[Duty]] that yields the result of applying the bifunction `f` to what the provided duties yield.
 	 * When executed, simultaneously triggers and execution of each duty and returns their results combined by the provided function.
-	 * Given the single-thread nature of [[Doer]] this operation only has sense when the provided duties involve foreign duties/tasks or alien duties/tasks.
+	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided duties involve foreign duties/tasks or alien duties/tasks.
 	 * ===Detailed behavior===
 	 * Creates a new [[Duty]] that, when executed:
 	 *		- triggers an execution for both: `dutyA` and `dutyB`
@@ -1640,7 +1639,7 @@ trait Doer { thisDoer =>
 
 	/**
 	 * Creates a [[Task]] that simultaneously triggers an execution for each of two tasks and returns their results combined with the received function.
-	 * Given the single thread nature of [[Doer]] this operation only has sense when the received tasks are a chain of actions that involve timers, foreign, or alien tasks.
+	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the received tasks are a chain of actions that involve timers, foreign, or alien tasks.
 	 * ===Detailed behavior===
 	 * Creates a new [[Task]] that, when executed:
 	 *		- triggers an execution of each: `taskA` and `taskB`
@@ -2749,12 +2748,20 @@ trait Doer { thisDoer =>
 
 	//// Coalesced Inquire/Query ////
 
-	/** Coalesces in-flight inquires. */
-	class CoalescedInquire[P, R](inquire: P => LatchedDuty[R]) {
+	/**
+	 * Coalesces concurrent requests by sharing the result of the in-flight inquire triggered for a specific parameter.
+	 *
+	 * This implements a '''First-In-Flight-Wins''' strategy:
+	 *  - If an equivalent request is already being processed, new callers subscribe to the existing [[LatchedTask]] handle.
+	 *  - Once that initial execution completes, the handle is removed, and the result is delivered to all concurrent subscribers.
+	 *
+	 * This is intended for stateless or point-in-time inquiries where any result retrieved after the request is enqueued is considered sufficient for all concurrent callers in that coalesced group.
+	 */
+	class CoalescedInquire[P, R](inquirer: P => LatchedDuty[R]) {
 		private val inFlight: mutable.Map[P, LatchedDuty[R]] = mutable.Map.empty
 
 		def getOrStart(params: P, isWithinDoer: Boolean = isInSequence): LatchedDuty[R] = {
-			if isWithinDoer then inFlight.getOrElse(params, inquire(params).andThen(_ => inFlight.remove(params)))
+			if isWithinDoer then inFlight.getOrElse(params, inquirer(params).andThen(_ => inFlight.remove(params)))
 			else {
 				val covenant = Covenant[R]()
 				execute {
@@ -2765,8 +2772,16 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** Coalesces in-flight queries. */
-	class CoalescedQuery[P, R](query: P => LatchedTask[R]) {
+	/**
+	 * Coalesces concurrent requests by sharing the result of the in-flight query triggered for a specific parameter.
+	 *
+	 * This implements a '''First-In-Flight-Wins''' strategy:
+	 *  - If an equivalent request is already being processed, new callers subscribe to the existing [[LatchedTask]] handle.
+	 *  - Once that initial execution completes, the handle is removed, and the result is delivered to all concurrent subscribers.
+	 *
+	 * This is intended for stateless or point-in-time inquiries where any result retrieved after the request is enqueued is considered sufficient for all concurrent callers in that coalesced group.
+	 */
+	class CoalescedQuery[P, R](querier: P => LatchedTask[R]) {
 		private val inFlight: mutable.Map[P, LatchedTask[R]] = mutable.Map.empty
 
 		def getOrStart(params: P, isWithinDoer: Boolean = isInSequence): LatchedTask[R] = {
@@ -2776,7 +2791,7 @@ trait Doer { thisDoer =>
 						lt
 					case None =>
 						try {
-							val lt = query(params)
+							val lt = querier(params)
 							inFlight.put(params, lt)
 							lt.andThen(_ => inFlight.remove(params))
 							lt
@@ -2790,6 +2805,81 @@ trait Doer { thisDoer =>
 					commitment.completeWith(getOrStart(params, true))
 				}
 				commitment
+			}
+		}
+	}
+
+	//// Convergent settlement ////
+
+	/**
+	 * Merges, with ```winner takes all``` resolution, the result of concurrent executions with the same parameter into a single stable handle.
+	 * The handle is fulfilled with the result of the winner execution when it completes.
+	 * The provided function decides whether its execution or the previously chosen one is the winner.
+	 *
+	 * === Strategy: Last-Fulfills (Latest-State-Wins) ===
+	 * Unlike [[CoalescedInquire]], this utility does '''not''' deduplicate executions; instead, it deduplicates '''results'''.
+	 * Every call to [[settle]] invokes the [[executedFunc]] to allow domain logic to determine if the environment has evolved, rendering in-flight work obsolete.
+	 *
+	 * === Structural Invariants ===
+	 *  - '''Identity Stability''': All concurrent callers for a specific parameter share a single stable handle.
+	 *  - '''Fulfillment Guard''': The stable handle only fulfills when the winner execution completes.
+	 *  - '''Lifecycle Management''': The handle is disposed ONLY upon completion of the winner execution, ensuring subsequent calls to [[settle]] initiate a fresh convergence process.
+	 *
+	 * @param executedFunc The function that is executed whenever [[settle]] is called.
+	 *                     It receives a pending [[LatchedDuty]], if any, that yields the result of the incumbent execution for the provided parameter.
+	 *                     It must decide which execution is the winner for the provided parameter, between the current execution of this function and the incumbent one.
+	 *                     It must return a [[LatchedDuty]] that yields the result of the new chosen execution.
+	 *
+	 * @note LLM GUIDANCE: This is an orchestrator of convergence, not a standard cache. Use it when in-flight work may become obsolete due to external state mutations.
+	 */
+	class ConvergentSettlement[P, R](executedFunc: (parameter: P, chosenDuty: Maybe[LatchedDuty[R]]) => LatchedDuty[R])(using doer: Doer) {
+		/** $suppressSyntheticCompanionObject */
+		private final def Handle(trap: Nothing): Any = trap
+
+		/**
+		 * Internal container for the stable handle and the volatile candidate.
+		 * @param convergedResultCovenant The stable identity (Contract) shared by all callers.
+		 * @param chosenDuty The current volatile execution (Work) authorized to fulfill the Contract.
+		 */
+		private class Handle(val convergedResultCovenant: Covenant[R], var chosenDuty: LatchedDuty[R] | Null)
+
+		private val handleByParameter: java.util.HashMap[P, Handle] = new java.util.HashMap()
+
+		private val handleProducer: java.util.function.Function[P, Handle] = _ => new Handle(Covenant[R](), null)
+
+		/**
+		 * Starts an execution of [[executedFunc]] and returns a [[LatchedDuty]] that yields the result of the winner execution among all the executions of [[executedFunc]] started while another with the same parameter is in-flight.
+		 *
+		 * @param parameter The parameter identifying the process.
+		 * @param isWithinDoer Indicates if the call is already within the $DoSerEx.
+		 *                     Defaults to the result of [[Doer.isInSequence]].
+		 * @return A stable handle that fulfills only once the winner execution completes.
+		 */
+		def settle(parameter: P, isWithinDoer: Boolean = doer.isInSequence): LatchedDuty[R] = {
+			if isWithinDoer then {
+				val handle = handleByParameter.computeIfAbsent(parameter, handleProducer)
+				val maybePreviousChosenDuty = Maybe.apply(handle.chosenDuty)
+				val newChosenDuty = executedFunc(parameter, maybePreviousChosenDuty)
+
+				// If the chosen duty has changed
+				if maybePreviousChosenDuty.fold(true)(_ ne newChosenDuty) then {
+					// memorize the new chosen one
+					handle.chosenDuty = newChosenDuty
+					// and subscribe a consumer of its result that completes the returned Covenant only if it continues being the chosen one.
+					newChosenDuty.subscribe { r =>
+						// The winner-takes-all guard
+						if newChosenDuty eq handle.chosenDuty then {
+							handle.convergedResultCovenant.fulfillUnsafe(r)
+							// forget the completed handle
+							handleByParameter.remove(parameter)
+						}
+					}
+				}
+				handle.convergedResultCovenant
+			} else {
+				val joiningCovenant = Covenant[R]()
+				doer.execute(joiningCovenant.fulfillWith(settle(parameter, true)))
+				joiningCovenant
 			}
 		}
 	}

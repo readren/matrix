@@ -277,6 +277,7 @@ object ConsensusParticipantSdm {
  * that would otherwise be needed for a service with many interrelated types.
  *
  * @see [[ConsensusParticipant]] for the main service implementation and detailed algorithm documentation
+ * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
  */
 trait ConsensusParticipantSdm { thisModule =>
 
@@ -3761,44 +3762,19 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 		private final def emptyLatchedDuty[A]: sequencer.LatchedDuty[Maybe[A]] = _emptyLatchedDuty.asInstanceOf[sequencer.LatchedDuty[Maybe[A]]]
 
-		/**
-		 * Suppresses the generation of the [[Leader]] synthetic companion object.
-		 *
-		 * This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module.
-		 * By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
-		 */
+		/** $suppressSyntheticCompanionObject */
 		private final def Leader(trap: Nothing): Any = trap
 
-		/**
-		 * Suppresses the generation of the [[CandidateInfo]] synthetic companion object.
-		 *
-		 * This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module.
-		 * By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
-		 */
+		/** $suppressSyntheticCompanionObject */
 		private final def CandidateInfo(trap: Nothing): Any = trap
 
-		/**
-		 * Suppresses the generation of the [[StableConfig]] synthetic companion object.
-		 *
-		 * This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module.
-		 * By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
-		 */
+		/** $suppressSyntheticCompanionObject */
 		private final def StableConfig(trap: Nothing): Any = trap
 
-		/**
-		 * Suppresses the generation of the [[TransitionalConfig]] synthetic companion object.
-		 *
-		 * This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module.
-		 * By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
-		 */
+		/** $suppressSyntheticCompanionObject */
 		private final def TransitionalConfig(trap: Nothing): Any = trap
 
-		/**
-		 * Suppresses the generation of the [[Accessible]] synthetic companion object.
-		 *
-		 * This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module.
-		 * By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
-		 */
+		/** $suppressSyntheticCompanionObject */
 		private final def Accessible(trap: Nothing): Any = trap
 	}
 }
