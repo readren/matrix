@@ -794,7 +794,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			doer.Duty_foreign(foreignDoer)(foreignDuty)
 				.map { int => int == dutyResult && doer.isInSequence && !foreignDoer.isInSequence }
-				.toTask
+				.succeed
 				.map(assert(_))
 				.toFuture()
 		}
@@ -838,7 +838,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- check("map", duty.map(identity))
 				_ <- check("flatMap", duty.flatMap(_ => duty))
 				_ <- check("andThen", duty.andThen(_ => ()))
-				_ <- check("toTask", duty.toTask)
+				_ <- check("toTask", duty.succeed)
 				_ <- check("repeatedUntilSome", duty.repeatedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty })
 				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
 				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty))
@@ -1513,7 +1513,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val fence = CausalStuckableFence(Success(initial))
 
 			val checks = for {
-				anchor <- fence.causalAnchor().toDutyHardy
+				anchor <- fence.causalAnchor().asHardyDuty
 				committedBefore <- fence.committed().toDutyHardy
 				state <- fence.advanceSpeculatively { (previousState, rba) =>
 					if previousState != initial then break("Speculative update received wrong previous state")
@@ -1527,7 +1527,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 							)
 						}
 					))
-				}.toDutyHardy
+				}.asHardyDuty
 				committedAfter <- fence.committed().toDutyHardy
 			} yield {
 				if !(anchor ==== Success(initial)) then break("Initial anchor mismatch")
@@ -1572,7 +1572,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 								}
 							}
 					))
-				}.toDutyHardy
+				}.asHardyDuty
 			} yield {
 				println(s"transition done")
 				actualResult match {

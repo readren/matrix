@@ -1236,8 +1236,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								else if isTermBumped then Maybe(accessible0.withTermUpdated(inquirerTerm))
 								else Maybe.empty
 							}
-					},
-					true
+					}
 				)
 				yield {
 
@@ -1605,8 +1604,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							Maybe(primaryState0.withTermUpdated(seenTerm))
 						}
 						else Maybe.empty
-					},
-					true
+					}
 				).andThen(ps => if ps.currentTerm > previousTermRef.elem then onTermBumped(ps))
 			}
 
@@ -1644,8 +1642,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									case Inaccessible => Maybe.empty
 									case a: Accessible => Maybe.some(a.withWorkspaceReleased())
 								}
-							},
-							true
+							}
 						).andThen(_ => completed.fulfillUnsafe(()))
 
 					case _ =>
@@ -1922,10 +1919,9 @@ trait ConsensusParticipantSdm { thisModule =>
 				notifyListeners(_.onHandingOff(endedTerm))
 
 				for {
-					primaryState1 <- primaryStateFence.advanceIf(
-						(primaryState0, _) => if primaryState0.currentTerm < latestTermSeen then Maybe(primaryState0.withTermUpdated(latestTermSeen)) else Maybe.empty,
-						true
-					)
+					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+						if primaryState0.currentTerm < latestTermSeen then Maybe(primaryState0.withTermUpdated(latestTermSeen)) else Maybe.empty
+					}
 				} do if currentRole eq this then primaryState1 match {
 					case Inaccessible =>
 						illegalStateQuiesce()
@@ -2014,17 +2010,13 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				for {
 					// Bump the term
-					primaryState1 <- primaryStateFence.advanceIf(
-						(primaryState0, _) => {
-							if currentRole ne this then Maybe.empty
-							else primaryState0 match {
-								case Inaccessible => Maybe.empty
-								case accessible0: Accessible => Maybe(primaryState0.withTermUpdated(primaryState0.currentTerm + 1))
-							}
-
-						},
-						true
-					)
+					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+						if currentRole ne this then Maybe.empty
+						else primaryState0 match {
+							case Inaccessible => Maybe.empty
+							case accessible0: Accessible => Maybe(primaryState0.withTermUpdated(primaryState0.currentTerm + 1))
+						}
+					}
 				} do {
 					if currentRole eq this then {
 						primaryState1 match {
@@ -2144,18 +2136,12 @@ trait ConsensusParticipantSdm { thisModule =>
 				val indexOfTopConfigChange = initialPrimaryState.indexOfTopConfigChange
 				// if the log lacks a ConfigChange record (is empty), create a synthetic one with the seed participants of the initial synthetic configuration (appointed in `currentConfig` during Starting).
 				if indexOfTopConfigChange == 0 then {
-					for primaryState1 <- primaryStateFence.advanceIf(
-						(primaryState0, _) => {
-							primaryState0 match {
-								case Inaccessible => Maybe.empty
-								case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
-							}
-						},
-						true
-					)
-					yield {
-						startConfigChangeSecondPhase(currentConfig.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
-					}
+					for primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+						primaryState0 match {
+							case Inaccessible => Maybe.empty
+							case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
+						}
+					} yield startConfigChangeSecondPhase(currentConfig.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
 				}
 				// if the log contains a ConfigChange record then:
 				else initialPrimaryState.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
@@ -2247,7 +2233,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						val highestRecordIndexKnownToBeAppended = thisLeader.highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex)
 						val indexOfFirstPotentiallyUnappendedRecord = highestRecordIndexKnownToBeAppended + 1
 						val potentiallyUnappendedRecords: GenIndexedSeq[Record] = primaryState.getRecordsBetween(indexOfFirstPotentiallyUnappendedRecord, configChangeIndex + 1)
-						val retirementDriver = RetirementDriver(
+						val retirementDriver = new RetirementDriver(
 							participantId,
 							primaryStateFence,
 							primaryState.getRecordTermAt(highestRecordIndexKnownToBeAppended),
@@ -2380,19 +2366,17 @@ trait ConsensusParticipantSdm { thisModule =>
 							scribe.trace(s"$boundParticipantId: About to append the first phase of config change $tcc")
 							for {
 								// Update primary state
-								primaryState2 <- primaryStateFence.advanceIf(
-									(primaryState1, _) => {
-										if currentRole ne this then Maybe.empty
-										else primaryState1 match {
-											case Inaccessible =>
-												Maybe.empty
-											case accessible1: Accessible =>
-												if assertionsEnabled then assert(primaryState1.currentTerm == leadedTerm)
-												Maybe(accessible1.withSingleRecordAppended(tcc.term, tcc))
-										}
-									},
-									true
-								)
+								primaryState2 <- primaryStateFence.advanceIf { (primaryState1, _) =>
+									if currentRole ne this then Maybe.empty
+									else primaryState1 match {
+										case Inaccessible =>
+											Maybe.empty
+										case accessible1: Accessible =>
+											if assertionsEnabled then assert(primaryState1.currentTerm == leadedTerm)
+											Maybe(accessible1.withSingleRecordAppended(tcc.term, tcc))
+									}
+								}
+
 								// replicate the TransitionalConfigChange and then start the second phase.
 								response <- replicateTccAndThenStartSecondPhase(primaryState2, tcc, primaryState2.firstEmptyRecordIndex - 1)
 							} yield response
@@ -2413,20 +2397,18 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @return  a [[sequencer.LatchedDuty]] that yields true/false if the [[StableConfigChange]] [[Record]] was/wasn't replicated to a majority. */
 			private def startConfigChangeSecondPhase(correspondingTransitionalConfigChange: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex): sequencer.LatchedDuty[Boolean] = {
 				for {
-					primaryState1 <- primaryStateFence.advanceIf(
-						(primaryState0, _) => {
-							if currentRole ne this then Maybe.empty
-							else primaryState0 match {
-								case accessible0: Accessible =>
-									if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
-									val scc = new StableConfigChange[ParticipantId](accessible0.currentTerm, correspondingTransitionalConfigChange.requestId, correspondingTransitionalConfigChange.term, correspondingTransitionalConfigChange.oldParticipants, correspondingTransitionalConfigChange.newParticipants)
-									Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, scc))
-								case Inaccessible =>
-									Maybe.empty
-							}
-						},
-						true
-					)
+					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+						if currentRole ne this then Maybe.empty
+						else primaryState0 match {
+							case accessible0: Accessible =>
+								if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
+								val scc = new StableConfigChange[ParticipantId](accessible0.currentTerm, correspondingTransitionalConfigChange.requestId, correspondingTransitionalConfigChange.term, correspondingTransitionalConfigChange.oldParticipants, correspondingTransitionalConfigChange.newParticipants)
+								Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, scc))
+							case Inaccessible =>
+								Maybe.empty
+						}
+					}
+
 					isSecondPhaseChangeReplicatedToMajority <- {
 						val sccIndex = primaryState1.firstEmptyRecordIndex - 1
 						scribe.trace(s"$boundParticipantId: Starting replication of the second phase of the configuration change at $sccIndex. The corresponding first phase is $correspondingTransitionalConfigChange at $tccIndex")
@@ -2475,61 +2457,58 @@ trait ConsensusParticipantSdm { thisModule =>
 				var primaryStateUpdaterResult: (recordIndex: RecordIndex, indexOfLastAppendedCommandFromClient: RecordIndex, shouldRetire: Boolean) | Null = null // secondary return value of the causal fence exclusive section
 				for {
 					// First, append the command to the log if it wasn't already
-					primaryState1 <- primaryStateFence.advanceIf(
-						(primaryState0, _) => {
-							if currentRole ne this then Maybe.empty
-							else primaryState0 match {
-								case Inaccessible =>
+					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+						if currentRole ne this then Maybe.empty
+						else primaryState0 match {
+							case Inaccessible =>
+								Maybe.empty
+							case accessible0: Accessible =>
+								val currentTerm = accessible0.currentTerm
+								if assertionsEnabled then assert(currentTerm == leadedTerm)
+
+								// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
+								if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
+									if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
+									primaryStateUpdaterResult = (0, 0, true)
 									Maybe.empty
-								case accessible0: Accessible =>
-									val currentTerm = accessible0.currentTerm
-									if assertionsEnabled then assert(currentTerm == leadedTerm)
+								} else {
+									val indexOfLastAppendedCommandFromClient = accessible0.indexOfLastAppendedCommandFrom(clientId)
 
-									// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-									if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
-										if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
-										primaryStateUpdaterResult = (0, 0, true)
-										Maybe.empty
-									} else {
-										val indexOfLastAppendedCommandFromClient = accessible0.indexOfLastAppendedCommandFrom(clientId)
-
-										// If this is the first command received from the client, proceed normally (append, replicate, apply)
-										if indexOfLastAppendedCommandFromClient == 0 then {
-											primaryStateUpdaterResult = (primaryState0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
-											Maybe(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
-										}
-										// else, check if the command was received before:
-										else {
-											// @formatter:off
-											accessible0.getRecordAt(indexOfLastAppendedCommandFromClient) match {
-												case CommandRecord[ClientCommand @unchecked](lastClientCommandTerm, lastClientCommand) =>
-													val comparison = clientCommandOrdering.compare(clientCommand, lastClientCommand)
-													// if the command is newer than the last received from the same client, append it to the log memorizing the index.
-													if comparison > 0 then {
-														primaryStateUpdaterResult = (accessible0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
-														Maybe.some(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
-													}
-													// if the command is the same as the last received, memorize the index of the last received.
-													else if comparison == 0 then {
-														primaryStateUpdaterResult = (indexOfLastAppendedCommandFromClient, indexOfLastAppendedCommandFromClient, false)
-														Maybe.empty
-													}
-													// if the command is older than the last received, obtain its index and memorize it.
-													else {
-														primaryStateUpdaterResult = (accessible0.indexOf(clientCommand), indexOfLastAppendedCommandFromClient, false)
-														Maybe.empty
-													}
-												case _ =>
-													// Inconsistency. Should never happen
-												Maybe.empty
-											}
-										// @formatter:on
-										}
+									// If this is the first command received from the client, proceed normally (append, replicate, apply)
+									if indexOfLastAppendedCommandFromClient == 0 then {
+										primaryStateUpdaterResult = (primaryState0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
+										Maybe(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
 									}
-							}
-						},
-						true
-					)
+									// else, check if the command was received before:
+									else {
+										// @formatter:off
+										accessible0.getRecordAt(indexOfLastAppendedCommandFromClient) match {
+											case CommandRecord[ClientCommand @unchecked](lastClientCommandTerm, lastClientCommand) =>
+												val comparison = clientCommandOrdering.compare(clientCommand, lastClientCommand)
+												// if the command is newer than the last received from the same client, append it to the log memorizing the index.
+												if comparison > 0 then {
+													primaryStateUpdaterResult = (accessible0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
+													Maybe.some(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
+												}
+												// if the command is the same as the last received, memorize the index of the last received.
+												else if comparison == 0 then {
+													primaryStateUpdaterResult = (indexOfLastAppendedCommandFromClient, indexOfLastAppendedCommandFromClient, false)
+													Maybe.empty
+												}
+												// if the command is older than the last received, obtain its index and memorize it.
+												else {
+													primaryStateUpdaterResult = (accessible0.indexOf(clientCommand), indexOfLastAppendedCommandFromClient, false)
+													Maybe.empty
+												}
+											case _ =>
+												// Inconsistency. Should never happen
+											Maybe.empty
+										}
+									// @formatter:on
+									}
+								}
+						}
+					}
 					// Second, replicate it if not already, and then, if replication was successful, apply the command to the state machine assuming it is idempotent.
 					response <- {
 						if currentRole ne this then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
@@ -3760,21 +3739,24 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** An already completed [[sequencer.LatchedDuty]] that yields [[Maybe.empty]].
 		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-		private final def emptyLatchedDuty[A]: sequencer.LatchedDuty[Maybe[A]] = _emptyLatchedDuty.asInstanceOf[sequencer.LatchedDuty[Maybe[A]]]
+		private inline final def emptyLatchedDuty[A]: sequencer.LatchedDuty[Maybe[A]] = _emptyLatchedDuty.asInstanceOf[sequencer.LatchedDuty[Maybe[A]]]
 
 		/** $suppressSyntheticCompanionObject */
-		private final def Leader(trap: Nothing): Any = trap
+		private inline final def Leader(trap: Nothing): Any = trap
 
 		/** $suppressSyntheticCompanionObject */
-		private final def CandidateInfo(trap: Nothing): Any = trap
+		private inline final def CandidateInfo(trap: Nothing): Any = trap
 
 		/** $suppressSyntheticCompanionObject */
-		private final def StableConfig(trap: Nothing): Any = trap
+		private inline final def StableConfig(trap: Nothing): Any = trap
 
 		/** $suppressSyntheticCompanionObject */
-		private final def TransitionalConfig(trap: Nothing): Any = trap
+		private inline final def TransitionalConfig(trap: Nothing): Any = trap
 
 		/** $suppressSyntheticCompanionObject */
-		private final def Accessible(trap: Nothing): Any = trap
+		private inline final def Accessible(trap: Nothing): Any = trap
+
+		/** $suppressSyntheticCompanionObject */
+		private inline def RetirementDriver(trap: Nothing): Any = trap
 	}
 }

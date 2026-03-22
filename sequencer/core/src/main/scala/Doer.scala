@@ -2,10 +2,9 @@ package readren.sequencer
 
 import Doer.*
 
-import readren.common.{Maybe, castTo, deriveToString}
+import readren.common.{Maybe, castTo, deriveToString, foldAndThenReify, mapFast, reify, reifyBack}
 
-import java.util
-import scala.annotation.{tailrec, threadUnsafe}
+import scala.annotation.{publicInBinary, tailrec, targetName, threadUnsafe}
 import scala.collection.{IterableFactory, mutable}
 import scala.compiletime.erasedValue
 import scala.concurrent.{ExecutionContext, Future, Promise}
@@ -20,7 +19,7 @@ object Doer {
 	val assertionsEnabled: Boolean = classOf[Doer].desiredAssertionStatus()
 
 	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
-	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure]], few [[Doer.Task]] operations like [[Doer.Task.andThen]] that can't propagate failures, and most [[Commitment]] operations. */
+	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure]], few [[Doer.Task]] operations like [[Doer.Task.andThen]] that can't propagate failures, and most [[Doer.Covenant]]/[[Doer.Commitment]] operations. */
 	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 
 	/** Information about the responsible for the completion and origin of the value with which a [[Covenant]]/[[Commitment]] is completed:
@@ -85,7 +84,7 @@ abstract class AbstractDoer extends Doer
  * @define DoSerEx DoSerEx (doer's serial executor)
  * @define onCompleteExecutedByDoSerEx The `onComplete` callback passed to `engage` is always, with no exception, executed by this $DoSerEx. This is part of the contract of the [[Task]] trait.
  * @define threadSafe This method is thread-safe.
- * @define isExecutedByDoSerEx Executed within the DoSerEx (doer's serial executor).
+ * @define isExecutedByDoSerEx This function is executed within the DoSerEx (doer's serial executor).
  * @define unhandledErrorsArePropagatedToTaskResult The call to this routine is guarded with try-catch. If it throws a non-fatal exception it will be caught and the [[Task]] will complete with a [[Failure]] containing the error.
  * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
  * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the duty will never complete. The same occurs with all routines received by [[Duty]] operations. This is one of the main differences with [[Task]] operation.
@@ -203,14 +202,13 @@ trait Doer { thisDoer =>
 	 * As a result, the compiler may flag type errors in cases where the contract is not violated, which is undesirable.
 	 * The [[castTypePath()]] method mitigates these false positives.
 	 *
-	 * CAUTION: Unlike [[Task]], [[Duty]] does NOT support failures. And unlike [[Task]], the invocation of function operands received by its operations is not guarded with a try-catch. Therefore, unlike [[Task]], any unhandled exception thrown during an execution of a [[Duty]] will break the expected flow and the duty will never complete.
+	 * CAUTION: Unlike [[Task]], [[Duty]] is strict (non-short-circuiting) and does NOT support failures. And unlike [[Task]], the invocation of function operands received by its operations is not guarded with a try-catch. Therefore, unlike [[Task]], any unhandled exception thrown during an execution of a [[Duty]] will break the expected flow and the duty will never complete.
 	 * It is recommended to use [[Task]] instead of [[Duty]] unless efficiency is a concern.
 	 *
 	 * @tparam A the type of result obtained when executing this duty.
 	 */
 	trait Duty[+A] { thisDuty =>
-		/**
-		 * This method performs the actions represented by the duty and calls `onComplete` within the $DoSerEx when the task finishes.
+		/** This method performs the actions represented by the duty and calls `onComplete` within the $DoSerEx when the task finishes.
 		 *
 		 * The implementation may assume this method is invoked within the $DoSerEx.
 		 *
@@ -225,8 +223,7 @@ trait Doer { thisDoer =>
 		 *
 		 * @param onComplete The callback that must be invoked upon the completion of this task. The implementation should call this callback within the $DoSerEx.
 		 *
-		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions.
-		 */
+		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
 		protected def engage(onComplete: A => Unit): Unit
 
 		/** The eta-conversion of the [[engage]] method. TODO: replace all eta-expansion of `engage` with this function. */
@@ -235,14 +232,12 @@ trait Doer { thisDoer =>
 		/** A bridge to access the [[engage]] method from macros in [[DoerMacros]] and sibling classes. */
 		private[sequencer] inline final def engagePortal(onComplete: A => Unit): Unit = engage(onComplete)
 
-		/**
-		 * Initiates an execution of this [[Duty]]/[[Task]] and subscribes the provided call-back as a consumer of the execution result.
+		/** Initiates an execution of this [[Duty]] and subscribes the provided call-back as a consumer of the execution result.
 		 * Each invocation of this method triggers a new execution.
 		 * Note: Executions triggered on [[Duty]] instances whose completion depends on other executions (e.g., a pending [[Covenant]]) will not complete until those dependent executions have themselves been triggered and completed.
 		 * @param isWithinDoSerEx $isWithinDoSerEx
 		 * @param onComplete Invoked when the triggered execution completes. The call-back must not throw non-fatal exceptions. It must either terminate normally or fail fatally, but never with a non-fatal exception.
-		 * $isExecutedByDoSerEx
-		 */
+		 * $isExecutedByDoSerEx */
 		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(inline onComplete: A => Unit): Unit = {
 			${ DoerMacros.triggerImpl('isWithinDoSerEx, 'thisDoer, 'thisDuty, 'onComplete) }
 		}
@@ -251,26 +246,28 @@ trait Doer { thisDoer =>
 		 *
 		 * $threadSafe
 		 *
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 */
+		 * @param isWithinDoSerEx $isWithinDoSerEx */
 		inline final def triggerAndForget(isWithinDoSerEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSerEx)(_ => {})
 
-		/**
-		 * Triggers and execution of this [[Duty]] and processes its result once it is completed for its side effects.
+		/** Triggers an execution of this [[Duty]] and then invokes the provided consumer passing the result.
+		 *
 		 * Is equivalent to {{{trigger(isInSequence)(consumer)}}}
-		 * @param consumer called with this task result when it completes. $isExecutedByDoSerEx $notGuarded
-		 */
+		 *
+		 * $threadSafe
+		 * @param consumer called with this task result when it completes.
+		 *
+		 * $isExecutedByDoSerEx
+		 *
+		 * $notGuarded */
 		def foreach(consumer: A => Unit): Unit = trigger(isInSequence)(consumer)
 
 		/**
-		 * Transforms this [[Duty]] by applying the provided function to the result of this [[Duty]].
-		 * ===Detailed behavior===
-		 * Creates a [[Duty]] that yields the result of applying the provided function to the results of this [[Duty]].
+		 * Creates a new [[Duty]] that yields the result of applying the provided function to the result of this [[Duty]].
 		 *
 		 * $threadSafe
 		 *
-		 * @param f a function that transforms the result of this [[Duty]].
+		 * @param f a function that is applied to the result of this [[Duty]] to produce the final result.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
@@ -279,15 +276,11 @@ trait Doer { thisDoer =>
 		def map[B](f: A => B): Duty[B] = new Duty_Map(thisDuty, f)
 
 		/**
-		 * Transforms this [[Duty]] by applying the provided function to the result of this [[Duty]] and then executing the [[Duty]] returned by said function.
-		 * ===Detailed behavior===
-		 * Creates a [[Duty]] that, when executed, it will:
-		 *		- Execute this [[Duty]] and apply the provided function to its result.
-		 *		- Then executes the [[Duty]] built in the previous step by the provided funcion and completes with its result.
+		 * Creates a new [[Duty]] that yields the result of executing an intermediate [[Duty]] produced by applying the provided function to the final result.
 		 *
 		 * $threadSafe
 		 *
-		 * @param f a function that is applied to the result of this [[Duty]] execution, to build a [[Duty]] that is executed next to produce the result that the [[Duty]] returned by this method yields.
+		 * @param f a function that is applied to the result of this [[Duty]] to produce an intermediate [[Duty]] that is then executed to produce the final result.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
@@ -295,39 +288,23 @@ trait Doer { thisDoer =>
 		 */
 		def flatMap[B](f: A => Duty[B]): Duty[B] = new Duty_FlatMap(thisDuty, f)
 
-		/** Applies the side-effecting function to the result of this duty without affecting the propagated value.
-		 * The result of the provided function is always ignored and therefore not propagated in any way.
-		 * This method allows to enforce many callbacks to receive the same value and to be executed in the order they are chained.
-		 * It's worth mentioning that the side-effecting function is executed before triggering the next duty in the chain.
-		 * ===Detailed description===
-		 * Returns a duty that, when executed, it will:
-		 *		- trigger an execution of this duty,
-		 *		- then apply the received function to this duty's result,
-		 *		- and finally complete with the result of this task (ignoring the functions result).
+		/** Creates a new [[Duty]] that yields exactly the same result (same identity) as this [[Duty]] but executes the provided side-effecting function before yielding it.
 		 *
 		 * $threadSafe
 		 *
-		 * @param sideEffect a side-effecting function. The call to this function is wrapped in a try-catch block; however, unlike most other operators, unhandled non-fatal exceptions are not propagated to the result of the returned task. $isExecutedByDoSerEx
+		 * @param sideEffect a function that is applied to the result of this [[Duty]] for its side effects.
 		 */
-		def andThen(sideEffect: A => Any): Duty[A] = new Duty_AndThen[A](thisDuty, sideEffect)
+		def andThen(sideEffect: A => Unit): Duty[A] = new Duty_AndThen[A](thisDuty, sideEffect)
 
-		/** Wraps this [[Duty]] into a [[Task]].
-		 * Together with [[Task.toDuty]] this method allow to mix duties and task in the same chain.
-		 * ===Detailed behavior===
-		 * Creates a [[Task]] that, when executed, triggers an execution of this [[Duty]] and completes with its result, which will always be successful.
+		/** Creates a new always successful [[Task]] that shields the result of this [[Duty]].
+		 *
+		 * This operation allows a [[Duty]] to participate in a [[Task]]'s short-circuiting context without itself being a short-circuit trigger.
+		 *
+		 * Together with [[reconcile]] this method allow to mix [[Duty]] and [[Task]] operations in the same chain.
 		 * @return a [[Task]] whose result is the result of this task wrapped inside a [[Success]]. */
-		inline final def toTask: Task[A] = new Duty_ToTask(thisDuty)
+		def succeed: Task[A] = new Task_fromDuty(thisDuty)
 
-		/**
-		 * Triggers an execution of this [[Task]] and returns a [[Future]] containing its result wrapped inside a [[Success]].
-		 *
-		 * Is equivalent to {{{ transform(Success.apply).toFuture(isWithinDoSerEx) }}}
-		 *
-		 * Useful when failures need to be propagated to the next for-expression (or for-binding).
-		 *
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @return a [[Future]] that will be completed when this [[Task]] is completed.
-		 */
+		/** Starts an execution of this [[Duty]] and returns a successful [[Future]] that yields the result. */
 		def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
 			trigger(isWithinDoSerEx)(a => promise.success(a))
@@ -351,10 +328,11 @@ trait Doer { thisDoer =>
 			otherDoer.Duty_foreign(thisDoer)(this)
 
 		/** Casts the singleton type of the [[Doer]] instance that owns this [[Duty]] to the singleton-type of the provided [[Doer]].
-		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with [[Duty]]s that correspond to the same [[Doer]] instance but have different type-paths.
+		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with references to the same [[Doer]] instance but through different type-paths.
 		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Duty]].
+		 *
 		 * Design note: It was decided to make [[Duty]] (and [[Task]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Duty]] (and [[Task]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
-		 * Using type-path checking to detect contract violations is very valuable but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Duty]]s correspond to the same [[Doer]] instance.
+		 * Using type-path checking to detect contract violations is very valuable, but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Duty]] instances belong to the same [[Doer]] instance.
 		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
 		 * This operation ([[castTypePath()]]) is intended to handle those cases.
 		 */
@@ -379,6 +357,8 @@ trait Doer { thisDoer =>
 		}
 	}
 
+	//// Duty's factory methods ////
+
 	/** A [[Duty]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy val Duty_unit: Duty[Unit] = Duty_ready(())
@@ -396,7 +376,7 @@ trait Doer { thisDoer =>
 	 *
 	 * @return a [[Duty]] whose execution never ends.
 	 * */
-	@threadUnsafe lazy val Duty_never: Duty[Nothing] = Duty_NotEver()
+	@threadUnsafe lazy val Duty_never: Duty[Nothing] = new Duty_NotEver()
 
 	/** Creates a [[Duty]] whose result is calculated at the call site even before the duty is constructed.
 	 * $threadSafe
@@ -520,7 +500,27 @@ trait Doer { thisDoer =>
 	/** Like [[Duty_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
 	inline def Duty_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]): Duty[Array[A]] = new Duty_Sequence[A, C](duties)
 
+	//// Concrete implementations of [[Duty]] used internally ////
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_FromTask(trap: Nothing): Any = trap
+
+	final class Duty_FromTask[A, B >: A](taskA: Task[A], exceptionHandler: Throwable => B) extends AbstractDuty[B] {
+		override def engage(onComplete: B => Unit): Unit = {
+			taskA.engagePortal { tryA =>
+				val b = tryA match {
+					case Success(a) => a
+					case Failure(exception) => exceptionHandler(exception)
+				}
+				onComplete(b)
+			}
+		}
+
+		override def toString: String = deriveToString[Duty_FromTask[A, B]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_Map(trap: Nothing): Any = trap
 
 	final class Duty_Map[A, B](val cA: Duty[A], val f: A => B) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit =
@@ -529,13 +529,19 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Duty_Map[A, B]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_FlatMap(trap: Nothing): Any = trap
+
 	final class Duty_FlatMap[A, B](cA: Duty[A], f: A => Duty[B]) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = cA.engagePortal { a => f(a).engagePortal(onComplete) }
 
 		override def toString: String = deriveToString[Duty_FlatMap[A, B]](this)
 	}
 
-	final class Duty_AndThen[A](dutyA: Duty[A], sideEffect: A => Any) extends AbstractDuty[A] {
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_AndThen(trap: Nothing): Any = trap
+
+	final class Duty_AndThen[A](dutyA: Duty[A], sideEffect: A => Unit) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit =
 			dutyA.engagePortal { a =>
 				sideEffect(a)
@@ -545,17 +551,17 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Duty_AndThen[A]](this)
 	}
 
-	final class Duty_ToTask[A](cA: Duty[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = cA.engagePortal(onComplete.compose(Success.apply))
-
-		override def toString: String = deriveToString[Duty_ToTask[A]](this)
-	}
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_NotEver(trap: Nothing): Any = trap
 
 	class Duty_NotEver extends AbstractDuty[Nothing] {
 		override def engage(onComplete: Nothing => Unit): Unit = ()
 
-		override def toString: String = "NotEver"
+		override def toString: String = deriveToString[Duty_NotEver](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_Mine(trap: Nothing): Any = trap
 
 	final class Duty_Mine[A](supplier: () => A) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = onComplete(supplier())
@@ -563,17 +569,26 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Duty_Mine[A]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_MineFlat(trap: Nothing): Any = trap
+
 	final class Duty_MineFlat[A](supplier: () => Duty[A]) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = supplier().engagePortal(onComplete)
 
 		override def toString: String = deriveToString[Duty_MineFlat[A]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_Foreign(trap: Nothing): Any = trap
+
 	final class Duty_Foreign[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => thisDoer.execute(onComplete(a)))
 
 		override def toString: String = deriveToString[Duty_Foreign[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_Combined(trap: Nothing): Any = trap
 
 	/** A [[Duty]] that, when executed:
 	 *		- triggers an execution for each: `taskA` and `taskB`;
@@ -608,6 +623,9 @@ trait Doer { thisDoer =>
 
 		override def toString: String = deriveToString[Duty_Combined[A, B, C]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_Sequence(trap: Nothing): Any = trap
 
 	/** @see [[Duty_sequenceToArray]] */
 	final class Duty_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]) extends AbstractDuty[Array[A]] {
@@ -646,41 +664,21 @@ trait Doer { thisDoer =>
 	 * @note Triggering (calling [[trigger]]) on a pending [[LatchedDuty]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
 	 * // TODO make [[LatchedDuty]] be a covariant trait, add a concrete covariant subclass named ReadyDuty, and move the fields and implementations that depend on them to [[Covenant]]. If I am right, doing that will allow to implement [[map]] and [[flatMap]] such that they don't require to be called within the [[Doer]].
 	 * */
-	sealed abstract class LatchedDuty[+A] extends AbstractDuty[A] {
+	sealed abstract class LatchedDuty[+A] extends AbstractDuty[A], Latched[A] {
 
 		def maybeResult: Maybe[A]
 
-		override protected def engage(onComplete: A => Unit): Unit =
-			subscribe(onComplete)
+		/** @inheritdoc
+		 * @note The override is necessary to specialize the return type; and the implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
+		 * */
+		override def succeed: LatchedTask[A] = {
+			this match {
+				case c: Covenant[A] @unchecked => c.succeed
+				case rd: ReadyDuty[A] => rd.succeed
+			}
+		}
 
-		/**
-		 * Subscribes a consumer of the result of this [[LatchedDuty]].
-		 *
-		 * The subscription is automatically removed after and execution of this [[LatchedDuty]] has completed and the received consumer is executed.
-		 *
-		 * If this [[LatchedDuty]] is already fulfilled when this method is called, the provided consumer is invoked synchronously and no subscription occurs.
-		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).
-		 *
-		 *
-		 * @note CAUTION: This method does not prevent duplicate subscriptions.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		def subscribe(consumer: A => Unit): Unit
-
-		/**
-		 * Removes a subscription done with [[subscribe]].
-		 *
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		def unsubscribe(onComplete: A => Unit): Unit
-
-		/** @note CAUTION: Must be called within the $DoSerEx
-		 *  @return true if this [[LatchedDuty]] was fulfilled; or false if it is still pending. */
-		def isCompleted: Boolean
-
-		/** @note CAUTION: Must be called within the $DoSerEx
-		 *  @return true if this [[LatchedDuty]] is still pending; or false if it was completed. */
-		def isPending: Boolean
-
-		inline def intoDuty: Duty[A] = this
+		inline def asDuty: Duty[A] = this
 
 		/**
 		 * Transforms this [[LatchedDuty]] by applying the given function to the result of this [[LatchedDuty]].
@@ -714,64 +712,90 @@ trait Doer { thisDoer =>
 		 */
 		def flatMap[B](f: A => LatchedDuty[B]): LatchedDuty[B]
 
-		/** Returns this [[LatchedDuty]] after subscribing the provided side-effecting procedure to it.
-		 * If this [[LatchedDuty]] is already fulfilled, the provided side-effecting procedure is executed synchronously (before this method returns).
-		 * Otherwise, the provided side-effecting procedure is scheduled to run upon completion in subscription order (after sequentially running all the previously subscribed result consumers).
-		 * Note that the implicit subscription done when chaining an operation to this one occurs after the subscription of the provided side-effecting procedure, se they are ran after the provided side-effecting procedure.
-		 * @note CAUTION: Must be called within the $DoSerEx
-		 * */
-		override def andThen(sideEffect: A => Any): LatchedDuty[A] = {
-			subscribe(a => sideEffect(a))
+		/** Creates a new [[LatchedDuty]] that yields exactly the same result (same identity) as this [[LatchedDuty]] but executes the provided side-effecting function before yielding it.
+		 *
+		 * $threadSafe
+		 *
+		 * @param sideEffect a function that is applied to the result of this [[LatchedDuty]] for its side effects. */
+		override def andThen(sideEffect: A => Unit): LatchedDuty[A] = {
+			subscribe(sideEffect)
 			this
 		}
 	}
 
-	final class ReadyDuty[+A](a: A) extends LatchedDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = onComplete(a)
-
-		override def subscribe(consumer: A => Unit): Unit = consumer(a)
-
-		override def unsubscribe(onComplete: A => Unit): Unit = ()
-
-		override def maybeResult: Maybe[A] = Maybe(a)
-
-		override def isCompleted: Boolean = true
-
-		override def isPending: Boolean = false
-
-		override def foreach(consumer: A => Unit): Unit = consumer(a)
-
-		override def map[B](f: A => B): ReadyDuty[B] = ReadyDuty(f(a))
-
-		override def flatMap[B](f: A => LatchedDuty[B]): LatchedDuty[B] = Covenant[B]().fulfillWith(f(a))
-
-		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] = Future.successful(a)
-
-		override def toString: String = deriveToString[ReadyDuty[A]](this)
-	}
+	//// LatchedDuty factory methods ////
 
 	/** Creates an already completed [[LatchedDuty]].
 	 * @param immediateResult the immediate result that this [[LatchedDuty]] yields. */
 	inline def LatchedDuty_ready[A](immediateResult: A): ReadyDuty[A] = {
-		ReadyDuty(immediateResult)
+		new ReadyDuty(immediateResult)
 	}
 
 	/** An already completed [[LatchedDuty]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedDuty_unit: LatchedDuty[Unit] = LatchedDuty_ready(())
+	@threadUnsafe lazy final val LatchedDuty_unit: ReadyDuty[Unit] = ReadyDuty(())
 
 	/** An already completed [[LatchedDuty]] that yields `true`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedDuty_true: LatchedDuty[Boolean] = LatchedDuty_ready(true)
+	@threadUnsafe lazy final val LatchedDuty_true: ReadyDuty[Boolean] = ReadyDuty(true)
 
 	/** An already completed [[LatchedDuty]] that yields `false`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedDuty_false: LatchedDuty[Boolean] = LatchedDuty_ready(false)
+	@threadUnsafe lazy final val LatchedDuty_false: ReadyDuty[Boolean] = ReadyDuty(false)
 
-	/** Like [[Duty_sequenceTasksToArray]] but eager.
-	 * */
+	/** Like [[Duty_sequenceTasksToArray]] but eager (instead of lazy). */
 	inline def LatchedDuty_sequenceTasksToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[Array[Try[A]]] =
 		Covenant_triggerAndWire(Duty_sequenceTasksToArray(tasks), isWithinDoSerEx)
+
+	//// READY DUTY ////
+
+	/** A [[LatchedDuty]] that is fulfilled since its inception. */
+	final class ReadyDuty[+A](val value: A) extends LatchedDuty[A] {
+
+		override protected def engage(onComplete: A => Unit): Unit =
+			onComplete(value)
+
+		override def succeed: LatchedTask[A] =
+			ReadyTask(Success(value))
+
+		override val maybeResult: Maybe[A] =
+			Maybe(value)
+
+		override def subscribe(consumer: A => Unit): Unit = {
+			checkWithin()
+			consumer(value)
+		}
+
+		override def unsubscribe(onComplete: A => Unit): Unit =
+			()
+
+		override def isSubscribed(onComplete: A => Unit): Boolean =
+			false
+
+		override def foreach(consumer: A => Unit): Unit = {
+			checkWithin()
+			consumer(value)
+		}
+
+		override def map[B](f: A => B): ReadyDuty[B] = {
+			checkWithin()
+			ReadyDuty(f(value))
+		}
+
+		override def flatMap[B](f: A => LatchedDuty[B]): LatchedDuty[B] = {
+			checkWithin()
+			f(value)
+		}
+
+		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] =
+			Future.successful(value)
+
+		override def toString: String = deriveToString[ReadyDuty[A]](this)
+	}
+
+	/** Creates a [[ReadyDuty]] that yields the provided value.
+	 * @note Also suppresses the generation of the synthetic companion object. */
+	inline final def ReadyDuty[A](a: A): ReadyDuty[A] = new ReadyDuty(a)
 
 	//// COVENANT /////
 
@@ -781,10 +805,13 @@ trait Doer { thisDoer =>
 	 *
 	 * [[Covenant]] is to [[Duty]] as [[Commitment]] is to [[Task]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
 	 * */
-	final class Covenant[A](fixedResult: Maybe[A]) extends LatchedDuty[A], Subscriptable[A] { thisCovenant =>
-		protected var oResult: Maybe[A] = fixedResult
+	final class Covenant[A](initialResult: Maybe[A]) extends LatchedDuty[A], SubscriptionHub[A] {
+		private var oResult: Maybe[A] = initialResult
 
 		def this() = this(Maybe.empty)
+
+		override protected def engage(onComplete: A => Unit): Unit =
+			oResult.fold(attach(onComplete))(onComplete)
 
 		override def maybeResult: Maybe[A] = {
 			checkWithin()
@@ -793,67 +820,47 @@ trait Doer { thisDoer =>
 
 		override def subscribe(consumer: A => Unit): Unit = {
 			checkWithin()
-			oResult.fold {
-				super.subscribe(consumer)
-			}(consumer)
+			oResult.fold(attach(consumer))(consumer)
 		}
 
-		override def unsubscribe(onComplete: A => Unit): Unit = {
+		override def unsubscribe(consumer: A => Unit): Unit = {
 			checkWithin()
-			if oResult.isEmpty then super.unsubscribe(onComplete)
+			detach(consumer)
 		}
 
-		override def isCompleted: Boolean = {
-			checkWithin()
-			this.oResult.isDefined
-		}
-
-		override def isPending: Boolean = {
-			checkWithin()
-			this.oResult.isEmpty
-		}
+		override def isSubscribed(onComplete: A => Unit): Boolean =
+			isAttached(onComplete)
 
 		override def foreach(consumer: A => Unit): Unit = {
-			if isInSequence then {
-				oResult.fold(subscribe(consumer))(consumer)
-			} else {
-				execute(oResult.fold(subscribe(consumer))(consumer))
-			}
+			checkWithin()
+			oResult.fold(subscribe(consumer))(consumer)
 		}
 
 		override def map[B](f: A => B): LatchedDuty[B] = {
-			if isInSequence then {
-				oResult.fold {
-					val covenant = Covenant[B]()
-					this.subscribe(a => covenant.fulfillUnsafe(f(a)))
-					covenant
-				} { a =>
-					ReadyDuty[B](f(a))
-				}
-			} else {
+			checkWithin()
+			oResult.fold {
 				val covenant = Covenant[B]()
-				this.trigger(false)(a => covenant.fulfillUnsafe(f(a)))
+				this.subscribe(a => covenant.fulfillUnsafe(f(a)))
 				covenant
+			} { a =>
+				new ReadyDuty[B](f(a))
 			}
 		}
 
 		override def flatMap[B](f: A => LatchedDuty[B]): LatchedDuty[B] = {
-			inline def consumer(a: A, f: A => LatchedDuty[B], c: Covenant[B]): Unit = f(a).subscribe(b => c.fulfillUnsafe(b))
-
-			val covenant = Covenant[B]()
-			if isInSequence then {
-				oResult.fold(this.subscribe(a => consumer(a, f, covenant)))(a => consumer(a, f, covenant))
-			} else {
-				this.trigger(false)(a => consumer(a, f, covenant))
-			}
-			covenant
+			checkWithin()
+			oResult.fold {
+				val covenant = Covenant[B]()
+				this.subscribe(a => f(a).subscribe(b => covenant.fulfillUnsafe(b)))
+				covenant
+			}(f)
 		}
 
 		/** The [[LatchedDuty]] whose completion is controlled by this [[Covenant]].
 		 *
 		 * Provided to mimic containment semantics, allowing external code to treat this [[Covenant]] as if it exposed a separate [[LatchedDuty]] field.
 		 * @return this [[Covenant]] as a [[LatchedDuty]]. */
-		inline def latchedDuty: LatchedDuty[A] = thisCovenant
+		inline def latchedDuty: LatchedDuty[A] = this
 
 
 		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled at the time the fulfillment is performed.
@@ -866,8 +873,7 @@ trait Doer { thisDoer =>
 		 *
 		 * @param result the value to complete this [[Covenant]] with.
 		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Covenant]] was already completed.
-		 *                    If [[ANOTHER_BEFORE]], the result is a previously set one; if [[THE_PROVIDED]], the result is the one provided here.
+		 * @param onCompleted optional callback invoked with the final result and information about its origin: [[ANOTHER_BEFORE]] if the result is a previously set one; [[THE_PROVIDED]] if the result is the one provided here.
 		 */
 		inline def fulfill(result: A, isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ImmediateResultOrigin) => Unit = (_, _) => ()): this.type = {
 			if isWithinDoSerEx then fulfillUnsafe(result, onCompleted)
@@ -894,23 +900,15 @@ trait Doer { thisDoer =>
 		 */
 		def fulfillUnsafe(result: A, onCompleted: (A, ImmediateResultOrigin) => Unit = (_, _) => ()): this.type = {
 			oResult.fold {
+				// First, set the result.
 				this.oResult = Maybe(result)
-				// First run the consumers in subscriptions order
-				if firstOnCompleteObserver ne null then {
-					firstOnCompleteObserver(result)
-					firstOnCompleteObserver = null // Nullify the reference to help the garbage collector.
-					if this.onCompletedObservers.nonEmpty then {
-						def loop(head: A => Unit, tail: List[A => Unit]): Unit = {
-							if tail.nonEmpty then loop(tail.head, tail.tail)
-							head(result)
-						}
-
-						loop(this.onCompletedObservers.head, this.onCompletedObservers.tail)
-						this.onCompletedObservers = Nil // Clean the observers list to help the garbage collector.
-					}
+				// Second, run the consumers in subscriptions order
+				this.capture(result)
+				// Finally. call the provided call-back.
+				try onCompleted(result, THE_PROVIDED)
+				catch {
+					case NonFatal(e) => reportPanicException(e)
 				}
-				// Finally call the provided call-back.
-				onCompleted(result, THE_PROVIDED)
 			}(previousResult => onCompleted(previousResult, ANOTHER_BEFORE))
 			this
 		}
@@ -930,7 +928,16 @@ trait Doer { thisDoer =>
 		 */
 		def fulfillWith(fulfillingDuty: Duty[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ResultOrigin) => Unit = (_, _) => ()): this.type = {
 			if fulfillingDuty eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
-			if isWithinDoSerEx then oResult.fold(fulfillingDuty.engagePortal(result => fulfillUnsafe(result, onCompleted)))(result => onCompleted(result, ANOTHER_BEFORE))
+			if isWithinDoSerEx then {
+				oResult.fold {
+					fulfillingDuty.engagePortal(result => fulfillUnsafe(result, onCompleted))
+				} { result =>
+					try onCompleted(result, ANOTHER_BEFORE)
+					catch {
+						case NonFatal(e) => reportPanicException(e)
+					}
+				}
+			}
 			else execute(fulfillWith(fulfillingDuty, true, onCompleted))
 			this
 		}
@@ -940,11 +947,14 @@ trait Doer { thisDoer =>
 		}
 	}
 
+	/** Creates a new pending [[Covenant]] */
+	inline def Covenant[A](): Covenant[A] =
+		new Covenant()
 
 	/** Creates an already completed [[Covenant]].
 	 * @param immediateResult the immediate result that this [[Covenant]] yields. */
 	inline def Covenant_ready[A](immediateResult: A): Covenant[A] =
-		Covenant(Maybe(immediateResult))
+		new Covenant(Maybe(immediateResult))
 
 	/** Triggers an execution of the given [[Duty]] and returns a [[Covenant]] that will be completed with the result of the triggered execution if it completes before this [[Covenant]] is completed by other means.
 	 *
@@ -953,7 +963,7 @@ trait Doer { thisDoer =>
 	 *
 	 * @param duty the [[Duty]] to be triggered.
 	 * @param isWithinDoSerEx $isWithinDoSerEx
-	 * @param onFulfilled invoked when the returned [[Covenant]] is fulfilled. The boolean parameters tells whenever it was already fulfilled before the execution triggered by this method of given [[Duty]] completes or not.
+	 * @param onFulfilled The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
 	 * @return a [[Covenant]] that will be completed with the result of the execution triggered by this method.
 	 */
 	inline def Covenant_triggerAndWire[A](duty: Duty[A], inline isWithinDoSerEx: Boolean = isInSequence, onFulfilled: (A, ImmediateResultOrigin) => Unit = (_: A, _: ImmediateResultOrigin) => ()): Covenant[A] = {
@@ -999,7 +1009,7 @@ trait Doer { thisDoer =>
 		private var lastCommittedCovenant: Covenant[A] = Covenant_ready(initialState)
 		private var lastEnqueuedCovenant: Covenant[A] = lastCommittedCovenant
 
-		/** Provides rollback capability for speculative updates.
+		/** Provides asynchronous rollback capability for speculative updates.
 		 *
 		 * Used within [[advanceSpeculatively]] to discard an in-flight update before it becomes visible.
 		 * Rollback is only effective if invoked before the update is committed.
@@ -1018,9 +1028,9 @@ trait Doer { thisDoer =>
 			 *
 			 * The callback receives the resulting state and a flag indicating whether rollback was applied (`false`) or too late (`true`).
 			 *
-			 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
-			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late
-			 * @return the [[LatchedDuty]] originally returned by [[advanceSpeculatively]], now fulfilled with either the committed or rolled-back state
+			 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor.
+			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late.
+			 * @return the [[LatchedDuty]] originally returned by the [[advanceSpeculatively]]-like method that created this [[RollbackAccessor]] instance, now fulfilled with either the committed or rolled-back state.
 			 */
 			def rollback(isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, RollbackApplication) => Unit = (_, _) => ()): LatchedDuty[A]
 		}
@@ -1034,13 +1044,9 @@ trait Doer { thisDoer =>
 		 *
 		 * @return a [[LatchedDuty]] representing the tail of the causal chain at call time.
 		 */
-		def causalChainTail(isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] = {
-			if isWithinDoSerEx then lastEnqueuedCovenant
-			else {
-				val wrapper = Covenant[A]()
-				execute(wrapper.fulfillWith(lastEnqueuedCovenant, true))
-				wrapper
-			}
+		def causalChainTail(): LatchedDuty[A] = {
+			checkWithin()
+			lastEnqueuedCovenant
 		}
 
 		/** The state to which the most recent step transitioned into.
@@ -1062,16 +1068,12 @@ trait Doer { thisDoer =>
 		 * Rolled-back transitions yield the previous state.
 		 * The returned [[LatchedDuty]] is always already fulfilled.
 		 *
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
+		 * Must be called within this [[Doer]].
 		 * @return a [[LatchedDuty]] yielding the currently visible state.
 		 */
-		def committed(isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] = {
-			if isWithinDoSerEx then lastCommittedCovenant
-			else {
-				val wrapper = Covenant[A]()
-				execute(wrapper.fulfillUnsafe(committedState))
-				wrapper
-			}
+		def committed: LatchedDuty[A] = {
+			checkWithin()
+			lastCommittedCovenant
 		}
 
 		/**
@@ -1101,76 +1103,61 @@ trait Doer { thisDoer =>
 			thisStepCovenant.fulfillWith(previousStepCovenant, true, stateConsumer)
 		}
 
-		/** Advances the state with a non-speculative asynchronous update causally anchored to the previous update.
+		/** Enqueues an asynchronous non-speculative primary-state updater.
 		 *
-		 * Is worth mentioning that the provided function will be executed after all the consumers subscribed (before the call to this method) to both, the [[LatchedDuty]] returned by both [[causalAnchor]] and the one returned by previous calls to [[advance]]-like methods, have completed.
-		 *
-		 * Caution: The execution of consumers that are subscribed to obsolete instances of [[LatchedDuty]] is not causally ordered.
-		 * So, avoid memorizing the [[LatchedDuty]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
-		 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method).
-		 *
-		 * The updater function is defined with a second parameter of type `Null` to match the internal speculative signature, allowing reuse without introducing an extra closure.
-		 * Rollback is not supported in this method.
+		 * Rollback is not supported in this method. The updater function is defined with a second parameter of type `Null` to match the internal speculative signature, allowing reuse without introducing an extra closure.
 		 *
 		 * **Temporal window of causal safety:**
-		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedDuty]] it returns has completed.
-		 * Calls to methods that rely on causal visibility are safe only within this window; after completion, the causal fence is closed and subsequent calls are no longer anchored.
+		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedDuty]] returned by this method and all the consumers synchronously subscribed to it have returned.
+		 *
+		 * Is worth mentioning that the provided updater will be executed after all the consumers previously and synchronously subscribed to the [[LatchedDuty]] returned by [[causalAnchor]] and [[advance]]-like methods have completed.
 		 *
 		 * @param primaryStateUpdater a function that computes the next state from the current one
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
 		 * @return a [[LatchedDuty]] that will be fulfilled with the new state once the update completes.
-		 */
-		inline def advance(inline primaryStateUpdater: (A, Null) => Duty[A], inline isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] =
-			advanceIf((a, _) => Maybe(primaryStateUpdater(a, null)), isWithinDoSerEx)
+		 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[LatchedDuty]] is not causally ordered.
+		 * So, avoid memorizing [[LatchedDuty]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
+		 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
+		inline def advance(inline primaryStateUpdater: (A, Null) => Duty[A]): LatchedDuty[A] =
+			advanceIf((a, _) => Maybe(primaryStateUpdater(a, null)))
 
 
-		/** Like [[advance]], but the update may be synchronously canceled by returning [[Maybe.empty]]
+		/** Like [[advance]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]]
 		 * If the [[primaryStateUpdater]] returns some state, it is committed.
 		 * If it returns [[Maybe.empty]], the update is canceled and the previous state is retained.
 		 * @param primaryStateUpdater a partial function that computes the next state from the current one; the second argument is always `null`
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
-		 * @return a [[LatchedDuty]] that yields the updated state
-		 * */
-		def advanceIf(primaryStateUpdater: (A, Null) => Maybe[Duty[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] = {
+		 * @return a [[LatchedDuty]] that yields the updated state */
+		def advanceIf(primaryStateUpdater: (A, Null) => Maybe[Duty[A]]): LatchedDuty[A] = {
 			val suAdapter = primaryStateUpdater.asInstanceOf[(A, RollbackAccessor | Null) => Maybe[LatchedDuty[A]]]
-			if isWithinDoSerEx then step(suAdapter, false)
-			else {
-				val covenant = Covenant[A]()
-				execute(covenant.fulfillWith(step(suAdapter, false), true))
-				covenant
-			}
+			step(suAdapter, false)
 		}
 
-		/** Advances the state with a rollback-aware speculative asynchronous update causally anchored to the previous update.
+		/** Enqueues an asynchronous speculative primary-state updater.
 		 *
 		 * The provided [[RollbackAccessor]] allows the update to be withdrawn before it becomes visible.
+		 *
 		 * All updates fulfill successfully, even when rolled back.
 		 *
+		 * **Temporal window of causal safety:**
+		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedDuty]] returned by this method and all the consumers synchronously subscribed to it have returned.
+		 *
+		 * Is worth mentioning that the provided updater will be executed after all the consumers previously and synchronously subscribed to the [[LatchedDuty]] returned by [[causalAnchor]] and [[advance]]-like methods have completed.
+		 *
 		 * @param primaryStateUpdater a function that computes the next state from the current one, with rollback control
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
 		 * @return a [[LatchedDuty]] that yields the updated or rolled-back state
-		 */
-		inline def advanceSpeculatively(inline primaryStateUpdater: (A, RollbackAccessor) => Duty[A], inline isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] = {
-			advanceSpeculativelyIf(
-				(a, rba) => Maybe(primaryStateUpdater(a, rba)),
-				isWithinDoSerEx
-			)
-		}
+		 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[LatchedDuty]] is not causally ordered.
+		 * So, avoid memorizing [[LatchedDuty]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
+		 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
+		inline def advanceSpeculatively(inline primaryStateUpdater: (A, RollbackAccessor) => Duty[A]): LatchedDuty[A] =
+			advanceSpeculativelyIf((a, rba) => Maybe(primaryStateUpdater(a, rba)))
 
-		/** Like [[advanceSpeculatively]], but the update may be synchronously canceled by returning [[Maybe.empty]]
+		/** Like [[advanceSpeculatively]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]]
 		 * If the [[primaryStateUpdater]] returns some state, it is committed.
 		 * If it returns [[Maybe.empty]], the update is canceled and the previous state is retained.
 		 * @param primaryStateUpdater a partial function that computes the next state from the current one, with rollback control
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
 		 * @return a [[LatchedDuty]] that yields the updated state
 		 * */
-		def advanceSpeculativelyIf(primaryStateUpdater: (A, RollbackAccessor) => Maybe[Duty[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedDuty[A] =
-			if isWithinDoSerEx then step(primaryStateUpdater, true)
-			else {
-				val covenant = Covenant[A]()
-				execute(covenant.fulfillWith(step(primaryStateUpdater, true), true))
-				covenant
-			}
+		def advanceSpeculativelyIf(primaryStateUpdater: (A, RollbackAccessor) => Maybe[Duty[A]]): LatchedDuty[A] =
+			step(primaryStateUpdater, true)
 
 		/** Internal method that performs the actual state transition.
 		 *
@@ -1178,6 +1165,7 @@ trait Doer { thisDoer =>
 		 * The rollback accessor is instantiated only when needed to avoid unnecessary allocations.
 		 */
 		private def step(primaryStateUpdater: (A, RollbackAccessor | Null) => Maybe[Duty[A]], isSpeculative: Boolean): LatchedDuty[A] = {
+			checkWithin()
 			val previousStepCovenant = lastEnqueuedCovenant
 			val thisStepCovenant = Covenant[A]()
 			lastEnqueuedCovenant = thisStepCovenant
@@ -1202,20 +1190,20 @@ trait Doer { thisDoer =>
 			thisStepCovenant
 		}
 
-		/** Advances the state with a synchronous, non-speculative update causally anchored to the previous one.
+		/** Enqueues a synchronous non-speculative primary-state updater.
 		 *
 		 * The update is applied synchronously and always fulfills with a committed state:
 		 * - The [[primaryStateUpdater]] is applied to the previous state.
 		 * - The resulting state is committed immediately.
 		 *
-		 * @param primaryStateUpdater a total function that produces the next state from the current one
-		 * @return a [[LatchedDuty]] that is always fulfilled with the committed state
+		 * @param primaryStateUpdater a total function that produces the next state from the current one.
+		 * @return a [[LatchedDuty]] that is always fulfilled with the committed state.
 		 */
 
 		inline def jump(inline primaryStateUpdater: A => A): LatchedDuty[A] =
 			jumpIf(a => Maybe(primaryStateUpdater(a)))
 
-		/** Like [[jump]], but the update may be canceled by returning [[Maybe.empty]].
+		/** Like [[jump]], but the update may be canceled by the provided updater returning [[Maybe.empty]].
 		 *
 		 * If the [[primaryStateUpdater]] returns some state, it is committed.
 		 * If it returns [[Maybe.empty]], the update is canceled and the previous state is retained.
@@ -1224,6 +1212,7 @@ trait Doer { thisDoer =>
 		 * @return a [[LatchedDuty]] that is always fulfilled with the committed state
 		 */
 		def jumpIf(primaryStateUpdater: A => Maybe[A]): LatchedDuty[A] = {
+			checkWithin()
 			val previousStepCovenant = lastEnqueuedCovenant
 			val thisStepCovenant = Covenant[A]()
 			lastEnqueuedCovenant = thisStepCovenant
@@ -1249,39 +1238,42 @@ trait Doer { thisDoer =>
 
 	///////////// TASK //////////////
 
-	abstract class AbstractTask[+A] extends Task[A]
+	// TODO remove this class when all its subclasses have been refactored to opaque types of the Duty counterpart; and remove all the extensions that can be replaced by the Duty counterpart.
+	type Task[+A] = AbstractTask[A]
 
 
-	/**
-	 * A hardy version of [[Duty]].
+	/** A hardy and short-circuiting version of [[Duty]].
 	 * Advantages of [[Task]] compared to [[Duty]]:
-	 *		- results are wrapped withing a [[Try]] which allow the support of failed results.
+	 *		- results are wrapped withing a [[Try]] which allows the support of failed results.
 	 *		- the call to the routines received by the operations are guarded with a try-catch, which allows to propagate failures through [[Task]] chains.
 	 *		- can encapsulate a [[Future]] making interoperability with them easier.
+	 * // TODO: Explore using mixins for the hardy side of the hierarchy. {{{ trait Task[+A] extends Duty[Tru[A]], TaskOps[A] }}}, where TaskOps defines all the members that are currently defined in Task. Note that with this approach the methods that override the Duty ones are dynamically bound during the concrete class construction.
 	 *
-	 * // TODO: Explore defining Task as `type Task[+A] = Duty[Try[A]]`. This could eliminate redundant Task implementation classes by reusing Duty's implementations, but it may cause IDE issues since Task operations would need to be defined as extension methods.  
-	 * @tparam A the type of the result obtained when executing this task.
-	 */
-	trait Task[+A] extends Duty[Try[A]] { thisTask =>
+	 * // TODO: Explore defining Task as `opaque type Task[+A] = Duty[Try[A]]`. This will eliminate many redundant Task implementation classes by reusing Duty's counterpart, but it may cause IDE issues since Task operations would need to be defined as extension methods.
+	 * @tparam A the type of the result obtained when executing this task. */
+	abstract class AbstractTask[+A] extends AbstractDuty[Try[A]] { thisTask =>
+
+		/** Removes short-circuit semantics by reifying both the successful and failed outcomes as a [[scala.util.Try]] value within a strict [[Duty]].
+		 *
+		 * Together with [[Duty.succeed]] this method allow to mix duties and task in the same chain. */
+		inline def reconcile: Duty[Try[A]] = thisTask
 
 		/** Triggers an execution of this [[Task]] and returns a [[Future]] of its result.
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @return a [[Future]] that will be completed when this [[Task]] is completed.
-		 */
+		 * @return a [[Future]] that will be completed when this [[Task]] is completed. */
 		def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
-			trigger(isWithinDoSerEx)(promise.complete)
+			thisTask.trigger(isWithinDoSerEx)(promise.complete)
 			promise.future
 		}
 
 		/** Triggers an execution of this [[Task]] noticing faulty results.
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param errorHandler called when the triggered execution completes with a failure. $isExecutedByDoSerEx $unhandledErrorsAreReported
-		 */
-		def triggerAndForgetHandlingErrors(errorHandler: Throwable => Unit, isWithinDoSerEx: Boolean = isInSequence): Unit =
-			trigger(isWithinDoSerEx) {
+		 * @param errorHandler called when the triggered execution completes with a failure. $isExecutedByDoSerEx $unhandledErrorsAreReported */
+		inline def triggerAndForgetHandlingErrors(inline errorHandler: Throwable => Unit, inline isWithinDoSerEx: Boolean = isInSequence): Unit =
+			thisTask.trigger(isWithinDoSerEx) {
 				case Failure(e) =>
 					try errorHandler(e) catch {
 						case NonFatal(cause) => reportPanicException(cause)
@@ -1291,11 +1283,12 @@ trait Doer { thisDoer =>
 
 		/**
 		 * Triggers this [[Task]] and, once it is completed, processes its result for its side effects.
-		 * @param consumer called with this task result when it completes, if it ever does.
+		 * Differs from [[trigger]] in that it catches non-fatal exceptions thrown by the provided consumer function and reports them with [[reportPanicException]].
+		 * @param onComplete called with this task result when it completes, if it ever does.
 		 */
-		inline def consume(inline consumer: Try[A] => Unit): Unit =
-			trigger(isInSequence) { tryA =>
-				try consumer(tryA)
+		inline def triggerHardy(inline onComplete: Try[A] => Unit, inline isWithinDoSerEx: Boolean = isInSequence): Unit =
+			thisTask.trigger(isWithinDoSerEx) { tryA =>
+				try onComplete(tryA)
 				catch {
 					case NonFatal(e) => thisDoer.reportPanicException(e)
 				}
@@ -1306,8 +1299,9 @@ trait Doer { thisDoer =>
 		 *
 		 * @param consumer called with this task result when it completes successfully, if it ever does.
 		 * */
-		inline def foreach(inline consumer: A => Unit): Unit =
-			consume {
+		@targetName("foreach_task")
+		def foreach(consumer: A => Unit): Unit =
+			thisTask.triggerHardy {
 				case Success(a) => consumer(a)
 				case _ => ()
 			}
@@ -1322,13 +1316,14 @@ trait Doer { thisDoer =>
 		 *
 		 * $threadSafe
 		 *
-		 * @param resultTransformer applied to the result of this [[Task]] to obtain the result of the returned [[Task]].
+		 * @param f applied to the result of this [[Task]] to obtain the result of the returned [[Task]].
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $unhandledErrorsArePropagatedToTaskResult
 		 */
-		def transform[B](resultTransformer: Try[A] => Try[B]): Task[B] = new Task_Transform(thisTask, resultTransformer)
+		def transform[B](f: Try[A] => Try[B]): Task[B] =
+			new Task_Transform(thisTask, f)
 
 
 		/**
@@ -1344,7 +1339,7 @@ trait Doer { thisDoer =>
 		 *
 		 * $isExecutedByDoSerEx
 		 */
-		inline def transformWith[B](taskBBuilder: Try[A] => Task[B]): Task[B] =
+		def transformWith[B](taskBBuilder: Try[A] => Task[B]): Task[B] =
 			new Task_TransformWith(thisTask, taskBBuilder)
 
 
@@ -1364,7 +1359,8 @@ trait Doer { thisDoer =>
 		 *
 		 * @param f a function that transforms successful results of this task. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 */
-		def map[B](f: A => B): Task[B] = new Task_Map(this, f)
+		def map[B](f: A => B): Task[B] =
+			new Task_Map(thisTask, f)
 
 		/**
 		 * Composes this [[Task]] with a second one that is built from the result of this one, but only when this one is successful. Analogous to [[Future.flatMap]].
@@ -1380,10 +1376,8 @@ trait Doer { thisDoer =>
 		 *
 		 * @param taskBBuilder a function that receives the result of `taskA`, when it is a [[Success]], and returns the task to be executed next. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 */
-		final def flatMap[B](taskBBuilder: A => Task[B]): Task[B] = transformWith {
-			case Success(a) => taskBBuilder(a);
-			case fail@Failure(_) => Task_ready(fail.castTo[B]);
-		}
+		def flatMap[B](taskBBuilder: A => Task[B]): Task[B] =
+			new Task_FlatMap(thisTask, taskBBuilder)
 
 		/** Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.
 		 * Detailed behavior: Gives a [[Task]] that, when executed, it will:
@@ -1398,7 +1392,8 @@ trait Doer { thisDoer =>
 		 *
 		 * @param predicate a predicate that determines which values are propagated to the following for-bindings.
 		 * */
-		inline final def withFilter(predicate: A => Boolean): Task[A] = new Task_WithFilter(thisTask, predicate)
+		def withFilter(predicate: A => Boolean): Task[A] =
+			new Task_WithFilter(thisTask, predicate)
 
 		/** Applies the side-effecting function to the result of this task without affecting the propagated value.
 		 * The result of the provided function is always ignored and therefore not propagated in any way.
@@ -1416,31 +1411,24 @@ trait Doer { thisDoer =>
 		 *
 		 * @param sideEffect a side-effecting function. The call to this function is wrapped in a try-catch block; however, unlike most other operators, unhandled non-fatal exceptions are not propagated to the result of the returned task. $isExecutedByDoSerEx
 		 */
-		override def andThen(sideEffect: Try[A] => Any): Task[A] = {
-			transform { tryA =>
-				try sideEffect(tryA)
-				catch {
-					case NonFatal(e) => reportPanicException(e)
-				}
-				tryA
-			}
-		}
+		override def andThen(sideEffect: Try[A] => Unit): Task[A] =
+			new Task_AndThen(thisTask, sideEffect)
 
 		/**
 		 * Wraps this [[Task]] into a [[Duty]] applying the given function to transform failure results into successful ones. This is like [[map]] but for the throwable; and like [[recover]] but with a complete function.
-		 * Together with [[Duty.toTask]] this method allow to mix duties and task in the same chain.
-		 *
-		 * @param exceptionHandler the complete function to apply to the result of this task if it is a [[Failure]]. $isExecutedByDoSerEx */
-		inline final def toDuty[B >: A](exceptionHandler: Throwable => B): Duty[B] =
-			new Task_ToDuty[A, B](thisTask, exceptionHandler)
+		 * Together with [[Duty.succeed]] this method allow to mix duties and task in the same chain. *
+		 * @param exceptionHandler a complete function to apply to the result of this task if it is a [[Failure]].
+		 *                         $isExecutedByDoSerEx
+		 *                         $notGuarded
+		 * @return a [[Duty]] that yields the result of this [[Task]]. */
+		inline final def reconcile[B >: A](exceptionHandler: Throwable => B): Duty[B] =
+			new Duty_FromTask[A, B](thisTask, exceptionHandler)
 
 		/** @return a [[Duty]] that yields the result of this [[Task]]. */
-		final def toDutyHardy: Duty[Try[A]] = new AbstractDuty[Try[A]] {
-			override protected def engage(onComplete: Try[A] => Unit): Unit =
-				thisTask.engage(onComplete)
-		}
+		inline final def asHardyDuty: Duty[Try[A]] =
+			thisTask
 
-		/** Transforms this task applying the given partial function to failure results. This is like map but for the throwable; and like [[toDuty]] but with a partial function. Analogous to [[Future.recover]].
+		/** Transforms this task applying the given partial function to failure results. This is like map but for the throwable; and like [[reconcile]] but with a partial function. Analogous to [[Future.recover]].
 		 * ===detailed description===
 		 * Returns a new [[Task]] that, when executed, executes this task and if the result is:
 		 * 		- a [[Success]] or a [[Failure]] for which `pf` is not defined, completes with the same result.
@@ -1452,10 +1440,8 @@ trait Doer { thisDoer =>
 		 *
 		 * @param pf the [[PartialFunction]] to apply to the result of this task if it is a [[Failure]]. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 */
-		final def recover[B >: A](pf: PartialFunction[Throwable, B]): Task[B] =
-			transform {
-				_.recover(pf)
-			}
+		def recover[B >: A](pf: PartialFunction[Throwable, B]): Task[B] =
+			transform(_.recover(pf))
 
 		/** Composes this task with a second one that is built from the result of this one, but only when said result is a [[Failure]] for which the given partial function is defined. This is like flatMap but for the exception. Analogous to [[Future.recoverWith]].
 		 * ===detailed description===
@@ -1469,10 +1455,10 @@ trait Doer { thisDoer =>
 		 *
 		 * @param pf the [[PartialFunction]] to apply to the result of this task, if it is a [[Failure]], to build the second task. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 */
-		final def recoverWith[B >: A](pf: PartialFunction[Throwable, Task[B]]): Task[B] = {
+		def recoverWith[B >: A](pf: PartialFunction[Throwable, Task[B]]): Task[B] = {
 			transformWith[B] {
-				case Failure(t) => pf.applyOrElse(t, (e: Throwable) => new Task_Ready(Failure(e)));
-				case sa@Success(_) => new Task_Ready(sa);
+				case Failure(t) => pf.applyOrElse(t, (e: Throwable) => new ReadyTask[B](Failure(e)));
+				case sa: Success[A] => new ReadyTask[B](sa);
 			}
 		}
 
@@ -1510,22 +1496,22 @@ trait Doer { thisDoer =>
 	 * Equivalent to {{{Task_successful[Unit](())}}}
 	 *
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Task_unit: Task[Unit] = Task_Ready(successUnit)
+	@threadUnsafe lazy val Task_unit: ReadyTask[Unit] = new ReadyTask(successUnit)
 
 	/** An always successful ready [[Task]] that yields [[true]].
 	 * Equivalent to {{{Task_successful[true](true}}}
 	 *
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Task_true: Task[true] = Task_Ready(successTrue)
+	@threadUnsafe lazy val Task_true: ReadyTask[true] = new ReadyTask(successTrue)
 
 	/** An always successful ready [[Task]] that yields [[false]].
 	 * Equivalent to {{{Task_successful[false](false)}}}
 	 *
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Task_false: Task[false] = Task_Ready(successFalse)
+	@threadUnsafe lazy val Task_false: ReadyTask[false] = new ReadyTask(successFalse)
 
 	/** A [[Task]] whose execution never ends. */
-	@threadUnsafe lazy val Task_never: Task[Nothing] = Task_Never()
+	@threadUnsafe lazy val Task_never: Task[Nothing] = new Task_Never()
 
 	/** Creates a [[Task]] whose result is calculated at the call site even before the task is constructed. The result of its execution is always the provided value.
 	 *
@@ -1534,7 +1520,7 @@ trait Doer { thisDoer =>
 	 * @param tryA the value that the returned task will give as result every time it is executed.
 	 * @return the task described in the method description.
 	 */
-	inline final def Task_ready[A](tryA: Try[A]): Task[A] = new Task_Ready(tryA)
+	inline final def Task_ready[A](tryA: Try[A]): Task[A] = new ReadyTask(tryA)
 
 	/** Creates a ready [[Task]] that always succeeds with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Success]] with the provided value.
 	 *
@@ -1543,7 +1529,7 @@ trait Doer { thisDoer =>
 	 * @param a the value contained in the [[Success]] that the returned task will give as result every time it is executed.
 	 * @return the task described in the method description.
 	 */
-	inline final def Task_successful[A](a: A): Task[A] = new Task_Ready(Success(a))
+	inline final def Task_successful[A](a: A): Task[A] = Task_ready(Success(a))
 
 	/** Creates a [[Task]] that always fails with a result that is calculated at the call site even before the task is constructed. The result of its execution is always a [[Failure]] with the provided [[Throwable]]
 	 *
@@ -1552,7 +1538,7 @@ trait Doer { thisDoer =>
 	 * @param throwable the exception contained in the [[Failure]] that the returned task will give as result every time it is executed.
 	 * @return the task described in the method description.
 	 */
-	inline final def Task_failed[A](throwable: Throwable): Task[A] = new Task_Ready(Failure(throwable))
+	inline final def Task_failed[A](throwable: Throwable): Task[A] = Task_ready(Failure(throwable))
 
 	/** Transforms a [[Duty]] to a [[Task]] */
 	def Task_fromDuty[A](duty: Duty[Try[A]]): Task[A] =
@@ -1749,6 +1735,8 @@ trait Doer { thisDoer =>
 	inline def Duty_sequenceTasksToArray[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]): Duty[Array[Try[A]]] =
 		new Duty_SequenceHardy[A, C](tasks)
 
+	//// Task concrete implementations used internally ////
+
 	/** A [[Task]] that never completes.
 	 *
 	 * $onCompleteExecutedByDoSerEx
@@ -1757,46 +1745,17 @@ trait Doer { thisDoer =>
 		override def engage(onComplete: Try[Nothing] => Unit): Unit = ()
 	}
 
-	/**
-	 * @param taskA the [[Task]] from where this duty takes its result.
-	 * @param exceptionHandler converts the faulty results of the `taskA` to instances of `B`.
-	 *
-	 * $notGuarded */
-	final class Task_ToDuty[A, B >: A](taskA: Task[A], exceptionHandler: Throwable => B) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				val b = tryA match {
-					case Success(a) => a
-					case Failure(exception) => exceptionHandler(exception)
-				}
-				onComplete(b)
-			}
-		}
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_fromDuty(trap: Nothing): Any = trap
 
-		override def toString: String = deriveToString[Task_ToDuty[A, B]](this)
+	final class Task_fromDuty[A](cA: Duty[A]) extends AbstractTask[A] {
+		override def engage(onComplete: Try[A] => Unit): Unit = cA.engagePortal(onComplete.compose(Success.apply))
+
+		override def toString: String = deriveToString[Task_fromDuty[A]](this)
 	}
 
-
-	/** A [[Task]] whose result is calculated at the call site even before the task is constructed. The result of its execution is always the provided value.
-	 *
-	 * $threadSafe
-	 *
-	 * @param tryA the value that the returned task will give as result every time it is executed.
-	 * @return the task described in the method description.
-	 * $onCompleteExecutedByDoSerEx
-	 */
-	final class Task_Ready[+A](tryA: Try[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit =
-			onComplete(tryA)
-
-		override def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] =
-			Future.fromTry(tryA)
-
-		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[Try[A]] =
-			Future.successful(tryA)
-
-		override def toString: String = deriveToString[Task_Ready[A]](this)
-	}
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Ready(trap: Nothing): Any = trap
 
 	/** A [[Task]] that, when executed, calls the `supplier` within the $DoSerEx and if it finishes:
 	 *  - abruptly, completes with the cause.
@@ -1819,6 +1778,9 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Task_Own[A]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_OwnFlat(trap: Nothing): Any = trap
+
 	final class Task_OwnFlat[+A](supplier: () => Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val taskA =
@@ -1828,7 +1790,12 @@ trait Doer { thisDoer =>
 				}
 			taskA.engagePortal(onComplete)
 		}
+
+		override def toString: String = deriveToString[Task_OwnFlat[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Wait(trap: Nothing): Any = trap
 
 	/** A [[Task]] that just waits the completion of the specified [[Future]]. The result of the task, when executed, is the result of the received [[Future]].
 	 *
@@ -1846,6 +1813,9 @@ trait Doer { thisDoer =>
 
 		override def toString: String = deriveToString[Task_Wait[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Alien(trap: Nothing): Any = trap
 
 	/** A [[Task]] that yields the resul of [[Future]] produced by a given builder.
 	 * The builder is executed within this [[Doer]] but the process that completes the produced [[Future]] may run in any thread.
@@ -1871,13 +1841,18 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Task_Alien[A]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Foreign(trap: Nothing): Any = trap
+
 	final class Task_Foreign[+A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
+		override def engage(onComplete: Try[A] => Unit): Unit =
 			foreignTask.trigger(false) { tryA => execute(onComplete(tryA)) }
-		}
 
 		override def toString: String = deriveToString[Task_Foreign[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Consume(trap: Nothing): Any = trap
 
 	/**
 	 * A [[Task]] that consumes the results of the received task for its side effects.
@@ -1904,6 +1879,9 @@ trait Doer { thisDoer =>
 
 		override def toString: String = deriveToString[Task_Consume[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_WithFilter(trap: Nothing): Any = trap
 
 	/**
 	 * A [[Task]] that transforms the received task by converting successful results to `Failure(new NoSuchElementException())` if it does not satisfy the received `predicate`.
@@ -1943,6 +1921,9 @@ trait Doer { thisDoer =>
 	}
 
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Transform(trap: Nothing): Any = trap
+
 	/**
 	 * A [[Task]] that transform the result of another task.
 	 * ===Detailed description===
@@ -1952,26 +1933,21 @@ trait Doer { thisDoer =>
 	 *
 	 * $onCompleteExecutedByDoSerEx
 	 *
-	 * @param resultTransformer applied to the result of the `originalTask` to obtain the result of this task.
+	 * @param f applied to the result of the `originalTask` to obtain the result of this task.
 	 *
 	 * $isExecutedByDoSerEx
 	 *
 	 * $unhandledErrorsArePropagatedToTaskResult
 	 */
-	final class Task_Transform[+A, +B](originalTask: Task[A], resultTransformer: Try[A] => Try[B]) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			originalTask.engagePortal { tryA =>
-				val tryB =
-					try resultTransformer(tryA)
-					catch {
-						case NonFatal(e) => Failure(e);
-					}
-				onComplete(tryB)
-			}
-		}
+	final class Task_Transform[+A, +B](originalTask: Task[A], f: Try[A] => Try[B]) extends AbstractTask[B] {
+		override def engage(onComplete: Try[B] => Unit): Unit =
+			originalTask.engagePortal { tryA => onComplete(tryA.reifyBack(f)) }
 
 		override def toString: String = deriveToString[Task_Transform[A, B]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Map(trap: Nothing): Any = trap
 
 	/**
 	 * A [[Task]] that transform the result of another task.
@@ -1984,30 +1960,40 @@ trait Doer { thisDoer =>
 	 *
 	 * $onCompleteExecutedByDoSerEx
 	 *
-	 * @param resultTransformer applied to the result of the `originalTask` to obtain the result of this task.
+	 * @param f applied to the result of the `originalTask` to obtain the result of this task.
 	 *
 	 * $isExecutedByDoSerEx
 	 *
 	 * $unhandledErrorsArePropagatedToTaskResult
 	 */
-	final class Task_Map[+A, +B](originalTask: Task[A], resultTransformer: A => B) extends AbstractTask[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			originalTask.engagePortal {
-				case success: Success[A] =>
-					val tryB =
-						try Success(resultTransformer(success.value))
-						catch {
-							case NonFatal(e) => Failure(e);
-						}
-					onComplete(tryB)
-				case failure: Failure[A] =>
-					onComplete(failure.castTo[B])
-			}
-		}
+	final class Task_Map[+A, +B](originalTask: Task[A], f: A => B) extends AbstractTask[B] {
+		override def engage(onComplete: Try[B] => Unit): Unit =
+			originalTask.engagePortal { tryA => onComplete(tryA.mapFast(f)) }
 
 		override def toString: String = deriveToString[Task_Map[A, B]](this)
 	}
 
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_FlatMap(trap: Nothing): Any = trap
+
+	final class Task_FlatMap[+A, +B](taskA: Task[A], taskBBuilder: A => Task[B]) extends AbstractTask[B] {
+		override def engage(onComplete: Try[B] => Unit): Unit = {
+			taskA.engagePortal { tryA =>
+				tryA.foldAndThenReify(
+					failure => Task_ready[B](failure),
+					exception => Task_failed[B](exception),
+					taskBBuilder
+				).engagePortal(onComplete)
+			}
+		}
+
+		override def toString: String = deriveToString[Task_FlatMap[A, B]](this)
+	}
+
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_TransformWith(trap: Nothing): Any = trap
 
 	/**
 	 * A [[Task]] that composes two [[Task]]s where the second is build from the result of the first.
@@ -2025,18 +2011,28 @@ trait Doer { thisDoer =>
 	final class Task_TransformWith[+A, +B](taskA: Task[A], taskBBuilder: Try[A] => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
 			taskA.engagePortal { tryA =>
-				val taskB =
-					try taskBBuilder(tryA)
-					catch {
-						case NonFatal(e) => Task_failed(e)
-					}
-				taskB.engagePortal(onComplete)
+				tryA.reify(e => Task_failed(e))(taskBBuilder)
+					.engagePortal(onComplete)
 			}
 		}
 
 		override def toString: String = deriveToString[Task_TransformWith[A, B]](this)
 	}
 
+	final class Task_AndThen[+A](taskA: Task[A], consumer: Try[A] => Unit) extends AbstractTask[A] {
+		override protected def engage(onComplete: Try[A] => Unit): Unit = {
+			taskA.engagePortal { tryA =>
+				consumer(tryA)
+				onComplete(tryA)
+			}
+		}
+
+		override def toString: String = deriveToString[Task_AndThen[A]](this)
+	}
+
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Combined(trap: Nothing): Any = trap
 
 	/** A [[Task]] that, when executed:
 	 *		- triggers an execution for each: `taskA` and `taskB`;
@@ -2080,6 +2076,9 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Task_Combined[A, B, C]](this)
 	}
 
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Sequence(trap: Nothing): Any = trap
+
 	/** @see [[Task_sequenceToArray]] */
 	final class Task_Sequence[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractTask[Array[A]] {
 		override def engage(onComplete: Try[Array[A]] => Unit): Unit = {
@@ -2107,6 +2106,9 @@ trait Doer { thisDoer =>
 			}
 		}
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Duty_SequenceHardy(trap: Nothing): Any = trap
 
 	final class Duty_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](tasks: C[Task[A]]) extends AbstractDuty[Array[Try[A]]] {
 		override def engage(onComplete: Array[Try[A]] => Unit): Unit = {
@@ -2144,51 +2146,9 @@ trait Doer { thisDoer =>
 	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Commitment]].
 	 * @note Triggering (calling [[trigger]]) on a pending [[LatchedTask]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
 	 * */
-	class LatchedTask[A] private[Doer](fixedResult: Maybe[Try[A]]) extends AbstractTask[A], Subscriptable[Try[A]] {
-		protected var oResult: Maybe[Try[A]] = fixedResult
+	abstract class LatchedTask[+A] extends AbstractTask[A], Latched[Try[A]] { thisLatchedTask =>
 
-		def this() = this(Maybe.empty)
-
-		inline def maybeResult: Maybe[Try[A]] = {
-			checkWithin()
-			oResult
-		}
-
-		protected override def engage(onComplete: Try[A] => Unit): Unit =
-			subscribe(onComplete)
-
-		/**
-		 * Subscribes a consumer of the result of this [[LatchedTask]].
-		 *
-		 * The subscription is automatically removed after this [[LatchedTask]] is completed and the received consumer is executed.
-		 *
-		 * If this [[LatchedTask]] is already completed when this method is called, the provided consumer is invoked synchronously and no subscription occurs.
-		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).
-		 *
-		 * @note CAUTION: This method does not prevent duplicate subscriptions.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		override def subscribe(consumer: Try[A] => Unit): Unit = {
-			checkWithin()
-			oResult.fold {
-				super.subscribe(consumer)
-			}(consumer)
-		}
-
-		/** @note CAUTION: should be called within the $DoSerEx
-		 * @return true if this [[Commitment]] was either fulfilled or broken; or false if it is still pending. */
-		def isCompleted: Boolean = {
-			checkWithin()
-			oResult.isDefined
-		}
-
-		/** @note CAUTION: should be called within the $DoSerEx
-		 * @return true if this [[Commitment]] is still pending; or false if it was completed. */
-		def isPending: Boolean = {
-			checkWithin()
-			oResult.isEmpty
-		}
-
-		inline def intoTask: Task[A] = this
+		inline def asTask: Task[A] = this
 
 
 		/**
@@ -2201,25 +2161,16 @@ trait Doer { thisDoer =>
 		 *
 		 * $threadSafe
 		 *
-		 * @param resultTransformer the function applied to the result of this [[LatchedTask]] to obtain the result of the returned [[LatchedTask]].
+		 * @param f the function applied to the result of this [[LatchedTask]] to obtain the result of the returned [[LatchedTask]].
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $unhandledErrorsArePropagatedToTaskResult
 		 */
-		override def transform[B](resultTransformer: Try[A] => Try[B]): LatchedTask[B] = {
-			def fBis(tryA: Try[A]): Try[B] = {
-				try resultTransformer(tryA)
-				catch {
-					case NonFatal(e) => Failure(e)
-				}
-			}
-			oResult.fold {
-				val commitment = Commitment[B]()
-				this.subscribe { tryA => commitment.completeUnsafe(fBis(tryA)) }
-				commitment
-			} { tryA =>
-				LatchedTask[B](Maybe(fBis(tryA)))
+		override def transform[B](f: Try[A] => Try[B]): LatchedTask[B] = {
+			thisLatchedTask match {
+				case commitment: Commitment[A] @unchecked => commitment.transform(f)
+				case ready: ReadyTask[A] => ready.transform(f)
 			}
 		}
 
@@ -2235,25 +2186,16 @@ trait Doer { thisDoer =>
 		 * $unhandledErrorsArePropagatedToTaskResult
 		 */
 		def transformWith[B](f: Try[A] => LatchedTask[B]): LatchedTask[B] = {
-			checkWithin()
-			val commitment = Commitment[B]()
-			val observer: Try[A] => Unit = tryA =>
-				val latchedB =
-					try f(tryA)
-					catch {
-						case NonFatal(e) => LatchedTask[B](Maybe(Failure(e)))
-					}
-				latchedB.subscribe { tryB =>
-					commitment.completeUnsafe(tryB)
-				}
-			oResult.fold(this.subscribe(observer))(observer)
-			commitment
+			thisLatchedTask match {
+				case commitment: Commitment[A] @unchecked => commitment.transformWith(f)
+				case ready: ReadyTask[A] => ready.transformWith(f)
+			}
 		}
 
 		/**
 		 * Transforms this [[LatchedDuty]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].
 		 * Equivalent to {{{ transform(_ map f) }}} but more efficient (one less closure allocation).
-		 * See [[recover]] and [[toDuty]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.
+		 * See [[recover]] and [[reconcile]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.
 		 * ===Detailed behavior===
 		 * Creates a [[LatchedTask]] that yields the result of applying the provided function to the result of this [[LatchedTask]].
 		 * If the evaluation of the provided function finishes:
@@ -2269,26 +2211,9 @@ trait Doer { thisDoer =>
 		 *          $unhandledErrorsArePropagatedToTaskResult
 		 */
 		override def map[B](f: A => B): LatchedTask[B] = {
-			checkWithin()
-
-			def fBis(tryA: Try[A]): Try[B] = {
-				tryA match {
-					case success: Success[A] =>
-						try Success(f(success.value))
-						catch {
-							case NonFatal(e) => Failure(e)
-						}
-					case failure: Failure[A] =>
-						failure.castTo[B]
-				}
-			}
-
-			oResult.fold {
-				val commitment = Commitment[B]()
-				this.subscribe { tryA => commitment.completeUnsafe(fBis(tryA)) }
-				commitment
-			} { tryA =>
-				LatchedTask[B](Maybe(fBis(tryA)))
+			thisLatchedTask match {
+				case commitment: Commitment[A] @unchecked => commitment.map(f)
+				case ready: ReadyTask[A] => ready.map(f)
 			}
 		}
 
@@ -2305,18 +2230,10 @@ trait Doer { thisDoer =>
 		 * $notGuarded
 		 */
 		def flatMap[B](f: A => LatchedTask[B]): LatchedTask[B] = {
-			checkWithin()
-			val commitment = Commitment[B]()
-			oResult.fold {
-				this.subscribe {
-					case Success(a) => f(a).subscribe(b => commitment.completeUnsafe(b))
-					case failure: Failure[A] => commitment.completeUnsafe(failure.castTo[B])
-				}
-			} {
-				case Success(a) => f(a).subscribe(b => commitment.completeUnsafe(b))
-				case failure: Failure[A] => commitment.completeUnsafe(failure.castTo[B])
+			thisLatchedTask match {
+				case commitment: Commitment[A] @unchecked => commitment.flatMap(f)
+				case ready: ReadyTask[A] => ready.flatMap(f)
 			}
-			commitment
 		}
 
 		/** Returns this [[LatchedTask]] after subscribing the provided side-effecting procedure to it.
@@ -2325,29 +2242,85 @@ trait Doer { thisDoer =>
 		 * Note that the implicit subscription done when chaining an operation to this one occurs after the subscription of the provided side-effecting procedure, se they are ran after the provided side-effecting procedure.
 		 * @note CAUTION: Must be called within the $DoSerEx
 		 * */
-		override def andThen(sideEffect: Try[A] => Any): LatchedTask[A] = {
-			subscribe(tryA => sideEffect(tryA))
-			this
+		override final def andThen(sideEffect: Try[A] => Unit): LatchedTask[A] = {
+			thisLatchedTask.subscribe(sideEffect)
+			thisLatchedTask
 		}
 	}
 
+	/** Creates a [[LatchedTask]] that is already completed if the provided value is defined, or is pending otherwise. */
+	inline final def LatchedTask[A](fixedResult: Maybe[Try[A]]): LatchedTask[A] =
+		fixedResult.fold(Commitment())(tryA => new ReadyTask(tryA))
 
 	/** Creates an already completed [[LatchedTask]].
 	 * @param immediateResult the immediate result that this [[LatchedTask]] yields. */
-	def LatchedTask_ready[A](immediateResult: Try[A]): LatchedTask[A] =
+	inline final def LatchedTask_ready[A](immediateResult: Try[A]): LatchedTask[A] =
 		LatchedTask(Maybe(immediateResult))
 
 	/** An already completed [[LatchedTask]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedTask_unit: LatchedTask[Unit] = LatchedTask_ready(Doer.successUnit)
+	@threadUnsafe lazy final val LatchedTask_unit: ReadyTask[Unit] = ReadyTask(Doer.successUnit)
 
 	/** An already completed [[LatchedTask]] that yields `true`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedTask_true: LatchedTask[true] = LatchedTask_ready(Doer.successTrue)
+	@threadUnsafe lazy final val LatchedTask_true: ReadyTask[true] = ReadyTask(Doer.successTrue)
 
 	/** An already completed [[LatchedTask]] that yields `false`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val LatchedTask_false: LatchedTask[false] = LatchedTask_ready(Doer.successFalse)
+	@threadUnsafe lazy final val LatchedTask_false: ReadyTask[false] = ReadyTask(Doer.successFalse)
+
+	//// READY TASK ////
+
+	/** A [[LatchedTask]] that is fulfilled since its inception. */
+	final class ReadyTask[+A](val value: Try[A]) extends LatchedTask[A] { thisReadyTask =>
+
+		override protected def engage(onComplete: Try[A] => Unit): Unit =
+			onComplete(value)
+
+		override def maybeResult: Maybe[Try[A]] =
+			Maybe(value)
+
+		override def subscribe(consumer: Try[A] => Unit): Unit = {
+			checkWithin()
+			consumer(value)
+		}
+
+		override def unsubscribe(onComplete: Try[A] => Unit): Unit =
+			()
+
+		override def isSubscribed(onComplete: Try[A] => Unit): Boolean =
+			false
+
+		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[Try[A]] =
+			Future.successful(value)
+
+		override def transform[B](f: Try[A] => Try[B]): ReadyTask[B] = {
+			checkWithin()
+			ReadyTask(f(thisReadyTask.value))
+		}
+
+		override def transformWith[B](f: Try[A] => LatchedTask[B]): LatchedTask[B] = {
+			checkWithin()
+			f(thisReadyTask.value)
+		}
+
+		override def map[B](f: A => B): ReadyTask[B] = {
+			checkWithin()
+			ReadyTask(thisReadyTask.value.map(f))
+		}
+
+		override def flatMap[B](f: A => LatchedTask[B]): LatchedTask[B] = {
+			thisReadyTask.value match {
+				case success: Success[A] =>
+					checkWithin()
+					f(success.value)
+				case failure: Failure[A] =>
+					ReadyTask(failure.castTo[B])
+			}
+		}
+	}
+
+	inline final def ReadyTask[A](tryA: Try[A]): ReadyTask[A] = new ReadyTask(tryA)
 
 	////////////// COMMITMENT ///////////////
 
@@ -2357,7 +2330,8 @@ trait Doer { thisDoer =>
 	 *
 	 * Analogous to [[scala.concurrent.Promise]] but for [[Task]]s instead of a [[scala.concurrent.Future]]s.
 	 */
-	final class Commitment[A] private[Doer](fixedResult: Maybe[Try[A]]) extends LatchedTask[A](fixedResult) { thisCommitment =>
+	final class Commitment[A] @publicInBinary private[Doer](initialResult: Maybe[Try[A]]) extends LatchedTask[A], SubscriptionHub[Try[A]] { thisCommitment =>
+		private var oResult: Maybe[Try[A]] = initialResult
 
 		def this() = this(Maybe.empty)
 
@@ -2366,6 +2340,93 @@ trait Doer { thisDoer =>
 		 * Provided to mimic containment semantics, allowing external code to treat this [[Commitment]] as if it exposed a separate [[LatchedTask]] field.
 		 * @return this [[Commitment]] as a [[LatchedTask]] */
 		inline def latchedTask: LatchedTask[A] = thisCommitment
+
+		override protected def engage(onComplete: Try[A] => Unit): Unit =
+			oResult.fold(attach(onComplete))(onComplete)
+
+		override def maybeResult: Maybe[Try[A]] = {
+			checkWithin()
+			oResult
+		}
+
+		override def subscribe(consumer: Try[A] => Unit): Unit = {
+			checkWithin()
+			attach(consumer)
+		}
+
+		override def unsubscribe(onComplete: Try[A] => Unit): Unit = {
+			checkWithin()
+			detach(onComplete)
+		}
+
+		override def isSubscribed(onComplete: Try[A] => Unit): Boolean = {
+			checkWithin()
+			isAttached(onComplete)
+		}
+
+		override def transform[B](f: Try[A] => Try[B]): LatchedTask[B] = {
+			thisCommitment.maybeResult.fold {
+				val commitment = Commitment[B]()
+				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
+				commitment
+			} { tryA =>
+				checkWithin()
+				ReadyTask[B](tryA.reifyBack(f))
+			}
+		}
+
+		override def transformWith[B](f: Try[A] => LatchedTask[B]): LatchedTask[B] = {
+			def fHardy(tryA: Try[A]): LatchedTask[B] = {
+				try f(tryA)
+				catch {
+					case NonFatal(e) => ReadyTask(Failure(e))
+				}
+			}
+
+			thisCommitment.maybeResult.fold {
+				val commitment = Commitment[B]()
+				thisCommitment.subscribe { tryA => commitment.completeWith(fHardy(tryA), true) }
+				commitment
+			} { tryA =>
+				checkWithin()
+				fHardy(tryA)
+			}
+		}
+
+		override def map[B](f: A => B): LatchedTask[B] = {
+			thisCommitment.maybeResult.fold {
+				val commitment = Commitment[B]()
+				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
+				commitment
+			} { tryA =>
+				checkWithin()
+				ReadyTask(tryA.mapFast(f))
+			}
+		}
+
+		override def flatMap[B](f: A => LatchedTask[B]): LatchedTask[B] = {
+			def fHardy(a: A): LatchedTask[B] = {
+				try f(a)
+				catch {
+					case NonFatal(e) => ReadyTask(Failure(e))
+				}
+			}
+
+			thisCommitment.maybeResult.fold {
+				val commitment = Commitment[B]()
+				thisCommitment.subscribe {
+					case success: Success[A] => commitment.completeWith(fHardy(success.value))
+					case failure: Failure[A] => commitment.completeUnsafe(failure.castTo[B])
+				}
+				commitment
+			} {
+				case success: Success[A] =>
+					checkWithin()
+					fHardy(success.value)
+				case failure: Failure[A] =>
+					ReadyTask(failure.castTo[B])
+			}
+		}
 
 		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed at the time the completion is performed.
 		 *
@@ -2377,10 +2438,9 @@ trait Doer { thisDoer =>
 		 *
 		 * @param result the value to complete this [[Commitment]] with.
 		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
-		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 * @param onCompleted optional callback invoked with the final result and information about its origin: [[ANOTHER_BEFORE]] if the result is a previously set one; [[THE_PROVIDED]] if the result is the one provided here.
 		 */
-		inline def complete(result: Try[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
+		inline def complete(result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type = {
 			if isWithinDoSerEx then completeUnsafe(result, onCompleted)
 			else {
 				execute(completeUnsafe(result, onCompleted))
@@ -2395,40 +2455,24 @@ trait Doer { thisDoer =>
 		 *
 		 * @note CAUTION: must be called from within this [[Doer]].
 		 * @param result the value to complete this [[Commitment]] with.
-		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the final result and a boolean indicating whether this [[Commitment]] was already completed.
-		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
+		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the fulfilling value and information about its origin:
+		 *                    - [[THE_PROVIDED]] if this [[Covenant]] was completed by this method call with the provided value;
+		 *                    - [[ANOTHER_BEFORE]] if this [[Covenant]] was already completed when this method was called.
 		 */
-		def completeUnsafe(result: Try[A], onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
+		def completeUnsafe(result: Try[A], onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type = {
 			checkWithin()
 			oResult.fold {
-				oResult = Maybe(result)
-				// First run the consumers in subscriptions order
-				if firstOnCompleteObserver ne null then {
-					try firstOnCompleteObserver(result)
-					catch {
-						case NonFatal(e) => reportPanicException(e)
-					}
-					firstOnCompleteObserver = null // unbind the observer reference to help the garbage collector
-					if onCompletedObservers.nonEmpty then {
-						def loop(head: Try[A] => Unit, tail: List[Try[A] => Unit]): Unit = {
-							if tail.nonEmpty then loop(tail.head, tail.tail)
-							try head(result)
-							catch {
-								case NonFatal(e) => reportPanicException(e)
-							}
-						}
-
-						loop(this.onCompletedObservers.head, this.onCompletedObservers.tail)
-						this.onCompletedObservers = Nil // Clean the observers list to help the garbage collector.
-					}
-				}
-				// Finally call the provided call-back.
-				try onCompleted(result, false)
+				// First, set the result.
+				this.oResult = Maybe(result)
+				// Second, run the consumers in subscriptions order
+				this.capture(result)
+				// Finally. call the provided call-back.
+				try onCompleted(result, THE_PROVIDED)
 				catch {
 					case NonFatal(e) => reportPanicException(e)
 				}
 			} { value =>
-				try onCompleted(value, true)
+				try onCompleted(value, ANOTHER_BEFORE)
 				catch {
 					case NonFatal(cause) => reportPanicException(cause)
 				}
@@ -2449,13 +2493,8 @@ trait Doer { thisDoer =>
 		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
 		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
 		 */
-		inline def fulfill(result: A, isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
-			if isWithinDoSerEx then completeUnsafe(Success(result), onCompleted)
-			else {
-				execute(completeUnsafe(Success(result), onCompleted))
-				this
-			}
-		}
+		inline def fulfill(result: A, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_, _) => ()): this.type =
+			complete(Success(result), isWithinDoSerEx, onCompleted)
 
 		/** Breaks this [[Commitment]] with the given `excuse`, unless it has already been completed at the time the fulfillment is performed.
 		 *
@@ -2470,13 +2509,8 @@ trait Doer { thisDoer =>
 		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.
 		 *                    If `true`, the result is a previously set one; if `false`, the result is the one provided here.
 		 */
-		inline def break(excuse: Throwable, isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): this.type = {
-			if isWithinDoSerEx then completeUnsafe(Failure(excuse), onCompleted)
-			else {
-				execute(completeUnsafe(Failure(excuse), onCompleted))
-				this
-			}
-		}
+		inline def break(excuse: Throwable, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type =
+			complete(Failure(excuse), isWithinDoSerEx, onCompleted)
 
 		/** Wires this [[Commitment]] to the completion of a [[LatchedTask]].
 		 *
@@ -2488,22 +2522,33 @@ trait Doer { thisDoer =>
 		 *
 		 * @param completingTask the [[Task]] whose result will be used to complete this [[Commitment]].
 		 * @param isWithinDoSerEx informs if this method was called within this [[Doer]].
-		 * @param onCompletedLater invoked (within this [[Doer]]) when this [[Commitment]] is completed, but only if that happens after the subscription is done. The boolean parameter tells whenever this [[Commitment]] was already completed when `completingTask` completes. `false` means the completión was due to the completion of `completingTask`. `true` means the completion was due to other means.
-		 * @param onAlreadyCompleted invoked (within this [[Doer]]) if this [[Commitment]] was already fulfilled when the subscription is done. The subscription is immediate when `isWithinDoSerEx` is true, and deferred otherwise.
+		 * @param onCompleted optional callback invoked when this [[Commitment]] is completed. The first parameter is the completing value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
 		 * @throws IllegalArgumentException if `completingTask` is the same instance as this [[Commitment]].
 		 */
-		def completeWith(completingTask: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompletedLater: (Try[A], Boolean) => Unit = (_, _) => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): this.type = {
+		def completeWith(completingTask: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ResultOrigin) => Unit = (_: Try[A], _: ResultOrigin) => ()): thisCommitment.type = {
 			if completingTask eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
-			if isWithinDoSerEx then oResult.fold(completingTask.engagePortal(result => completeUnsafe(result, onCompletedLater)))(onAlreadyCompleted)
-			else execute(completeWith(completingTask, true, onCompletedLater, onAlreadyCompleted))
+			if isWithinDoSerEx then {
+				oResult.fold {
+					completingTask.engagePortal(result => completeUnsafe(result, onCompleted))
+				} { tryA =>
+					try onCompleted(tryA, ANOTHER_BEFORE)
+					catch {
+						case NonFatal(e) => reportPanicException(e)
+					}
+				}
+			}
+			else execute(completeWith(completingTask, true, onCompleted))
 			this
 		}
 	}
 
+	inline def Commitment[A](fixedResult: Maybe[Try[A]] = Maybe.empty): Commitment[A] =
+		new Commitment(fixedResult)
+
 	/** Creates an already completed [[Commitment]].
 	 * @param immediateResult the immediate result that this [[LatchedTask]] yields. */
-	def Commitment_ready[A](immediateResult: Try[A]): Commitment[A] =
-		Commitment(Maybe(immediateResult))
+	inline def Commitment_ready[A](immediateResult: Try[A]): Commitment[A] =
+		new Commitment(Maybe(immediateResult))
 
 	/** Triggers the given [[Task]] and returns a [[Commitment]] that will be completed with the result of the triggered execution unless this [[Commitment]] is completed before by other means.
 	 *
@@ -2512,11 +2557,11 @@ trait Doer { thisDoer =>
 	 *
 	 * @param task the [[Task]] to be triggered.
 	 * @param isWithinDoSerEx true if triggering occurs within the current [[Doer]] sequence.
-	 * @param onCompleted invoked when the returned [[Commitment]] is completed. The boolean parameters tells whenever it was already completed before the execution triggered by this method of the given [[Task]] completes or not.
+	 * @param onCompleted  The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
 	 * @return a [[Commitment]] that will be completed with the result of the execution triggered by this method.
 	 */
-	def Commitment_triggerAndWire[A](task: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_: Try[A], _: Boolean) => ()): Commitment[A] = {
-		val commitment = new Commitment[A]()
+	def Commitment_triggerAndWire[A](task: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ResultOrigin) => Unit = (_: Try[A], _: ResultOrigin) => ()): Commitment[A] = {
+		val commitment = Commitment[A]()
 		task.trigger(isWithinDoSerEx)(result => commitment.completeUnsafe(result, onCompleted))
 		commitment
 	}
@@ -2527,7 +2572,7 @@ trait Doer { thisDoer =>
 	 *
 	 * Differs from [[CausalFence]] in that it may become stuck on specific states. Once a stuckable state is committed (currently [[Failure]]), the fence halts: subsequent transition attempts are skipped and yield the same stuck state. A transition to a stuck state becomes the final committed state, and no further transitions are accepted.
 	 *
-	 * Core idea: CausalStuckableFence[A] is a causal sequencing primitive with stuckness semantics. It maintains a single tail commitment ([[lastEnqueuedCommitment]]) that represents the latest step in a causal chain. Each [[advance]] and [[causalAnchor]] call enqueues a new [[Commitment]], chained to the previous one, unless the fence is already stuck.
+	 * Core idea: CausalStuckableFence[A] is a causal sequencing primitive with stuckness semantics. It maintains a single tail commitment ([[lastEnqueuedCommitment]]) that represents the latest step in a causal chain. Each [[advanceIf]] and [[causalAnchor]] call enqueues a new [[Commitment]], chained to the previous one, unless the fence is already stuck.
 	 *
 	 * This fence provides **causal fulfillment semantics with stuckness**:
 	 * - Each successful transition yields a committed, visible state. Rolled-back transitions fulfill with the previous state.
@@ -2536,21 +2581,21 @@ trait Doer { thisDoer =>
 	 * - If a transition to a stuck state occurs, the stuck state is committed and the fence halts — subsequent update attempts are skipped and yield the same stuck state.
 	 *
 	 * Fundamental Invariants
-	 * - Single updater invariant: At most one `primaryStateUpdater` (the function passed to [[advance]]) is in progress at a time. Subsequent advances wait until the previous one completes.
-	 * - Advance ordering invariant: The `primaryStateUpdater` passed to [[advance]] runs after all consumers that subscribed to the previous [[Commitment]] in the queue (via earlier [[advance]] or [[causalAnchor]]) have completed their synchronous part.
-	 * - Anchor freshness invariant: A consumer subscribed to [[causalAnchor]] observes the same state that a `primaryStateUpdater` would receive if [[advance]] were invoked at that moment. Ordering is guaranteed relative to the last completed advance at subscription time, but not relative to advances invoked later. If the fence is stuck, the anchor yields the stuck state deterministically.
+	 * - Single updater invariant: At most one `primaryStateUpdater` (the function passed to [[advanceIf]]) is in progress at a time. Subsequent advances wait until the previous one completes.
+	 * - Advance ordering invariant: The `primaryStateUpdater` passed to [[advanceIf]] runs after all consumers that subscribed to the previous [[Commitment]] in the queue (via earlier [[advanceIf]] or [[causalAnchor]]) have completed their synchronous part.
+	 * - Anchor freshness invariant: A consumer subscribed to [[causalAnchor]] observes the same state that a `primaryStateUpdater` would receive if [[advanceIf]] were invoked at that moment. Ordering is guaranteed relative to the last completed advance at subscription time, but not relative to advances invoked later. If the fence is stuck, the anchor yields the stuck state deterministically.
 	 * - Stuckness invariant: Once a stuck state is committed, no further transitions are accepted. All subsequent advances or anchors yield the same stuck state.
 	 * - Rollback integrity invariant: For speculative advances, derived updates must not be composed into the primary updater, otherwise rollback semantics are broken.
 	 *
 	 * Invariants related to derived state:
-	 * - Game-changing invariant: Immediately after an [[advance]] or [[causalAnchor]] call (if not stuck), there are no pending advances other than the one just created. The returned [[Commitment]] (seen as [[LatchedTask]]) is a fresh tail. Any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the commitment fulfills, that consumer sees the up‑to‑date state deterministically. This invariant eliminates the race where another [[advance]] could sneak in and publish a newer state before or while the synchronous consumer runs. The consumer is deterministically ordered before any updater that follows in the causal chain.
-	 * - Anchor specificity invariant: Derived updates that require strict ordering relative to a particular primary transition must anchor to that transition’s [[Commitment]] (the one returned by [[advance]]), not to a generic tail snapshot (as returned by [[causalAnchor]]).
+	 * - Game-changing invariant: Immediately after an [[advanceIf]] or [[causalAnchor]] call (if not stuck), there are no pending advances other than the one just created. The returned [[Commitment]] (seen as [[LatchedTask]]) is a fresh tail. Any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the commitment fulfills, that consumer sees the up‑to‑date state deterministically. This invariant eliminates the race where another [[advanceIf]] could sneak in and publish a newer state before or while the synchronous consumer runs. The consumer is deterministically ordered before any updater that follows in the causal chain.
+	 * - Anchor specificity invariant: Derived updates that require strict ordering relative to a particular primary transition must anchor to that transition’s [[Commitment]] (the one returned by [[advanceIf]]), not to a generic tail snapshot (as returned by [[causalAnchor]]).
 	 * - Deterministic derived ordering invariant: When derived updates have dependencies, their execution order must be enforced by anchoring the dependent update and deriving prerequisites synchronously from the anchored state, or by composing into the primary updater if not speculative.
-	 * - Rollback integrity invariant: No derived side-effect may commit externally during a speculative advance before the primary step is safely committed; otherwise rollback can leave the system in an inconsistent state.
-	 * - Idempotence/compensation invariant: Any derived side-effect that can be re-run or rolled back must be idempotent or have a compensating action to preserve causal correctness under retries or rollback.
+	 * - Rollback integrity invariant: No derived side effect may commit externally during a speculative advance before the primary step is safely committed; otherwise rollback can leave the system in an inconsistent state.
+	 * - Idempotence/compensation invariant: Any derived side effect that can be re-run or rolled back must be idempotent or have a compensating action to preserve causal correctness under retries or rollback.
 	 *
 	 * Invariants inherited from [[Commitment]]:
-	 * - Sequential consumer invariant: The [[LatchedTask]] returned by [[advance]] and [[causalAnchor]] is a [[Commitment]] and therefore the subscribed consumers are invoked in registration order. The synchronous part of each consumer runs to completion before the next begins.
+	 * - Sequential consumer invariant: The [[LatchedTask]] returned by [[advanceIf]] and [[causalAnchor]] is a [[Commitment]] and therefore the subscribed consumers are invoked in registration order. The synchronous part of each consumer runs to completion before the next begins.
 	 *
 	 * @param initialState the initial state, already visible and committed (may be stuck if it is a stuckable state).
 	 */
@@ -2559,7 +2604,7 @@ trait Doer { thisDoer =>
 		private var lastCommittedCommitment: Commitment[A] = Commitment_ready(initialState)
 		private var lastEnqueuedCommitment: Commitment[A] = lastCommittedCommitment
 
-		/** Provides rollback capability for speculative updates.
+		/** Provides asynchronous rollback capability for speculative updates.
 		 *
 		 * A [[RollbackAccessor]] is passed to speculative state transitions to allow them to cancel themselves before becoming visible.
 		 * Rollback is only effective if invoked before the update is committed.
@@ -2572,32 +2617,28 @@ trait Doer { thisDoer =>
 			 * The rollback is applied if "invoked" before the update it targets has completed.
 			 * The quotes around "invoked" reflect that, when `isWithinDoSerEx` is false, the rollback attempt is scheduled asynchronously and may race with the update's completion.
 			 *
-			 * Regardless of timing, the [[LatchedTask]] originally returned by [[advanceSpeculatively]] is fulfilled:
+			 * Regardless of timing, the [[LatchedTask]] originally returned by [[advanceSpeculativelyIf]] is fulfilled:
 			 * - With the previous state if rollback succeeds
 			 * - With the committed state if rollback was too late
 			 *
 			 * The callback receives the resulting state and a flag indicating whether rollback was applied (`false`) or too late (`true`).
 			 *
-			 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
-			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late
-			 * @return the [[LatchedTask]] originally returned by [[advanceSpeculatively]], now fulfilled with either the committed or rolled-back state
+			 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor.
+			 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late.
+			 * @return the [[LatchedTask]] originally returned by the [[advanceSpeculatively]]-like method that created this [[RollbackAccessor]], now fulfilled with either the committed or rolled-back state.
 			 */
-			def rollback(isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit = (_, _) => ()): LatchedTask[A]
+			def rollback(isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], RollbackApplication) => Unit = (_, _) => ()): LatchedTask[A]
 		}
 
 		/** Provides the tail of the causal chain at call time.
 		 *
-		 * Unlike [[causalAnchor]], this method does not guarantee deterministic observation of the up‑to‑date state. Subscribers to the returned [[LatchedTask]] will observe the progression until that tail, but synchronous [[advance]]s that install a newer tail before the subscriber executes are not observed.
+		 * Unlike [[causalAnchor]], this method does not guarantee deterministic observation of the up‑to‑date state. Subscribers to the returned [[LatchedTask]] will observe the progression until that tail, but synchronous [[advanceIf]]s that install a newer tail before the subscriber executes are not observed.
 		 *
 		 * @return a [[LatchedTask]] representing the tail of the causal chain at call time.
 		 */
-		def causalChainTail(isWithinDoSerEx: Boolean = isInSequence): LatchedTask[A] = {
-			if isWithinDoSerEx then lastEnqueuedCommitment
-			else {
-				val wrapper = Commitment[A]()
-				execute(wrapper.completeWith(lastEnqueuedCommitment, true))
-				wrapper
-			}
+		def causalChainTail(): LatchedTask[A] = {
+			checkWithin()
+			lastEnqueuedCommitment
 		}
 
 		/** The state to which the most recent step transitioned into, or a [[Failure]] if the transition failed.
@@ -2608,7 +2649,10 @@ trait Doer { thisDoer =>
 		 *
 		 * @return the last transition result
 		 */
-		inline def committedState: Try[A] = lastCommittedCommitment.maybeResult.get
+		inline def committedState: Try[A] = {
+			checkWithin()
+			lastCommittedCommitment.maybeResult.get
+		}
 
 		/** Returns a [[LatchedTask]] that yields the currently visible state or failure.
 		 *
@@ -2616,20 +2660,16 @@ trait Doer { thisDoer =>
 		 * Rolled-back transitions yield the previous state.
 		 * The returned [[LatchedTask]] is always already completed.
 		 *
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
+		 * Must be called within this [[Doer]].
 		 * @return a [[LatchedTask]] yielding the currently visible state or failure.
 		 */
-		def committed(isWithinDoSerEx: Boolean = isInSequence): LatchedTask[A] = {
-			if isWithinDoSerEx then lastCommittedCommitment
-			else {
-				val wrapper = Commitment[A]()
-				execute(wrapper.completeWith(lastCommittedCommitment, true))
-				wrapper
-			}
+		def committed: LatchedTask[A] = {
+			checkWithin()
+			lastCommittedCommitment
 		}
 
 		/**
-		 * Returns a [[LatchedTask]] that yields the same state an updater would see if [[advance]] were invoked at this moment.
+		 * Returns a [[LatchedTask]] that yields the same state an updater would see if [[advanceIf]] were invoked at this moment.
 		 * This provides a causal checkpoint suitable for synchronous consumers that need to derive state deterministically.
 		 *
 		 * The returned [[LatchedTask]] is backed by a fresh [[Commitment]] that forwards from the current tail [[Commitment]].
@@ -2639,53 +2679,68 @@ trait Doer { thisDoer =>
 		 * The causal guarantee holds only during the synchronous execution of a consumer subscribed to the returned [[LatchedTask]].
 		 * Calls to methods that rely on causal visibility are safe only within the body of that consumer; once the consumer has returned, deferred or later code is no longer causally anchored.
 		 *
-		 * @note When derived updates (those done to secondary state that derives from the primary state) have causal dependencies among themselves, you must enforce deterministic order by other means: use causal derivation functions (anchor only the dependent update and derive prerequisites synchronously from the anchored state), or, if derived updates are fast and the advance is not speculative, compose them into the `primaryStateUpdater` passed to [[advance]] or [[advanceIf]]. Composition is not safe for speculative advances, because rollback during the derived update phase could succeed despite it shouldn’t.
+		 * @note When derived updates (those done to secondary state that derives from the primary state) have causal dependencies among themselves, you must enforce deterministic order by other means: use causal derivation functions (anchor only the dependent update and derive prerequisites synchronously from the anchored state), or, if derived updates are fast and the advance is not speculative, compose them into the `primaryStateUpdater` passed to [[advanceIf]] or [[advanceIf]]. Composition is not safe for speculative advances, because rollback during the derived update phase could succeed despite it shouldn’t.
 		 *
 		 * Independent subscriptions to [[causalAnchor]] are appropriate only for derived updates that are order‑independent.
 		 *
-		 * @param onCompletedLater optional call-cack that is invoked only if a transition was in progress (the tail [[Commitment]] is pending) when this method is called. Useful to discriminate the timing. The boolean parameter is always false and should be ignored. This call-back is called within this [[Doer]] sequential executor before any subscriber to the returned [[LatchedTask]]. Mutually exclusive with the other call-back parameter.
-		 * @param onAlreadyCompleted optional call-back tha is invoked only if the last transition is complete when this method is called. Useful to discriminate the timing. This call-back is called within this [[Doer]] sequential executor before any subscriber to the returned [[LatchedTask]]. Mutually exclusive with the other call-back parameter.
-		 * @return a [[LatchedTask]] yielding the state that the next update will be causally anchored to — i.e. the same state an updater would see if [[advance]] were called at this moment.
+		 * @param stateConsumer optional callback invoked when the anchored link is reached. Executed within this [[Doer]]’s sequential executor before any consumer subscribed to the returned [[LatchedDuty]]. The first parameter is the primary state; the second indicates whether the link was already reached when this method was invoked: [[ARRIVED_BEFORE]] if so, or [[ARRIVED_AFTER]] if not.
+		 * @return a [[LatchedTask]] yielding the state that the next update will be causally anchored to — i.e. the same state an updater would see if [[advanceIf]] were called at this moment.
 		 */
-		def causalAnchor(onCompletedLater: (Try[A], Boolean) => Unit = (_, _) => (), onAlreadyCompleted: Try[A] => Unit = _ => ()): LatchedTask[A] = {
+		def causalAnchor(stateConsumer: (Try[A], CausalAnchorArrival) => Unit = (_, _) => ()): LatchedTask[A] = {
 			checkWithin()
 			val previousStepCommitment = lastEnqueuedCommitment
 			val thisStepCommitment = Commitment[A]()
 			lastEnqueuedCommitment = thisStepCommitment
-			thisStepCommitment.completeWith(previousStepCommitment, true, onCompletedLater, onAlreadyCompleted)
+			thisStepCommitment.completeWith(previousStepCommitment, true, stateConsumer)
 		}
 
-
-		/** Attempts a deterministic asynchronous state transition causally anchored to the previous one.
+		/** Enqueues an asynchronous non-speculative primary-state updater.
 		 *
-		 * If this [[CausalStuckableFence]] is stuck, because a previous update failed, the provided updater is not executed and the returned [[LatchedTask]] is completed with the same failure.
+		 * If this [[CausalStuckableFence]] gets stuck (because a previous update failed) before the provided updater is executed, it is skipped and the returned [[LatchedTask]] is completed with the same failure.
 		 *
-		 * Is worth mentioning that the provided function will be executed after all the consumers subscribed (before the call to this method) to both, the [[LatchedTask]] returned by both [[causalAnchor]] and the one returned by previous calls to [[advance]]-like methods, have completed.
-		 *
-		 * Caution: The execution of consumers that are subscribed to obsolete instances of [[LatchedTask]] is not causally ordered.
-		 * So, avoid memorizing the [[LatchedTask]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
-		 * Obsolete are those instances returned by methods of this [[CausalStuckableFence]] before the last call to an [[advance]]-like method).
-		 *
-		 * The updater function is defined with a second parameter of type `Null` to match the internal speculative signature, allowing reuse without introducing an extra closure.
-		 * Rollback is not supported in this method.
+		 * Rollback is not supported in this method. The updater function is defined with a second parameter of type `Null` to match the internal speculative signature, allowing reuse without introducing an extra closure.
 		 *
 		 * **Temporal window of causal safety:**
-		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedTask]] it returns has completed.
-		 * Calls to methods that rely on causal visibility are safe only within this window; after completion, the causal fence is closed and subsequent calls are no longer anchored.
+		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedDuty]] returned by this method and all the consumers synchronously subscribed to it have returned.
+		 *
+		 * Is worth mentioning that the provided updater will be executed after all the consumers previously and synchronously subscribed to the [[LatchedDuty]] returned by [[causalAnchor]] and [[advance]]-like methods have completed.
 		 *
 		 * @param primaryStateUpdater a function that computes the next state from the current one
-		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
-		 * @return a [[LatchedTask]] that will be fulfilled with the new state once the update completes, or the previous failure due to which the update was skipped.
-		 */
-		def advance(primaryStateUpdater: (A, Null) => Maybe[Task[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedTask[A] = {
+		 * @return a [[LatchedTask]] that will be fulfilled with the new state once the update completes.
+		 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[LatchedDuty]] is not causally ordered.
+		 * So, avoid memorizing [[LatchedDuty]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
+		 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
+		inline def advance(inline primaryStateUpdater: (A, Null) => Task[A]): LatchedTask[A] =
+			advanceIf((a, _) => Maybe(primaryStateUpdater(a, null)))
+
+		/** Like [[advance]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]]
+		 * If the [[primaryStateUpdater]] returns some state, it is commited.
+		 * If it returns [[Maybe.empty]], the update is canceled and the previous state is retained.
+		 * @param primaryStateUpdater a partial function that computes the next state from the current one; the second argument is always `null`
+		 * @return a [[LatchedTask]] that yields the updated state */
+		def advanceIf(primaryStateUpdater: (A, Null) => Maybe[Task[A]]): LatchedTask[A] = {
 			val suAdapter = primaryStateUpdater.asInstanceOf[(A, RollbackAccessor | Null) => Maybe[LatchedTask[A]]]
-			if isWithinDoSerEx then step(suAdapter, false)
-			else {
-				val commitment = Commitment[A]()
-				execute(commitment.completeWith(step(suAdapter, false), true))
-				commitment
-			}
+			step(suAdapter, false)
 		}
+
+		/** Enqueues an asynchronous speculative primary-state updater.
+		 *
+		 * The provided [[RollbackAccessor]] allows the update to be withdrawn before it becomes visible.
+		 *
+		 * If the previous step failed, this transition is skipped and the returned [[LatchedTask]] is completed with the same failure.
+		 *
+		 * If rollback is invoked before visibility, the update is canceled and the previous state is kept.
+		 *
+		 * Only successful transitions update the committed state.
+		 *
+		 * **Temporal window of causal safety:**
+		 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchedDuty]] returned by this method and all the consumers synchronously subscribed to it have returned.
+		 *
+		 * @param primaryStateUpdater a function that computes the next state from the current one, with rollback control
+		 * @return a [[LatchedTask]] that yields the updated or rolled-back state
+		 */
+		inline def advanceSpeculatively(inline primaryStateUpdater: (A, RollbackAccessor) => Task[A]): LatchedTask[A] =
+			advanceSpeculativelyIf((a, rba) => Maybe(primaryStateUpdater(a, rba)))
 
 		/** Attempts a speculative state transition anchored to the previous one.
 		 *
@@ -2697,12 +2752,12 @@ trait Doer { thisDoer =>
 		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
 		 * @return a [[LatchedTask]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped.
 		 */
-		def advanceSpeculatively(primaryStateUpdater: (A, RollbackAccessor) => Maybe[Task[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedTask[A] = {
+		def advanceSpeculativelyIf(primaryStateUpdater: (A, RollbackAccessor) => Maybe[Task[A]], isWithinDoSerEx: Boolean = isInSequence): LatchedTask[A] = {
 			if isWithinDoSerEx then step(primaryStateUpdater, true)
 			else {
-				val covenant = Commitment[A]()
-				execute(covenant.completeWith(step(primaryStateUpdater, true), true))
-				covenant
+				val commitment = Commitment[A]()
+				execute(commitment.completeWith(step(primaryStateUpdater, true), true))
+				commitment
 			}
 		}
 
@@ -2726,7 +2781,7 @@ trait Doer { thisDoer =>
 				case success@Success(previousState) =>
 					val rba =
 						if isSpeculative then new RollbackAccessor {
-							override def rollback(isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], Boolean) => Unit): LatchedTask[A] =
+							override def rollback(isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], RollbackApplication) => Unit): LatchedTask[A] =
 								thisStepCommitment.fulfill(previousState, isWithinDoSerEx, onCompleted)
 						} else null
 					primaryStateUpdater(previousState, rba)
@@ -2743,6 +2798,10 @@ trait Doer { thisDoer =>
 					thisStepCommitment.break(e, true)
 			}
 			thisStepCommitment
+		}
+
+		override def toString: String = {
+			s"CausalStuckableFence(lastEnqueuedCovenant=${lastEnqueuedCommitment.toString}, lastCommittedCovenant=${lastCommittedCommitment.toString})"
 		}
 	}
 
@@ -2834,7 +2893,7 @@ trait Doer { thisDoer =>
 	 */
 	class ConvergentSettlement[P, R](executedFunc: (parameter: P, chosenDuty: Maybe[LatchedDuty[R]]) => LatchedDuty[R])(using doer: Doer) {
 		/** $suppressSyntheticCompanionObject */
-		private final def Handle(trap: Nothing): Any = trap
+		private inline final def Handle(trap: Nothing): Any = trap
 
 		/**
 		 * Internal container for the stable handle and the volatile candidate.
@@ -2912,10 +2971,10 @@ trait Doer { thisDoer =>
 	def StreamDuty_source[A]: Source[A] = new Source[A]
 
 
-	final class Source[A] extends AbstractDuty[A] with Subscriptable[A] {
+	final class Source[A] extends AbstractDuty[A], SubscriptionHub[A] {
 
 		override protected def engage(onComplete: A => Unit): Unit =
-			subscribe(onComplete)
+			attach(onComplete)
 
 		def push(a: A): Unit = {
 			// Run the consumers in subscriptions order
@@ -2967,33 +3026,59 @@ trait Doer { thisDoer =>
 	}
 
 
-	//////////////// Subscriptable ////////////////////
+	//////////////// Subscriptable producer ////////////////////
 
-	trait Subscriptable[A] {
-		protected var firstOnCompleteObserver: (A => Unit) | Null = null
-		protected var onCompletedObservers: List[A => Unit] = Nil
+	/** A single result latched exactly once, allowing multiple consumers to subscribe.
+	 * @tparam A The type of the result obtained when the process completes. */
+	trait Latched[+A] {
 
-		/**
-		 * Subscribes a consumer of the result of this producer.
+		/** @return the result if completed.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		def maybeResult: Maybe[A]
+
+		/** @return true if this [[LatchedDuty]] was fulfilled; or false if it is still pending.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		inline def isCompleted: Boolean = maybeResult.isDefined
+
+		/** @return true if this [[LatchedDuty]] is still pending; or false if it was completed.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		inline def isPending: Boolean = maybeResult.isEmpty
+
+		/** Subscribes a consumer of the result of this producer.
 		 *
-		 * The subscription is automatically removed after and execution of this producer has completed and the received consumer is executed.
+		 * The subscription is automatically removed after an execution of this producer has completed and the received consumer is executed.
 		 *
-		 * The provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed consumers).
+		 * If this producer is already fulfilled when this method is called, the provided consumer is invoked synchronously and no subscription occurs.
+		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).
 		 *
 		 * @note CAUTION: This method does not prevent duplicate subscriptions.
 		 * @note CAUTION: Must be called within the $DoSerEx */
-		def subscribe(consumer: A => Unit): Unit = {
-			checkWithin()
+		def subscribe(consumer: A => Unit): Unit
+
+		/** Removes a subscription done with [[subscribe]].
+		 *
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		def unsubscribe(onComplete: A => Unit): Unit
+
+
+		/** @return `true` if the provided consumer is currently subscribed.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		def isSubscribed(onComplete: A => Unit): Boolean
+	}
+
+	/** A mixin trait that maintains a list of observers subscribed to a future result.
+	 *
+	 * @tparam A The type of the result obtained when the associated process completes. */
+	trait SubscriptionHub[A] {
+		protected var firstOnCompleteObserver: (A => Unit) | Null = null
+		protected var onCompletedObservers: List[A => Unit] = Nil // TODO Change the collection to one with a efficient iterator from first to last appended.
+
+		protected def attach(consumer: A => Unit): Unit = {
 			if firstOnCompleteObserver eq null then firstOnCompleteObserver = consumer
 			else onCompletedObservers = consumer :: onCompletedObservers
 		}
 
-		/**
-		 * Removes a subscription done with [[subscribe]].
-		 *
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		def unsubscribe(onComplete: A => Unit): Unit = {
-			checkWithin()
+		protected def detach(onComplete: A => Unit): Unit = {
 			if firstOnCompleteObserver eq onComplete then {
 				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
 				else {
@@ -3004,11 +3089,32 @@ trait Doer { thisDoer =>
 		}
 
 
-		/** @note CAUTION: Must be called within the $DoSerEx
-		 * @return `true` if the provided consumer is currently subscribed. */
-		def isSubscribed(onComplete: A => Unit): Boolean = {
-			checkWithin()
+		protected def isAttached(onComplete: A => Unit): Boolean = {
 			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
+		}
+
+		/** Apply the provided value to each consumers in subscriptions order and then clear all the subscriptions.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		protected def capture(a: A): Unit = {
+			if firstOnCompleteObserver ne null then {
+				try {
+					firstOnCompleteObserver(a)
+					if onCompletedObservers.nonEmpty then {
+						// TODO change this implementation to one that does not cause StackOverflow when onCompleteObserver is big..
+						def loop(head: A => Unit, tail: List[A => Unit]): Unit = {
+							if tail.nonEmpty then loop(tail.head, tail.tail)
+							head(a)
+						}
+
+						loop(onCompletedObservers.head, onCompletedObservers.tail)
+					}
+				} catch {
+					case NonFatal(e) => reportPanicException(e)
+				} finally {
+					firstOnCompleteObserver = null // unbind the observer reference to help the garbage collector
+					onCompletedObservers = Nil // Clean the observers list to help the garbage collector.
+				}
+			}
 		}
 	}
 }

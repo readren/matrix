@@ -331,7 +331,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					val replierNode = getNode(replierId)
 					replierNode.sequencer.Duty_mineFlat[R] { () =>
 						call(replierNode)
-					}.onBehalfOf(netSequencer).toTask
+					}.onBehalfOf(netSequencer).succeed
 				}
 			}
 		}
