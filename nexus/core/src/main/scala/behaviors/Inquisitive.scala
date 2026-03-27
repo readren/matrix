@@ -103,6 +103,6 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 		pendingQuestions.update(lastQuestionId, covenant)
 		val question = questionBuilder(lastQuestionId)
 		receptor.tell(question)
-		covenant.latchedDuty
+		covenant.asLatchedDuty
 	}
 }

@@ -40,8 +40,7 @@ object Borrame {
 		covenant.trigger()(x => println(s"covenant completed with $x"))
 		covenant.fulfillWith(dOne)
 
-		val stateUpdater: (Animal, Null) => Maybe[doer.LatchedDuty[Animal]] =
-			(previous, _) => previous match {
+		val stateUpdater: Animal => Maybe[doer.LatchedDuty[Animal]] = {
 				case Dog(ladrido) =>
 					//					Maybe.some(doer.LatchedDuty_ready(Dog(ladrido + " " + ladrido)))
 					if ladrido.length < 10 then Maybe(doer.LatchedDuty_ready(Dog(ladrido + " " + ladrido)))

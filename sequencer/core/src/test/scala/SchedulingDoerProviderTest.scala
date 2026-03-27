@@ -9,7 +9,6 @@ import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer
 
-import java.util
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.compiletime.uninitialized
@@ -35,9 +34,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	@volatile private var unhandledExceptionObserver: Null | ((Doer, Throwable) => Unit) = null
 	@volatile private var reportedFailuresObserver: Null | ((Doer, Throwable) => Unit) = null
 
-	private var sharedDoerProviderFixture: Fixture[DP] = uninitialized
-	private var sharedDoerFixture: Fixture[D] = uninitialized
-	private var sharedGeneratorsFixture: Fixture[GeneratorsForDoerTests[D]] = uninitialized
+	private var sharedDoerProvider: DP = uninitialized
+	private var sharedDoer: D = uninitialized
+	private var sharedGenerators: GeneratorsForDoerTests[D] = uninitialized
 
 	@volatile private var observingSession: Int = 0
 
@@ -86,25 +85,16 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	override val munitTimeout: Duration = scala.concurrent.duration.Duration(240, "seconds")
 
-	/**
-	 * Creates instances of the classes under test that can be re-used by many test.
-	 * Specifically, creates the instance of [[DoerProvider]] that [[getSharedDoerProvider]] returns, and the instance of [[Doer]] that [[getSharedDoer]] returns. */
-	override def munitFixtures: Seq[Fixture[?]] = {
+	/** Creates the shared instances that depend on the abstract methods of this class in a deferred way to ensure the concrete subclass is fully constructed before said methods are invoked. */
+	override def beforeAll(): Unit = {
 		ScribeConfig.init(deleteLogFilesOnLaunch = true)
 
 		val sharedDoerProvider = buildDoerProvider
-		sharedDoerProviderFixture = new Fixture[DP]("shared-doer-provider") {
-			override def apply(): DP = sharedDoerProvider
-		}
+		this.sharedDoerProvider = sharedDoerProvider
 		val sharedDoer = sharedDoerProvider.provide(sharedDoerProvider.tagFromText("main-doer"))
-		sharedDoerFixture = new Fixture[D]("main-doer") {
-			override def apply(): D = sharedDoer
-		}
+		this.sharedDoer = sharedDoer
 		val sharedGenerators = GeneratorsForDoerTests(sharedDoer, sharedDoerProvider)
-		sharedGeneratorsFixture = new Fixture[GeneratorsForDoerTests[D]]("generators") {
-			override def apply(): GeneratorsForDoerTests[D] = sharedGenerators
-		}
-		List(sharedDoerProviderFixture, sharedDoerFixture)
+		this.sharedGenerators = sharedGenerators
 	}
 
 	/** Clean up resources after tests. */
@@ -117,25 +107,32 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	//// Shared instance's getters ////
 
 	/** Gets the shared instance of the [[DoerProvider]] implementation under test. */
-	protected def getSharedDoerProvider: DP = sharedDoerProviderFixture()
+	protected def getSharedDoerProvider: DP = sharedDoerProvider
 
 	/** Builds an instance of [[Doer]] using the shared [[DoerProvider]]. */
 	protected def buildDoer(tag: String): D = {
-		val provider = sharedDoerProviderFixture()
+		val provider = sharedDoerProvider
 		provider.provide(provider.tagFromText(tag))
 	}
 
 	/** Gets the shared instance of [[Doer]] provided by the shared doer provider. */
-	protected def getSharedDoer: D = sharedDoerFixture()
+	protected def getSharedDoer: D = sharedDoer
 
 	/** Get the shared instance of [[GeneratorsForDoerTests]] built using the [[DoerProvider]] and [[Doer]] instances returned by [[getSharedDoerProvider]] and [[getSharedDoer]] respectively. */
-	protected def getGenerators: GeneratorsForDoerTests[D] = sharedGeneratorsFixture()
+	protected def getGenerators: GeneratorsForDoerTests[D] = sharedGenerators
 
 	//// UTILITIES ////
 
 	/** Breaks the `promise` if it wasn't already completed. */
 	protected def break[P](message: String)(using promise: Promise[P]): Unit =
 		promise.tryFailure(new AssertionError(message))
+
+	protected def gate[P](using promise: Promise[P]): Future[P] = {
+		promise.future.map { result =>
+			// println(s"gating to next promise in thread ${Thread.currentThread().getName}")
+			result
+		}(using scala.concurrent.ExecutionContext.Implicits.global)
+	}
 
 	/** Waits the promise to complete or the specified duration, what happens first. In the second case the promise is broken with the specified message.
 	 * @return the [[Future]] view of the provided [[Promise]]. */
@@ -144,7 +141,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		promise.future.andThen(_ => latch.countDown())
 		latch.await(duration, TimeUnit.MILLISECONDS)
 		break(message)
-		promise.future
+		gate
 	}
 
 	/** Executes the provided `supplier` observing the calls to the [[onUnhandledException]] and [[onFailureReported]] methods during its execution. */
@@ -168,7 +165,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// Verify supplier is called multiple times with delay between completions
 		// Verify each result is yielded
 		val generators = getGenerators
-		import generators.given
+		import generators.*
 
 		true
 	}
@@ -188,14 +185,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	 */
 	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using hoping duties (much faster than the version that uses random delays)") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		def buildDuty(serial: Int, hops: Int): Duty[Int] = {
 			if hops <= 0 then Duty_ready(serial)
 			else Covenant[Int]().fulfillWith(buildDuty(serial, hops - 1), false)
 		}
 
-		val initialState = (0, 0)
+		type PrimaryState = (pathId: Int, serial: Int)
+		val initialState: PrimaryState = (0, 0)
 		PropF.forAllF(
 			for {
 				swarmSizeMinusOne <- Gen.choose(1, 9)
@@ -214,32 +212,27 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			type PrimaryState = (pathId: Int, serial: Int)
-
-			val fence = CausalFence[PrimaryState](initialState)
+			val fence = doer.CausalFence(initialState)
 			var derivedSerial: Int = 0
 			var advanceCallSerial = 0
 
 			def path(pathId: Int): LatchedDuty[PrimaryState] = {
-				val advanceName = s"advance${advanceCallSerial}${advanceCallSerial + 1}"
+				val advanceName = s"advance$advanceCallSerial${advanceCallSerial + 1}"
 				advanceCallSerial += 1
 				for {
 					nextState <- {
-						fence.advanceIf(
-							(previous, _) => {
-								if previous.serial >= topSerial then Maybe.empty
-								else {
-									val commitedAtStart = fence.committedState
-									val duty = buildDuty(previous.serial + 1, hopsList(previous.serial))
-										.map(newSerial => (pathId, newSerial))
-										.andThen { nextState =>
-											if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
-										}
-									Maybe.some(duty)
-								}
-							},
-							isInSequence
-						)
+						fence.advanceIf { (previous: PrimaryState) =>
+							if previous.serial >= topSerial then Maybe.empty
+							else {
+								val commitedAtStart = fence.committedState
+								val duty = buildDuty(previous.serial + 1, hopsList(previous.serial))
+									.map(newSerial => (pathId, newSerial))
+									.andThen { nextState =>
+										if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
+									}
+								Maybe.some(duty)
+							}
+						}
 					}
 					anchoredState <- {
 						val committedState = fence.committedState
@@ -255,16 +248,16 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					}
 					recursiveState <- {
 						if nextState.serial < topSerial then path(pathId)
-						else fence.committed(true)
+						else fence.committed
 					}
 				} yield recursiveState
 			}
 
-			val swarm: Seq[LatchedDuty[PrimaryState]] = Seq.tabulate(swarmSize) { n => path(n) }
-			val checks = for array <- Duty_sequenceToArray(swarm) yield promise.trySuccess(())
+			val swarm: Seq[Duty[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.Duty_mineFlat(() => path(n)) }
+			val checks = for array <- doer.Duty_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
 
-			promise.future
+			gate
 		}
 
 	}
@@ -285,10 +278,11 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	 */
 	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using random delays (very slow)") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
+		type PrimaryState = (pathId: Int, serial: Int)
+		val initialState: PrimaryState = (0, 0)
 		val topSerial = 99
-		val initialState = (0, 0)
 		PropF.forAllF(Gen.choose(1, 9)) { (swarmSize: Int) =>
 			println(s"Begin: swarmSize=$swarmSize")
 
@@ -296,28 +290,23 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			type PrimaryState = (pathId: Int, serial: Int)
-
-			val fence = CausalFence[PrimaryState](initialState)
+			val fence = doer.CausalFence(initialState)
 			var derivedSerial: Int = 0
 
 			def path(pathId: Int): LatchedDuty[PrimaryState] = {
 				for {
 					nextState <- {
-						fence.advance(
-							(previous, _) => {
-								val commitedAtStart = fence.committedState
-								val dutyGenerator: Gen[Duty[Int]] = genDuty(previous.serial + 1)
-								val randomDuty: Duty[Int] = dutyGenerator.sample.get
-								val delay = Gen.choose(-1, 1).sample.get
-								val duty = if delay > 0 then randomDuty.delayed(delay) else randomDuty
-								duty.map(newSerial => (pathId, newSerial))
-									.andThen { nextState =>
-										if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
-									}
-							},
-							isInSequence
-						)
+						fence.advance { (previous: PrimaryState) =>
+							val commitedAtStart = fence.committedState
+							val dutyGenerator: Gen[Duty[Int]] = genDuty(previous.serial + 1)
+							val randomDuty: Duty[Int] = dutyGenerator.sample.get
+							val delay = Gen.choose(-1, 1).sample.get
+							val duty = if delay > 0 then randomDuty.delayed(delay) else randomDuty
+							duty.map(newSerial => (pathId, newSerial))
+								.andThen { nextState =>
+									if commitedAtStart.serial != fence.committedState.serial then break(s"In the interval between the updater passed to `advance` is called and the Duty it returns completes, no other updater is started; and that is not happening.")
+								}
+						}
 					}
 					anchoredState <- {
 						if nextState.pathId != pathId then break(s"A consumer subscribed to the LatchedDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: $pathId, actual: ${nextState.pathId}")
@@ -332,7 +321,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					}
 					followingState <- {
 						if nextState.serial <= topSerial then path(pathId)
-						else fence.committed(true)
+						else fence.committed
 					}
 				} yield {
 					if followingState.serial != fence.committedState.serial then break(s"followingState=$followingState, commited=${fence.committedState}")
@@ -340,10 +329,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			val swarm: Seq[LatchedDuty[PrimaryState]] = Seq.tabulate(swarmSize) { n => path(n) }
-			val checks = for array <- Duty_sequenceToArray(swarm) yield promise.trySuccess(())
+			val swarm: Seq[Duty[PrimaryState]] = Seq.tabulate(swarmSize) { n => Duty_mineFlat(() => path(n)) }
+			val checks = for array <- doer.Duty_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
@@ -351,7 +340,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("`Doer.execute` executes in a decoupled manner.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		val promise = Promise[Unit]
 
@@ -359,7 +348,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		var mutable = 1
 
-		val duty = Duty_mine { () =>
+		val duty = doer.Duty_mine { () =>
 			println("start")
 
 			def m12(): Unit = {
@@ -368,7 +357,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 2
 			}
 
-			execute(m12())
+			doer.execute(m12())
 
 			inline def m23(): Unit = {
 				println("executing 23")
@@ -376,7 +365,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 3
 			}
 
-			execute(m23())
+			doer.execute(m23())
 
 			def m34(): Unit = {
 				println("executing 34")
@@ -384,7 +373,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 4
 			}
 
-			execute(m34())
+			doer.execute(m34())
 
 			def end(): Unit = {
 				println("executing end")
@@ -392,14 +381,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				promise.trySuccess(())
 			}
 
-			execute(end())
+			doer.execute(end())
 			if mutable != 1 then break(s"An execute was not decoupled 0: mutable=$mutable")
 
 			println("completed")
 		}
 
 		duty.triggerAndForget(false)
-		promise.future
+		gate
 	}
 
 	test("Doer should execute tasks sequentially") {
@@ -547,14 +536,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			observingUnhandledAndReportedExceptionsDo { () =>
 				// Submit a task that uses Task.andThen which will cause a failure report
-				mainDoer.Task_unit.andThen(_ => throw throwable).trigger() { _ =>
+				val task = mainDoer.Task_successful(0).andThen(_ => throw throwable)
+				task.trigger() { _ =>
 					if NonFatal(throwable) then break(s"The failure report should be done before the task that produced it completes.")
 					else break("The operation completed despite the operand thew a fatal exception")
 				}
 
 				breakAfterWaiting(9, "No notification of the exception until 9 milliseconds after applying the operation. Waiting aborted.")
-			} {
-				(doer, exception) =>
+			} { (doer, exception) =>
 					if NonFatal(exception) then break(s"A non fatal exception was uncaught despite it should: $exception")
 					else promise.trySuccess(())
 			} { (doer, failure) =>
@@ -721,7 +710,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic left identity law: Duty.ready(x).flatMap(f) == f(x)
 	test("Duty: left identity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllF { (x: Int, f: Int => Duty[Int]) =>
 			val left: doer.Duty[Int] = Duty_ready(x).flatMap(f)
 			val right: doer.Duty[Int] = f(x)
@@ -732,7 +721,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic right identity law: m.flatMap(Duty.ready) == m
 	test("Duty: right identity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllF { (m: Duty[Int]) =>
 			val left = m.flatMap(Duty_ready)
 			val right = m
@@ -743,7 +732,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
 	test("Duty: associativity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (m: Duty[Int], f: Int => Duty[Int], g: Int => Duty[Int]) =>
 			val leftAssoc = m.flatMap(f).flatMap(g)
@@ -755,7 +744,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Functor: `m.map(f) == m.flatMap(a => ready(f(a)))`
 	test("Duty: can be transformed with map") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (m: Duty[Int], f: Int => String) =>
 			val left = m.map(f)
@@ -766,7 +755,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Duty: any pair of duties can be combined") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (dutyA: Duty[Int], dutyB: Duty[Int], f: (Int, Int) => Int) =>
 			val combinedDuty = Duty_combine(dutyA, dutyB)(f)
@@ -783,7 +772,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Duty: `doer.Duty.foreign(foreignDoer)(foreignDuty)` should complete in the `doer`'s thread") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
 				dutyResult <- intGen
@@ -802,7 +791,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("`Duty.engage` should not catch exceptions thrown by `onComplete`") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (duty: Duty[Int], exception: Throwable, randomInt: Int) =>
 			val smallNonNegativeInt = math.abs(randomInt % 10)
@@ -869,7 +858,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
 	test("Task: left identity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
 			val sx = Task_successful(x)
@@ -882,7 +871,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic right identity law: m.flatMap(Task.successful) == m
 	test("Task: right identity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (m: Task[Int]) =>
 			val left = m.flatMap(Task_successful)
@@ -894,7 +883,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
 	test("Task: associativity") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
 			val leftAssoc = m.flatMap(f).flatMap(g)
@@ -906,7 +895,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
 	test("Task: can be transformed with map") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (m: Task[Int], f: Int => String) =>
 			val left = m.map(f)
@@ -918,7 +907,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
 	test("Task: can be recovered from failure") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
 			if NonFatal(e) then {
@@ -931,7 +920,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Task: any can be combined") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
 			val combinedTask = Task_combine(taskA, taskB)(f)
@@ -948,7 +937,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Task: `doer.Task.foreign(foreignDoer)(foreignTask)` should complete in the `doer`'s thread") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
 				taskResult <- intGen
@@ -969,7 +958,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Task: if a function operand passed to a Task's operation throws an exception then, if the exception isn't fatal, the task should complete with a [[Failure]] containing that exception; and if it is fatal, the task should not complete and instead the `DoerProvider.onUnhandledException` method should be called passing the exception.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF(
 			for {i <- intGen; task <- genTask(i, "")} yield task,
@@ -1045,7 +1034,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("`Task.engage` should not catch exceptions thrown by the `onComplete` operand") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllF { (task1: Task[Int], task2: Task[Int], exception: Throwable, future: Future[Int]) =>
 
@@ -1104,20 +1093,20 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Covenant: `covenant.fulfill(int)` should trigger the execution of all the down-chains and subscriptions it has passing `int`") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
 			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]
-			val testedCovenant = doer.Covenant[Int]
+			val testedCovenant = doer.Covenant[Int]()
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
 			testedCovenant.fulfill(int)
-			promise.future
+			gate(using promise)
 		}
 	}
 
 	test("Covenant: `covenant.fulfillWith(duty)` should tigger the execution of all the down-chains and subscriptions it has passing what `duty` shields") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.{dutyArbitrary, *}
 		PropF.forAllF(
 			for {
 				int <- intGen
@@ -1133,7 +1122,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val subscriptableDuty = Covenant_triggerAndWire[Int](doer.Duty_delays(1)(_ => int))
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
 			testedCovenant.fulfillWith(subscriptableDuty)
-			promise.future
+			gate(using promise)
 		}
 	}
 
@@ -1141,7 +1130,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		given Promise[Unit] = promise
 
 		import doer.*
-		val subscriptionAwareCovenant = doer.Covenant[Int]
+		val subscriptionAwareCovenant = doer.Covenant[Int]()
 		val subscriptionOnCompleteCallBack: Int => Unit = x => subscriptionAwareCovenant.fulfill(x, true, (y, b) => if b == Doer.ANOTHER_BEFORE then break(s"`subscriptionAwareCovenant` was already  fulfilled with $y"))
 		val checks = for {
 			_ <- Duty_mine { () =>
@@ -1173,7 +1162,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Commitment: `commitment.complete(a)` should trigger the execution of all the down-chains and subscriptions it has, passing `a`") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF(
 			for {
 				nat <- Gen.choose(1, 9)
@@ -1185,16 +1174,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]
-			val testedCommitment = Commitment[Int]
-			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat))
-			promise.future
-		}.check(Parameters.default.withMinSuccessfulTests(500))
-
+			val testedCommitment = doer.Commitment[Int]()
+			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat))
+			gate(using promise)
+		} // .check(Parameters.default.withMinSuccessfulTests(500))
 	}
 
 	test("Commitment: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF(
 			for {
 				nat <- Gen.choose(1, 9)
@@ -1207,15 +1195,24 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]
-
-			val testedCommitment = Commitment[Int]()
+			val testedCommitment = doer.Commitment[Int]()
 			val subscriptableTask = Commitment_triggerAndWire(doer.Task_delays(1)(_ => tryNat))
-			checksCommitment[doer.type](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableTask))
-			promise.future
-		}.check(Parameters.default.withMinSuccessfulTests(500))
+			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableTask))
+			gate(using promise)
+		} // .check(Parameters.default.withMinSuccessfulTests(500))
 	}
 
-	private def checksCommitment[DD <: Doer & SchedulingExtension & LoopingExtension](doer: DD, testedCommitment: doer.Commitment[Int], promise: Promise[Unit], nat: Int, expectedOutcome: Try[Int], f1: Int => Int, f2: Int => doer.Task[Int])(completer: () => Unit): Unit = {
+	private def checksCommitment[DD <: Doer & SchedulingExtension & LoopingExtension](
+		doer: DD,
+		testedCommitment: doer.Commitment[Int],
+		promise: Promise[Unit],
+		nat: Int,
+		expectedOutcome: Try[Int],
+		f1: Int => Int,
+		f2: Int => doer.Task[Int]
+	)(
+		completer: () => Unit
+	): Unit = {
 		import doer.*
 
 		given Promise[Unit] = promise
@@ -1233,9 +1230,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		var completeWasNotCalled = true
 		// The commitment that the `completionObserver` will see the completion of the `testedCommitment`.
-		val completionSeenCommitment = doer.Commitment[Int]
+		val completionSeenCommitment = doer.Commitment[Int]()
 		val completionObserver: Try[Int] => Unit =
-			x => completionSeenCommitment.complete(x, true, (y, b) => if b then break(s"`subscriptionAwareCommitment` was already completed with $y"))
+			x => completionSeenCommitment.complete(x, true, (y, b) => if b == Doer.ANOTHER_BEFORE then break(s"`subscriptionAwareCommitment` was already completed with $y"))
 
 		// The task that checks what this test verifies.
 		val checks: doer.Task[Unit] = {
@@ -1267,7 +1264,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 		}
-		checks.trigger() { r => if r.isFailure then break(s"The test is wrong. This should not happen: `checks` yielded $r") }
+		checks.trigger() { r =>
+			if r.isFailure then break(s"The test is wrong. This should not happen: `checks` yielded $r")
+		}
 		if nat == 1 then {
 			completeWasNotCalled = false
 			completer()
@@ -1283,124 +1282,116 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("CausalFence: `advance` should fulfill with updated state and preserve causal sequencing") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
 			// println(s"initial: $initial")
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence: CausalFence[Int] = CausalFence(initial)
+			execute {
+				val fence = doer.CausalFence(initial)
 
-			val checks: LatchedDuty[Unit] = for {
-				expectedUpdate <- Covenant_triggerAndWire(updater(initial))
-				anchorBefore <- fence.causalAnchor()
-				committedBefore <- fence.committed(true)
-				update <- fence.advance { (a, _) =>
-					if a != initial then break(s"The first state received by the updates mismatch")
-					Covenant_triggerAndWire(updater(a))
+				for {
+					expectedUpdate <- Covenant_triggerAndWire(updater(initial), false)
+					anchorBefore <- fence.causalAnchor()
+					committedBefore <- fence.committed
+					update <- fence.advance { (a: Int) =>
+						if a != initial then break(s"The first state received by the updates mismatch")
+						Covenant_triggerAndWire(updater(a))
+					}
+					committedAfter <- fence.committed
+				} do {
+					// println(s"yield: expectedUpdate: $expectedUpdate, anchor: $anchor, commitedBefore: $committedBefore, update: $update, committedAfter: $committedAfter")
+					if committedBefore != initial then break("Initial committed state mismatch")
+					else if anchorBefore != initial then break("Anchor did not reflect initial state")
+					else if update != expectedUpdate then break("The committed state yield by the `advance` method does not match the expected")
+					else if committedAfter != expectedUpdate then break("The committed state yield by the `commitedAsync` method does not match expected.")
+					else promise.trySuccess(())
 				}
-				committedAfter <- fence.committed(true)
-			} yield {
-				// println(s"yield: expectedUpdate: $expectedUpdate, anchor: $anchor, commitedBefore: $committedBefore, update: $update, committedAfter: $committedAfter")
-				if committedBefore != initial then break("Initial committed state mismatch")
-				else if anchorBefore != initial then break("Anchor did not reflect initial state")
-				else if update != expectedUpdate then break("The committed state yield by the `advance` method does not match the expected")
-				else if committedAfter != expectedUpdate then break("The committed state yield by the `commitedAsync` method does not match expected.")
-				else promise.trySuccess(())
-				()
 			}
-
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
-	test("CausalFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
+	test("CausalFence: `advanceSpeculatively` before commit should fulfill with rollback or committed state") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence = CausalFence(initial)
-
-			val checks = for {
-				anchor <- fence.causalAnchor()
-				committedBefore <- fence.committed()
-				state <- fence.advanceSpeculatively { (a, rba) =>
-					if a != initial then break("Speculative update received wrong anchor")
-					Covenant_triggerAndWire(updater(a).andThen { _ =>
-						rba.rollback(
-							true,
-							(v, rollbackApplication) =>
-								if rollbackApplication == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
-								else if v != initial then break("Rollback did not restore initial state")
-						)
-					})
+			execute {
+				val fence = doer.CausalFence(initial)
+				for {
+					anchor <- fence.causalAnchor()
+					committedBefore <- fence.committed
+					state <- fence.advanceSpeculatively { (a, rba) =>
+						if a != initial then break("Speculative update received wrong anchor")
+						Covenant_triggerAndWire(updater(a).andThen { _ =>
+							rba.rollback(
+								true,
+								(v, rollbackApplication) =>
+									if rollbackApplication == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
+									else if v != initial then break("Rollback did not restore initial state")
+							)
+						})
+					}
+					committedAfter <- fence.committed
+				} do {
+					if anchor != initial then break("Anchor mismatch")
+					else if committedBefore != initial then break("Initial committed state mismatch")
+					else if committedAfter != initial then break("Rollback did not restore committed state")
+					else promise.trySuccess(())
 				}
-				committedAfter <- fence.committed()
-			} yield {
-				if anchor != initial then break("Anchor mismatch")
-				else if committedBefore != initial then break("Initial committed state mismatch")
-				else if committedAfter != initial then break("Rollback did not restore committed state")
-				else promise.trySuccess(())
 			}
-
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
 	test("CausalFence: rollback after commit should be ignored") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: String, updater: String => Duty[String]) =>
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence = CausalFence[String](initial)
-
-			val checks = for {
-				state <- fence.advanceSpeculatively { (a, rba) =>
-					Covenant_triggerAndWire(
-						updater(a)
-							.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
-							// ensure `rollback` is called after the duty returned by primaryStateUpdater is fulfilled.
-							.andThen { x =>
-								doer.execute {
-									rba.rollback(true, (v, rollbackApplication) =>
-										if rollbackApplication == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
-										else break("Rollback should have been rejected")
-									)
+			execute {
+				val fence = doer.CausalFence[String](initial)
+				for {
+					state <- fence.advanceSpeculatively { (a, rba) =>
+						Covenant_triggerAndWire(
+							updater(a)
+								.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
+								// ensure `rollback` is called after the duty returned by primaryStateUpdater is fulfilled.
+								.andThen { x =>
+									doer.execute {
+										rba.rollback(true, (v, rollbackApplication) =>
+											if rollbackApplication == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
+											else break("Rollback should have been rejected")
+										)
+									}
 								}
-							}
-					)
-				}
-			} yield {
-				if state eq initial then break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$state`")
+						)
+					}
+				} do if state eq initial then break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$state`")
 			}
-
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
 	test("CausalFence: multiple stepped advances should serialize and commit in order") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
 			val promise = Promise[Unit]
 
 			given Promise[Unit] = promise
 
-			val fence = CausalFence[Int](initial)
+			val fence = doer.CausalFence[Int](initial)
 
 			def loop(expectedState: Int, repetition: Int): Unit = {
 				if repetition == 9 then promise.trySuccess(())
@@ -1412,43 +1403,44 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			loop(initial, 0)
-			promise.future
+			execute(loop(initial, 0))
+			gate
 		}
 	}
 
 	test("CausalFence: multiple simultaneous advances should serialize and commit in order") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence = CausalFence[Int](initial)
-			val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => Covenant_triggerAndWire(updater(previousState)) }
+			execute {
+				val fence = doer.CausalFence(initial)
 
-			def loop(previousState: Int, repetition: Int): Duty[List[Int]] = {
-				if repetition > 9 then Duty_ready(Nil)
-				else for {
-					nextState <- updater(previousState)
-					followingStates <- loop(nextState, repetition + 1)
-				} yield nextState :: followingStates
+				val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => Covenant_triggerAndWire(updater(previousState)) }
+
+				def loop(previousState: Int, repetition: Int): Duty[List[Int]] = {
+					if repetition > 9 then Duty_ready(Nil)
+					else for {
+						nextState <- updater(previousState)
+						followingStates <- loop(nextState, repetition + 1)
+					} yield nextState :: followingStates
+				}
+
+				val expectedResultsDuty = loop(initial, 0)
+
+				for {
+					actualResults <- doer.Duty_sequenceToArray(actualSteps)
+					expectedResults <- expectedResultsDuty
+				} do {
+					// println(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
+					if actualResults.toList != expectedResults then break(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
+					else promise.trySuccess(())
+				}
 			}
-
-			val expectedResultsDuty = loop(initial, 0)
-
-			val checks = for {
-				actualResults <- Duty_sequenceToArray(actualSteps)
-				expectedResults <- expectedResultsDuty
-			} yield {
-				// println(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
-				if actualResults.toList != expectedResults then break(s"expected:${expectedResults.mkString(", ")}, actual:${actualResults.mkString(", ")}")
-				else promise.trySuccess(())
-			}
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
@@ -1456,133 +1448,129 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("CausalStuckableFence: `advance` should skip transition if failed, or commit updated state if successful") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Try[Int], updater: Int => Task[Int]) =>
 			// println(s"initial: $initial")
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence: CausalStuckableFence[Int] = CausalStuckableFence(initial)
+			execute {
+				val fence = doer.CausalStuckableFence(initial)
 
-			fence.causalAnchor().trigger(false) { anchorBefore =>
-				if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
-			}
-
-			fence.committed(false).trigger(false) { commitedBefore =>
-				if !(commitedBefore ==== initial) then break("Commited state before transition and previous state mismatch")
-			}
-
-			fence.advance { (previousState, _) =>
-				initial match {
-					case Failure(e) => break("A transition from a failed fence wasn't skipped")
-					case Success(initialState) => if previousState != initialState then break("Previous and initial state mismatch")
+				fence.causalAnchor().trigger(false) { anchorBefore =>
+					if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
 				}
-				Maybe(Commitment_triggerAndWire(updater(previousState)))
-			}.trigger(false) { actualState =>
-				initial match {
-					case failure: Failure[Int] =>
-						if !(actualState ==== failure) then break("A transition attempt when the fence is failed changed the fence's failure")
-						else promise.trySuccess(())
-					case Success(initialState) =>
-						updater(initialState).trigger(true) { expectedState =>
-							if !(actualState ==== expectedState) then break("Actual and expected state mismatch")
 
-							fence.committed(true).trigger(true) { stateAfter =>
-								if stateAfter ==== expectedState then promise.trySuccess(())
-								else break("Commited state after transition is not the expected")
+				fence.committed.subscribe { commitedBefore =>
+					if !(commitedBefore ==== initial) then break("Commited state before transition and previous state mismatch")
+				}
+
+				fence.advanceIf { (previousState: Int) =>
+					initial match {
+						case Failure(e) => break("A transition from a failed fence wasn't skipped")
+						case Success(initialState) => if previousState != initialState then break("Previous and initial state mismatch")
+					}
+					Maybe(Commitment_triggerAndWire(updater(previousState)))
+				}.trigger(false) { actualState =>
+					initial match {
+						case failure: Failure[Int] =>
+							if !(actualState ==== failure) then break("A transition attempt when the fence is failed changed the fence's failure")
+							else promise.trySuccess(())
+						case Success(initialState) =>
+							updater(initialState).trigger(true) { expectedState =>
+								if !(actualState ==== expectedState) then break("Actual and expected state mismatch")
+
+								fence.committed.trigger(true) { stateAfter =>
+									if stateAfter ==== expectedState then promise.trySuccess(())
+									else break("Commited state after transition is not the expected")
+								}
 							}
-						}
+					}
 				}
 			}
-
-			promise.future
+			gate
 		}
 	}
 
 	test("CausalStuckableFence: `advanceSpeculatively` should fulfill with rollback or committed state") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Task[Int]) =>
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence = CausalStuckableFence(Success(initial))
-
-			val checks = for {
-				anchor <- fence.causalAnchor().asHardyDuty
-				committedBefore <- fence.committed().toDutyHardy
-				state <- fence.advanceSpeculatively { (previousState, rba) =>
-					if previousState != initial then break("Speculative update received wrong previous state")
-					Maybe(Commitment_triggerAndWire(
-						updater(previousState).andThen { expectedResult =>
-							rba.rollback(
-								true,
-								(v, wasTooLate) =>
-									if wasTooLate then break("Rollback was too late")
-									else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
-							)
-						}
-					))
-				}.asHardyDuty
-				committedAfter <- fence.committed().toDutyHardy
-			} yield {
-				if !(anchor ==== Success(initial)) then break("Initial anchor mismatch")
-				else if !(committedBefore ==== Success(initial)) then break("Initial committed state mismatch")
-				else if !(state ==== Success(initial)) then break("Rollback did not restore committed state")
-				else if !(committedAfter ==== Success(initial)) then break("Commited after did not match commited state")
-				else promise.trySuccess(())
+			execute {
+				val fence = doer.CausalStuckableFence(Success(initial))
+				for {
+					anchor <- fence.causalAnchor().asHardyDuty
+					committedBefore <- fence.committed.asHardyDuty
+					state <- fence.advanceSpeculativelyIf { (previousState, rba) =>
+						if previousState != initial then break("Speculative update received wrong previous state")
+						Maybe(Commitment_triggerAndWire(
+							updater(previousState).andThen { expectedResult =>
+								rba.rollback(
+									true,
+									(v, wasTooLate) =>
+										if wasTooLate == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
+										else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
+								)
+							}
+						))
+					}.asHardyDuty
+					committedAfter <- fence.committed.asHardyDuty
+				} do {
+					if !(anchor ==== Success(initial)) then break("Initial anchor mismatch")
+					else if !(committedBefore ==== Success(initial)) then break("Initial committed state mismatch")
+					else if !(state ==== Success(initial)) then break("Rollback did not restore committed state")
+					else if !(committedAfter ==== Success(initial)) then break("Commited after did not match commited state")
+					else promise.trySuccess(())
+				}
 			}
-
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
 	test("CausalStuckableFence: rollback after commit should be ignored") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: String, updater: String => Task[String]) =>
 			println(s"Begin: initial=$initial")
 			val promise = Promise[Unit]
-
 			given Promise[Unit] = promise
 
-			val fence = CausalStuckableFence[String](Success(initial))
-
-			val checks = for {
-				actualResult <- fence.advanceSpeculatively { (a, rba) =>
-					println(s"updater called")
-					Maybe(Commitment_triggerAndWire(
-						updater(a)
-							.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
-							.andThen { x =>
-								println(s"updater about to complete")
-								// ensure `rollback` is called after the task returned by primaryStateUpdater is fulfilled.
-								doer.execute {
-									println(s"about to rollback")
-									rba.rollback(true, (actualResult, wasTooLate) =>
-										if wasTooLate then promise.trySuccess(())
-										else break("Rollback should have been ignored")
-									)
+			execute {
+				val fence = doer.CausalStuckableFence(Success(initial))
+				for {
+					actualResult <- fence.advanceSpeculativelyIf { (a: String, rba) =>
+						println(s"updater called")
+						Maybe(Commitment_triggerAndWire(
+							updater(a)
+								.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
+								.andThen { x =>
+									println(s"updater about to complete")
+									// ensure `rollback` is called after the task returned by primaryStateUpdater is fulfilled.
+									doer.execute {
+										println(s"about to rollback")
+										rba.rollback(true, (actualResult, wasTooLate) =>
+											if wasTooLate == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
+											else break("Rollback should have been ignored")
+										)
+									}
 								}
-							}
-					))
-				}.asHardyDuty
-			} yield {
-				println(s"transition done")
-				actualResult match {
-					case Success(actualState) if actualState eq initial => break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$actualResult`")
-					case _ => // do nothing
+						))
+					}.asHardyDuty
+				} do {
+					println(s"transition done")
+					actualResult match {
+						case Success(actualState) if actualState eq initial => break(s"Rollback incorrectly restored state: initial:`$initial`, state:`$actualResult`")
+						case _ => // do nothing
+					}
 				}
 			}
-
-			checks.triggerAndForget()
-			promise.future
+			gate
 		}
 	}
 
@@ -1593,7 +1581,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling: `SchedulingExtension.schedule` should fail if called with the same `Schedule` instance twice") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		Prop.forAllNoShrink(Gen.choose(1, 5), Gen.choose(1, 5)) { (delay: Int, interval: Int) =>
 			val delaySchedule = doer.newDelaySchedule(delay)
@@ -1621,7 +1609,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty: `Duty.schedule(newDelaySchedule(delay))(supplier)` should execute the supplier after the delay") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
@@ -1639,7 +1627,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty: `Duty.schedule(newFixedRateSchedule)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 10), Gen.choose(1, 10)) { (initialDelay: Int, interval: Int) =>
 			val repetitions = 10 - interval
@@ -1673,7 +1661,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty: `duty.scheduled(newDelaySchedule(delay))` should preserve the original duty's result and postpone its execution the specified `delay`") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.{dutyArbitrary, *}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 10)) { (duty: Duty[Int], testDelay: Int) =>
 			val schedule = doer.newDelaySchedule(testDelay)
@@ -1691,7 +1679,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty: `duty.scheduled(newFixedDelaySchedule(initialDelay, period))` should execute the `duty` (up-chained operations) repeatedly according to the specified period until cancellation") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.{dutyArbitrary, *}
 
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, 10),
@@ -1701,7 +1689,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val repetitions = 5 - interval
 			// println(s"\nBegin: initialDelay = $initialDelay, interval = $interval, repetitions = $repetitions")
 			val schedule = doer.newFixedDelaySchedule(initialDelay, interval)
-			val commitment = Commitment[Unit]()
+			val commitment = doer.Commitment[Unit]()
 			var counter: Int = 0
 			val check = for {
 				directResult <- duty
@@ -1725,7 +1713,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable after the schedule was activated.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.{dutyArbitrary, *}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
 			// println(s"Begin: delay: $delay, duty: $duty")
@@ -1757,14 +1745,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			} yield () // println("cancelsAndWaits completed successfully")
 			cancelsAndWaits.trigger()(promise.tryComplete(_))
-			promise.future
+			gate
 		}
 	}
 
 
 	test("Scheduling Duty: `duty.scheduled(schedule)` should be cancellable before the schedule is activated.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.{dutyArbitrary, *}
 
 		PropF.forAllNoShrinkF(dutyArbitrary[Int].arbitrary, Gen.choose(1, 5)) { (duty: Duty[Int], delay: Int) =>
 			val schedule = doer.newDelaySchedule(delay)
@@ -1779,7 +1767,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 			if !doer.isCanceled(schedule) then break("The schedule says it is not canceled despite it was.")
 			doer.schedule(doer.newDelaySchedule(1))(_ => promise.trySuccess(()))
-			promise.future
+			gate
 		}
 	}
 
@@ -1787,7 +1775,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling Duty.scheduled: should compose correctly with other Duty operations") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 
 		PropF.forAllNoShrinkF { (duty: Duty[Int], delay: Int, f: Int => String) =>
 			//			def f(i: Int): String = i.toString.reverse
@@ -1820,7 +1808,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	test("Scheduling: when `doer.cancelAll()` is called within the thread currently assigned to `doer`, then no scheduled [[Runnable]]s should be executed, even if called near its scheduled time.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		val maxDuration = 5
 		PropF.forAllNoShrinkF(
 			Gen.nonEmptyListOf(for {
@@ -1854,13 +1842,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			promise.future
+			gate
 		}
 	}
 
 	test("Scheduling: when `doer.cancelAll()` is called outside the thread currently assigned to `doer`, the scheduled [[Runnable]]s may be executed at most one time and only if called near its scheduled time.") {
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		val maxDelay = 5
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, maxDelay),
@@ -1908,7 +1896,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			promise.future
+			gate
 		}
 	}
 
@@ -1919,7 +1907,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// Verify supplier is called exactly once and duty yields the result
 
 		val generators = getGenerators
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, 5)
 		) { (expectedDelay: Int) =>
@@ -1944,7 +1932,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			duty.triggerAndForget()
 			if latch.await(expectedDelay * 2 + 5, TimeUnit.MILLISECONDS) then break("The routine was executed more than one time")
 			else promise.trySuccess(())
-			promise.future
+			gate
 		}
 	}
 
@@ -1952,7 +1940,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		val REPETITIONS = 4
 		var testExecutionsCounter = 0
-		import generators.{*, given}
+		import generators.*
 		PropF.forAllNoShrinkF(
 			Gen.choose(-1, 10),
 			Gen.choose(1, 5)
@@ -1987,7 +1975,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			else break(s"The number of executions within the provided time is less than the expected")
 			doer.cancel(schedule)
 			testExecutionsCounter += 1
-			promise.future
+			gate
 		}
 	}
 }

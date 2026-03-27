@@ -2,6 +2,7 @@ package readren.common
 
 import scala.reflect.ClassTag
 
+// 	TODO rename to file to IArrayOps.scala
 extension [A](array: IArray[A]) {
 
 	inline def mapWithIndex[B: ClassTag](inline f: (element: A, index: Int) => B): IArray[B] = {

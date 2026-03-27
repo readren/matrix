@@ -1,58 +1,63 @@
-package readren.common.collections
+package readren.common
+package collections
 
 import scala.annotation.nowarn
 import scala.collection.AbstractIterator
 
+
 @deprecated("not used")
 object Queue {
-	abstract class Node {
+	trait Node {
 		type Self <: Node
 
 		private[Queue] var next: Self | Null = null
 	}
 }
 
+/** A queue that saves allocations by requiring the elements to extend the [[Node]] trait.
+ * @see [[ConcurrentQueue]] for a thread-save version */
 @deprecated("not used")
-class Queue[A <: Queue.Node { type Self = A }] extends Queue.Node {
-	type Self = A
+class Queue[N <: Queue.Node {type Self = N}] extends Queue.Node {
+	type Self = N
 
-	private var head: A | Null = null
-	private var tail: A | Null = null
-	
-	def enqueue(a: A): Unit = {
-		assert(a.next eq null)
-		if tail eq null then {
-			head = a
-			tail = a
-		} else {	
-			tail.next = a
-			tail = a
-		} 
+	private var head: N | Null = null
+	private var tail: N | Null = null
+
+	def enqueue(node: N): Unit = {
+		assert(node.next eq null)
+		val t = tail
+		if t eq null then
+			assert(head eq null)
+			head = node
+			tail = node
+		else
+			t.next = node
+			tail = node
 	}
-	
-	def dequeue(): A | Null = {
-		val a = head
-		if a ne null then  {
-			a.next = null
-			head = a.next
+
+	def dequeue(): N | Null = {
+		val node = head
+		if node ne null then {
+			head = node.next
+			node.next = null
 			if head eq null then tail = null
 		}
-		a
+		node
 	}
-	
-	inline def nextOf(a: A): A | Null = a.next
-	
-	def iterator: Iterator[A] = new AbstractIterator[A] {
-		private var nextA: A | Null = head 
+
+	inline def nextOf(a: N): N | Null = a.next
+
+	def iterator: Iterator[N] = new AbstractIterator[N] {
+		private var nextA: N | Null = head
 		
 		override def hasNext: Boolean = nextA ne null
 
-		override def next(): A = {
-			if nextA eq null then throw new NoSuchElementException()
+		override def next(): N = {
+			val n = nextA
+			if n eq null then throw new NoSuchElementException()
 			else {
-				val result = nextA.asInstanceOf[A]
-				nextA = nextA.next
-				result
+				nextA = n.next
+				n.nn
 			}
 		}
 	}

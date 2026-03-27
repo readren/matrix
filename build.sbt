@@ -15,7 +15,6 @@ ThisBuild / libraryDependencies ++= Seq(
 
 ThisBuild / scalacOptions ++= Seq(
 	"-preview",
-	"-g:vars", // adds debug info
 //	"-source:future",
 //	"-language:strictEquality",
 	"-experimental",
@@ -23,10 +22,18 @@ ThisBuild / scalacOptions ++= Seq(
 	"-feature",
 	"-explain",
 	//	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
+	// "-Yexplicit-nulls"
 )
 
-ThisBuild / fork := true // required for the "-ea" to work, but the assertions are not enabled anyway in for IntelliJ run configurations, so, can be removed
-ThisBuild / javaOptions ++= Seq("-ea") // intended to enable assertions but is ignored by IntelliJ run configurations, so, can be removed
+// These two lines are required for the "-ea" VM option to work when running with SBT. Note that this does not affect IntelliJ's run configurations. Use add "-ea" to the run-configurations' VM options to achieve the same.
+ThisBuild / fork := true
+ThisBuild / javaOptions ++= Seq("-ea")
+
+// Avoids the key not used warning for `idePackagePrefix`.
+Global / excludeLintKeys += idePackagePrefix
+
+// registers the test framework
+// ThisBuild / testFrameworks += new TestFramework("munit.Framework")
 
 lazy val common = (project in file("common"))
 	.settings(

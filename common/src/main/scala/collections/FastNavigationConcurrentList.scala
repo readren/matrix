@@ -1,4 +1,5 @@
-package readren.common.collections
+package readren.common
+package collections
 
 import FastNavigationConcurrentList.Node
 
@@ -76,9 +77,9 @@ final class FastNavigationConcurrentList[A <: Node {type Self = A}] { thisConcur
 				if previousNode eq null then {
 					thisConcurrentList.synchronized {
 						if head eq element then {
-							head.synchronized {
+							element.synchronized {
+								head = element.next
 								element.next = null
-								head = head.next
 							}
 							return true
 						}

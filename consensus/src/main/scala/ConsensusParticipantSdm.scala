@@ -91,7 +91,7 @@ object ConsensusParticipantSdm {
 		val latestBallotSeen: Ballot
 	}
 
-	/** The requested configuration change was successfully completed. Only participants with the [[LEADER]]] role answer this. */
+	/** The requested configuration change was successfully completed. Only participants with the [[LEADER]] role answer this. */
 	class SUCCESSFULLY_CHANGED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse
 
 	/** The participant is leading and already has the requested configuration. */
@@ -872,7 +872,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var quiescenceGrantor: Maybe[ParticipantId] = Maybe.empty
 		/** Memory where the [[Role.onQuiescencePermitted]] method stores the [[RecordIndex]] of the last [[StableConfigChange]] for which quiescence was authorized. */
 		private var indexOfStableConfigChangeForWhichQuiescenceWasPermitted: RecordIndex = 0
-		/** Memorices the schedule used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry.. */
+		/** Memorices the schedule used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
 		private var retryPermitQuiescenceSchedule: Maybe[sequencer.Schedule] = Maybe.empty
 
 		/** Knows the [[RetirementDriver]]s corresponding to the participant that were excluded from the configuration and potentially have not received the appends to notice that they can leave. */
@@ -1214,30 +1214,28 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchedDuty[AppendResult] = {
 				checkWithin()
 				var primaryUpdateResult: (isTermBumped: Boolean, appendSuccess: Boolean) = null
-				for primaryState1 <- primaryStateFence.advanceIf(
-					(primaryState0, _) => primaryState0 match {
-						case Inaccessible =>
+				for primaryState1 <- primaryStateFence.advanceIf {
+					case Inaccessible =>
+						primaryUpdateResult = (isTermBumped = false, appendSuccess = false)
+						Maybe.empty
+
+					case accessible0: Accessible =>
+						val currentTerm = accessible0.currentTerm
+						if inquirerTerm < currentTerm then {
 							primaryUpdateResult = (isTermBumped = false, appendSuccess = false)
 							Maybe.empty
-
-						case accessible0: Accessible =>
-							val currentTerm = accessible0.currentTerm
-							if inquirerTerm < currentTerm then {
-								primaryUpdateResult = (isTermBumped = false, appendSuccess = false)
-								Maybe.empty
-							} else {
-								val isTermBumped = inquirerTerm > currentTerm
-								val appendSuccess =
-									JOINING <= currentRole.ordinal && (isTermBumped || currentRole.ordinal <= FOLLOWER)
-										&& prevRecordIndex < accessible0.firstEmptyRecordIndex
-										&& prevRecordTerm == accessible0.getRecordTermAt(prevRecordIndex)
-								primaryUpdateResult = (isTermBumped, appendSuccess)
-								if appendSuccess && records.nonEmpty then Maybe(accessible0.withRecordsAppended(inquirerTerm, records, prevRecordIndex + 1))
-								else if isTermBumped then Maybe(accessible0.withTermUpdated(inquirerTerm))
-								else Maybe.empty
-							}
-					}
-				)
+						} else {
+							val isTermBumped = inquirerTerm > currentTerm
+							val appendSuccess =
+								JOINING <= currentRole.ordinal && (isTermBumped || currentRole.ordinal <= FOLLOWER)
+									&& prevRecordIndex < accessible0.firstEmptyRecordIndex
+									&& prevRecordTerm == accessible0.getRecordTermAt(prevRecordIndex)
+							primaryUpdateResult = (isTermBumped, appendSuccess)
+							if appendSuccess && records.nonEmpty then Maybe(accessible0.withRecordsAppended(inquirerTerm, records, prevRecordIndex + 1))
+							else if isTermBumped then Maybe(accessible0.withTermUpdated(inquirerTerm))
+							else Maybe.empty
+						}
+				}
 				yield {
 
 					primaryState1 match {
@@ -1597,15 +1595,13 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param previousTermRef the [[Term]] value in this reference object is overwritten with the [[PrimaryState.currentTerm]] corresponding to the [[PrimaryState]] before the causally anchored advance is performed.
 			 * @note About the safety of reusing the same [[TermRef]] instance for different calls: The value is guaranteed to reflect the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[LatchedDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
 			protected def updateTermIfLessThan(seenTerm: Term, previousTermRef: TermRef = defaultPreviousTermRef): sequencer.LatchedDuty[PrimaryState] = {
-				primaryStateFence.advanceIf(
-					(primaryState0, _) => {
-						previousTermRef.elem = primaryState0.currentTerm
-						if seenTerm > primaryState0.currentTerm then {
-							Maybe(primaryState0.withTermUpdated(seenTerm))
-						}
-						else Maybe.empty
+				primaryStateFence.advanceIf { (primaryState0: PrimaryState) =>
+					previousTermRef.elem = primaryState0.currentTerm
+					if seenTerm > primaryState0.currentTerm then {
+						Maybe(primaryState0.withTermUpdated(seenTerm))
 					}
-				).andThen(ps => if ps.currentTerm > previousTermRef.elem then onTermBumped(ps))
+					else Maybe.empty
+				}.andThen(ps => if ps.currentTerm > previousTermRef.elem then onTermBumped(ps))
 			}
 
 			private def memorizedParticipantInfosToArray(currentConfig: Configuration): IArray[StateInfo] = {
@@ -1635,15 +1631,13 @@ trait ConsensusParticipantSdm { thisModule =>
 				cluster.notifyQuiesced(motive)
 				previousRole match {
 					case statefulRole: StatefulRole =>
-						statefulRole.primaryStateFence.advanceIf(
-							(ps, _) => {
-								if currentRole ne this then Maybe.empty
-								else ps match {
-									case Inaccessible => Maybe.empty
-									case a: Accessible => Maybe.some(a.withWorkspaceReleased())
-								}
+						statefulRole.primaryStateFence.advanceIf { ps =>
+							if currentRole ne this then Maybe.empty
+							else ps match {
+								case Inaccessible => Maybe.empty
+								case a: Accessible => Maybe.some(a.withWorkspaceReleased())
 							}
-						).andThen(_ => completed.fulfillUnsafe(()))
+						}.andThen(_ => completed.fulfillUnsafe(()))
 
 					case _ =>
 						completed.fulfillUnsafe(())
@@ -1919,7 +1913,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				notifyListeners(_.onHandingOff(endedTerm))
 
 				for {
-					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
 						if primaryState0.currentTerm < latestTermSeen then Maybe(primaryState0.withTermUpdated(latestTermSeen)) else Maybe.empty
 					}
 				} do if currentRole eq this then primaryState1 match {
@@ -2010,7 +2004,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				for {
 					// Bump the term
-					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
 						if currentRole ne this then Maybe.empty
 						else primaryState0 match {
 							case Inaccessible => Maybe.empty
@@ -2136,11 +2130,9 @@ trait ConsensusParticipantSdm { thisModule =>
 				val indexOfTopConfigChange = initialPrimaryState.indexOfTopConfigChange
 				// if the log lacks a ConfigChange record (is empty), create a synthetic one with the seed participants of the initial synthetic configuration (appointed in `currentConfig` during Starting).
 				if indexOfTopConfigChange == 0 then {
-					for primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
-						primaryState0 match {
-							case Inaccessible => Maybe.empty
-							case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
-						}
+					for primaryState1 <- primaryStateFence.advanceIf {
+						case Inaccessible => Maybe.empty
+						case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
 					} yield startConfigChangeSecondPhase(currentConfig.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
 				}
 				// if the log contains a ConfigChange record then:
@@ -2366,7 +2358,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							scribe.trace(s"$boundParticipantId: About to append the first phase of config change $tcc")
 							for {
 								// Update primary state
-								primaryState2 <- primaryStateFence.advanceIf { (primaryState1, _) =>
+								primaryState2 <- primaryStateFence.advanceIf { primaryState1 =>
 									if currentRole ne this then Maybe.empty
 									else primaryState1 match {
 										case Inaccessible =>
@@ -2397,7 +2389,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @return  a [[sequencer.LatchedDuty]] that yields true/false if the [[StableConfigChange]] [[Record]] was/wasn't replicated to a majority. */
 			private def startConfigChangeSecondPhase(correspondingTransitionalConfigChange: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex): sequencer.LatchedDuty[Boolean] = {
 				for {
-					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
 						if currentRole ne this then Maybe.empty
 						else primaryState0 match {
 							case accessible0: Accessible =>
@@ -2454,10 +2446,11 @@ trait ConsensusParticipantSdm { thisModule =>
 				if attemptFlag == LEADERSHIP_VACATED then scribe.warn(s"$leadedTerm: Received a command tagged with LEADER_VACATED despite it is leading.")
 
 				val clientId = clientIdOf(clientCommand)
-				var primaryStateUpdaterResult: (recordIndex: RecordIndex, indexOfLastAppendedCommandFromClient: RecordIndex, shouldRetire: Boolean) | Null = null // secondary return value of the causal fence exclusive section
+				type PrimaryStateUpdaterResult = (recordIndex: RecordIndex, indexOfLastAppendedCommandFromClient: RecordIndex, shouldRetire: Boolean)
+				var primaryStateUpdaterResult: PrimaryStateUpdaterResult | Null = null // secondary return value of the causal fence exclusive section
 				for {
 					// First, append the command to the log if it wasn't already
-					primaryState1 <- primaryStateFence.advanceIf { (primaryState0, _) =>
+					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
 						if currentRole ne this then Maybe.empty
 						else primaryState0 match {
 							case Inaccessible =>
@@ -2469,7 +2462,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
 								if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
 									if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
-									primaryStateUpdaterResult = (0, 0, true)
+									primaryStateUpdaterResult = (0L, 0L, true)
 									Maybe.empty
 								} else {
 									val indexOfLastAppendedCommandFromClient = accessible0.indexOfLastAppendedCommandFrom(clientId)
@@ -2532,8 +2525,8 @@ trait ConsensusParticipantSdm { thisModule =>
 											authorizeQuiescenceIfVanished(config1.asInstanceOf[StableConfig])
 											become(Retiring(leadedTerm, config1.changeIndex, config1.allParticipants)).onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
 										}
-										else if recordIndex == 0 then sequencer.LatchedDuty_ready(Stale(clientCommand, indexOfLastAppendedCommandFromClient))
-										else if recordIndex == -1 then sequencer.LatchedDuty_ready(TooOld(clientCommand))
+										else if recordIndex == 0L then sequencer.LatchedDuty_ready(Stale(clientCommand, indexOfLastAppendedCommandFromClient))
+										else if recordIndex == -1L then sequencer.LatchedDuty_ready(TooOld(clientCommand))
 										else {
 											assert(recordIndex > 0)
 											for {
@@ -3283,22 +3276,22 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def toString: String = s"Accessible(currentTerm=$currentTerm, firstEmptyRecordIndex=$firstEmptyRecordIndex, indexOfTopConfigChange=$indexOfTopConfigChange)"
 		}
 
-		/** Knows which are the participants involved in the consensus and defines rules that govern replication, quorum formation, and elections.
+		/** Knows which are the participants involved in the consensus and defines rules pertaining to elections and replication that govern the participant's behavior.
 		 *
 		 * It has exactly three concrete subclasses:
 		 *
-		 *	- [[NoConfig]]: Active when lack of access to the needed information.
+		 *	- [[NoConfig]]: Active when quiesced or lack of access to the persistent state (log, term, etc), which drives the participant to [[Quiesced]].
 		 *
 		 *	- [[TransitionalConfig]]: Active during joint consensus (`Cold` ∪ `Cnew`).
-		 *     This behavior begins immediately once the transitional entry is appended to the log.
-		 *     Replication and quorum require majorities across both `Cold` and `Cnew`.
-		 *     Elections must also consider both sets.
-		 *     Transitional behavior remains active until a [[StableConfigChange]] entry is replicated to a majority of both `Cold` and `Cnew` ([[commitIndex]] >= indexOfStableConfigChange).
+		 *     This behavior begins immediately once the transitional entry is appended to the participant's log.
+		 *     Replication and election quorum require majorities across both `Cold` and `Cnew`.
+		 *     Transitional behavior remains active until the corresponding [[StableConfigChange]] entry is replicated to a majority of both `Cold` and `Cnew` ([[commitIndex]] >= indexOfCorrespondingStableConfigChange).
 		 *
 		 *	- [[StableConfig]]: Active during non-joint consensus (Cnew).
-		 *     This behavior begins only once the stable entry is committed (i.e. when [[commitIndex]] ≥ indexOfStableConfigChange).
-		 *     Replication and quorum reduce to `Cnew` only.
-		 *     `Cold` only servers, having seen the stable entry, shut down.
+		 *     This behavior begins only once the backing [[StableConfigChange]] entry is committed (i.e. when [[commitIndex]] ≥ indexOfBackingStableConfigChange).
+		 *     Replication and election quorum require the majority of `Cnew` only.
+		 *     Non-leader `Cold` only participants having commited the [[StableConfigChange]] entry that excluded them, do transition to [[Retiring]] and wait authorization to quiesce from a stable leader of a succeeding term.
+		 *     A leader `Cold` only participant having commited the [[StableConfigChange]] entry that excluded it, do stay leading as ghost leader until either: it sees all the other participants had commited said [[StableConfigChange]]; or it receives either an "append records" or "authorization to quiesce" RPC from a leader of a higher term.
 		 *
 		 * === Commit Index Dependency ===
 		 * - [[TransitionalConfig]] behavior starts on append of its entry, but ends when the stable entry is committed.

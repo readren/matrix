@@ -1,4 +1,5 @@
-package readren.common.collections
+package readren.common
+package collections
 
 import ConcurrentList.Node
 
@@ -60,23 +61,29 @@ final class ConcurrentList[A <: Node {type Self = A}] { thisConcurrentList =>
 	def nextOf(element: A | Null): A | Null = {
 		if element eq null then updatedHead()
 		else element.synchronized {
-			var nextElem = element.next
-			while nextElem ne null do nextElem.synchronized {
-				if nextElem.removed then {
-					nextElem = nextElem.next
-					element.next = nextElem
-				} else return nextElem
-			}
-			null
+			skipRemoved(element.next)
 		}
 	}
 
 	/** Updates and gets the [[head]] of this list. */
 	private def updatedHead(): A | Null = thisConcurrentList.synchronized {
-		while head ne null do head.synchronized {
-			if head.removed then head = head.next
-			else return head
-		}
+		val newHead = skipRemoved(head)
+		head = newHead
+		newHead
+	}
+
+	/** Skips all removed elements starting from the given element, unattaching them from the list as it goes. */
+	private def skipRemoved(start: A | Null): A | Null = {
+		var element = start
+		while {
+			val stableElement = element
+			if stableElement eq null then return null
+			else stableElement.synchronized {
+				if stableElement.isRemoved then element = stableElement.next
+				else return stableElement
+				true
+			}
+		} do ()
 		null
 	}
 

@@ -181,7 +181,7 @@ abstract class ActantCore[U, D <: Doer](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: doer.LatchedDuty[Unit] = stopCovenant.latchedDuty
+	override def stopDuty: doer.LatchedDuty[Unit] = stopCovenant.asLatchedDuty
 
 	override def watch[CSM <: U](watchedActant: Actant[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
@@ -242,7 +242,7 @@ abstract class ActantCore[U, D <: Doer](
 			isMarkedToStop = true
 			doer.execute(selfStop())
 		}
-		stopCovenant.latchedDuty
+		stopCovenant.asLatchedDuty
 	}
 
 	/**
@@ -274,7 +274,7 @@ abstract class ActantCore[U, D <: Doer](
 				spawner.stopsChildren().trigger(true)(_ => stopMe())
 			}
 		}
-		stopCovenant.latchedDuty
+		stopCovenant.asLatchedDuty
 	}
 
 	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {

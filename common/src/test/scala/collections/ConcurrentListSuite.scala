@@ -77,7 +77,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 
 			addFutures.map { _ =>
 				val iterator = list.circularIterator
-				val traversed = Iterator.continually(iterator.next())
+				val traversed = Iterator.continually(iterator.next().nn)
 					.take(nodes.size)
 					.toSet
 
@@ -128,12 +128,12 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 					val leastIdByThread = Array.fill(PARALLELISM)(Integer.MAX_VALUE)
 					var reachedAInitialNode = false
 					while !reachedAInitialNode do {
-						if current.id > greatestIdByThread(current.addingThreadIndex) then greatestIdByThread(current.addingThreadIndex) = current.id
-						if current.id < leastIdByThread(current.addingThreadIndex) then leastIdByThread(current.addingThreadIndex) = current.id
+						if current.nn.id > greatestIdByThread(current.nn.addingThreadIndex) then greatestIdByThread(current.nn.addingThreadIndex) = current.nn.id
+						if current.nn.id < leastIdByThread(current.nn.addingThreadIndex) then leastIdByThread(current.nn.addingThreadIndex) = current.nn.id
 						val next = circularIterator.next()
-						if next.id >= greatestIdByThread(next.addingThreadIndex) then reachedAInitialNode = true
+						if next.nn.id >= greatestIdByThread(next.nn.addingThreadIndex) then reachedAInitialNode = true
 						else {
-							assert(next.id < leastIdByThread(next.addingThreadIndex))
+							assert(next.nn.id < leastIdByThread(next.nn.addingThreadIndex))
 						}
 						current = next
 					}
@@ -158,7 +158,7 @@ class ConcurrentListSuite extends ScalaCheckEffectSuite {
 				var nodesCounter = 0
 				while node ne null do {
 					nodesCounter += 1
-					assert(expectedNodesById.containsKey(node.id))
+					assert(expectedNodesById.containsKey(node.nn.id))
 					node = testedList.nextOf(node)
 				}
 				assert(nodesCounter == expectedNodesById.size)

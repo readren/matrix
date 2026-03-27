@@ -1,31 +1,53 @@
 # AGENTS.md
 
-This file provides guidance to WARP (warp.dev) when working with code in this repository.
+This file provides guidance to Antigravity when working in this repository.
+
+## Role
+
+Treat the user as an adult. Do not be condescendent. Be critical. Do not accept the user's premises without question.
 
 ## Build, test, and development commands
 
 ### Environment
-- Toolchain is SBT + Scala 3 (`scalaVersion := 3.7.4`, `sbt.version=1.11.5`).
+
+- Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).
 - Run all commands from the repository root.
+- Open and keep SBT in interactive mode to run SBT commands.
 
 ### Core commands
-- Compile all modules:
-  - `sbt compile`
-- Run all tests:
-  - `sbt test`
-- Compile or test a specific module:
-  - `sbt "project common" compile`
-  - `sbt "project consensus" test`
 
-### Running a single test suite or test case
-- Single suite:
-  - `sbt "consensus / Test / testOnly readren.consensus.ConsensusParticipantSdmTest"`
-- Single test by name filter (MUnit):
-  - `sbt "consensus / Test / testOnly readren.consensus.ConsensusParticipantSdmTest -- -z \"All invariants special case\""`
+- Start SBT interactive mode:
+    - `sbt`
+- Exit SBT interactive mode:
+    - `exit`
+
+#### SBT interactive mode commands
+
+- Reload project:
+    - `reload`
+- Clean project:
+    - `clean`
+- List subprojects:
+    - `projects`
+- Compile all subprojects:
+    - `compile`
+- Run all tests:
+    - `test`
+- Compile a specific subproject:
+    - `{subproject name} / compile`
+- Test a specific subproject:
+    - `{subproject name} / test`
+- Run a single test suite:
+    - `{subproject name} / Test / testOnly {full name of concrete suite class}`
+- Run a single test case of a test suite:
+    - `{subproject name} / Test / testOnly {full name of concrete suite class} -- -z "*{test name or fragment of it}*"`
+- To run directly from the command line, wrap the sbt command in quotes, removing the inner quotes, and cropping the test name to a single word:
+    - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class}"`
+    - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class} -- -z *{a single word of the test name}*"`
 
 ### Lint/format
 - There is no dedicated lint/format task configured in this repo (no scalafmt/scalafix config found).
-- Use `compile` + `test` as the validation baseline.
+- Use `compile` as the validation baseline.
 
 ### Packaging
 - Package jars:
