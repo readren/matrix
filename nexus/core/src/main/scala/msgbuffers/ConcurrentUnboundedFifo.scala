@@ -28,7 +28,7 @@ class ConcurrentUnboundedFifo[M](owner: ActantCore[M, ?]) extends Inqueue[M], In
 	override def submit(message: M): Unit = {
 		if atomicSize.getAndIncrement() == 0 then {
 			queue.offer(message)
-			owner.doer.execute(owner.onInboxBecomesNonempty())
+			owner.doer.run(owner.onInboxBecomesNonempty())
 		} else queue.offer(message)
 	}
 

@@ -31,7 +31,7 @@ class ParticipantDelegateEgg(participantService: ParticipantService, eggChannel:
 				oPeerContactAddress = Maybe(message.myContactAddress)
 				if participantService.config.acceptedConnectionsFilter.test(message.myContactAddress) then {
 					scribe.debug(s"${participantService.myAddress}: I have received the hello message `$message` from `${message.myContactAddress}` through channel $eggChannelId.")
-					participantService.sequencer.execute(hatch(message))
+					participantService.sequencer.run(hatch(message))
 				} else {
 					scribe.info(s"${participantService.myAddress}: A connection to me initiated by `${message.myContactAddress}` with channel $eggChannel was rejected by the contact-addresses' filter")
 					abortIncubated(oPeerContactAddress)

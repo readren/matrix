@@ -196,7 +196,7 @@ trait LoopingExtension { thisDoer: Doer =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(completedCycles + 1, recursionDepth + 1)
 						} else {
-							execute(loop(completedCycles + 1, 0))
+							run(loop(completedCycles + 1, 0))
 						}
 					}(onComplete)
 				}
@@ -228,7 +228,7 @@ trait LoopingExtension { thisDoer: Doer =>
 				condition(completedCycles, lastDutyResult).fold {
 					dutyA.engagePortal { newA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-						else execute(loop(completedCycles + 1, newA, 0))
+						else run(loop(completedCycles + 1, newA, 0))
 					}
 				}(onComplete)
 			}
@@ -259,7 +259,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					case Right(dutyA) =>
 						dutyA.engagePortal { newA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-							else execute(loop(completedCycles + 1, newA, 0))
+							else run(loop(completedCycles + 1, newA, 0))
 						}
 				}
 			}
@@ -290,7 +290,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					case Left(b) => onComplete(b)
 					case Right(a) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
-						else execute(loop(executionsCounter + 1, a, 0))
+						else run(loop(executionsCounter + 1, a, 0))
 				}
 			}
 
@@ -329,7 +329,7 @@ trait LoopingExtension { thisDoer: Doer =>
 						} else if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(attemptsAlreadyMade + 1, recursionDepth + 1)
 						} else {
-							execute(loop(attemptsAlreadyMade + 1, 0))
+							run(loop(attemptsAlreadyMade + 1, 0))
 						}
 				}
 			}
@@ -643,7 +643,7 @@ trait LoopingExtension { thisDoer: Doer =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) {
 							loop(completedCycles + 1, recursionDepth + 1)
 						} else {
-							execute(loop(completedCycles + 1, 0))
+							run(loop(completedCycles + 1, 0))
 						}
 					}(onComplete)
 				}
@@ -693,7 +693,7 @@ trait LoopingExtension { thisDoer: Doer =>
 				conditionResult.fold {
 					taskA.engagePortal { newTryA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
-						else execute(loop(completedCycles + 1, newTryA, 0))
+						else run(loop(completedCycles + 1, newTryA, 0))
 					}
 				}(onComplete)
 			}
@@ -735,7 +735,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					case Right(taskA) =>
 						taskA.engagePortal { newTryA =>
 							if (recursionDepth < maxRecursionDepthPerExecutor) loop(completedCycles + 1, newTryA, recursionDepth + 1)
-							else execute(loop(completedCycles + 1, newTryA, 0));
+							else run(loop(completedCycles + 1, newTryA, 0));
 						}
 				}
 			}
@@ -777,7 +777,7 @@ trait LoopingExtension { thisDoer: Doer =>
 				task.engagePortal {
 					case Success(Right(a)) =>
 						if (recursionDepth < maxRecursionDepthPerExecutor) loop(executionsCounter + 1, a, recursionDepth + 1)
-						else execute(loop(executionsCounter + 1, a, 0));
+						else run(loop(executionsCounter + 1, a, 0));
 					case Success(Left(tryB)) =>
 						onComplete(tryB)
 					case Failure(e) =>
@@ -825,7 +825,7 @@ trait LoopingExtension { thisDoer: Doer =>
 								} else if (recursionDepth < maxRecursionDepthPerExecutor) {
 									loop(attemptsAlreadyMade + 1, recursionDepth + 1)
 								} else {
-									execute(loop(attemptsAlreadyMade + 1, 0))
+									run(loop(attemptsAlreadyMade + 1, 0))
 								}
 						}
 					case failure: Failure[Either[A, B]] =>

@@ -290,7 +290,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	private def startConnectionToSeeds(seeds: Iterable[ContactAddress]): Unit = {
-		sequencer.execute {
+		sequencer.run {
 			for seed <- seeds do if config.myAddress != seed then {
 				if !delegateByAddress.contains(seed) then addANewConnectingDelegateAndStartAConnectionToThenAConversationWithParticipant(seed)
 			}
@@ -318,7 +318,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				}
 				val channelId = ChannelId(INITIATED, oChannelLocalAddress)
 				scribe.trace(s"$myAddress: I have successfully initiated a connection to `$peerContactAddress` with channel $channelId.")
-				sequencer.execute {
+				sequencer.run {
 					val currentDelegate = delegateByAddress.getOrElse(peerContactAddress, null)
 					// if the `relievedConnectingDelegate` was not removed in the middle, then no conflicting connection happened on the while. Therefore, I can replace the relieved delegate with a communicable one.
 					if relievedConnectingDelegate eq currentDelegate then {
@@ -339,7 +339,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 				}
 			case Failure(exc) =>
 				scribe.error(s"$myAddress: The connection that I started to `$peerContactAddress` has been aborted after many failed tries.", exc)
-				sequencer.execute(relievedConnectingDelegate.onConnectionAborted(exc))
+				sequencer.run(relievedConnectingDelegate.onConnectionAborted(exc))
 		}
 	}
 
@@ -448,7 +448,7 @@ class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock,
 	}
 
 	private def release(): Unit = {
-		sequencer.execute {
+		sequencer.run {
 			_isShutDown = true
 			notifyListenersThat(IAmGoingToCloseAllChannels())
 			serverChannel.close()

@@ -171,14 +171,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	}
 
 	/**
-	 * Test invariants of [[CausalFence]] ensuring that synchronous consumers of the [[LatchedDuty]] returned by [[advance]] observe the up‑to‑date state deterministically.
+	 * Test invariants of [[Doer.CausalFence]] ensuring that synchronous consumers of the [[Doer.LatchingDuty]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
 	 *
 	 * Unique checks in this test:
-	 *  - Consumers subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.LatchingDuty]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
 	 *
-	 *  - A consumer subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.LatchingDuty]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
 	 *
-	 *  - Game‑changing invariant: Immediately after an [[advance]] call, there are no other advances in flight except the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *  - Game‑changing invariant: Immediately after an [[Doer.CausalFence.advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Covenant]] (seen as [[Doer.LatchingDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
 	 *
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
 	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
@@ -216,7 +216,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			var derivedSerial: Int = 0
 			var advanceCallSerial = 0
 
-			def path(pathId: Int): LatchedDuty[PrimaryState] = {
+			def path(pathId: Int): LatchingDuty[PrimaryState] = {
 				val advanceName = s"advance$advanceCallSerial${advanceCallSerial + 1}"
 				advanceCallSerial += 1
 				for {
@@ -236,14 +236,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					}
 					anchoredState <- {
 						val committedState = fence.committedState
-						if nextState.pathId != pathId && nextState.serial < topSerial then break(s"A consumer subscribed to the LatchedDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchedDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						if nextState.pathId != pathId && nextState.serial < topSerial then break(s"A consumer subscribed to the LatchingDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchingDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					latestState <- {
-						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						fence.causalChainTail()
 					}
 					recursiveState <- {
@@ -264,14 +264,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 
 	/**
-	 * Test invariants of [[CausalFence]] ensuring that synchronous consumers of the [[LatchedDuty]] returned by [[advance]] observe the up‑to‑date state deterministically.
+	 * Test invariants of [[CausalFence]] ensuring that synchronous consumers of the [[Doer.LatchingDuty]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
 	 *
 	 * Unique checks in this test:
-	 *  - Consumers subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.LatchingDuty]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
 	 *
-	 *  - A consumer subscribed immediately (synchronously) to the [[LatchedDuty]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.LatchingDuty]] returned by [[Doer.CausalFence.causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
 	 *
-	 *  - Game‑changing invariant: Immediately after an [[advance]] call, there are no other advances in flight except the one just created. The returned [[Covenant]] (seen as [[LatchedDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *  - Game‑changing invariant: Immediately after an [[advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Covenant]] (seen as [[Doer.LatchingDuty]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
 	 *
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
 	 * // TODO removing delay causes stack overflow. Look for a solution for this test, and consider a solution at the library level. See note in [[Doer.Covenant.fulfillUnsafe]].
@@ -293,7 +293,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val fence = doer.CausalFence(initialState)
 			var derivedSerial: Int = 0
 
-			def path(pathId: Int): LatchedDuty[PrimaryState] = {
+			def path(pathId: Int): LatchingDuty[PrimaryState] = {
 				for {
 					nextState <- {
 						fence.advance { (previous: PrimaryState) =>
@@ -309,14 +309,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						}
 					}
 					anchoredState <- {
-						if nextState.pathId != pathId then break(s"A consumer subscribed to the LatchedDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: $pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchedDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=${fence.committedState}")
+						if nextState.pathId != pathId then break(s"A consumer subscribed to the LatchingDuty returned by `advance` should see the state to which the advance transitioned to; and is not happening: $pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchingDuty returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=${fence.committedState}")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					latestState <- {
-						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchedDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						fence.causalChainTail()
 					}
 					followingState <- {
@@ -357,7 +357,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 2
 			}
 
-			doer.execute(m12())
+			doer.run(m12())
 
 			inline def m23(): Unit = {
 				println("executing 23")
@@ -365,7 +365,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 3
 			}
 
-			doer.execute(m23())
+			doer.run(m23())
 
 			def m34(): Unit = {
 				println("executing 34")
@@ -373,7 +373,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				mutable = 4
 			}
 
-			doer.execute(m34())
+			doer.run(m34())
 
 			def end(): Unit = {
 				println("executing end")
@@ -381,7 +381,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				promise.trySuccess(())
 			}
 
-			doer.execute(end())
+			doer.run(end())
 			if mutable != 1 then break(s"An execute was not decoupled 0: mutable=$mutable")
 
 			println("completed")
@@ -1289,7 +1289,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalFence(initial)
 
 				for {
@@ -1322,7 +1322,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalFence(initial)
 				for {
 					anchor <- fence.causalAnchor()
@@ -1358,7 +1358,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalFence[String](initial)
 				for {
 					state <- fence.advanceSpeculatively { (a, rba) =>
@@ -1367,7 +1367,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 								.map(new String(_)) // this line is needed because the random updater function may return a duty that yields the argument.
 								// ensure `rollback` is called after the duty returned by primaryStateUpdater is fulfilled.
 								.andThen { x =>
-									doer.execute {
+									doer.run {
 										rba.rollback(true, (v, rollbackApplication) =>
 											if rollbackApplication == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
 											else break("Rollback should have been rejected")
@@ -1403,7 +1403,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			execute(loop(initial, 0))
+			run(loop(initial, 0))
 			gate
 		}
 	}
@@ -1416,7 +1416,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalFence(initial)
 
 				val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => Covenant_triggerAndWire(updater(previousState)) }
@@ -1455,7 +1455,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalStuckableFence(initial)
 
 				fence.causalAnchor().trigger(false) { anchorBefore =>
@@ -1501,7 +1501,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalStuckableFence(Success(initial))
 				for {
 					anchor <- fence.causalAnchor().asHardyDuty
@@ -1541,7 +1541,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val promise = Promise[Unit]
 			given Promise[Unit] = promise
 
-			execute {
+			run {
 				val fence = doer.CausalStuckableFence(Success(initial))
 				for {
 					actualResult <- fence.advanceSpeculativelyIf { (a: String, rba) =>
@@ -1552,7 +1552,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 								.andThen { x =>
 									println(s"updater about to complete")
 									// ensure `rollback` is called after the task returned by primaryStateUpdater is fulfilled.
-									doer.execute {
+									doer.run {
 										println(s"about to rollback")
 										rba.rollback(true, (actualResult, wasTooLate) =>
 											if wasTooLate == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
@@ -1824,7 +1824,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			var cancelAllWasCalled = false
 			// Activate all the sample schedules and check if their routine is executed after `cancelAll` was called.
-			doer.execute {
+			doer.run {
 				for sample <- samples do {
 					doer.schedule(sample) { s =>
 						if cancelAllWasCalled then break(s"A schedule's routine was executed despite `cancelAll` was cancelled: schedule: $sample, isActive=${doer.wasActivated(sample)}")
@@ -1835,7 +1835,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// With another Doer instance, schedule the execution of `doer.cancelAll` within the doer and wait enough time for the routines be executed before considering the test as passed.
 			val otherDoer = buildDoer("other")
 			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
-				doer.execute {
+				doer.run {
 					doer.cancelAll()
 					cancelAllWasCalled = true
 					otherDoer.schedule(otherDoer.newDelaySchedule(maxDuration))(_ => promise.trySuccess(()))

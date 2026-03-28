@@ -105,7 +105,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				mutable = 2
 			}
 
-			doer.execute(m12())
+			doer.run(m12())
 
 			inline def m23(): Unit = {
 				println("executing 23")
@@ -113,7 +113,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				mutable = 3
 			}
 
-			doer.execute(m23())
+			doer.run(m23())
 
 			def m34(): Unit = {
 				println("executing 34")
@@ -121,7 +121,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				mutable = 4
 			}
 
-			doer.execute(m34())
+			doer.run(m34())
 
 			def end(): Unit = {
 				println("executing end")
@@ -129,7 +129,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				promise.trySuccess(())
 			}
 
-			doer.execute(end())
+			doer.run(end())
 			if mutable != 1 then break(s"An execute was not decoupled 0: mutable=$mutable")
 
 			println("completed")
@@ -276,10 +276,10 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			// The Duty executes asynchronously, avoiding the artificial Thread.sleep
 			// which gave the main thread too much of a head start.
 			val duty = doer.Duty_mine { () =>
-				doer.execute {
+				doer.run {
 					scribe.debug(s"#$i: test A first execute")
 				}
-				doer.execute {
+				doer.run {
 					scribe.debug(s"#$i: test A second execute")
 					promise.trySuccess(())
 				}
@@ -297,15 +297,15 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			while busy < target do busy += 1
 
 			// 4. Main thread immediately enqueues new tasks, racing with the worker's queue exit
-			doer.execute {
+			doer.run {
 				// scribe.debug(s"#$i: test B first execute")
 				latch.countDown()
 			}
-			doer.execute {
+			doer.run {
 				// scribe.debug(s"#$i: test B second execute")
 				latch.countDown()
 			}
-			doer.execute {
+			doer.run {
 				// scribe.debug(s"#$i: test C third execute")
 				latch.countDown()
 			}

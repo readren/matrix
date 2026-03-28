@@ -245,7 +245,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					assert(inquirerNode.sequencer.isInSequence)
 					val inquirerRole = RoleOrdinal_nameOf(inquirerNode.participant.getRoleOrdinal)
 					val covenant = netSequencer.Covenant[(Try[R], RequestId)]()
-					netSequencer.execute {
+					netSequencer.run {
 						lastProcessTimeoutSchedule.foreach(netSequencer.cancel)
 
 						val requestChannel = channelBySenderByReceiver(inquirerIndex)(replierIndex)
@@ -443,7 +443,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private var indexOfActiveConfigChange: RecordIndex = 0
 
 		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
-			netSequencer.execute {
+			netSequencer.run {
 				scribe.trace(s"Net: onActiveConfigChanged($change, index=$changeIndex) was called") // when readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
 				activeConfigChange = change
 				indexOfActiveConfigChange = changeIndex
@@ -459,7 +459,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		def onNodeQuiesced(node: Node): Unit = {
-			netSequencer.execute {
+			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
 				if activeConfigChange.isActive(node.myId) then node.startsIfNotRunning(indexOfActiveConfigChange).triggerAndForget(false)
 			}
@@ -651,7 +651,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		def release(): Unit = {
-			sequencer.execute {
+			sequencer.run {
 				_participant = null
 				scribe.trace(s"node-$myId: consensus service was released")
 			}
@@ -662,7 +662,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			private val appliedCommands: mutable.Map[RecordIndex, ClientCommand] = mutable.LongMap.empty
 			var highestAppliedIndex: RecordIndex = 0
 
-			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.LatchedDuty[StateMachineResponse] = {
+			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.LatchingDuty[StateMachineResponse] = {
 				sequencer.checkWithin()
 
 				if index <= highestAppliedIndex then assert(appliedCommands.get(index).contains(command))
@@ -674,12 +674,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 
 				// TODO add delay
-				sequencer.LatchedDuty_ready(command.value)
+				sequencer.LatchingDuty_ready(command.value)
 			}
 
-			override def recoverIndexOfLastAppliedCommand: sequencer.LatchedDuty[RecordIndex] = {
+			override def recoverIndexOfLastAppliedCommand: sequencer.LatchingDuty[RecordIndex] = {
 				sequencer.checkWithin()
-				sequencer.LatchedDuty_ready(0)
+				sequencer.LatchingDuty_ready(0)
 			}
 		}
 
@@ -775,15 +775,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		object storage extends Storage {
 			private[ConsensusParticipantSdmTest] var memory: WS = TestWorkspace()
 
-			override def load: sequencer.LatchedDuty[Try[WS]] = {
+			override def load: sequencer.LatchingDuty[Try[WS]] = {
 				sequencer.checkWithin()
-				sequencer.LatchedDuty_ready(Success(memory))
+				sequencer.LatchingDuty_ready(Success(memory))
 			} // TODO add a delay
 
-			override def save(workspace: WS): sequencer.LatchedDuty[Try[Unit]] = {
+			override def save(workspace: WS): sequencer.LatchingDuty[Try[Unit]] = {
 				sequencer.checkWithin()
 				memory = workspace
-				sequencer.LatchedDuty_ready(Doer.successUnit) // TODO add a delay
+				sequencer.LatchingDuty_ready(Doer.successUnit) // TODO add a delay
 			}
 		}
 
@@ -1015,7 +1015,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					for nodeIndex <- 0 until clusterSize do {
 						val otherNode = net.getNode(nodeIndex)
 						if otherNode ne node then {
-							otherNode.sequencer.execute {
+							otherNode.sequencer.run {
 								if otherNode.storage.memory.firstEmptyRecordIndex > index && otherNode.storage.memory.getRecordAt(index).term == record.term then {
 									val otherNodeRecords = otherNode.storage.memory.getRecordsBetween(1, index)
 									if !otherNodeRecords.sameElements(thisNodeRecords) then promise.tryFailure(new AssertionError(s"The logs of nodes ${node.myId} and ${otherNode.myId} are not identical in all entries up through $index despite the records at $index have the same term. ${otherNodeRecords.toSeq}==${thisNodeRecords.toSeq}"))
@@ -1041,7 +1041,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					for nodeIndex <- 0 until clusterSize do {
 						val otherNode = net.getNode(nodeIndex)
 						if otherNode ne node then {
-							otherNode.sequencer.execute {
+							otherNode.sequencer.run {
 								val commandsAppliedToTheOtherNode = appliedCommandsByNodeIndex(net.indexOf(otherNode.myId))
 								val commandAppliedToTheOtherNodeAtIndex = commandsAppliedToTheOtherNode(index.toInt)
 								if (commandAppliedToTheOtherNodeAtIndex ne None) && commandAppliedToTheOtherNodeAtIndex != command then
@@ -1064,7 +1064,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					// check that the log of the leader contains the records previously committed by all participants
 					for nodeIndex <- 0 until clusterSize do {
 						val otherNode = net.getNode(nodeIndex)
-						otherNode.sequencer.execute {
+						otherNode.sequencer.run {
 							val committedRecordsMemory = committedRecordsByNodeIndex(nodeIndex)
 							for committedRecordIndex <- committedRecordsMemory.indices if committedRecordIndex < thisNodeRecords.size do {
 								val committedRecord = committedRecordsMemory(committedRecordIndex)

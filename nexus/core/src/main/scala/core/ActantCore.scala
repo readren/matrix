@@ -181,7 +181,7 @@ abstract class ActantCore[U, D <: Doer](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: doer.LatchedDuty[Unit] = stopCovenant.asLatchedDuty
+	override def stopDuty: doer.LatchingDuty[Unit] = stopCovenant.asLatchingDuty
 
 	override def watch[CSM <: U](watchedActant: Actant[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
@@ -201,7 +201,7 @@ abstract class ActantCore[U, D <: Doer](
 
 				override def apply(unit: Unit): Unit = {
 					if watchedActant.doer eq thisActant.doer then work()
-					else doer.execute(work())
+					else doer.run(work())
 				}
 
 				override def unsubscribe(): Unit = {
@@ -210,7 +210,7 @@ abstract class ActantCore[U, D <: Doer](
 					activeWatchSubscriptions.computeIfPresent(watchedActant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
 					if watchedActant.doer eq thisActant.doer then watchedActant.stopDuty.unsubscribe(observer)
-					else watchedActant.doer.execute(watchedActant.stopDuty.unsubscribe(observer))
+					else watchedActant.doer.run(watchedActant.stopDuty.unsubscribe(observer))
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -227,7 +227,7 @@ abstract class ActantCore[U, D <: Doer](
 			if watchedActant.doer eq thisActant.doer then {
 				watchedActant.stopDuty.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), true))
-			} else watchedActant.doer.execute {
+			} else watchedActant.doer.run {
 				watchedActant.stopDuty.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), false))
 			}
@@ -240,9 +240,9 @@ abstract class ActantCore[U, D <: Doer](
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
 			isMarkedToStop = true
-			doer.execute(selfStop())
+			doer.run(selfStop())
 		}
-		stopCovenant.asLatchedDuty
+		stopCovenant.asLatchingDuty
 	}
 
 	/**
@@ -259,7 +259,7 @@ abstract class ActantCore[U, D <: Doer](
 			// execute the signal handler and ignore its result
 			handleSignal(isSignalTest.stopReceived)
 			// remove myself form progenitor children
-			progenitor.doer.execute {
+			progenitor.doer.run {
 				progenitor.removeChild(thisActant.serial)
 				stopCovenant.fulfill(())
 			}
@@ -274,7 +274,7 @@ abstract class ActantCore[U, D <: Doer](
 				spawner.stopsChildren().trigger(true)(_ => stopMe())
 			}
 		}
-		stopCovenant.asLatchedDuty
+		stopCovenant.asLatchingDuty
 	}
 
 	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {
@@ -309,7 +309,7 @@ abstract class ActantCore[U, D <: Doer](
 	private def beReadyToProcess(): Unit = {
 		doer.checkWithin()
 		assert(!stopWasStarted && !isReadyToProcessMsg)
-		if inbox.maybeNonEmpty then doer.execute {
+		if inbox.maybeNonEmpty then doer.run {
 			if !stopWasStarted then {
 				inbox.withdraw().fold(beReadyToProcess())(processMessages)
 			}
