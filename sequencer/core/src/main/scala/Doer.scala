@@ -746,8 +746,6 @@ trait Doer { thisDoer =>
 	 * */
 	sealed abstract class LatchingDuty[+A] extends AbstractDuty[A], Idempotent[A] {
 
-		def maybeResult: Maybe[A]
-
 		/** @inheritdoc
 		 * @note The override is necessary to specialize the return type; and the implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
 		 * */
@@ -891,6 +889,16 @@ trait Doer { thisDoer =>
 
 		override protected def engage(onComplete: A => Unit): Unit =
 			oResult.fold(attach(onComplete))(onComplete)
+
+		override def succeed: LatchingTask[A] = {
+			oResult.fold {
+				val commitment = new Commitment[A]
+				subscribe(a => commitment.completeUnsafe(Success(a)))
+				commitment
+			} { a =>
+				ReadyTask(Success(a))
+			}
+		}
 
 		override def maybeResult: Maybe[A] = {
 			checkWithin()
@@ -1352,7 +1360,7 @@ trait Doer { thisDoer =>
 		/** Removes short-circuit semantics by reifying both the successful and failed outcomes as a [[scala.util.Try]] value within a strict [[Duty]].
 		 *
 		 * Together with [[Duty.succeed]] this method allow to mix duties and task in the same chain. */
-		inline def reconcile: Duty[Try[A]] = thisTask
+		def reconcile: Duty[Try[A]] = thisTask
 
 		/** Triggers an execution of this [[Task]] and returns a [[Future]] of its result.
 		 *
@@ -2162,10 +2170,17 @@ trait Doer { thisDoer =>
 	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Covenant]].
 	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingTask]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
 	 * */
-	abstract class LatchingTask[+A] extends AbstractTask[A], Idempotent[Try[A]] { thisLatchingTask =>
+	sealed abstract class LatchingTask[+A] extends AbstractTask[A], Idempotent[Try[A]] { thisLatchingTask =>
 
 		inline def asTask: Task[A] = this
 
+		override def reconcile: LatchingDuty[Try[A]] = {
+			maybeResult.fold {
+				val covenant = new Covenant[Try[A]]
+				subscribe(tryA => covenant.fulfillUnsafe(tryA))
+				covenant
+			} { tryA => ReadyDuty(tryA) }
+		}
 
 		/**
 		 * Transform this [[LatchingTask]] by applying the given function to the result of this [[LatchingTask]]. Analogous to [[Future.transform]]

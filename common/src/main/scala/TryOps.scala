@@ -58,7 +58,7 @@ extension [A](thisTry: Try[A]) {
 	 * @param onException Handles the case when the reified function throws a nonfatal exception.
 	 * @param reifiedFunc The function applied when this [[Try]] is a [[Success]] and whose evaluation is being reified.
 	 */
-	inline def foldAndThenReify[B, M[x <: B]](inline onFailure: Failure[B] => M[B], inline onException: Throwable => M[B], inline reifiedFunc: A => M[B]): M[B] = {
+	inline def foldAndThenReify[B, M[_]](inline onFailure: Failure[B] => M[B], inline onException: Throwable => M[B], inline reifiedFunc: A => M[B]): M[B] = {
 		thisTry match {
 			case success: Success[A] =>
 				try reifiedFunc(success.value)

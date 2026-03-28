@@ -1,11 +1,12 @@
 package readren.sequencer
+package sandbox
 
 import readren.common.{Maybe, shouldBe}
 
 import scala.collection.mutable
 import scala.util.Try
 
-// TODO move the `call` method and `Deferrable` trait to `Doer`
+/** A minimalist version of [[Doer]] intended to try other designs. */
 trait Doer2 {
 
 	/** Queues the provided procedure for execution after previous ones. */
@@ -43,7 +44,7 @@ trait Doer2 {
 		def engage(onComplete: A => Unit): Unit
 	}
 
-	private final class Duty_Mine[A](supplier: () => A) extends Duty[A] {
+	final class Duty_Mine[A](supplier: () => A) extends Duty[A] {
 		override def engage(onComplete: A => Unit): Unit =
 			run(onComplete(supplier()))
 	}
