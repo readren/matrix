@@ -124,7 +124,7 @@ trait Doer3 {
 		def map[B](f: A => B): Self[B] =
 			selfFactory.build[B] { onComplete =>
 				thisTask.engage { tryA =>
-					onComplete(tryA.flatMapFast(a => Success(f(a))))
+					onComplete(tryA.mapFast(f))
 				}
 			}(s"$thisTask.map(?)")
 

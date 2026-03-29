@@ -361,7 +361,7 @@ trait Doer { thisDoer =>
 		 *
 		 * $notGuarded
 		 */
-		def flatMap[B](f: A => Duty[B]): Duty[B] = new Duty_FlatMap(thisDuty, f)
+		inline def flatMap[B](f: A => Duty[B]): Duty[B] = new Duty_FlatMap(thisDuty, f)
 
 		/** Creates a new [[Duty]] that yields exactly the same result (same identity) as this [[Duty]] but executes the provided side-effecting function before yielding it.
 		 *
@@ -1279,7 +1279,8 @@ trait Doer { thisDoer =>
 			previousStepCovenant.subscribe { previousState =>
 				val rba: RollbackAccessor =
 					if isSpeculative then (isWithinDoSerEx: Boolean, onCompleted: (A, RollbackApplication) => Unit) =>
-						thisStepCovenant.fulfill(previousState, isWithinDoSerEx, onCompleted) else null.asInstanceOf[RollbackAccessor]
+						thisStepCovenant.fulfill(previousState, isWithinDoSerEx, onCompleted)
+					else null.asInstanceOf[RollbackAccessor]
 				primaryStateUpdater(previousState, rba)
 					.fold {
 						lastCommittedCovenant = thisStepCovenant
@@ -1439,12 +1440,12 @@ trait Doer { thisDoer =>
 		 *
 		 * $threadSafe
 		 *
-		 * @param taskBBuilder a function that is applied to the result of this [[Task]] execution, to build a [[Task]] that is executed next to produce the result that the [[Task]] returned by this method yields.
+		 * @param f a function that is applied to the result of this [[Task]] execution, to build a [[Task]] that is executed next to produce the result that the [[Task]] returned by this method yields.
 		 *
 		 * $isExecutedByDoSerEx
 		 */
-		def transformWith[B](taskBBuilder: Try[A] => Task[B]): Task[B] =
-			new Task_TransformWith(thisTask, taskBBuilder)
+		inline def transformWith[B](f: Try[A] => Task[B]): Task[B] =
+			new Task_TransformWith(thisTask, f)
 
 
 		/**
@@ -1478,10 +1479,10 @@ trait Doer { thisDoer =>
 		 *
 		 * $threadSafe
 		 *
-		 * @param taskBBuilder a function that receives the result of `taskA`, when it is a [[Success]], and returns the task to be executed next. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
+		 * @param f a function that receives the result of `taskA`, when it is a [[Success]], and returns the task to be executed next. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToTaskResult
 		 */
-		def flatMap[B](taskBBuilder: A => Task[B]): Task[B] =
-			new Task_FlatMap(thisTask, taskBBuilder)
+		inline def flatMap[B](f: A => Task[B]): Task[B] =
+			new Task_FlatMap(thisTask, f)
 
 		/** Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.
 		 * Detailed behavior: Gives a [[Task]] that, when executed, it will:
@@ -2018,14 +2019,18 @@ trait Doer { thisDoer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
-	final class Task_FlatMap[+A, +B](taskA: Task[A], taskBBuilder: A => Task[B]) extends AbstractTask[B] {
+	final class Task_FlatMap[+A, +B](taskA: Task[A], f: A => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				tryA.foldAndThenReify(
-					failure => Task_ready[B](failure),
-					exception => Task_failed[B](exception),
-					taskBBuilder
-				).engagePortal(onComplete)
+			taskA.engagePortal {
+				case Success(a) =>
+					val maybeTaskB = try Maybe(f(a)) catch {
+						case NonFatal(e) =>
+							onComplete(Failure(e))
+							Maybe.empty
+					}
+					maybeTaskB.foreach(_.engagePortal(onComplete))
+				case failure: Failure[A] =>
+					onComplete(failure.castTo[B])
 			}
 		}
 
@@ -2036,12 +2041,15 @@ trait Doer { thisDoer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_TransformWith(trap: Nothing): Any = trap
 
-	final class Task_TransformWith[+A, +B](taskA: Task[A], taskBBuilder: Try[A] => Task[B]) extends AbstractTask[B] {
+	final class Task_TransformWith[+A, +B](taskA: Task[A], f: Try[A] => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			taskA.engagePortal { tryA =>
-				tryA.reify(e => Task_failed(e))(taskBBuilder)
-					.engagePortal(onComplete)
-			}
+			taskA.engagePortal(tryA =>
+				tryA.reify(e =>
+					onComplete(Failure(e))
+				)(tryA =>
+					f(tryA).engagePortal(onComplete)
+				)
+			)
 		}
 
 		override def toString: String = deriveToString[Task_TransformWith[A, B]](this)
@@ -2180,6 +2188,13 @@ trait Doer { thisDoer =>
 				subscribe(tryA => covenant.fulfillUnsafe(tryA))
 				covenant
 			} { tryA => ReadyDuty(tryA) }
+		}
+
+		override def withFilter(predicate: A => Boolean): LatchingTask[A] = {
+			thisLatchingTask match {
+				case commitment: Commitment[A] @unchecked => commitment.withFilter(predicate)
+				case ready: ReadyTask[A] => ready.withFilter(predicate)
+			}
 		}
 
 		/**
@@ -2327,6 +2342,15 @@ trait Doer { thisDoer =>
 		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[Try[A]] =
 			Future.successful(value)
 
+		override def withFilter(predicate: A => Boolean): ReadyTask[A] = {
+			value.foldAndThenReify(
+				_ => thisReadyTask,
+				e => ReadyTask(Failure(e)),
+				a => if predicate(a) then thisReadyTask else ReadyTask(Failure(new NoSuchElementException(s"ReadyTask filter predicate is not satisfied for $a")))
+			)
+		}
+
+
 		override def transform[B](f: Try[A] => Try[B]): ReadyTask[B] = {
 			checkWithin()
 			ReadyTask(f(thisReadyTask.value))
@@ -2397,68 +2421,81 @@ trait Doer { thisDoer =>
 			isAttached(onComplete)
 		}
 
-		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B] = {
+		override def withFilter(predicate: A => Boolean): LatchingTask[A] = {
+			checkWithin()
 			thisCommitment.maybeResult.fold {
-				val commitment = Commitment[B]()
-				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
+				val commitment = new Commitment[A]
+				thisCommitment.engage { tryA =>
+					tryA.foldAndThenReify(
+						commitment.completeUnsafe(_),
+						e => commitment.completeUnsafe(Failure(e)),
+						a => if predicate(a) then commitment.completeUnsafe(Success(a)) else commitment.completeUnsafe(Failure(new NoSuchElementException(s"LatchingTask filter predicate is not satisfied for $a")))
+					)
+				}
 				commitment
 			} { tryA =>
-				checkWithin()
+				tryA.foldAndThenReify(
+					_ => thisCommitment,
+					e => ReadyTask(Failure(e)),
+					a => if predicate(a) then thisCommitment else ReadyTask(Failure(new NoSuchElementException(s"LatchingTask filter predicate is not satisfied for $a")))
+				)
+			}
+		}
+
+		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B] = {
+			checkWithin()
+			thisCommitment.maybeResult.fold {
+				val commitment = Commitment[B]()
+				thisCommitment.engage { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
+				commitment
+			} { tryA =>
 				ReadyTask[B](tryA.reifyBack(f))
 			}
 		}
 
 		override def transformWith[B](f: Try[A] => LatchingTask[B]): LatchingTask[B] = {
-			def fHardy(tryA: Try[A]): LatchingTask[B] = {
-				try f(tryA)
-				catch {
-					case NonFatal(e) => ReadyTask(Failure(e))
-				}
-			}
-
+			checkWithin()
 			thisCommitment.maybeResult.fold {
-				val commitment = Commitment[B]()
-				thisCommitment.subscribe { tryA => commitment.completeWith(fHardy(tryA), true) }
+				val commitment = new Commitment[B]
+				thisCommitment.engage(tryA =>
+					tryA.reify(e =>
+						commitment.completeUnsafe(Failure(e))
+					)(tryA =>
+						f(tryA).engagePortal(tryB => commitment.completeUnsafe(tryB))
+					)
+				)
 				commitment
-			} { tryA =>
-				checkWithin()
-				fHardy(tryA)
-			}
+			}(_.reify(e => ReadyTask(Failure(e)))(f))
 		}
 
 		override def map[B](f: A => B): LatchingTask[B] = {
+			checkWithin()
 			thisCommitment.maybeResult.fold {
-				val commitment = Commitment[B]()
-				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
+				val commitment = new Commitment[B]
+				thisCommitment.engage { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
 				commitment
 			} { tryA =>
-				checkWithin()
 				ReadyTask(tryA.mapFast(f))
 			}
 		}
 
 		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
-			def fHardy(a: A): LatchingTask[B] = {
-				try f(a)
-				catch {
-					case NonFatal(e) => ReadyTask(Failure(e))
-				}
-			}
-
+			checkWithin()
 			thisCommitment.maybeResult.fold {
-				val commitment = Commitment[B]()
-				thisCommitment.subscribe {
-					case success: Success[A] => commitment.completeWith(fHardy(success.value))
-					case failure: Failure[A] => commitment.completeUnsafe(failure.castTo[B])
+				val commitment = new Commitment[B]
+				thisCommitment.engage {
+					case success: Success[A] =>
+						val maybeTaskB = try Maybe(f(success.value)) catch {
+							case NonFatal(e) =>
+								commitment.completeUnsafe(Failure(e))
+								Maybe.empty
+						}
+						maybeTaskB.foreach(_.engagePortal(tryB => commitment.completeUnsafe(tryB)))
+					case failure: Failure[A] =>
+						commitment.completeUnsafe(failure.castTo[B])
 				}
 				commitment
-			} {
-				case success: Success[A] =>
-					checkWithin()
-					fHardy(success.value)
-				case failure: Failure[A] =>
-					ReadyTask(failure.castTo[B])
-			}
+			}(_.foldAndThenReify(ReadyTask(_), e => ReadyTask(Failure(e)), f))
 		}
 
 		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed at the time the completion is performed.
@@ -2824,7 +2861,8 @@ trait Doer { thisDoer =>
 				case success@Success(previousState) =>
 					val rba: RollbackAccessor =
 						if isSpeculative then (isWithinDoSerEx: Boolean, onCompleted: (Try[A], RollbackApplication) => Unit) =>
-							thisStepCommitment.fulfill(previousState, isWithinDoSerEx, onCompleted) else null.asInstanceOf[RollbackAccessor]
+							thisStepCommitment.fulfill(previousState, isWithinDoSerEx, onCompleted)
+						else null.asInstanceOf[RollbackAccessor]
 					primaryStateUpdater(previousState, rba)
 						.fold {
 							lastCommittedCommitment = thisStepCommitment

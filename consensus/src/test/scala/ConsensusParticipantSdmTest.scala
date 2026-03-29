@@ -319,12 +319,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						while numberOfTravelingMessages > enqueueThresholdForEarlyDelivery do chooseAChannel().dispatchNext()
 					}
 
-					netSequencer.Task_fromDuty(covenant.map {
-						case (response, requestId) =>
-							// TODO consider moving this to the line after calling `covenant.fulfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
-							scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
-							response
-					})
+					netSequencer.Task_fromDuty(
+						netSequencer.Duty_mineFlat { () =>
+							covenant.map {
+								case (response, requestId) =>
+									// TODO consider moving this to the line after calling `covenant.fulfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
+									scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
+									response
+							}
+						}
+					)
 
 				} else {
 					/// Simple implementation that always succeeds and adds no randomness
