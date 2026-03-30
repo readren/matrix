@@ -2983,7 +2983,7 @@ trait Doer { thisDoer =>
 
 		private val handleByParameter: java.util.HashMap[P, Handle] = new java.util.HashMap()
 
-		private val handleProducer: java.util.function.Function[P, Handle] = _ => new Handle(Covenant[R](), null)
+		private val newHandleProducer: java.util.function.Function[P, Handle] = _ => new Handle(Covenant[R](), null)
 
 		/**
 		 * Starts an execution of [[executedFunc]] and returns a [[LatchingDuty]] that yields the result of the winner execution among all the executions of [[executedFunc]] started while another with the same parameter is in-flight.
@@ -2995,8 +2995,8 @@ trait Doer { thisDoer =>
 		 */
 		def settle(parameter: P, isWithinDoer: Boolean = doer.isInSequence): LatchingDuty[R] = {
 			if isWithinDoer then {
-				val handle = handleByParameter.computeIfAbsent(parameter, handleProducer)
-				val maybePreviousChosenDuty = Maybe.apply(handle.chosenDuty)
+				val handle = handleByParameter.computeIfAbsent(parameter, newHandleProducer)
+				val maybePreviousChosenDuty = Maybe(handle.chosenDuty)
 				val newChosenDuty = executedFunc(parameter, maybePreviousChosenDuty)
 
 				// If the chosen duty has changed

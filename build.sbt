@@ -76,7 +76,7 @@ lazy val sequencerAkkaIntegration = (project in file("sequencer/akka-integration
 	.settings(
 		name := "sequencer_akka-integration",
 		idePackagePrefix := Some("readren.sequencer.akka"),
-		scalacOptions ++= Seq("-language:strictEquality"),
+		scalacOptions ++= Seq("-language:strictEquality", "-source:future"),
 		resolvers += "Akka library repository".at("https://repo.akka.io/maven"),
 		libraryDependencies ++= Seq(
 			"ch.qos.logback" % "logback-classic" % "1.5.18",
@@ -123,8 +123,7 @@ lazy val root = (project in file("."))
 	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensus)
 	.settings(
 		name := "matrix",
-		scalacOptions ++= Seq("-source:future")
-	)	
+	)
 
 enablePlugins(DockerPlugin)
 

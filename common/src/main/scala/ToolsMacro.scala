@@ -24,7 +24,8 @@ object ToolsMacro {
 		} do {
 			stringBuilderExpr = '{ $stringBuilderExpr.append('(') }
 			var isFirst = true
-			for param <- paramsList if !param.info.isFunctionType do {
+			// The next line can be replaced by `for param <- paramsList if !param.info.isFunctionType do {` if the experimental compiler option is set.
+			for param <- paramsList if !TypeRepr.of[T].memberType(param).isFunctionType do {
 				val paramName = param.name
 				val select = Select.unique(productTerm, paramName)
 				val argValueExpr: Expr[Any] = select.asExpr

@@ -330,13 +330,13 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			var hasCompleted = false
 			schedule(timer) { _ =>
 				cancel(timer)
-				if (!hasCompleted) {
+				if !hasCompleted then {
 					hasElapsed = true
 					onComplete(Maybe.empty)
 				}
 			}
 			duty { a =>
-				if (!hasElapsed) {
+				if !hasElapsed then {
 					cancel(timer)
 					hasCompleted = true
 					onComplete(Maybe(a))
@@ -639,13 +639,13 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			var hasCompleted = false
 			schedule(timer) { _ =>
 				cancel(timer)
-				if (!hasCompleted) {
+				if !hasCompleted then {
 					hasElapsed = true
 					onComplete(Success(Maybe.empty))
 				}
 			}
 			val consumer: Try[A] => Unit = tryA =>
-				if (!hasElapsed) {
+				if !hasElapsed then {
 					cancel(timer)
 					hasCompleted = true
 					tryA match {

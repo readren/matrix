@@ -79,7 +79,7 @@ object GeneratorsForDoerTests {
 				// Use input's hashCode and seed to create a deterministic random choice
 				val random = new scala.util.Random(seed + x.hashCode().toLong)
 				val shouldFail = random.nextInt(100) < failureProbabilityPercentage
-				if (shouldFail) {
+				if shouldFail then {
 					val result = f(x)
 					throw FaultyValue(result, "faulted function")
 				} else {

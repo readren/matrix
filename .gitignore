@@ -53,8 +53,9 @@ build/
 .vscode
 metals.sbt
 
-### Scala ###
+### Build tools ###
 .bsp
+/sbt-launch.jar
 
 ### This project ###
 /dump
@@ -64,3 +65,4 @@ metals.sbt
 sequencer/build.sbt
 sequencer/project/
 sequencer/target/
+

@@ -48,8 +48,7 @@ trait AmigoFutures { actor: Actor =>
 	 */
 	protected val efectuarTareaProgramada: akka.actor.Actor.Receive = new PartialFunction[Any, Unit] {
 		def isDefinedAt(x: Any): Boolean = {
-			if (debug)
-				hiloActualActor = Thread.currentThread();
+			if debug then hiloActualActor = Thread.currentThread();
 			x.isInstanceOf[Efectuar]
 		}
 
@@ -198,7 +197,7 @@ trait AmigoFutures { actor: Actor =>
 								cuandoCompleta(Success(Right(exito)));
 
 							case Success(Left(rechazo)) =>
-								if (cantReintentos > 0) {
+								if cantReintentos > 0 then {
 									reintenta(cantReintentos - 1)(tarea).realizar(llameYo = true)(cuandoCompleta);
 								} else {
 									cuandoCompleta(Success(Left(rechazo)));
@@ -209,7 +208,7 @@ trait AmigoFutures { actor: Actor =>
 						}
 					}
 
-					if (llameYo) trabajo();
+					if llameYo then trabajo();
 					else actor.self ! Efectuar(() => trabajo());
 				}
 			}
@@ -237,7 +236,7 @@ trait AmigoFutures { actor: Actor =>
 		protected[AmigoFutures] def realizar(llameYo: Boolean)(cuandoCompleta: Try[A] => Unit): Unit;
 
 		def efectuar(llameYo: Boolean)(cuandoCompleta: Try[A] => Unit): Unit = {
-			if (llameYo && debug && (Thread.currentThread() ne hiloActualActor)) {
+			if llameYo && debug && (Thread.currentThread() ne hiloActualActor) then {
 				throw new AssertionError(s"currentThread=${Thread.currentThread.getName}, hiloActualActor=${hiloActualActor.getName}");
 			}
 			this.realizar(llameYo)(cuandoCompleta)
@@ -364,7 +363,7 @@ trait AmigoFutures { actor: Actor =>
 			def realizar(llameYo: Boolean)(cuandoCompleta: Try[A] => Unit): Unit = {
 				def trabajo(): Unit = tarea.realizar(llameYo = true) {
 					case s@Success(a) =>
-						if (p(a))
+						if p(a) then
 							cuandoCompleta(s)
 						else
 							cuandoCompleta(Failure(new NoSuchElementException(s"Tarea filter predicate is not satisfied for $a")))
@@ -373,7 +372,7 @@ trait AmigoFutures { actor: Actor =>
 						cuandoCompleta(f)
 				}
 
-				if (llameYo) trabajo();
+				if llameYo then trabajo();
 				else actor.self ! Efectuar(() => trabajo())
 			}
 		}
@@ -479,7 +478,7 @@ trait AmigoFutures { actor: Actor =>
 
 										case None =>
 											// Limitar el nivel de recursión para evitar desborde del stack.
-											if (nivelRecursion < 5) { // TODO hacer que el nivel de recursión máximo sea configurable
+											if nivelRecursion < 5 then { // TODO hacer que el nivel de recursión máximo sea configurable
 												trabajo(nivelRecursion + 1)
 											} else {
 												actor.self ! Efectuar(() => trabajo(0))
@@ -491,7 +490,7 @@ trait AmigoFutures { actor: Actor =>
 						}
 					}
 
-					if (llameYo) trabajo(0);
+					if llameYo then trabajo(0);
 					else actor.self ! Efectuar(() => trabajo(0));
 				}
 			}
@@ -566,17 +565,15 @@ trait AmigoFutures { actor: Actor =>
 					tarea.realizar(llameYo) {
 						case s@Success(_) => cuandoCompleta(s)
 						case f@Failure(e) =>
-							if (cantReintentos <= 0)
-								cuandoCompleta(f)
-							else
+							if cantReintentos <= 0 then cuandoCompleta(f)
+							else {
 								try {
-									if (p(e))
-										this.reintentadaSiFallaPor(cantReintentos - 1)(p).realizar(llameYo = true)(cuandoCompleta)
-									else
-										cuandoCompleta(f)
+									if p(e) then this.reintentadaSiFallaPor(cantReintentos - 1)(p).realizar(llameYo = true)(cuandoCompleta)
+									else cuandoCompleta(f)
 								} catch {
 									case NonFatal(nf) => cuandoCompleta(Failure(nf))
 								}
+							}
 					}
 				}
 			}
@@ -599,10 +596,8 @@ trait AmigoFutures { actor: Actor =>
 	 */
 	class TareaTrivial[A](ta: Try[A]) extends Tarea[A] {
 		override def realizar(llameYo: Boolean)(cuandoCompleta: Try[A] => Unit): Unit =
-			if (llameYo)
-				cuandoCompleta(ta)
-			else
-				actor.self ! Efectuar(() => cuandoCompleta(ta))
+			if llameYo then	cuandoCompleta(ta)
+			else actor.self ! Efectuar(() => cuandoCompleta(ta))
 
 		override def correr(llameYo: Boolean): Future[A] =
 			Future.fromTry(ta)
@@ -627,11 +622,8 @@ trait AmigoFutures { actor: Actor =>
 					case NonFatal(e) => Failure(e)
 				}
 
-			if (llameYo) {
-				cuandoCompleta(accionProtegida)
-			} else {
-				actor.self ! Efectuar(() => cuandoCompleta(accionProtegida))
-			}
+			if llameYo then cuandoCompleta(accionProtegida)
+			else actor.self ! Efectuar(() => cuandoCompleta(accionProtegida))
 		}
 	}
 
@@ -757,7 +749,7 @@ trait AmigoFutures { actor: Actor =>
 				case NonFatal(e) => cuandoCompleta(Failure(e));
 			}
 
-			if (llameYo) trabajo();
+			if llameYo then trabajo();
 			else actor.self ! Efectuar(() => trabajo());
 		}
 	}
@@ -781,7 +773,7 @@ trait AmigoFutures { actor: Actor =>
 						promesa.observadoresDeCuandoCompleta = cuandoCompleta :: promesa.observadoresDeCuandoCompleta;
 				}
 
-				if (llameYo) trabajo();
+				if llameYo then trabajo();
 				else actor.self ! Efectuar(() => trabajo());
 			}
 		}
@@ -810,8 +802,7 @@ trait AmigoFutures { actor: Actor =>
 
 		/** Ejecuta la `otraTarea` recibida y, cuando completa, concreta esta [[Promesa]] con el resultado. */
 		def concretarCon(otraTarea: Tarea[A]): this.type = {
-			if (otraTarea ne this.tarea)
-				otraTarea.realizar(llameYo = false)(concretar);
+			if otraTarea ne this.tarea then otraTarea.realizar(llameYo = false)(concretar);
 			this
 		}
 	}
@@ -833,7 +824,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 	}
 
 	/** Truco para agregar operaciones al objeto [[AmigoFutures.Tarea]]. Para que funcione se requiere que esta clase esté importada. */
-	implicit class PimpTareaCompanion(companion: Tarea.type) {
+	extension (companion: Tarea.type) {
 		/** Crea una tarea, llamémosla "bucle", que al ejecutarla ejecuta la `tarea` supervisada recibida y, si consume mas tiempo que el margen recibido, la vuelve a ejecutar. Este ciclo se repite hasta que el tiempo que consume la ejecución de la tarea supervisada no supere el margen, o se acaben los reintentos.
 		 * La ejecución de la tarea bucle completará cuando:
 		 * - el tiempo que demora la ejecución de la tarea supervisada en completar esta dentro del margen, en cuyo caso el resultado de la tarea bucle sería `Some(resultadoTareaMonitoreada)`,
@@ -871,7 +862,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 	}
 
 	/** Truco para agregar operaciones a las instancias de [[Tarea]]. Para que funcione se requiere que esta clase esté importada. */
-	implicit class PimpTarea[A](tarea: Tarea[A]) {
+	extension [A](tarea: Tarea[A]) {
 		/** Da una [[Tarea]] que al ejecutarla:
 		 *  - inicia simultáneamente la ejecución de esta [[Tarea]] y un temporizador con el `margen` de tiempo recibido. Si:
 		 *  	- el margen de tiempo transcurre antes, llama a `cuandoCompleta` con `Success(None)`.
@@ -896,7 +887,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 				var haCompletado = false;
 				val idTemporizador = genIdTemporizador();
 				tarea.efectuar(llameYo = true) { tryA =>
-					if (!haTranscurrido) {
+					if !haTranscurrido then {
 						timers.cancel(idTemporizador);
 						haCompletado = true;
 						cuandoCompleta(tryA map Some.apply)
@@ -905,7 +896,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 				timers.startSingleTimer(
 					idTemporizador,
 					Efectuar { () =>
-						if (!haCompletado) {
+						if !haCompletado then {
 							haTranscurrido = true;
 							cuandoCompleta(Success(None))
 						}
@@ -914,7 +905,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 				);
 			}
 
-			if (llameYo) trabajo();
+			if llameYo then trabajo();
 			else actor.self ! Efectuar(() => trabajo());
 		}
 	}
@@ -927,7 +918,7 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 					case Success(Some(Success(a))) => cuandoCompleta(Success(Some(a)))
 					case Success(Some(Failure(e))) => cuandoCompleta(Failure(e))
 					case Success(None) =>
-						if (maximaCantEjecuciones > 1) {
+						if maximaCantEjecuciones > 1 then {
 							val idTemporizador = genIdTemporizador();
 							timers.startSingleTimer(
 								idTemporizador,
@@ -941,14 +932,14 @@ trait AmigoFuturesYTimers extends AmigoFutures with Timers { actor: Actor =>
 			}
 
 			def trabajo(): Unit = {
-				if (maximaCantEjecuciones <= 0) {
+				if maximaCantEjecuciones <= 0 then {
 					cuandoCompleta(Success(None))
 				} else {
 					bucle(maximaCantEjecuciones);
 				}
 			}
 
-			if (llameYo) trabajo();
+			if llameYo then trabajo();
 			else actor.self ! Efectuar(() => trabajo());
 		}
 	}
