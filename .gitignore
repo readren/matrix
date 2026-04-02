@@ -11,6 +11,7 @@ target/
 .idea/sbt.xml
 .idea/scala_compiler.xml
 /.idea/GrepConsole.xml
+.idea/scala_settings.xml
 *.iws
 *.iml
 *.ipr
@@ -66,3 +67,4 @@ sequencer/build.sbt
 sequencer/project/
 sequencer/target/
 
+/consensus/logs/app-2026-04-01.log

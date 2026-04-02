@@ -91,7 +91,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	@volatile private var earliestScheduledTime: MilliTime = clock.MaxValue
 
 
-	/** Exposes the number of times that [[lull]] was called that didn't put the [[Worker]] to sleep. */
+	/** Exposes the number of times that [[determineWaitDurationFor]] was called that didn't put the [[Worker]] to sleep. */
 	var skippedLullsCounter: Int = 0
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
@@ -180,15 +180,18 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
-	override def lull(worker: Worker, numberOfNonSleepingWorkers: Int): Unit = {
-		if numberOfNonSleepingWorkers > 0 then worker.wait()
+	override def determineWaitDurationFor(worker: Worker, numberOfNonSleepingWorkers: Int): Long = {
+		if numberOfNonSleepingWorkers > 0 then Long.MaxValue
 		else {
 			val est = earliestScheduledTime
-			if est == clock.MaxValue then worker.wait()
+			if est == clock.MaxValue then Long.MaxValue
 			else {
 				val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
-				if durationUntilEarliestScheduledTime > 0 then worker.wait(durationUntilEarliestScheduledTime)
-				else skippedLullsCounter += 1
+				if durationUntilEarliestScheduledTime > 0 then durationUntilEarliestScheduledTime
+				else {
+					skippedLullsCounter += 1
+					-1L
+				}
 			}
 		}
 	}

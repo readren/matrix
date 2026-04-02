@@ -454,7 +454,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				if change.isInstanceOf[TransitionalConfigChange[Id]] then {
 					for nodeIndex <- 0 until clusterSize do {
 						val node = this.getNode(nodeIndex)
-						if change.newParticipants.contains(node.myId) then {
+						if change.newParticipants.contains(node.myId) && !change.oldParticipants.contains(node.myId) then {
 							node.startsIfNotRunning(changeIndex).triggerAndForget(false)
 						}
 					}
@@ -1126,8 +1126,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -359368432946550500L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
+		//val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 563901697643278299L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 1727149220655985707L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -359368432946550500L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -924293462626283685L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -9144192791162226895L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -8485779671449355485L)

@@ -320,7 +320,11 @@ abstract class CooperativeWorkersDp(
 					var isAwakened = false
 					thisWorker.synchronized {
 						isSleeping = true
-						lull(thisWorker, workers.length - sleepingCounter)
+						val waitDuration = determineWaitDurationFor(thisWorker, workers.length - sleepingCounter)
+						if waitDuration > 0 then {
+							val actualLull = if workers.length - sleepingCounter == 0 && waitDuration > 1 then 1 else waitDuration
+							if actualLull == Long.MaxValue then thisWorker.wait() else thisWorker.wait(actualLull)
+						}
 						// if a spurious wakeup occur then act as if the worker was awakened with `wakeUpIfSleeping(null)`, unless it was simultaneously stopped (very unlikely to occur if it is possible at all), in which case act as if the worker was stopped while sleeping.
 						if keepRunning == isSleeping then isSleeping = !keepRunning
 						isAwakened = !isSleeping
@@ -380,11 +384,15 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
-	/** Puts the specified [[Worker]] to wait until it is awakened.
-	 * Called within a synchronization block on the specified [[Worker]]. */
-	protected def lull(worker: Worker, numberOfNonSleepingWorkers: Int): Unit = {
-		worker.wait() // TODO analyse if the interrupted exception should be handled
-	}
+	/** Determines the duration that a worker is set to wait when the [[queuedDoers]] is empty.
+	 * Called within a synchronization block on the provided [[Worker]].
+	 * The default implementation always returns the singular value [[Long.MaxValue]] which instructs to wait forever.
+	 *
+	 * The intention of this method is to allow extension to support scheduling applying the standard scheduling operations of [[java.lang.Thread]] on the [[Worker.thread]] of the [[Worker]]s. See [[CooperativeWorkersWithSyncSchedulerDp.determineWaitDurationFor]] for an example.
+	 * @return how many milliseconds to wait. [[Long.MaxValue]] for effectively infinite. Values less than or equal to zero means "don't wait". */
+	protected def determineWaitDurationFor(worker: Worker, numberOfNonSleepingWorkers: Int): Long =
+		Long.MaxValue
+
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
 	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
