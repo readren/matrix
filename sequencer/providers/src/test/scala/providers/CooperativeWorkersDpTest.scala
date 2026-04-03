@@ -90,7 +90,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 	test("`Doer.execute` executes in a decoupled manner.") {
 		val doer = sharedDoer
 
-		val promise = Promise[Unit]
+		val promise = Promise[Unit]()
 
 		given Promise[Unit] = promise
 

@@ -206,7 +206,7 @@ object Prueba {
 			}
 		}
 
-		val result = Promise[(Long, Long)]
+		val result = Promise[(Long, Long)]()
 
 		// println(nexus.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 

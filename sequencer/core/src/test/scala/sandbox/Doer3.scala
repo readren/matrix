@@ -102,7 +102,7 @@ trait Doer3 {
 			if oValue.isEmpty then {
 				oValue = Maybe(value)
 				consumers.foreach(consumer => consumer(value))
-				consumers.clear
+				consumers.clear()
 			}
 	}
 

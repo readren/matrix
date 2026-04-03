@@ -1,13 +1,13 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.8.2"
+ThisBuild / scalaVersion := "3.8.3"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",
 
-	"com.outr" %% "scribe" % "3.18.0",
-	"com.outr" %% "scribe-file" % "3.18.0",
+	"com.outr" %% "scribe" % "3.19.0",
+	"com.outr" %% "scribe-file" % "3.19.0",
 
 	"org.typelevel" %% "scalacheck-effect" % "2.1.0" % Test,
 	"org.typelevel" %% "scalacheck-effect-munit" % "2.1.0" % Test,

@@ -13,7 +13,7 @@ object ActorBasedDoer {
 
 	private[akka] val currentDoerThreadLocal: ThreadLocal[ActorBasedDoer] = new ThreadLocal()
 
-	private[sequencer] case class Procedure(runnable: Runnable)
+	private[sequencer] case class Procedure(runnable: Runnable) extends Matchable
 
 	/** A [[Behavior]] factory that provides access to an [[ActorBasedDoer]] whose DoSerEx (doer's serial executor) is the actor corresponding to the provided [[ActorContext]]. */
 	def setup[A: Typeable](ctxA: ActorContext[A])(frontier: ActorBasedDoer => Behavior[A]): Behavior[A] = {

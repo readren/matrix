@@ -6,7 +6,7 @@ import providers.ShutdownAble
 
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
-import readren.sequencer.Doer.ExecutionSerial
+import Doer.ExecutionSerial
 
 import java.lang.invoke.VarHandle
 import java.util.concurrent.*

@@ -719,7 +719,7 @@ trait Doer { thisDoer =>
 				var completedCounter: Int = 0
 				var index = 0
 				while index < size do {
-					val duty = dutyIterator.next
+					val duty = dutyIterator.next()
 					val dutyIndex = index
 					duty.engagePortal { a =>
 						array(dutyIndex) = a
@@ -2122,7 +2122,7 @@ trait Doer { thisDoer =>
 				var completedCounter: Int = 0
 				var index = 0
 				while index < size do {
-					val task = taskIterator.next
+					val task = taskIterator.next()
 					val taskIndex = index
 					task.engagePortal {
 						case Success(a) =>
@@ -2152,7 +2152,7 @@ trait Doer { thisDoer =>
 				var completedCounter: Int = 0
 				var index = 0
 				while index < size do {
-					val task = taskIterator.next
+					val task = taskIterator.next()
 					val taskIndex = index
 					task.engagePortal { tryA =>
 						array(taskIndex) = tryA

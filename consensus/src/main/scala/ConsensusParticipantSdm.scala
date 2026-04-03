@@ -949,8 +949,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** The serial number of the last execution of [[StatefulRole.updateRole]]. */
 		private var serialOfLastUpdateRoleExecution = 0
-		private var incumbetUpdateRoleSerial = serialOfLastUpdateRoleExecution
-		private var myStateInfoAtPreviousUpdateRoleStart: StateInfo = stateInfoExposedInLastInteraction
+		private var incumbentUpdateRoleSerial = serialOfLastUpdateRoleExecution
+		private var myStateInfoAtLastUpdateRoleStart: StateInfo = stateInfoExposedInLastInteraction
 		private val updateRoleMonotonicConvergence = new MonotonicConvergence[Unit, sequencer.type](sequencer)
 
 		private val coalescedHowAreYou = CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo, sequencer.type](sequencer, params =>
@@ -1191,7 +1191,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									if !config1.allParticipants.contains(boundParticipantId) then currentRole.yieldsBlankVote
 									// ask again if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot.
 									else {
-										// if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot; then ignore this `determineMyVote` execution replacint it with a new fresh one.
+										// if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot; then ignore this `determineMyVote` execution replacing it with a new fresh one.
 										if (config1 ne config0) || memorizedParticipantInfos.size + numberOfFailedAnswers < config0.allOtherParticipants.length then {
 											scribe.trace(s"$boundParticipantId: Restarting my vote determination due to ${if config1 ne config0 then s"a concurrent configuration change (${config0.changeIndex}->${config1.changeIndex})" else s"an obsolete answer, currentBallot=$currentBallot, memorizedInfosSize=${memorizedParticipantInfos.size}, numberOfFailedAnswers=$numberOfFailedAnswers, numberOfRequests=${config1.allOtherParticipants.size}"}")
 											// TODO analyze if memorizedParticipantInfos should be cleared here.
@@ -1459,7 +1459,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				val serial = serialOfLastUpdateRoleExecution
 				scribe.trace(s"$boundParticipantId: updateRole execution #$serial started")
 
-				inline def haveToAbort: Boolean = (currentRole ne this) || incumbetUpdateRoleSerial != serial
+				inline def haveToAbort: Boolean = (currentRole ne this) || incumbentUpdateRoleSerial != serial
 
 				/** Determines the [[Role]] based solely on the provided [[Vote]], assuming it was decided knowing the [[StateInfo]] of all the active participants. */
 				def updateRoleOmnisciently(currentState: Accessible, vote: Vote[ParticipantId]): sequencer.LatchingDuty[Unit] = {
@@ -1560,7 +1560,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 
 				def start(primaryState1: PrimaryState): sequencer.LatchingDuty[Unit] = {
-					incumbetUpdateRoleSerial = serial
+					incumbentUpdateRoleSerial = serial
 					// scribe.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) was called") // TODO delete line
 					if currentRole ne this then sequencer.LatchingDuty_unit
 					else {
@@ -1572,13 +1572,13 @@ trait ConsensusParticipantSdm { thisModule =>
 							_ <- {
 								// scribe.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - myVote=$myVote") // TODO delete line
 								if haveToAbort then sequencer.LatchingDuty_unit
+								else if syncLocalStateInfo(primaryState2).ballot != myStateInfoAtLastUpdateRoleStart.ballot then {
+									scribe.trace(s"$boundParticipantId: Restarting updateRole due to a ballot bump")
+									updateRole(primaryState2)
+								}
 								else primaryState2 match {
 									case accessible2: Accessible =>
-										if primaryState2 ne primaryState1 then {
-											scribe.trace(s"$boundParticipantId: Restarting updateRole due to concurrent primary state change")
-											updateRole(accessible2)
-										}
-										else updateRoleKnowingMyVote(accessible2, myVote)
+										updateRoleKnowingMyVote(accessible2, myVote)
 									case Inaccessible =>
 										illegalStateQuiesce()
 										sequencer.LatchingDuty_unit
@@ -1592,17 +1592,17 @@ trait ConsensusParticipantSdm { thisModule =>
 					maybePreviousUpdateRoleExecution => {
 						val myCurrentStateInfo = syncLocalStateInfo(primaryState0)
 						maybePreviousUpdateRoleExecution.fold {
-							myStateInfoAtPreviousUpdateRoleStart = myCurrentStateInfo
-							scribe.trace(s"$boundParticipantId: starting the first updateRole execution #$serial. currentStateInfo=${myCurrentStateInfo}")
+							myStateInfoAtLastUpdateRoleStart = myCurrentStateInfo
+							scribe.trace(s"$boundParticipantId: starting the first updateRole execution #$serial. currentStateInfo=$myCurrentStateInfo")
 							start(primaryState0)
 						} { previousUpdateRoleExecution =>
-							if myCurrentStateInfo == myStateInfoAtPreviousUpdateRoleStart then {
+							if myCurrentStateInfo == myStateInfoAtLastUpdateRoleStart then {
 								scribe.trace(s"$boundParticipantId: merging updateRole #$serial with previus execution: currentStateInfo=$myCurrentStateInfo")
 								previousUpdateRoleExecution
 							}
 							else {
-								scribe.trace(s"$boundParticipantId: starting new updateRole execution #$serial due to state info change: old:${myStateInfoAtPreviousUpdateRoleStart}, new=$myCurrentStateInfo")
-								myStateInfoAtPreviousUpdateRoleStart = myCurrentStateInfo
+								scribe.trace(s"$boundParticipantId: starting new updateRole execution #$serial due to state info change: old:$myStateInfoAtLastUpdateRoleStart, new=$myCurrentStateInfo")
+								myStateInfoAtLastUpdateRoleStart = myCurrentStateInfo
 								start(primaryState0)
 							}
 						}

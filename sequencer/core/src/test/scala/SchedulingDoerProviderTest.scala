@@ -208,7 +208,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			println(s"Begin: swarmSize=$swarmSize, topSerial=$topSerial, hopsList=$hopsList")
 
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
@@ -286,7 +286,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		PropF.forAllF(Gen.choose(1, 9)) { (swarmSize: Int) =>
 			println(s"Begin: swarmSize=$swarmSize")
 
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
@@ -342,7 +342,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		val promise = Promise[Unit]
+		val promise = Promise[Unit]()
 
 		given Promise[Unit] = promise
 
@@ -1096,7 +1096,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 		PropF.forAllF { (int: Int, f1: Int => Int, f2: Int => Duty[Int]) =>
 			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			val testedCovenant = doer.Covenant[Int]()
 			checkCovenant[doer.type](doer, testedCovenant, promise, int, f1, f2)
 			testedCovenant.fulfill(int)
@@ -1116,7 +1116,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			Gen.function1[Int, Duty[Int]](dutyArbitrary[Int].arbitrary)
 		) { case ((int, duty), f1, f2) =>
 			// println(s"Begin: int: $int, duty: $duty, f1(int): ${f1(int)}")
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			val testedCovenant = doer.Covenant[Int]()
 			val subscriptableDuty = Covenant_triggerAndWire[Int](doer.Duty_delays(1)(_ => int))
@@ -1173,7 +1173,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { case ((nat, tryNat), f1, f2) =>
 
 			/** The promise that this test will succeed. */
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			val testedCommitment = doer.Commitment[Int]()
 			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.complete(tryNat))
 			gate(using promise)
@@ -1194,7 +1194,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { case ((nat, tryNat, task), f1, f2) =>
 
 			/** The promise that this test will succeed. */
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			val testedCommitment = doer.Commitment[Int]()
 			val subscriptableTask = Commitment_triggerAndWire(doer.Task_delays(1)(_ => tryNat))
 			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableTask))
@@ -1286,7 +1286,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
 			// println(s"initial: $initial")
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1319,7 +1319,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1355,7 +1355,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: String, updater: String => Duty[String]) =>
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1387,7 +1387,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
@@ -1413,7 +1413,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Duty[Int]) =>
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1452,7 +1452,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		PropF.forAllNoShrinkF { (initial: Try[Int], updater: Int => Task[Int]) =>
 			// println(s"initial: $initial")
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1498,7 +1498,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Task[Int]) =>
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1538,7 +1538,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		PropF.forAllNoShrinkF { (initial: String, updater: String => Task[String]) =>
 			println(s"Begin: initial=$initial")
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
 			run {
@@ -1856,7 +1856,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { (cancelDelay: Int, delays: List[Int]) =>
 			// println(s"Begin: cancelDelay: $cancelDelay, delays: $delays")
 
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
@@ -1913,7 +1913,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { (expectedDelay: Int) =>
 			// println(s"Begin: upChain: $upChain, delays: $delays")
 
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
@@ -1948,7 +1948,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// scribe.debug(s"Begin: $expectedInitialDelay, $expectedPeriod")
 
 			val EXECUTION_DELAY_MARGIN_MILLIS = if testExecutionsCounter < 5 then 100 else 50
-			val promise = Promise[Unit]
+			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 

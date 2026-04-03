@@ -27,7 +27,7 @@ import scala.util.{Failure, Random, Success, Try}
  * */
 class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
-	ScribeConfig.init(useSimpleFormatter = true, modifiers = List(new LogModifier {
+	ScribeConfig.init(useSimpleFormatter = true, deleteLogFilesOnLaunch = true, modifiers = List(new LogModifier {
 		override def id: String = "simulated-failures-filter"
 
 		override def priority: Priority = Priority.Normal
@@ -405,7 +405,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val adjustedProbability = changeProbabilityBetweenClientCommands / numberOfConfigNoiseInjectionsPerClientCommand
 			if random.nextFloat() >= adjustedProbability then Maybe.empty
 			else {
-				val newConfigMask = IArray.unsafeFromArray(Array.fill[Boolean](clusterSize)(random.nextBoolean))
+				val newConfigMask = IArray.unsafeFromArray(Array.fill[Boolean](clusterSize)(random.nextBoolean()))
 				if newConfigMask.contains(true) then {
 					val oldConfigMask = lastProposedConfigMask
 					lastProposedConfigMask = newConfigMask
@@ -1126,7 +1126,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5775352996191749875L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
 		//val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 563901697643278299L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 1727149220655985707L)
