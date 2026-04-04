@@ -15,6 +15,12 @@ import scala.language.implicitConversions
 object InteractiveTests {
 
 	ScribeConfig.init(deleteLogFilesOnLaunch = true)
+	// Set debug level for Transmitter class
+	Logger("readren.nexus.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
+
+	// Set debug level for Receiver class
+	Logger("readren.nexus.cluster.channel.Receiver").withMinimumLevel(Level.Debug).replace()
+
 
 	object csAEventListener extends EventListener {
 		override def handle(event: ParticipantServiceEvent): Unit = {

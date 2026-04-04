@@ -27,7 +27,10 @@ object ScribeConfig {
 		}
 	}
 
-	val mySourceLinkFormatter: Formatter = Formatter.fromBlocks(
+	inline def mySimpleFormater: Formatter =
+		formatter"${format.timeStamp} ${Trace.format} ${format.messages}"
+
+	inline def mySourceLinkFormatter: Formatter = Formatter.fromBlocks(
 		groupBySecond(
 			cyan(bold(dateFull)),
 			space,
@@ -46,12 +49,9 @@ object ScribeConfig {
 	/**
 	 * Initialize the Scribe logging configuration.
 	 *
-	 * @param useSimpleFormatter If true, use Formatter.simple (default). If false, use mySourceLinkFormatter.
 	 * @param deleteLogFilesOnLaunch If true, delete previous log files at launch.
 	 */
-	def init(modifiers: List[LogModifier] = Nil, useSimpleFormatter: Boolean = true, deleteLogFilesOnLaunch: Boolean = false): Unit = {
-		val formatter = if useSimpleFormatter then formatter"${format.timeStamp} ${format.messages}${format.mdc}"
-		else mySourceLinkFormatter
+	def init(modifiers: List[LogModifier] = Nil, formatter: Formatter = mySimpleFormater, deleteLogFilesOnLaunch: Boolean = false): Unit = {
 
 		if deleteLogFilesOnLaunch then {
 			// Delete previous log files at launch
@@ -75,12 +75,6 @@ object ScribeConfig {
 				formatter = formatter,
 				modifiers = modifiers
 			).replace()
-
-		// Set debug level for Transmitter class
-		Logger("readren.nexus.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
-
-		// Set debug level for Receiver class
-		Logger("readren.nexus.cluster.channel.Receiver").withMinimumLevel(Level.Debug).replace()
 
 		Thread.setDefaultUncaughtExceptionHandler((t: Thread, e: Throwable) => scribe.error(s"Uncaught exception in thread ${t.getName}:", e))
 	}

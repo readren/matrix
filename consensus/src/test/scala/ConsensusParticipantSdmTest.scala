@@ -27,7 +27,7 @@ import scala.util.{Failure, Random, Success, Try}
  * */
 class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
-	ScribeConfig.init(useSimpleFormatter = true, deleteLogFilesOnLaunch = true, modifiers = List(new LogModifier {
+	ScribeConfig.init(deleteLogFilesOnLaunch = true, modifiers = List(new LogModifier {
 		override def id: String = "simulated-failures-filter"
 
 		override def priority: Priority = Priority.Normal
