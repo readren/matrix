@@ -28,7 +28,7 @@ object ScribeConfig {
 	}
 
 	inline def mySimpleFormater: Formatter =
-		formatter"${format.timeStamp} ${Trace.format} ${format.messages}"
+		formatter"${format.timeStamp}${Trace.format} ${format.messages}"
 
 	inline def mySourceLinkFormatter: Formatter = Formatter.fromBlocks(
 		groupBySecond(
