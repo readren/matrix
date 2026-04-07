@@ -2826,7 +2826,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														// Update the commitIndex if a majority of the followers have replicated the uncommitted records.
 														// If there exists an N such that N > commitIndex, the highest log-entry index known to be replicated is > N in a majority of the servers, and getRecordAt[N].term == currentTerm: set commitIndex = N
 														val previousCommitIndex = commitIndex
-														commitIndex = config2a.indexOfTheCommittedRecordWithHighestIndex(accessible2, previousCommitIndex, IArray.unsafeFromArray(highestRecordIndexKnownToBeAppended_ByParticipantIndex))
+														commitIndex = config2a.indexOfTheCommittedRecordWithHighestIndex(accessible2, previousCommitIndex, IArray.unsafeFromArray(highestRecordIndexKnownToBeAppended_ByParticipantIndex), appendOutcomes2a)
 														val config2b =
 															if commitIndex == previousCommitIndex then config2a
 															else {
@@ -2892,7 +2892,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						assert(currentConfig eq deriveConfigurationFrom(primaryState))
 					}
 
-					// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skipp it and fake a successful response.
+					// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skip it and fake a successful response.
 					if fromIndex >= untilIndex && commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex) && untilIndex <= 1 + highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex)
 					then sequencer.Task_successful(AppendResult(primaryState.currentTerm, 0, ISOLATED))
 					else {
@@ -3537,7 +3537,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			def reachedAMajority(vote: Vote[ParticipantId]): Boolean
 
-			def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex]): RecordIndex
+			def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex
 
 			/** @param appendOutcomes the [[AppendOutcome]] of each other participant, indexed according to [[allOtherParticipants]].
 			 * @return true if at least half of the [[AppendOutcome]]s in the provided array are [[AO_SUCCESS]]. */
@@ -3584,7 +3584,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def reachedAMajority(vote: Vote[ParticipantId]): Boolean =
 				false
 
-			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex]): RecordIndex =
+			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex =
 				from
 
 			override def achievesQuorumWhen(appendOutcomes: IArray[AppendOutcome]): Boolean =
@@ -3625,7 +3625,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				vote.reachableCandidatesOfOldConf > halfTheNumberOfParticipants || allParticipants.length == 0
 			}
 
-			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex]): RecordIndex = {
+			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex = {
 				var n = primaryState.firstEmptyRecordIndex - 1
 				while n > from && (
 					highestRecordIndexKnowToBeAppended_ByParticipantIndex.countWithIndex((hri, _) => hri >= n) < halfTheNumberOfParticipants
@@ -3714,7 +3714,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					&& (vote.reachableCandidatesOfNewConf > halfOfNewParticipants || newParticipants.isEmpty)
 			}
 
-			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex]): RecordIndex = {
+			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex = {
 				var n = primaryState.firstEmptyRecordIndex - 1
 				while n > from do {
 					if primaryState.getRecordTermAt(n) == primaryState.currentTerm then {
@@ -3730,10 +3730,12 @@ trait ConsensusParticipantSdm { thisModule =>
 							var goNext = true
 							otherParticipantIndex -= 1
 							while otherParticipantIndex >= 0 && goNext do {
-								if highestRecordIndexKnowToBeAppended_ByParticipantIndex(otherParticipantIndex) >= n then {
-									participantId = allOtherParticipants(otherParticipantIndex)
-									goNext = false
-								}
+								participantId = allOtherParticipants(otherParticipantIndex)
+								// The other participant's record at index `n` is considered up-to-date if either, an append that contains records of equal or greater index was successful, or the other participant is retiring and is part of the old configuration only.
+								// Why are retiring participants considered up-to-date? Because during joint consensus, a newly crowned leader cannot directly commit previous-term records (such as a pending `StableConfigChange`). It must indirectly commit them by committing a record from its current term. Treating retiring participants as up-to-date for all records acts as a wildcard "YES" vote in the old configuration, allowing the new leader to commit current-term records and successfully transition out of joint consensus.
+								if highestRecordIndexKnowToBeAppended_ByParticipantIndex(otherParticipantIndex) >= n
+									|| (appendOutcomes(otherParticipantIndex) == AO_IS_RETIRING && !newParticipants.contains(participantId))
+								then goNext = false
 								else otherParticipantIndex -= 1
 							}
 						}
