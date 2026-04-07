@@ -13,13 +13,13 @@ import scala.concurrent.{Future, Promise}
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
-/** Abstract test suite for testing [[MonotonicConvergence]].
+/** Abstract test suite for testing [[ResultIncrementalCoalescing]].
  *
  * This suite checks if the primitive respects its convergence properties.
  *
  * @tparam D The type of Doer being tested.
  */
-abstract class MonotonicConvergenceTest[D <: Doer & SchedulingExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
+abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
 
 	type DP <: DoerProvider[D]
 
@@ -83,7 +83,7 @@ abstract class MonotonicConvergenceTest[D <: Doer & SchedulingExtension & Loopin
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new MonotonicConvergence[Int, doer.type](doer)
+				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 				val resultDuty = mc.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						contender
@@ -121,7 +121,7 @@ abstract class MonotonicConvergenceTest[D <: Doer & SchedulingExtension & Loopin
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new MonotonicConvergence[Int, doer.type](doer)
+				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
 				val firstResultDuty = mc.contend { _ => firstContender }
 
@@ -161,7 +161,7 @@ abstract class MonotonicConvergenceTest[D <: Doer & SchedulingExtension & Loopin
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new MonotonicConvergence[Int, doer.type](doer)
+				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
 				// To test yielding, the FIRST contender must be evaluated and complete on its own,
 				// so we use the generated one. The second contender yields simply by returning the incumbent.
@@ -210,7 +210,7 @@ abstract class MonotonicConvergenceTest[D <: Doer & SchedulingExtension & Loopin
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new MonotonicConvergence[Int, doer.type](doer)
+				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
 				val firstResultDuty = mc.contend { _ => firstContender }
 

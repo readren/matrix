@@ -2,7 +2,7 @@ package readren.consensus
 
 import readren.common.*
 import readren.common.Trace.Context
-import readren.sequencer.{CoalescedQuery, Doer, MilliDuration, MonotonicConvergence, SchedulingExtension}
+import readren.sequencer.{CoalescedQuery, Doer, MilliDuration, ResultIncrementalCoalescing, SchedulingExtension}
 
 import java.util
 import java.util.Comparator
@@ -206,6 +206,7 @@ object ConsensusParticipantSdm {
 	 * @param ballot the election round to which this [[Vote]] belongs to, or zero to indicate this [[Vote]] is blank.
 	 */
 	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, rank: ElectionRank, ballot: Ballot) {
+		inline def isBlank: Boolean = ballot == 0
 		inline def isNonBlank: Boolean = ballot > 0
 		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, rank=${ElectionRank_nameOf(rank)}, ballot=$ballot)"
 	}
@@ -645,12 +646,12 @@ trait ConsensusParticipantSdm { thisModule =>
 
 
 			/**
-			 * Authorizes the destination participant to transition from [[RETIRING]] to the terminal [[QUIESCED]] [[ConsensusParticipant.Role]], provided it became [[RETIRING]] due to being excluded by the [[StableConfigChange]] at the specified index.
+			 * Authorizes the destination participant to transition from [[RETIRING]] to the terminal [[QUIESCED]] [[ConsensusParticipant.Role]], provided it becomes [[RETIRING]] due to being excluded by the [[StableConfigChange]] at the specified index.
 			 * This bridge is invoked by the leader established AFTER the second phase of a configuration change (that excluded the destination participant) has finalized.
 			 * By requiring the leader of the new configuration to issue this permission, the system ensures the caller is a stable authority within the finalized membership set — thereby excluding the 'ghost leader' from performing this final decommissioning.
 			 *
 			 * This call is the trigger for the **Retiring Quorum-Buffering** mechanism to release the buffer.
-			 * The purpose of this mechanism is to maintain the quorum safety of the previous participant set during joint consensus.
+			 * The purpose of this mechanism is to maintain the quorum safety of the old participants set during joint consensus.
 			 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute to the quorum of the old set (by not voting but effectively lowering the required threshold of active votes) until a new, stable majority is functionally proven by a new leader.
 			 *
 			 * @param indexOfGrantedStableConfigChange The index of the [[StableConfigChange]] record for which the authorization is granted, which is the one that excludes the destination participant.
@@ -882,6 +883,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private inline val AO_IS_QUIESCED = 6
 		private inline val AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT = 7
 		private inline val AO_IS_UNREACHABLE = 8
+		private inline val AO_UNEXPECTED_RETIRING = 9
 
 		/** The index of the highest entry known to be committed according to this participant.
 		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
@@ -952,7 +954,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var serialOfLastUpdateRoleExecution = 0
 		private var incumbentUpdateRoleSerial = serialOfLastUpdateRoleExecution
 		private var myStateInfoAtLastUpdateRoleStart: StateInfo = stateInfoExposedInLastInteraction
-		private val updateRoleMonotonicConvergence = new MonotonicConvergence[Unit, sequencer.type](sequencer)
+		private val updateRoleCoalescing = new ResultIncrementalCoalescing[Unit, sequencer.type](sequencer)
 
 		private val coalescedHowAreYou = CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo, sequencer.type](sequencer, params =>
 			sequencer.Commitment_triggerAndWire(params.otherParticipantId.howAreYou(params.stateInfo))
@@ -1106,9 +1108,9 @@ trait ConsensusParticipantSdm { thisModule =>
 				sequencer.LatchingDuty_ready(AppendResult(0, 1, ordinal))
 			}
 
-			/** Must be called when transitioning to an empty [[Configuration]].
-			 * The [[Leader]] role should to authorize others to transition to the terminal [[QUIESCED]] state.
-			 * @param config The current [[Configuration]] with should be a [[StableConfig]] with empty participants. */
+			/** Must be called before transitioning to [[Retiring]] to handle the special case when the active [[Configuration]] in an empty [[StableConfig]].
+			 * The [[Leader]] role should start the process that authorizes others to transition to the terminal [[QUIESCED]] state.
+			 * @param config The currently active [[Configuration]]. */
 			def authorizeQuiescenceIfVanished(config: StableConfig)(using Trace.Context): Unit = ()
 		}
 
@@ -1463,6 +1465,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				} yield ()
 			}
 
+
 			/** Like [[updateRole]] but already knowing the current [[PrimaryState]]. */
 			def updateRole(primaryState0: PrimaryState)(using Context): sequencer.LatchingDuty[Unit] = {
 				checkWithin()
@@ -1582,28 +1585,43 @@ trait ConsensusParticipantSdm { thisModule =>
 							// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - primaryState=$primaryState") // TODO delete line
 							for {
 								myVote <- determineMyVote(primaryState1, true)
-								primaryState2 <- primaryStateFence.causalAnchor()
 								_ <- {
-									// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - myVote=$myVote") // TODO delete line
 									if haveToAbort then sequencer.LatchingDuty_unit
-									else if syncLocalStateInfo(primaryState2).ballot != myVote.ballot then {
-										Trace.trace(s"Restarting due to a ballot bump")
-										updateRole(primaryState2)
-									}
-									else primaryState2 match {
-										case accessible2: Accessible =>
-											updateRoleKnowingMyVote(accessible2, myVote)
-										case Inaccessible =>
-											illegalStateQuiesce()
-											sequencer.LatchingDuty_unit
-									}
+									// if the leader is a ghost
+									else for {
+										primaryState2 <- primaryStateFence.causalAnchor()
+										_ <- {
+											// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - myVote=$myVote") // TODO delete line
+											if haveToAbort then sequencer.LatchingDuty_unit
+											// else if excluded
+											else if myVote.isBlank then {
+												val config2 = deriveConfigurationFrom(primaryState2)
+												if assertionsEnabled then assert(config2.isInstanceOf[StableConfig] && !config2.desiredParticipants.contains(boundParticipantId))
+												become(Retiring(primaryState2.currentTerm, config2.changeIndex, config2.allParticipants))
+												sequencer.LatchingDuty_unit
+											} else {
+												val stateInfo2 = syncLocalStateInfo(primaryState2)
+												if stateInfo2.ballot != myVote.ballot then {
+													Trace.trace(s"Restarting due to a ballot bump: currentBallot=${stateInfo2.ballot}, myVote.ballot=${myVote.ballot}")
+													updateRole(primaryState2)
+												}
+												else primaryState2 match {
+													case accessible2: Accessible =>
+														updateRoleKnowingMyVote(accessible2, myVote)
+													case Inaccessible =>
+														illegalStateQuiesce()
+														sequencer.LatchingDuty_unit
+												}
+											}
+										}
+									} yield ()
 								}
 							} yield ()
 						}
 					}
 
-					val competitionResult = updateRoleMonotonicConvergence.contend(
-						maybePreviousUpdateRoleExecution => {
+					val updateCovenant = updateRoleCoalescing.contend(true) {
+						maybePreviousUpdateRoleExecution =>
 							val myCurrentStateInfo = syncLocalStateInfo(primaryState0)
 							maybePreviousUpdateRoleExecution.fold {
 								myStateInfoAtLastUpdateRoleStart = myCurrentStateInfo
@@ -1620,10 +1638,8 @@ trait ConsensusParticipantSdm { thisModule =>
 									start(primaryState0)
 								}
 							}
-						},
-						true
-					)
-					competitionResult.andThen(_ => Trace.trace(s"Execution #$serial ended"))
+					}
+					updateCovenant.andThen(_ => Trace.trace(s"Execution #$serial ended"))
 				}
 			}
 
@@ -1772,12 +1788,14 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/** A transitional [[Role]] before [[Quiesced]] to which a participant transitions to when a [[StableConfigChange]] that excludes it becomes active.
-		 * This [[Role]] last until all the [[RetirementDriver]]s created while leading, in case it was, have concluded their job. The [[RetirementDriver]] that concludes lately triggers the transition to [[Quiesced]].
+		 * The life of this [[Role]] last until a stable [[Leader]] of a subsequent [[Term]] authorizes this participant to quiesce.
 		 *
-		 * This [[Role]] exists only to support configuration changes that result in an empty participant set.
-		 * Why is it needed? Because excluded participants depend on the leader to send them the final appends confirming they are safe to quiesce. If this [[Role]] didn't exist, there would be no [[RetirementDriver]]s responsible for that task when the configuration changes to an empty set.
-		 * Since this role must exist for that reason, we also take advantage of its presence to wait the [[RetirementDriver]]s to conclude their job even when the deposing [[ConfigChange]]'s [[ConfigChange.newParticipants]] set is not empty. In this scenario, the job of the [[RetirementDriver]]s of this retiring ex-leader will overlap with the job of the [[RetirementDriver]]s of the new [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].
-		 * @param finalTerm the last [[Term]] during which this participant was active.
+		 * This [[Role]] is part of the **Retiring Quorum-Buffering** mechanism.
+		 * The purpose of this mechanism is to maintain the quorum safety of the old participant set during joint consensus.
+		 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute toward the old set's quorum. Although they do not cast a specific vote, they effectively lower the required threshold of active votes by one, acting as a neutral "don't care" participant until a succeeding leader (líder sucesor) establishes a stable majority in the new configuration.
+		 *
+		 * Since this role must exist for that reason, we also take advantage of its presence to wait for the [[RetirementDriver]]s to conclude their job. In this scenario, the job of the [[RetirementDriver]]s of this retiring ex-leader will overlap with the job of the [[RetirementDriver]]s of the succeeding [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].
+		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]].
 		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
 		 * @param newParticipants the [[StableConfigChange.newParticipants]] of the [[StableConfigChange]] that excluded this participant while it was [[Leader]]. */
 		private final class Retiring(val finalTerm: Term, val excludingConfigIndex: RecordIndex, newParticipants: IArray[ParticipantId]) extends Role {
@@ -1788,6 +1806,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onRetiring(finalTerm))
+				becomeQuiescedIfEligible(excludingConfigIndex)
 			}
 
 			override def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ConfigChangeResponse]): sequencer.LatchingDuty[ConfigChangeResponse] = {
@@ -1808,7 +1827,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				Trace.init(() => s"$boundParticipantId: Retiring.onAppendRecords") {
-					// Check if the received records contain a [[TransitionalConfigChange]] that includes this participant back.
+					// Check if the received records contain a [[TransitionalConfigChange]] that includes this participant.
 					val relativeIndexOfTheIncludingConfigChange = records.lastIndexWhere {
 						case tcc: TransitionalConfigChange[ParticipantId] @unchecked => tcc.newParticipants.contains(boundParticipantId)
 						case _ => false
@@ -1832,7 +1851,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		/** @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement. */
+		/**
+		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]].
+		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
+		 * @param newParticipants the [[StableConfigChange.newParticipants]] of the [[StableConfigChange]] that excluded this participant while it was [[Leader]]. */
 		private final def Retiring(finalTerm: Term, excludingConfigIndex: RecordIndex, newParticipants: IArray[ParticipantId]): Maybe[Retiring] = {
 			currentRole match {
 				case retiring: Retiring if retiring.finalTerm == finalTerm && retiring.excludingConfigIndex == excludingConfigIndex => Maybe.empty
@@ -2024,8 +2046,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		/** A transitional [[Role]] that updates the [[Term]] to the provided one, and then transitions to [[Isolated]] or [[Retiring]].
-		 * It always comes after [[Leader]] when a later [[Term]] is seen in a [[StateInfo]] of another participant.
+		/** A transitional [[Role]] that:
+		 *		- always comes after [[Leader]] when a later [[Term]] is seen in a [[StateInfo]] of another participant;
+		 *		- updates the [[Term]] to the provided one, and then transitions to [[Isolated]] or [[Retiring]].
+		 *
 		 * Note that this [[Role]] is not hosted when the [[Term]] is updated by the [[StatefulRole.onAppendRecords]] handler, which does the update itself.
 		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest [[Term]] seen if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
 		 *
@@ -2220,6 +2244,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Behavior when the participant has the [[LEADER]] role. Taken when reachability to a majority of the participants is achieved, none of them is a [[Leader]] with higher or equal term, and wins the new leader election.
 		 *
 		 * In this state, the participant coordinates consensus decisions.
+		 * @param leadedTerm the [[Term]] owned by this [[Leader]] instance.
+		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
+		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
+		 * @param wsf the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances.
 		 * TODO replace the `initialPrimaryState` parameter with what is obtained from it. Storing an instance of [[Accessible]] is error prone.
 		 */
 		private final class Leader(val leadedTerm: Term, initialPrimaryState: Accessible, initialConfig: Configuration, wsf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(wsf) { thisLeader =>
@@ -2251,7 +2279,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			private var highestRecordIndexKnowToBeCommitted_ByParticipantIndex: Array[RecordIndex] = Array.fill(initialConfig.allOtherParticipants.size)(0)
 
-			/** Set to the index of the [[StableConfigChange]] that excluded this [[ConsensusParticipant]] by the [[Leader.driveTheRetirements]] method, which is called by [[deriveConfigurationFrom]] when the active [[Configuration]] changes from a [[TransitionalConfig]] to a [[StableConfig]]. */
+			/** Either, the index of the [[StableConfigChange]] that excluded this leading participant causing it become a ghost leader, or zero if in joint consensus or not excluded.
+			 * Set by the [[Leader.driveTheRetirements]] method, which is called by [[deriveConfigurationFrom]] when the active [[Configuration]] changes from a [[TransitionalConfig]] to a [[StableConfig]]. */
 			private var indexOfConfigChangeThatExcludedThisParticipant: RecordIndex = 0
 
 			/** The serial number of the last replication attempt. Incremented whenever the [[attemptToUpdateOtherParticipantsLogs]] method is called. */
@@ -2281,6 +2310,8 @@ trait ConsensusParticipantSdm { thisModule =>
 						case scc: StableConfigChange[ParticipantId @unchecked] =>
 							// ... and it was committed (commitIndex >= its index in the log), program the driving of excluded participants to retirement and authorize retiring participants to quiesce.
 							if commitIndex >= indexOfTopConfigChange then thisLeader.driveTheRetirements(initialPrimaryState, initialConfig, scc, indexOfTopConfigChange)
+							else replicateUntilSuccessOrLeaderRoleIsAbandoned(initialPrimaryState, indexOfTopConfigChange)
+							
 					}
 				}
 			}
@@ -2290,6 +2321,8 @@ trait ConsensusParticipantSdm { thisModule =>
 				unreachableFollowersRetrySchedule.foreach(sequencer.cancel(_))
 				unreachableFollowersRetrySchedule = Maybe.empty
 			}
+
+			def isGhost: Boolean = indexOfConfigChangeThatExcludedThisParticipant > 0
 
 			/** @inheritdoc
 			 *  This implementation does two different things:
@@ -2378,10 +2411,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			/** Insistently authorizes the quiescence of the specified participants; allowing them to transition from [[Retiring]] to [[Quiesced]] provided they retire due to being excluded by a [[StableConfigChange]] at the `permittedConfigChangeIndex`.
+			/** Starts a process that insistently authorizes the quiescence of the specified participants; allowing them to transition from [[Retiring]] to [[Quiesced]] provided they retire due to being excluded by a [[StableConfigChange]] at the `permittedConfigChangeIndex`.
 			 * @param participants the participants to authorize the quiescence of.
 			 * @param permittedConfigChangeIndex the index of the [[StableConfigChange]] for which the quiescence is authorized. The destination participant will quiesce only if it reaches the [[Retiring]] state with a [[Retiring.excludingConfigIndex]] equal to this value.
-			 * @param includeMyself whether to include this participant in the set of participants to authorize the quiescence of.
+			 * @param includeMyself whether to include this participant in the set of participants to authorize the quiescence of. If true, this participant will be authorized after all the others have acknowledged the authorization.
 			 */
 			private def authorizeQuiescenceTo(participants: Set[ParticipantId], permittedConfigChangeIndex: RecordIndex, includeMyself: Boolean)(using Trace.Context): Unit = {
 				Trace.step("authorizeQuiescenceTo") {
@@ -2410,7 +2443,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								sequencer.schedule(schedule)(_ => loop(failedParticipants, retriesDone + 1))
 							} else {
 								if failedParticipants.length > 0 then Trace.warn(s"$boundParticipantId: The limit of retries ($retriesDone) to permit the participants ${remainingParticipants.mkString("[", ", ", "]")} to quiesce at $permittedConfigChangeIndex has been reached.")
-								if includeMyself then onQuiescencePermitted(boundParticipantId, permittedConfigChangeIndex)
+								if includeMyself then currentRole.onQuiescencePermitted(boundParticipantId, permittedConfigChangeIndex)
 							}
 						}
 					}
@@ -2483,10 +2516,10 @@ trait ConsensusParticipantSdm { thisModule =>
 							// Do not start a configuration transition if excluded from both, the current, and the new configuration.
 							else if !stable0.desiredParticipants.contains(boundParticipantId) && !desiredParticipants.contains(boundParticipantId) then {
 								// Also, become retiring immediately if all followers have committed the excluding config change. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-								if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
+								if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
 									if assertionsEnabled then assert(indexOfConfigChangeThatExcludedThisParticipant == stable0.changeIndex)
 									authorizeQuiescenceIfVanished(stable0)
-									become(Retiring(leadedTerm, stable0.changeIndex, stable0.allParticipants)).requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+									become(Retiring(primaryState0.currentTerm, stable0.changeIndex, stable0.allParticipants)).requestConfigChange(requestId, desiredParticipants, Maybe.empty)
 								}
 								// If leading as a ghost and some follower hasn't commited the excluding config change, make them commit it.
 								else {
@@ -2600,7 +2633,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 					val clientId = clientIdOf(clientCommand)
 					type PrimaryStateUpdaterResult = (recordIndex: RecordIndex, indexOfLastAppendedCommandFromClient: RecordIndex, shouldRetire: Boolean)
-					var primaryStateUpdaterResult: PrimaryStateUpdaterResult | Null = null // secondary return value of the causal fence exclusive section
+					var primaryStateUpdaterResultCompanion: PrimaryStateUpdaterResult | Null = null // secondary return value of the causal fence exclusive section
 					for {
 						// First, append the command to the log if it wasn't already
 						primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
@@ -2608,21 +2641,23 @@ trait ConsensusParticipantSdm { thisModule =>
 							else primaryState0 match {
 								case Inaccessible =>
 									Maybe.empty
+
 								case accessible0: Accessible =>
 									val currentTerm = accessible0.currentTerm
 									if assertionsEnabled then assert(currentTerm == leadedTerm)
 
 									// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-									if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
+									// Note that for the result of `isGhostAndAllFollowersCommittedTheExcludingConfigChange` be fiable here, it is required that the [[deriveConfigurationFrom]] be called whenever a [[Record]] is appended to the local log. // TODO check the mentioned requirement is satisfied. Never delete this TODO. This is a candidate target for an AI based agentic source checker
+									if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
 										if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
-										primaryStateUpdaterResult = (0L, 0L, true)
+										primaryStateUpdaterResultCompanion = (0L, 0L, true)
 										Maybe.empty
 									} else {
 										val indexOfLastAppendedCommandFromClient = accessible0.indexOfLastAppendedCommandFrom(clientId)
 
 										// If this is the first command received from the client, proceed normally (append, replicate, apply)
 										if indexOfLastAppendedCommandFromClient == 0 then {
-											primaryStateUpdaterResult = (primaryState0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
+											primaryStateUpdaterResultCompanion = (primaryState0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
 											Maybe(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
 										}
 										// else, check if the command was received before:
@@ -2633,24 +2668,23 @@ trait ConsensusParticipantSdm { thisModule =>
 													val comparison = clientCommandOrdering.compare(clientCommand, lastClientCommand)
 													// if the command is newer than the last received from the same client, append it to the log memorizing the index.
 													if comparison > 0 then {
-														primaryStateUpdaterResult = (accessible0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
+														primaryStateUpdaterResultCompanion = (accessible0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
 														Maybe.some(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
 													}
 													// if the command is the same as the last received, memorize the index of the last received.
 													else if comparison == 0 then {
-														primaryStateUpdaterResult = (indexOfLastAppendedCommandFromClient, indexOfLastAppendedCommandFromClient, false)
+														primaryStateUpdaterResultCompanion = (indexOfLastAppendedCommandFromClient, indexOfLastAppendedCommandFromClient, false)
 														Maybe.empty
 													}
 													// if the command is older than the last received, obtain its index and memorize it.
 													else {
-														primaryStateUpdaterResult = (accessible0.indexOf(clientCommand), indexOfLastAppendedCommandFromClient, false)
+														primaryStateUpdaterResultCompanion = (accessible0.indexOf(clientCommand), indexOfLastAppendedCommandFromClient, false)
 														Maybe.empty
 													}
-												case _ =>
-													// Inconsistency. Should never happen
-												Maybe.empty
+												case _ => // State inconsistency between the client and the log exposed by the bound ClusterParticipant: the record at indexOfLastAppendedCommandFrom(clientId) isn't a CommandRecord.
+													Maybe.empty
 											}
-										// @formatter:on
+											// @formatter:on
 										}
 									}
 							}
@@ -2664,9 +2698,10 @@ trait ConsensusParticipantSdm { thisModule =>
 
 								case accessible1: Accessible =>
 									if assertionsEnabled then assert(accessible1.currentTerm == leadedTerm)
-									primaryStateUpdaterResult.asMatchable match {
-										case null =>
-											sequencer.LatchingDuty_ready(InconsistentState(s"For client $clientId, the last known log-entry index does not point to a record of the expected type."))
+
+									primaryStateUpdaterResultCompanion.asMatchable match {
+										case null => // Reaches here when the last known log-entry index for the client does not point to a CommandRecord.
+											sequencer.LatchingDuty_ready(InconsistentState(s"Inconsistency between the client $clientId and the log exposed by the bound `ClusterParticipant`: the log record at `ClusterParticipant.indexOfLastAppendedCommandFrom(clientId)` isn't a `CommandRecord`."))
 
 										case (recordIndex, indexOfLastAppendedCommandFromClient, shouldRetire) =>
 											if shouldRetire then {
@@ -2676,7 +2711,7 @@ trait ConsensusParticipantSdm { thisModule =>
 													assert(indexOfConfigChangeThatExcludedThisParticipant == config1.changeIndex) // because `shouldRetire == true` implies that `indexOfConfigChangeThatExcludedThisParticipant > 0` and the primary state was not mutated (=> `primaryState1 eq primaryState0` and `config1 eq config0`). And given it is assumed that [[deriveConfigurationFrom]] is called whenever a [[Record]] is appended to the local log, then `indexOfConfigChangeThatExcludedThisParticipant == config0.changeIndex`.
 												}
 												authorizeQuiescenceIfVanished(config1.asInstanceOf[StableConfig])
-												become(Retiring(leadedTerm, config1.changeIndex, config1.allParticipants)).onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+												become(Retiring(accessible1.currentTerm, config1.changeIndex, config1.allParticipants)).onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
 											}
 											else if recordIndex == 0L then sequencer.LatchingDuty_ready(Stale(clientCommand, indexOfLastAppendedCommandFromClient))
 											else if recordIndex == -1L then sequencer.LatchingDuty_ready(TooOld(clientCommand))
@@ -2776,7 +2811,7 @@ trait ConsensusParticipantSdm { thisModule =>
 											val appendOutcomes1 = appendResponses1.mapWithIndex { (appendResponse, otherParticipantIndex) =>
 												val otherParticipantId = config1.allOtherParticipants(otherParticipantIndex)
 												// Handle the responses. Note that when successful, it updates the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
-												handleAppendResponse(accessible1.logBufferOffset, otherParticipantId, otherParticipantIndex, config1.isInNew(otherParticipantId), appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
+												handleAppendResponse(accessible1, config1, otherParticipantId, otherParticipantIndex, appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 											}
 											Trace.trace(s"The append responses until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.allOtherParticipants.indices yield s"${config1.allOtherParticipants(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 											for maybeLastAppendAttemptInfo2 <- retryLaggingLearners(accessible1, config1, appendOutcomes1, indexAfterTopRecordToSend, false, false, serialOfReplicationAttempt)
@@ -2821,8 +2856,8 @@ trait ConsensusParticipantSdm { thisModule =>
 																val config3 = lastAppendAttemptInfo3.updatedConfig
 																Trace.trace(s"Final step: excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config3.allOtherParticipants.indices yield s"${config3.allOtherParticipants(i)}: outcome=${lastAppendAttemptInfo3.lastAttemptOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 																// If this leading participant is not included in the active configuration and all the followers in the new configuration have committed the StableConfigChange that excludes this participant, retire this participant.
-																// Note that this line are skipped if another replication started (call to this method). Therefore, this check and the transition to retiring should be done before calling this method (attemptToUpdateOtherParticipantsLogs) in order to minimize the time a participant is leading while excluded.
-																if isExcludedAndAllFollowersCommittedTheExcludingConfigChange then {
+																// Note that these lines are skipped if another replication started (call to this method). Therefore, this check and the transition to retiring should be done before calling this method (attemptToUpdateOtherParticipantsLogs) in order to minimize the time a participant is leading while excluded.
+																if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
 																	assert(config3.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
 																	authorizeQuiescenceIfVanished(config3.asInstanceOf[StableConfig])
 																	become(Retiring(leadedTerm, indexOfConfigChangeThatExcludedThisParticipant, config3.allParticipants))
@@ -2976,7 +3011,7 @@ trait ConsensusParticipantSdm { thisModule =>
 															else {
 																val newRequestIndex = laggingParticipants.indexOf(participantId)
 																assert(newRequestIndex >= 0)
-																handleAppendResponse(accessible2.logBufferOffset, participantId, participantIndex2, config2.isInNew(participantId), newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
+																handleAppendResponse(accessible2, config2, participantId, participantIndex2, newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 															}
 														}
 													}
@@ -2995,14 +3030,15 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Handles the result of an [[ClusterParticipant.appendRecords]] call.
 			 *
 			 * Updates the [[indexOfNextRecordToSend_ByParticipantIndex]], [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and [[highestRecordIndexKnowToBeCommitted_ByParticipantIndex]] arrays and maps the [[AppendResult]] to an [[AppendOutcome]].
-			 * @param indexOfFirstRecordInMemory the index of the first record that is still memorized in the current [[PrimaryState]] log.
+			 * @param primaryState the current [[PrimaryState]].
+			 * @param config the active [[Configuration]]. Assumes it is derived from `config`.
 			 * @param participantId the identifier of the participant whose response is being handled.
 			 * @param participantIndex the index of the participant in the [[Configuration.allOtherParticipants]] derived from the provided [[PrimaryState]].
 			 * @param appendResponse the response from the peer about the appending.
 			 * @param appendRequestTerm the term passed to [[ClusterParticipant.appendRecords]] as `inquirerTerm` parameter.
 			 * @param indexAfterTopRecordSent index of the record after the one at the top of the [[IndexedSeq]] of [[Record]]s passed to [[ClusterParticipant.appendRecords]] as argument to the parameter named `records`.
 			 * @param appendRequestLeaderCommit the [[commitIndex]] of this [[Leader]] when [[ClusterParticipant.appendRecords]] was called. Must match the value passed to the `leaderCommit` parameter. */
-			private def handleAppendResponse(indexOfFirstRecordInMemory: RecordIndex, participantId: ParticipantId, participantIndex: Int, isInNewConfig: Boolean, appendResponse: AppendResponse | Null, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex)(using Context): AppendOutcome = {
+			private def handleAppendResponse(primaryState: Accessible, config: Configuration, participantId: ParticipantId, participantIndex: Int, appendResponse: AppendResponse | Null, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex)(using Context): AppendOutcome = {
 				appendResponse match {
 					case null =>
 						AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION
@@ -3010,10 +3046,8 @@ trait ConsensusParticipantSdm { thisModule =>
 					case Success(appendResult) =>
 
 						// Trace.trace(s"handleAppendResponse@${primaryState.currentTerm} from $participantId requested@$appendRequestTerm, dialog=$appendResponse, indexAfterTopRecordSent=$indexAfterTopRecordSent") // TODO delete line
-
-						if appendResult.roleOrdinal == QUIESCED then AO_IS_QUIESCED
-						else if !isInNewConfig && appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING
-						else if appendResult.term > appendRequestTerm then AO_HAS_HIGHER_TERM
+						if appendResult.term > appendRequestTerm then AO_HAS_HIGHER_TERM
+						else if appendResult.roleOrdinal == QUIESCED then AO_IS_QUIESCED
 						else {
 							if assertionsEnabled then {
 								assert(appendResult.roleOrdinal >= RETIRING) // because the Starting role always defers to other role.
@@ -3023,8 +3057,23 @@ trait ConsensusParticipantSdm { thisModule =>
 							val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
 							val highestRecordIndexKnownToBeAppended = highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex)
 							val highestRecordIndexKnownToBeCommited = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
+
+							if appendResult.roleOrdinal == RETIRING then {
+								val topConfigChangeIndex = primaryState.indexOfTopConfigChange
+								val topConfigChange = primaryState.getRecordAt(topConfigChangeIndex).asInstanceOf[StableConfigChange[ParticipantId]]
+								if assertionsEnabled then {
+									assert(config.isInstanceOf[TransitionalConfig] && !config.isInNew(participantId))
+									assert(appendResult.successOrIndexForNextAttempt > topConfigChangeIndex)
+									assert(topConfigChange.requestId == config.backingConfigChange.requestId)
+								}
+
+								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = topConfigChangeIndex
+								if config.changeIndex >= indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = topConfigChangeIndex + 1
+								highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = topConfigChangeIndex
+								AO_IS_RETIRING
+							}
 							// If the appending is obsolete (the records it intended to append are already appended), return AO_SUCCESS updating nothing.
-							if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then AO_SUCCESS
+							else if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then AO_SUCCESS
 							// If the appending was successful, update the local knowledge about the participant and return AO_SUCCESS.
 							else if appendResult.successOrIndexForNextAttempt == 0 then {
 								if appendRequestLeaderCommit > highestRecordIndexKnownToBeCommited then highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = appendRequestLeaderCommit
@@ -3037,9 +3086,9 @@ trait ConsensusParticipantSdm { thisModule =>
 								// Clamp the index of the first record to append in the next attempt after the highest record index known to be appended.
 								val indexForNextAttempt = if suggestedIndexForNextAttempt <= highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended + 1 else suggestedIndexForNextAttempt
 								// If the earlier record predates the snapshot, report an error.
-								if indexForNextAttempt < indexOfFirstRecordInMemory then {
+								if indexForNextAttempt < primaryState.logBufferOffset then {
 									// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism if this situation is possible to happen at all (because highestRecordIndexKnownToBeAppended_ByParticipantIndex would always be greater than or equal to the lobBufferOffset).
-									Trace.error(s"$boundParticipantId: Unable to append records to $participantId because its log has inconsistencies at records that predate the last snapshot. They are at indexes less than the logBufferOffset=$indexOfFirstRecordInMemory. THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
+									Trace.error(s"$boundParticipantId: Unable to append records to $participantId because its log has inconsistencies at records that predate the last snapshot. They are at indexes less than the logBufferOffset=${primaryState.logBufferOffset}. THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
 									// return false without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnownToBeAppended_ByParticipantIndex.
 									AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT
 								} else {
@@ -3112,7 +3161,7 @@ trait ConsensusParticipantSdm { thisModule =>
 															val participantId = unreachableParticipantIds(resultIndex)
 															val participantIndex = config2.participantIndexOf(participantId)
 															if participantIndex < 0 then AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION
-															else handleAppendResponse(accessible2.logBufferOffset, participantId, participantIndex, config2.isInNew(participantId), appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
+															else handleAppendResponse(accessible2, config2, participantId, participantIndex, appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 														}
 														Trace.trace(s"The append responses to the unreachable-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, outcomes=${unreachableParticipantIds.zip(appendsOutcomes)}") // TODO delete
 														scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendsOutcomes, indexAfterTopRecordSent, serialOfReplicationAttempt)
@@ -3128,12 +3177,10 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			/**
 			 * CAUTION: this method is called from a [[PrimaryState]] updater. So, limit the implementation to operation allowed there.
-			 * @note that for the result of this operation be fiable, it is required that the [[deriveConfigurationFrom]] be called whenever a [[Record]] is appended to the local log. // TODO check the mentioned requirement is satisfied. Never delete this TODO. This is a candidate target for an AI based agentic source checker
+			 * @note that for the result of this operation be fiable, the [[PrimaryState]] should have stayed constant since the last call to [[deriveConfigurationFrom]].
 			 * @return true if this leading participant is not included in the active [[Configuration]] and all the followers in the new [[Configuration]] have committed the [[StableConfigChange]] that excludes this participant. */
-			private def isExcludedAndAllFollowersCommittedTheExcludingConfigChange: Boolean = {
-				indexOfConfigChangeThatExcludedThisParticipant > 0
-					&& commitIndex >= indexOfConfigChangeThatExcludedThisParticipant
-					&& IArray.unsafeFromArray(highestRecordIndexKnowToBeCommitted_ByParticipantIndex).forallWithIndex((highestRecordIndexKnowToBeCommitted, _) => highestRecordIndexKnowToBeCommitted >= indexOfConfigChangeThatExcludedThisParticipant)
+			private def isGhostAndAllFollowersCommittedTheExcludingConfigChange: Boolean = {
+				isGhost && IArray.unsafeFromArray(highestRecordIndexKnowToBeCommitted_ByParticipantIndex).forallWithIndex((highestRecordIndexKnowToBeCommitted, _) => highestRecordIndexKnowToBeCommitted >= indexOfConfigChangeThatExcludedThisParticipant)
 			}
 
 			/** Consolidates the many [[sequencer.Task]]s into a single [[sequencer.LatchingDuty]] that yields an array with the results of the [[sequencer.Task]]s.

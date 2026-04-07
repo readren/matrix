@@ -1126,7 +1126,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5775352996191749875L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -3277263891068940824L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5775352996191749875L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
 		//val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 563901697643278299L)

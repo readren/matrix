@@ -1,11 +1,11 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.MonotonicConvergenceTest
+import readren.sequencer.ResultIncrementalCoalescingTest
 
-/** Tests if the [[MonotonicConvergence]] works correctly using the [[Doer]] provided by [[CooperativeWorkersWithSyncSchedulerDp]].
+/** Tests if the [[ResultIncrementalCoalescing]] works correctly using the [[Doer]] provided by [[CooperativeWorkersWithSyncSchedulerDp]].
  */
-class CooperativeWorkersWithSyncSchedulerDpMonotonicConvergenceTest extends MonotonicConvergenceTest[CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+class CooperativeWorkersWithSyncSchedulerDpResultIncrementalCoalescingTest extends ResultIncrementalCoalescingTest[CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeWorkersWithSyncSchedulerDp
 
