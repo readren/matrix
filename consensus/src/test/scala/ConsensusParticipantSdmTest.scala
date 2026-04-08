@@ -487,7 +487,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							else {
 								val attemptNumber = failedAttempts + 1
 								scribe.trace(s"Net: Attempt #$attemptNumber to shutdown the net failed with ${responses.mkString("[", ", ", "]")}")
-								netSequencer.Duty_delaysFlat(stimulusSettlingTime * clusterSize)(_ => loop(attemptNumber)) // TODO replace the delay with an "on settled" mechanism
+								netSequencer.Duty_delaysFlat(10 * clusterSize)(_ => loop(attemptNumber)) // TODO replace the delay with an "on settled" mechanism
 							}
 						}
 					} yield maybeErrorMessage
@@ -1126,11 +1126,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -7835823244107552832L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, 1362449429532672961L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5674795268043328521L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -8187096177033288099L) // GHOST to TCC that includes it back
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -4995429467987335482L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -7835823244107552832L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -3277263891068940824L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5775352996191749875L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
-		//val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
+		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 563901697643278299L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 1727149220655985707L)
 		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -359368432946550500L)
@@ -1160,7 +1164,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			Gen.oneOf(true, false),
 			Gen.long
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
-			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 0)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 1)
 			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
 		}

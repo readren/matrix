@@ -1659,10 +1659,23 @@ trait ConsensusParticipantSdm { thisModule =>
 								startNewBallot()
 							}
 							if currentRole.ordinal >= FOLLOWER then currentRole.onCommandFromClient(command, FIRST_ATTEMPT)
-							else for primaryState <- primaryStateFence.causalAnchor() yield Unable(
-								if leadershipVacated then LEADERSHIP_VACATED else FALLBACK,
-								deriveConfigurationFrom(primaryState).otherProbableParticipants
-							)
+							else {
+								val nextAttemptFlag = if leadershipVacated then LEADERSHIP_VACATED else FALLBACK
+								currentRole match {
+									case stateful: StatefulRole =>
+										for primaryState <- stateful.primaryStateFence.causalAnchor() yield Unable(
+											nextAttemptFlag,
+											deriveConfigurationFrom(primaryState).otherProbableParticipants
+										)
+									case retiring: Retiring =>
+										sequencer.LatchingDuty_ready(Unable(
+											nextAttemptFlag,
+											ListSet.newBuilder[ParticipantId].addAll(retiring.newParticipants).addAll(cluster.getOtherProbableParticipant).result()
+										))
+									case stateless =>
+										sequencer.LatchingDuty_ready(Unable(nextAttemptFlag, cluster.getOtherProbableParticipant))
+								}
+							}
 
 						}
 					} yield result
@@ -1798,7 +1811,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]].
 		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
 		 * @param newParticipants the [[StableConfigChange.newParticipants]] of the [[StableConfigChange]] that excluded this participant while it was [[Leader]]. */
-		private final class Retiring(val finalTerm: Term, val excludingConfigIndex: RecordIndex, newParticipants: IArray[ParticipantId]) extends Role {
+		private final class Retiring(val finalTerm: Term, val excludingConfigIndex: RecordIndex, val newParticipants: IArray[ParticipantId]) extends Role {
 			override val ordinal: RoleOrdinal = RETIRING
 			override val rank: ElectionRank = ElectionRank_from(ordinal)
 
@@ -2010,10 +2023,13 @@ trait ConsensusParticipantSdm { thisModule =>
 					for {
 						primaryState <- primaryStateFence.causalAnchor()
 						response <- {
-							// Update the `memorizedParticipantsInfos`
-							syncLocalStateInfo(primaryState)
-							if attemptFlag == LEADERSHIP_VACATED && !memorizedParticipantInfos.isEmpty then startNewBallot()
-							updateRoleAndThenCallsOnCommandFromClient(command, (attemptFlag & LEADERSHIP_VACATED) != 0)
+							if currentRole ne this then currentRole.onCommandFromClient(command, attemptFlag)
+							else {
+								// Update the `memorizedParticipantsInfos`
+								syncLocalStateInfo(primaryState)
+								if attemptFlag == LEADERSHIP_VACATED && !memorizedParticipantInfos.isEmpty then startNewBallot()
+								updateRoleAndThenCallsOnCommandFromClient(command, (attemptFlag & LEADERSHIP_VACATED) != 0)
+							}
 						}
 					} yield response
 				}
@@ -2024,15 +2040,10 @@ trait ConsensusParticipantSdm { thisModule =>
 					Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request. ")
 					for {
 						_ <- updateRole(primaryState0) // TODO consider making updateRole return the current primary state, so that the causalAnchor method call is not needed here (and other places also).
+						primaryState <- primaryStateFence.causalAnchor()
 						response <- {
 							if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-							else for {
-								primaryState <- primaryStateFence.causalAnchor()
-								response <- {
-									if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-									else sequencer.LatchingDuty_ready(SECLUDED(syncLocalStateInfo(primaryState).ballot))
-								}
-							} yield response
+							else sequencer.LatchingDuty_ready(SECLUDED(syncLocalStateInfo(primaryState).ballot))
 						}
 					} yield response
 				}
@@ -2108,9 +2119,12 @@ trait ConsensusParticipantSdm { thisModule =>
 						for {
 							primaryState <- primaryStateFence.causalAnchor()
 							response <- {
-								syncLocalStateInfo(primaryState)
-								if !memorizedParticipantInfos.isEmpty && (attemptFlag == REDIRECTED || attemptFlag == LEADERSHIP_VACATED) then startNewBallot()
-								updateRoleAndThenCallsOnCommandFromClient(command, (attemptFlag & LEADERSHIP_VACATED) != 0)
+								if currentRole ne this then currentRole.onCommandFromClient(command, attemptFlag)
+								else {
+									syncLocalStateInfo(primaryState)
+									if !memorizedParticipantInfos.isEmpty && (attemptFlag == REDIRECTED || attemptFlag == LEADERSHIP_VACATED) then startNewBallot()
+									updateRoleAndThenCallsOnCommandFromClient(command, (attemptFlag & LEADERSHIP_VACATED) != 0)
+								}
 							}
 						} yield response
 					}
@@ -2122,15 +2136,10 @@ trait ConsensusParticipantSdm { thisModule =>
 					Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request.")
 					for {
 						_ <- updateRole(primaryState0)
+						primaryState1 <- primaryStateFence.causalAnchor()
 						response <- {
 							if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-							else for {
-								primaryState1 <- primaryStateFence.causalAnchor()
-								response <- {
-									if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-									else sequencer.LatchingDuty_ready(ASK_THE_LEADER(followeeId, syncLocalStateInfo(primaryState1).ballot))
-								}
-							} yield response
+							else sequencer.LatchingDuty_ready(ASK_THE_LEADER(followeeId, syncLocalStateInfo(primaryState1).ballot))
 						}
 					} yield response
 				}
@@ -2152,7 +2161,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val rank: ElectionRank = ElectionRank_from(ordinal)
 
 			/** Is fulfilled after bumping the term and becoming [[Leader]] if success, or [[Quiesced]] if fails to persist the primary state. */
-			private val promotionCovenant: sequencer.Covenant[Unit] = sequencer.Covenant()
+			private val promotionCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
 			override def onEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onPromoting(previous.ordinal, getCommittedPrimaryState.currentTerm))
@@ -2176,7 +2185,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								become(Maybe(new Leader(accessible1.currentTerm, accessible1, deriveConfigurationFrom(accessible1), primaryStateFence)))
 						}
 					}
-					promotionCovenant.fulfillUnsafe(())
+					promotionCovenant.fulfillUnsafe(primaryState1)
 				}
 			}
 
@@ -2184,8 +2193,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.step("Promoting.determineMyVote") {
 					checkWithin()
 					for {
-						_ <- promotionCovenant
-						primaryState1 <- primaryStateFence.causalAnchor()
+						primaryState1 <- promotionCovenant
 						vote <- currentRole.determineMyVote(primaryState1, blankVoteIfRoleChanges)
 					} yield vote
 				}
@@ -2611,14 +2619,20 @@ trait ConsensusParticipantSdm { thisModule =>
 								}
 								result <- {
 									if isSccReplicatedToMajority then sequencer.LatchingDuty_true
+									else if currentRole ne this then sequencer.LatchingDuty_false
 									else {
 										Trace.trace(s"Updating role (in a new ballot) due to insufficient quorum when replicating a StableConfigChange record.")
 										startNewBallot()
 										for {
 											_ <- updateRole()
-											primaryState1 <- primaryStateFence.causalAnchor()
-											recursionResult <- replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, targetIndex)
-										} yield recursionResult
+											result <- {
+												if currentRole ne this then sequencer.LatchingDuty_false
+												else for {
+													primaryState1 <- primaryStateFence.causalAnchor()
+													recursionResult <- replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, targetIndex)
+												} yield recursionResult
+											}
+										} yield result
 									}
 								}
 							} yield result
@@ -3059,17 +3073,13 @@ trait ConsensusParticipantSdm { thisModule =>
 							val highestRecordIndexKnownToBeCommited = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
 
 							if appendResult.roleOrdinal == RETIRING then {
-								val topConfigChangeIndex = primaryState.indexOfTopConfigChange
-								val topConfigChange = primaryState.getRecordAt(topConfigChangeIndex).asInstanceOf[StableConfigChange[ParticipantId]]
-								if assertionsEnabled then {
-									assert(config.isInstanceOf[TransitionalConfig] && !config.isInNew(participantId))
-									assert(appendResult.successOrIndexForNextAttempt > topConfigChangeIndex)
-									assert(topConfigChange.requestId == config.backingConfigChange.requestId)
-								}
-
-								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = topConfigChangeIndex
-								if config.changeIndex >= indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = topConfigChangeIndex + 1
-								highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = topConfigChangeIndex
+								val retireeExcludingConfigIndex = appendResult.successOrIndexForNextAttempt - 1 // see `Retiring.onAppendRecords`
+								// If the commitIndex of the retiree is higher than the commitIndex of this leading participant when append was called, then this leader was crowned with a still not active StableConfigChange in its log, which became active in the retiree.
+								// Else, the retiree is still retiring from a previous joint consensus and was included back, but it hasn't noticed yet.
+								// In both cases it must be considered as a wild-card voter.
+								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
+								if retireeExcludingConfigIndex >= indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = appendResult.successOrIndexForNextAttempt
+								highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
 								AO_IS_RETIRING
 							}
 							// If the appending is obsolete (the records it intended to append are already appended), return AO_SUCCESS updating nothing.
