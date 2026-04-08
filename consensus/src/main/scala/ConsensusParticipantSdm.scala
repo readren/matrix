@@ -1111,6 +1111,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			/** Must be called before transitioning to [[Retiring]] to handle the special case when the active [[Configuration]] in an empty [[StableConfig]].
 			 * The [[Leader]] role should start the process that authorizes others to transition to the terminal [[QUIESCED]] state.
+			 *
+			 * "Vanished" means the new config has zero participants. In that case there will be no successor leader to authorize quiescence, so the current (ghost) leader must do it itself before retiring.
 			 * @param config The currently active [[Configuration]]. */
 			def authorizeQuiescenceIfVanished(config: StableConfig)(using Trace.Context): Unit = ()
 		}
@@ -2164,31 +2166,32 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Is fulfilled after bumping the term and becoming [[Leader]] if success, or [[Quiesced]] if fails to persist the primary state. */
 			private val promotionCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
-				notifyListeners(_.onPromoting(previous.ordinal, getCommittedPrimaryState.currentTerm))
+			override def onEnter(previous: Role)(using Trace.Context): Unit =
+				Trace.step("Promoting.onEnter") {
+					notifyListeners(_.onPromoting(previous.ordinal, getCommittedPrimaryState.currentTerm))
 
-				for {
-					// Bump the term
-					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
-						if currentRole ne this then Maybe.empty
-						else primaryState0 match {
-							case Inaccessible => Maybe.empty
-							case accessible0: Accessible => Maybe(primaryState0.withTermUpdated(primaryState0.currentTerm + 1))
+					for {
+						// Bump the term
+						primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
+							if currentRole ne this then Maybe.empty
+							else primaryState0 match {
+								case Inaccessible => Maybe.empty
+								case accessible0: Accessible => Maybe(primaryState0.withTermUpdated(primaryState0.currentTerm + 1))
+							}
 						}
-					}
-				} do {
-					if currentRole eq this then {
-						primaryState1 match {
-							case Inaccessible =>
-								illegalStateQuiesce()
+					} do {
+						if currentRole eq this then {
+							primaryState1 match {
+								case Inaccessible =>
+									illegalStateQuiesce()
 
-							case accessible1: Accessible =>
-								become(Maybe(new Leader(accessible1.currentTerm, accessible1, deriveConfigurationFrom(accessible1), primaryStateFence)))
+								case accessible1: Accessible =>
+									become(Maybe(new Leader(accessible1.currentTerm, accessible1, deriveConfigurationFrom(accessible1), primaryStateFence)))
+							}
 						}
+						promotionCovenant.fulfillUnsafe(primaryState1)
 					}
-					promotionCovenant.fulfillUnsafe(primaryState1)
 				}
-			}
 
 			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
 				Trace.step("Promoting.determineMyVote") {
@@ -2603,7 +2606,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/** Replicates all the records in this [[ConsensusParticipant]], retrying until either:
-			 *		- the [[Record]]s up to the provided index are replicated to a majority.
+			 *		- the [[Record]]s up to the provided index are replicated to a majority ([[commitIndex]] equals or greater than the provided index).
 			 *		- the [[currentRole]] stops being this [[Leader]] instance.
 			 * A no-op [[LeaderTransition]] record is appended if [[Record]]s of a previous [[Term]] are blocking the [[commitIndex]] advancement due to the Raft safety rule (§5.4.2): "A leader cannot determine commitment using entries from previous terms". This contraint is implemented in [[TransitionalConfig.indexOfTheCommittedRecordWithHighestIndex]].
 			 * This method recurses whenever it fails and the consequent [[updateRole]] does not change the [[Role]] (stays as leader) */
@@ -3237,6 +3240,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * This driver performs a log-matching loop, invoking [[appendRecords]] on the target until its log contains the [[StableConfigChange]] record that triggered its exclusion.
 		 * By passing a `leaderCommit` equal to the index of that configuration change, the driver ensures the remote participant's active [[Configuration]] transitions to the stable set that excludes it.
 		 *
+		 * In other words: pushes uncommitted records + leaderCommit to followers so they can enter [[Retiring]]; authorizeQuiescenceTo/PermitQuiesce grants them permission to transition from [[Retiring]] → [[Quiesced]]. Neither alone is sufficient.
+		 *
 		 * @param id the [[ParticipantId]] of the retiring participant.
 		 * @param termOfHighestRecordKnownToBeAppended the term of the [[Record]] immediately preceding the first potentially unappended [[Record]].
 		 * @param potentiallyUnappendedRecords a sequence of [[Record]]s starting from the lowest potentially unappended [[RecordIndex]], up to the [[StableConfigChange]] record.
@@ -3296,7 +3301,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					inquire.trigger(true) { response =>
 						// if the driver wasn't removed...
 						for driver <- retirementDriverByParticipantId.get(id) do {
-							// if the driver instance was replaced with a new one, ignore the response and restart.
+							// if the driver instance was replaced with a newer one, ignore the response and restart. // TODO why the restart of the newer driver instance?
 							if driver ne this then primaryStateFence.causalAnchor { (currentState1, _) =>
 								if currentState1.isInstanceOf[Accessible] then driver.driveLoop(currentState1.currentTerm, 0)
 							}
@@ -3365,6 +3370,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *
 		 * This check is performed whenever a potential prerequisite for quiescence is met (e.g., is retiring, a [[RetirementDriver]] finishes, or permission is granted).
 		 * The transition only proceeds if the participant is in the [[RETIRING]] role, no [[RetirementDriver]] is active, and protocol permission was granted.
+		 * Three independent async processes must converge: (a) all RetirementDrivers must complete/be removed, (b) role must be RETIRING, (c) quiescence permission must be granted. And that these are fulfilled by different mechanisms (RetirementDriver.driveLoop, become(Retiring), authorizeQuiescenceTo).
 		 */
 		private def becomeQuiescedIfEligible(indexOfExcludingConfigChange: RecordIndex)(using Trace.Context): Unit = {
 			Trace.step("becomeQuiescedIfEligible") {
@@ -3653,7 +3659,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				var n = primaryState.firstEmptyRecordIndex - 1
 				while n > from && (
 					highestRecordIndexKnowToBeAppended_ByParticipantIndex.countWithIndex((hri, _) => hri >= n) < halfTheNumberOfParticipants
-						|| primaryState.getRecordTermAt(n) != primaryState.currentTerm
+						|| primaryState.getRecordTermAt(n) != primaryState.currentTerm // This second term or the `or` enforces Raft §5.4.2 ("A leader cannot determine commitment using entries from previous terms") and that a leader inheriting previous-term records cannot commit them without first committing a current-term record
 					)
 				do n -= 1
 				n
@@ -3741,6 +3747,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex = {
 				var n = primaryState.firstEmptyRecordIndex - 1
 				while n > from do {
+					// This if enforces Raft §5.4.2 ("A leader cannot determine commitment using entries from previous terms") and that a leader inheriting previous-term records cannot commit them without first committing a current-term record
 					if primaryState.getRecordTermAt(n) == primaryState.currentTerm then {
 						var oldParticipantsWithRecordAtNSuccessfullyAppended = 0
 						var newParticipantsWithRecordAtNSuccessfullyAppended = 0
