@@ -48,6 +48,7 @@ Treat the user as an adult. Do not be condescendent. Be critical. Do not accept 
 ### Lint/format
 - There is no dedicated lint/format task configured in this repo (no scalafmt/scalafix config found).
 - Use `compile` as the validation baseline.
+- Never wrap text. Let the container do that.
 
 ### Packaging
 - Package jars:

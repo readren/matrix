@@ -108,7 +108,8 @@ object ConsensusParticipantSdm {
 		override def toString: String = deriveToString[ALREADY_IN_PROGRESS](this)
 	}
 
-	/** The participant is leading but is currently processing another change to a configuration different from the requested. */
+	/** The participant is leading but is currently processing another change to a configuration different from the requested.
+	 * TODO: consider avoiding this result and coalesce with the in-flight change. */
 	class WAIT_PREVIOUS_CHANGE_TO_COMPLETE(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[WAIT_PREVIOUS_CHANGE_TO_COMPLETE](this)
 	}
@@ -2318,6 +2319,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						case scc: StableConfigChange[ParticipantId @unchecked] =>
 							// ... and it was committed (commitIndex >= its index in the log), program the driving of excluded participants to retirement and authorize retiring participants to quiesce.
 							if commitIndex >= indexOfTopConfigChange then thisLeader.driveTheRetirements(initialPrimaryState, initialConfig, scc, indexOfTopConfigChange)
+							// ... and it wasn't committed (commitIndex < its index in the log), drive its commitment eagerly.
 							else replicateUntilSuccessOrLeaderRoleIsAbandoned(initialPrimaryState, indexOfTopConfigChange)
 							
 					}
@@ -2603,6 +2605,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Replicates all the records in this [[ConsensusParticipant]], retrying until either:
 			 *		- the [[Record]]s up to the provided index are replicated to a majority.
 			 *		- the [[currentRole]] stops being this [[Leader]] instance.
+			 * A no-op [[LeaderTransition]] record is appended if [[Record]]s of a previous [[Term]] are blocking the [[commitIndex]] advancement due to the Raft safety rule (§5.4.2): "A leader cannot determine commitment using entries from previous terms". This contraint is implemented in [[TransitionalConfig.indexOfTheCommittedRecordWithHighestIndex]].
 			 * This method recurses whenever it fails and the consequent [[updateRole]] does not change the [[Role]] (stays as leader) */
 			private def replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState0: PrimaryState, targetIndex: RecordIndex)(using Context): sequencer.LatchingDuty[Boolean] = {
 				Trace.step("replicateUntilSuccessOrLeaderRoleIsAbandoned") {
@@ -2613,15 +2616,26 @@ trait ConsensusParticipantSdm { thisModule =>
 						case accessible0: Accessible =>
 							if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
 							for {
-								isSccReplicatedToMajority <- {
+								isReplicationSuccessful <- {
 									if commitIndex < targetIndex then attemptToUpdateOtherParticipantsLogs(accessible0)
 									else sequencer.LatchingDuty_true
 								}
 								result <- {
-									if isSccReplicatedToMajority then sequencer.LatchingDuty_true
+									if isReplicationSuccessful && commitIndex >= targetIndex then sequencer.LatchingDuty_true
 									else if currentRole ne this then sequencer.LatchingDuty_false
-									else {
-										Trace.trace(s"Updating role (in a new ballot) due to insufficient quorum when replicating a StableConfigChange record.")
+									else if isReplicationSuccessful then {
+										Trace.trace(s"Appending a no-op record to be able to commit records of previous [[Term]] transitively.")
+										for {
+											primaryState2 <- primaryStateFence.advanceIf {
+												case Inaccessible =>
+													Maybe.empty
+												case accessible1: Accessible =>
+													Maybe(accessible1.withSingleRecordAppended(accessible0.currentTerm, LeaderTransition(accessible1.currentTerm)))
+											}
+											result <- replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState2, targetIndex)
+										} yield result
+									} else {
+										Trace.trace(s"Updating role (in a new ballot) due to insufficient quorum when replicating records up-to-index $targetIndex.")
 										startNewBallot()
 										for {
 											_ <- updateRole()
