@@ -23,7 +23,6 @@ import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
 
 import readren.sequencer.MilliDuration
-import scala.annotation.tailrec
 
 
 /** A comprehensive test suite for the `ConsensusParticipantSdm` module, designed to verify the correctness and robustness of the distributed consensus algorithm. It uses `munit.ScalaCheckEffectSuite` and `ScalaCheck` for property-based testing, allowing for a wide range of scenarios to be tested with varying parameters.
@@ -136,7 +135,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def startsAllNodes: netSequencer.Duty[Array[Unit]] = {
 			val starters = for nodeIndex <- 0 until clusterSize yield {
 				val node = getNode(nodeIndex)
-				node.startsIfNotRunning(0).onBehalfOf(netSequencer)
+				node.startsIfNotRunning(0, ListSet.empty).onBehalfOf(netSequencer)
 			}
 			netSequencer.Duty_sequenceToArray(starters)
 		}
@@ -173,7 +172,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			private val observers: mutable.SortedMap[TickTime, () => Unit] = mutable.SortedMap.empty
 
 			def tick(): Unit = {
-				scribe.trace(s"Net: tick $tickTime")
+				// scribe.trace(s"Net: tick $tickTime")
 				this.tickTime += 1
 				consume(tickTime)
 
@@ -183,7 +182,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			private def armInactivityTimer(): Unit = {
-				scribe.trace(s"Net: armInactivityTimer")
+				// scribe.trace(s"Net: armInactivityTimer")
 				observers.headOption match {
 					case Some(entry) =>
 						val schedule = netSequencer.newDelaySchedule(stimulusSettlingTime)
@@ -200,7 +199,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			private def consume(tickTime: TickTime): Unit = {
-				scribe.trace(s"Net: consume($tickTime)")
+				// scribe.trace(s"Net: consume($tickTime)")
 				observers.headOption match {
 					case Some(firstEntry) if firstEntry._1 == tickTime =>
 						observers.remove(tickTime)
@@ -210,7 +209,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			def schedule(tickDuration: TickDuration)(onElapsed: () => Unit): Unit = {
-				scribe.trace(s"Net: schedule($tickDuration), tickTime=$tickTime, observers=${observers.size}")
+				// scribe.trace(s"Net: schedule($tickDuration), tickTime=$tickTime, observers=${observers.size}")
 				assert(netSequencer.isInSequence)
 				observers.updateWith(tickTime + tickDuration) {
 					case Some(oldOnElapsed) => Some(() => {
@@ -386,7 +385,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						// Enqueue the lazy duty that performs the RPC in the channel corresponding to the requests from the inquirer to the replier.
 						requestChannel.enqueue(requestingDuty)
 
-						while numberOfTravelingMessages > enqueueThresholdForEarlyDelivery do chooseAChannel().dispatchNext()
+						while numberOfTravelingMessages > enqueueThresholdForEarlyDelivery do chooseAChannel().dispatchNext() // TODO comment the line
 					}
 
 					netSequencer.Task_fromDuty(
@@ -441,7 +440,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			else IArray.fill(clusterSize)(true)
 		}
 		private var lastProposedConfigMask: ConfigMask = initialConfigMask
-		private var activeConfigChange: ConfigChange[Id] = StableConfigChange(0, "", 0, nodesIncludedIn(initialConfigMask), nodesIncludedIn(initialConfigMask))
+		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
+		private var indexOfActiveConfigChange: RecordIndex = 0
 
 		/** Should be called when the client simulator sends a command to a consensus-participant, before it is received.
 		 * Needed to allow the [[Net]] to count the number of commands sent, which is required to adjust the configuration noise probability. */
@@ -515,20 +515,21 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		//// Consensus services lifecycle management ////
 
-		private var indexOfActiveConfigChange: RecordIndex = 0
-
 		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onActiveConfigChanged($change, index=$changeIndex) was called") // when readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
 				activeConfigChange = change
 				indexOfActiveConfigChange = changeIndex
-				if change.isInstanceOf[TransitionalConfigChange[Id]] then {
-					for nodeIndex <- 0 until clusterSize do {
-						val node = this.getNode(nodeIndex)
-						if change.newParticipants.contains(node.myId) && !change.oldParticipants.contains(node.myId) then {
-							node.startsIfNotRunning(changeIndex).triggerAndForget(false)
+				change match {
+					case tcc: TransitionalConfigChange[Id] =>
+						for nodeIndex <- 0 until clusterSize do {
+							val node = this.getNode(nodeIndex)
+							if tcc.newParticipants.contains(node.myId) && !tcc.oldParticipants.contains(node.myId) then {
+								val participantsInTheTcc = ListSet.newBuilder.addAll(tcc.oldParticipants).addAll(tcc.newParticipants).result()
+								node.startsIfNotRunning(changeIndex, participantsInTheTcc).triggerAndForget(false)
+							}
 						}
-					}
+					case _ => // Do nothing.
 				}
 			}
 		}
@@ -536,7 +537,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
-				if activeConfigChange.isActive(node.myId) then node.startsIfNotRunning(indexOfActiveConfigChange).triggerAndForget(false)
+				if activeConfigChange.isActive(node.myId) then {
+					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChange.oldParticipants).addAll(activeConfigChange.newParticipants).result()
+					node.startsIfNotRunning(indexOfActiveConfigChange, participantsInActiveConfigChange).triggerAndForget(false)
+				}
 			}
 		}
 
@@ -550,7 +554,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 *
 		 * @param maxAttempts The maximum number of configuration change requests before failing the shutdown process.
 		 * @param durationBetweenAttempts The duration to wait between attempts to shut down.
-		 * @return a `Duty` yielding `Maybe.empty` on success, or a message detailing the failure if `maxAttempts` is reached.
+		 * @return a [[netSequencer.Duty]] yielding [[Maybe.empty]] on success, or a message detailing the failure if `maxAttempts` is reached.
 		 */
 		def shutsDownGracefully(maxAttempts: Int, durationBetweenAttempts: TickDuration = 9): netSequencer.Duty[Maybe[String]] = {
 			netSequencer.checkWithin()
@@ -605,17 +609,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * If the target [[Node]] responds with a [[Processed]], [[Superseded]], [[Stale]], or [[TooOld]] the command is considered processed and the target [[Node]] is not updated.
 		 * @param commandPayload The payload of the command to send.
 		 * @param attemptFlag tells the participant that will receive the command whether this is the first attempt, a redirect, or a fallback.
-		 * @return A task that completes with true if the command was processed; false if the command was not processed despite all nodes were tried or the net is empty. */
-		private def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag = FIRST_ATTEMPT): net.netSequencer.Duty[Boolean] = {
-			if knownParticipants.isEmpty then return net.netSequencer.Duty_false
+		 * @return A task that completes with [[Maybe.empty]] if the command was processed; a [[Maybe]] containing the next attempt flag if the command was not processed despite all nodes were tried or the net is empty. */
+		private def sendsCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.Duty[Maybe[CommandAttemptFlag]] = {
+			if knownParticipants.isEmpty then return net.netSequencer.Duty_ready(Maybe(attemptFlag))
 			val receiverNode = targetParticipant
 			scribe.info(s"Client: Sent command:$commandPayload, attemptFlag:$attemptFlag, to:${receiverNode.myId}")
 			net.onBeforeClientCommandSent()
 
-			def retry(nextAttemptFlag: CommandAttemptFlag): net.netSequencer.Duty[Boolean] = {
+			def retry(nextAttemptFlag: CommandAttemptFlag): net.netSequencer.Duty[Maybe[CommandAttemptFlag]] = {
 				knownParticipants.find(p => !alreadyTriedParticipants.contains(p)).fold {
 					alreadyTriedParticipants.clear()
-					net.netSequencer.Duty_false
+					net.netSequencer.Duty_ready(Maybe(nextAttemptFlag))
 				} { chosen =>
 					targetParticipant = net.getNode(chosen)
 					sendsCommand(commandPayload, nextAttemptFlag)
@@ -624,15 +628,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			net.netSequencer.Duty_foreign(receiverNode.sequencer)(receiverNode.sequencer.Duty_mineFlat { () =>
 				receiverNode.clusterParticipant.delegate.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
-			}).flatMap[Boolean] {
+			}).flatMap {
 				case receiverNode.Processed(index, content) =>
 					scribe.info(s"Client: command `$commandPayload` was processed @$index by ${receiverNode.myId} which replied with `$content`.")
 					alreadyTriedParticipants.clear()
-					net.netSequencer.Duty_true
+					net.netSequencer.Duty_ready(Maybe.empty)
 				case receiverNode.RedirectTo(leaderId) =>
 					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
 					targetParticipant = net.getNode(leaderId)
-					// if despite the attempt flag sent to the participant was FALLBACk (which instructs to update the role before responding) it responds with a redirection to an already tried participant, add it to the already tried ones.
+					// if despite the attempt flag sent to the participant was FALLBACK (which instructs to update the role before responding) it responds with a redirection to an already tried participant, add it to the already tried ones.
 					if attemptFlag == FALLBACK && alreadyTriedParticipants.contains(leaderId) then alreadyTriedParticipants.addOne(targetParticipant.myId)
 					sendsCommand(commandPayload, REDIRECTED)
 				case receiverNode.Unable(nextAttemptFlag, otherParticipants) =>
@@ -646,37 +650,36 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				case stale: receiverNode.Stale =>
 					scribe.info(s"Client: command `${stale.command}` is stale. The last received command at that moment was at index @${stale.lastCommandIndex}. Received by ${receiverNode.myId}.")
 					alreadyTriedParticipants.clear()
-					net.netSequencer.Duty_true
+					net.netSequencer.Duty_ready(Maybe.empty)
 				case superseded: receiverNode.Superseded =>
 					scribe.info(s"Client: command `${superseded.command}` is superseded. The last received command at that moment was at index @${superseded.lastCommandIndex}. Received by ${receiverNode.myId}.")
 					alreadyTriedParticipants.clear()
-					net.netSequencer.Duty_true
+					net.netSequencer.Duty_ready(Maybe.empty)
 				case tooOld: receiverNode.TooOld =>
 					scribe.info(s"Client: command `${tooOld.command}` is too old. Received by ${receiverNode.myId}.")
 					alreadyTriedParticipants.clear()
-					net.netSequencer.Duty_true
+					net.netSequencer.Duty_ready(Maybe.empty)
 			}
 		}
 
 		def sendsCommandsUntil(predicate: (commandIndex: Int) => Boolean, maxRetries: Int = 9): net.netSequencer.Duty[Maybe[String]] = {
 
-			def sendCommandLoop(commandIndex: Int, attemptsCounter: Int): net.netSequencer.Duty[Maybe[String]] = {
+			def sendCommandLoop(commandIndex: Int, attemptsCounter: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.Duty[Maybe[String]] = {
 				if predicate.apply(commandIndex) then net.netSequencer.Duty_ready(Maybe.empty)
 				else if attemptsCounter > maxRetries then net.netSequencer.Duty_ready(Maybe("The cluster got stuck unable to progress"))
 				else for {
-					wasProcessed <- sendsCommand(commandIndex)
+					wasProcessed <- sendsCommand(commandIndex, attemptFlag)
 					maybeError <- {
-						if wasProcessed then sendCommandLoop(commandIndex + 1, 0)
-						else {
+						wasProcessed.fold(sendCommandLoop(commandIndex + 1, 0, attemptFlag)) { nextAttemptFlag =>
 							scribe.info(s"Client: The command $commandIndex was tried with all the participants. Retrying all again. Attempts done so far: ${attemptsCounter + 1}.")
-							sendCommandLoop(commandIndex, attemptsCounter + 1)
+							sendCommandLoop(commandIndex, attemptsCounter + 1, nextAttemptFlag)
 						}
 					}
 				} yield maybeError
 			}
 
 			net.netSequencer.Duty_mineFlat(() =>
-				sendCommandLoop(1, 0)
+				sendCommandLoop(1, 0, FIRST_ATTEMPT)
 			)
 		}
 
@@ -712,6 +715,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override val sequencer: ScheduSequen = sharedDap.provide(s"node-sequencer-$myId")
 
 		override val QUIESCENCE_AUTHORIZATION_RETRY_PERIOD: MilliDuration = 10
+		override val retiringParticipantRetryPeriod = 5000 // TODO reduce to 10
 
 		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = ()
@@ -736,11 +740,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates the [[ConsensusParticipant]] service instance of this [[Node]]. */
-		def startsIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex): sequencer.Duty[Unit] = {
+		def startsIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): sequencer.Duty[Unit] = {
 			sequencer.Duty_mine { () =>
 				if isDown || participant.getRoleOrdinal == QUIESCED then {
 					scribe.info(s"node-$myId: about to create the consensus participant service due to the configuration change at $indexOfTheIncludingConfigChange")
-					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingConfigChange, List(initialNotificationListener, notificationScribe))
+					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange, List(initialNotificationListener, notificationScribe))
 				} else scribe.info(s"node-$myId: service creation skipped because it is already running with role ${participant.getRoleOrdinal}.")
 			}
 		}
@@ -785,7 +789,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 */
 		object clusterParticipant extends ClusterParticipant {
 			override val boundParticipantId: ParticipantId = myId
-			private var currentParticipants: Set[ParticipantId] = initialParticipants
+			private val currentParticipants: Set[ParticipantId] = initialParticipants
 
 			var delegate: Delegate = uninitialized
 
@@ -888,7 +892,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * Test implementation of [[Workspace]]
 		 */
 		class TestWorkspace extends Workspace {
-			private var currentTerm: Term = 0
+			private var currentTerm: Term = PRE_INIT
 			private var _logBufferOffset: RecordIndex = 1
 			private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
@@ -1044,9 +1048,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: is handing off the leadership. The term $term is over.")
 			}
 
-			override def onRetiring(term: Term): Unit = {
+			override def onRetiring(previous: RoleOrdinal, term: Term): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is retiring because it was excluded. Its final term is $term.")
+				scribe.info(s"scribe-$myId: became retiree from ${RoleOrdinal_nameOf(previous)} at @$term.")
 			}
 
 			override def onRoleLeft(left: RoleOrdinal, term: Term): Unit = ()
@@ -1191,7 +1195,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		} do maybeErrorMsg.fold(promise.tryComplete(Success(())))(errorMsg => promise.tryFailure(new AssertionError(errorMsg)))
 
-		promise.future.andThen(_ => net.stop())
+		promise.future.andThen { tr =>
+			scribe.trace(s"**** TEST COMPLETED! **** Stopping the Net. Result: ${tr.fold(e => s"${e.getMessage}, cause:${e.getCause.getMessage}", _ => "Success")}")
+			net.stop()
+		}
 	}
 
 	// A simple test to remind the user to run tests with assertions enabled (`-ea` VM option)
@@ -1214,35 +1221,53 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 	}
 
+	test("Previous failing cases") {
+		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
+		val failingCases = Seq[FailingCase](
+			(30, 5, false, 2968913177794423906L), // commitIndex > rank
+			(30, 4, false, 1456932037162721701L), // commitIndex > rank
+			(30, 5, false, -8135974743174795114L), // rank > commitIndex
+			(30, 3, false, 2055168570462232490L),
+			(30, 3, true, 2948006105353705496L),
+			(30, 5, false, 1362449429532672961L),
+			(30, 4, true, -5674795268043328521L),
+			(30, 4, true, -8187096177033288099L), // GHOST to TCC that includes it back
+			(30, 4, true, -4995429467987335482L),
+			(30, 4, true, -7835823244107552832L),
+			(30, 4, false, -3277263891068940824L),
+			(30, 4, true, -5775352996191749875L),
+			(30, 3, false, -2168381909298808173L),
+			(30, 4, false, -5047626618219465556L),
+			(30, 3, false, 563901697643278299L),
+			(30, 5, true, 1727149220655985707L),
+			(30, 5, false, -359368432946550500L),
+			(30, 5, false, -924293462626283685L),
+			(30, 4, false, -9144192791162226895L),
+			(30, 4, false, -8485779671449355485L),
+			(30, 5, true, 8602566370082359974L),
+			(30, 4, true, -1687211017040616033L),
+			(30, 4, true, 1192722668228908098L),
+			(30, 5, false, 6939971176246473149L),
+			(30, 8, false, -267763525086557879L),
+			(30, 5, false, -1610899221355081839L),
+			(30, 8, false, 3726663850566216084L),
+			(30, 6, false, 805546499403932689L),
+			(30, 8, false, 3726663850566216084L),
+			(30, 5, true, 2741710523245740467L),
+		)
+		for failingCase <- failingCases do {
+			val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = failingCase
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
+			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
+			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
+		}
+
+	}
+
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, 2948006105353705496L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, 1362449429532672961L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5674795268043328521L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -8187096177033288099L) // GHOST to TCC that includes it back
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -4995429467987335482L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -7835823244107552832L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -3277263891068940824L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -5775352996191749875L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, -2168381909298808173L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -5047626618219465556L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 563901697643278299L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 1727149220655985707L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -359368432946550500L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -924293462626283685L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -9144192791162226895L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, false, -8485779671449355485L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 8602566370082359974L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, -1687211017040616033L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (4, true, 1192722668228908098L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, 6939971176246473149L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, -267763525086557879L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, false, -1610899221355081839L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, 3726663850566216084L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (6, false, 805546499403932689L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, 3726663850566216084L)
-		// val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, 2741710523245740467L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, 261920333344933204L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
@@ -1252,7 +1277,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("All invariants must comply") {
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
-			Gen.choose(2, 5),
+			Gen.choose(2, 3),
 			Gen.oneOf(true, false),
 			Gen.long
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
