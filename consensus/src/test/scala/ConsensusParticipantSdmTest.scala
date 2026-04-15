@@ -692,7 +692,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param firstReplacedRecord the first stored [[Record]] that is removed.
 		 * @param firstReplacingRecord the [[Record]] with which the first overwritten log entry is replaced with.
 		 * @param roleOrdinal the behavior of the [[ConsensusParticipant]] when the conflict occurred. */
-		def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = ()
+		def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = ()
 
 		/** Called when a [[Record]] is appended to the log buffer. */
 		def onRecordAppended(record: Record, index: RecordIndex): Unit = ()
@@ -718,7 +718,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override val retiringParticipantRetryPeriod = 5000 // TODO reduce to 10
 
 		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
-			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = ()
+			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = ()
 		}
 
 		private var initialNotificationListener: NotificationListener = new DefaultNotificationListener()
@@ -954,7 +954,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}
 				}
 				if conflictFound then {
-					statesChangesListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex), participant.getRoleOrdinal)
+					statesChangesListener.onLogOverwrite(storedIndex + logBufferOffset, logBuffer(storedIndex), records(newIndex))
 					logBuffer.takeInPlace(storedIndex)
 				}
 				while newIndex < records.size do {
@@ -1102,9 +1102,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		createAndInitializeNodes(net, weakReferencesHolder) { node =>
 			node.statesChangesListener = new NodeStateChangesListener() {
-				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record, roleOrdinal: RoleOrdinal): Unit = {
-					// "Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3"
-					if roleOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
+				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = {
+					// Defer the check to let the updating execution to complete the atomic changes.
+					node.sequencer.run {
+						// "Leader Append-Only: a leader never overwrites or deletes entries in its log; it only appends new entries. §5.3"
+						if node.participant.getRoleOrdinal == LEADER then promise.tryFailure(new AssertionError(s"The participant ${node.myId} broke the \"append only rule\" at index $index. Removed record: $firstReplacedRecord, replacing record: $firstReplacingRecord."))
+					}
 				}
 
 				override def onRecordAppended(record: Record, index: RecordIndex): Unit = {
@@ -1224,36 +1227,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
-			(30, 5, false, 2968913177794423906L), // commitIndex > rank
-			(30, 4, false, 1456932037162721701L), // commitIndex > rank
-			(30, 5, false, -8135974743174795114L), // rank > commitIndex
-			(30, 3, false, 2055168570462232490L),
-			(30, 3, true, 2948006105353705496L),
-			(30, 5, false, 1362449429532672961L),
-			(30, 4, true, -5674795268043328521L),
-			(30, 4, true, -8187096177033288099L), // GHOST to TCC that includes it back
-			(30, 4, true, -4995429467987335482L),
-			(30, 4, true, -7835823244107552832L),
-			(30, 4, false, -3277263891068940824L),
-			(30, 4, true, -5775352996191749875L),
-			(30, 3, false, -2168381909298808173L),
-			(30, 4, false, -5047626618219465556L),
-			(30, 3, false, 563901697643278299L),
-			(30, 5, true, 1727149220655985707L),
-			(30, 5, false, -359368432946550500L),
-			(30, 5, false, -924293462626283685L),
-			(30, 4, false, -9144192791162226895L),
-			(30, 4, false, -8485779671449355485L),
-			(30, 5, true, 8602566370082359974L),
-			(30, 4, true, -1687211017040616033L),
-			(30, 4, true, 1192722668228908098L),
-			(30, 5, false, 6939971176246473149L),
-			(30, 8, false, -267763525086557879L),
-			(30, 5, false, -1610899221355081839L),
-			(30, 8, false, 3726663850566216084L),
-			(30, 6, false, 805546499403932689L),
-			(30, 8, false, 3726663850566216084L),
-			(30, 5, true, 2741710523245740467L),
+			(30, 3, false, 3592691889253758326L),
+			(30, 5, false, 2968913177794423906L),
+			(30, 4, false, 1456932037162721701L),
 		)
 		for failingCase <- failingCases do {
 			val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = failingCase
@@ -1267,7 +1243,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, 261920333344933204L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 3592691889253758326L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)

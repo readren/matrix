@@ -1307,26 +1307,26 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.init(() => s"$boundParticipantId: onAppendRecords") {
 					checkWithin()
 					Trace.trace(s"onAppendRecords($inquirerId, s$inquirerTerm, $prevRecordIndex, $prevRecordTerm, $records, $leaderCommit, $termAtLeaderCommit) called")
-					var primaryUpdateResult: (isTermBumped: Boolean, appendSuccess: Boolean) = null
+					var primaryUpdateResult: (isTermUpdated: Boolean, appendSuccess: Boolean) = null
 					for primaryState1 <- primaryStateFence.advanceIf {
 						case Inaccessible =>
-							primaryUpdateResult = (isTermBumped = false, appendSuccess = false)
+							primaryUpdateResult = (isTermUpdated = false, appendSuccess = false)
 							Maybe.empty
 
 						case accessible0: Accessible =>
 							val currentTerm = accessible0.currentTerm
 							if inquirerTerm < currentTerm then {
-								primaryUpdateResult = (isTermBumped = false, appendSuccess = false)
+								primaryUpdateResult = (isTermUpdated = false, appendSuccess = false)
 								Maybe.empty
 							} else {
-								val isTermBumped = inquirerTerm > currentTerm
+								val isTermUpdated = inquirerTerm > currentTerm
 								val appendSuccess =
-									JOINING <= currentRole.ordinal && (isTermBumped || currentRole.ordinal <= FOLLOWER)
+									JOINING <= currentRole.ordinal && (isTermUpdated || currentRole.ordinal <= FOLLOWER) // Note that even a leader appends records when received from another leader with a higher term. The role of the deposed participant is changed below, in the yield block, within the same Doer execution; so these two mutations are viewed as atomic from other executions of the same Doer.
 										&& prevRecordIndex < accessible0.firstEmptyRecordIndex
 										&& prevRecordTerm == accessible0.getRecordTermAt(prevRecordIndex)
-								primaryUpdateResult = (isTermBumped, appendSuccess)
+								primaryUpdateResult = (isTermUpdated, appendSuccess)
 								if appendSuccess && records.nonEmpty then Maybe(accessible0.withRecordsAppended(inquirerTerm, records, prevRecordIndex + 1))
-								else if isTermBumped then Maybe(accessible0.withTermUpdated(inquirerTerm))
+								else if isTermUpdated then Maybe(accessible0.withTermUpdated(inquirerTerm))
 								else Maybe.empty
 							}
 					} yield {
@@ -1347,7 +1347,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								val previousCommitIndex = commitIndex
 								if primaryUpdateResult.appendSuccess then {
 									// Update the commitIndex
-									commitIndex = if leaderCommit < accessible1.firstEmptyRecordIndex then leaderCommit else accessible1.firstEmptyRecordIndex - 1
+									if commitIndex < leaderCommit then commitIndex = if leaderCommit < accessible1.firstEmptyRecordIndex then leaderCommit else accessible1.firstEmptyRecordIndex - 1
 									// if the commitIndex is bumped then:
 									if commitIndex != previousCommitIndex then {
 										// notify the change
@@ -1357,7 +1357,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									}
 								}
 
-								if primaryUpdateResult.appendSuccess || primaryUpdateResult.isTermBumped then {
+								if primaryUpdateResult.appendSuccess || primaryUpdateResult.isTermUpdated then {
 									val cro = currentRole.ordinal
 
 									// get the updated configuration. Note that this must be done after updating the commitIndex.
@@ -4047,7 +4047,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private final def illegalStateQuiesce()(using Trace.Context): Role = {
 			Trace.step("illegalStateQuiesce") {
 				val failure = new IllegalStateException("Should never happen")
-				// Trace.error(s"Should never happen", failure)
+				Trace.error(s"Should never happen", failure)
 				become(Quiesced(Failure(failure)))
 			}
 		}
