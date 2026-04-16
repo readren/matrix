@@ -22,7 +22,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
 
-import readren.sequencer.MilliDuration
+
 
 
 /** A comprehensive test suite for the `ConsensusParticipantSdm` module, designed to verify the correctness and robustness of the distributed consensus algorithm. It uses `munit.ScalaCheckEffectSuite` and `ScalaCheck` for property-based testing, allowing for a wide range of scenarios to be tested with varying parameters.
@@ -714,8 +714,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		override val sequencer: ScheduSequen = sharedDap.provide(s"node-sequencer-$myId")
 
-		override val QUIESCENCE_AUTHORIZATION_RETRY_PERIOD: MilliDuration = 10
-		override val retiringParticipantRetryPeriod = 5000 // TODO reduce to 10
+
 
 		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = ()
@@ -864,6 +863,28 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def notifyQuiesced(motive: Try[String]): Unit = {
 				scribe.info(s"cluster-$myId: `notifyQuiesced` was called with motive=$motive")
 				net.onNodeQuiesced(thisNode)
+			}
+
+			override def requestWakeUp(reason: WakeUpReason, callback: () => Unit): WakeUpToken = {
+				sequencer.checkWithin()
+				val tokenHolder = Array[Any](null) // mutable holder to allow cancellation
+				net.netSequencer.run {
+					net.clock.schedule(1) { () =>
+						if tokenHolder(0) != null then { // not cancelled
+							sequencer.run {
+								if tokenHolder(0) != null then callback() // double-check after entering sequencer
+							}
+						}
+					}
+				}
+				tokenHolder(0) = tokenHolder // mark as active
+				WakeUpToken(tokenHolder)
+			}
+
+			override def cancelWakeUp(token: WakeUpToken): Unit = {
+				sequencer.checkWithin()
+				val tokenHolder = token.asInstanceOf[Array[Any]]
+				tokenHolder(0) = null // mark as cancelled
 			}
 		}
 
@@ -1227,6 +1248,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 3, false, -2547866549608645507L), // PanicException
+			(30, 3, true, -7417113718760886059L), // "Should never happen" assertion triggered
+			(30, 3, false, 7259924510493798812L),
+			(30, 3, true, -7726398781820803091L), // assertion failed: currentPrimaryState eq primaryStateFence.committedState
 			(30, 3, false, 3592691889253758326L),
 			(30, 5, false, 2968913177794423906L),
 			(30, 4, false, 1456932037162721701L),
@@ -1243,7 +1268,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, false, 3592691889253758326L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, -7417113718760886059L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)

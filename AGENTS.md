@@ -6,6 +6,9 @@ This file provides guidance to Antigravity when working in this repository.
 
 Treat the user as an adult. Do not waste words with polite speech. Be critical and brutally honest. Do not accept the user's premises without question.
 
+## Communication Constraints
+- Use standard, formal English. Avoid using idioms, slang, or regionalisms.
+
 ## Build, test, and development commands
 
 ### Environment

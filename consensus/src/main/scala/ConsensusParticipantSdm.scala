@@ -2,7 +2,7 @@ package readren.consensus
 
 import readren.common.*
 import readren.common.Trace.Context
-import readren.sequencer.{CoalescedQuery, Doer, MilliDuration, ResultIncrementalCoalescing, SchedulingExtension}
+import readren.sequencer.{CoalescedQuery, Doer, ResultIncrementalCoalescing}
 
 import java.util
 import java.util.Comparator
@@ -313,6 +313,23 @@ object ConsensusParticipantSdm {
 
 		def recreateCouple: TransitionalConfigChange[P] = TransitionalConfigChange(coupleTerm, requestId, oldParticipants, newParticipants)
 	}
+
+	/** Describes what the consensus algorithm needs retried when it requests a deferred wake-up via [[ClusterParticipant.requestWakeUp]].
+	 * The host uses this to choose an appropriate delay before invoking the callback. */
+	enum WakeUpReason {
+		/** Retry sending PermitQuiesce to participants that failed to receive it. */
+		case QuiescenceAuthorizationRetry
+		/** Retry [[ClusterParticipant.appendRecords]] calls to followers that were unreachable. */
+		case UnreachableFollowersRetry
+		/** Retry sending records to a retiring participant that was unreachable. */
+		case RetiringParticipantRetry
+	}
+
+	/** An opaque token returned by [[ClusterParticipant.requestWakeUp]], used to cancel a pending wake-up via [[ClusterParticipant.cancelWakeUp]]. */
+	opaque type WakeUpToken = Any
+	object WakeUpToken {
+		inline def apply(value: Any): WakeUpToken = value
+	}
 }
 
 
@@ -395,33 +412,19 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	val MAX_RECURSION_DEPTH: Int = 99
 	val MAX_PERMIT_QUIESCENCE_RETRIES: Int = 9
-	val QUIESCENCE_AUTHORIZATION_RETRY_PERIOD: MilliDuration = 5000
-
-	def retiringParticipantRetryPeriod: MilliDuration = 5000
 
 	def retiringParticipantMaxRetries: Int = 9
 
 	def isEager: Boolean = false
 
-	/** Used for both, [[ISOLATED]] and [[HANDING_OFF]] roles. */
-	def isolatedMainLoopInterval: MilliDuration = 500
+	//// THREADING
 
-	def candidateMainLoopInterval: MilliDuration = 500
-
-	//	def leaderMainLoopInterval: MilliDuration = 500
-
-	def failedReplicationsLoopInterval: MilliDuration = 500
-
-	//// THREADING & TIMING
-
-	/** The execution sequencer that [[ConsensusParticipant]] instances uses to mutate its state and schedule tasks.
+	/** The execution sequencer that [[ConsensusParticipant]] instances uses to mutate its state.
 	 *
 	 * All methods that access mutable consensus state must be invoked through this sequencer to ensure deterministic,
 	 * single-threaded execution. This coordination model avoids the need for blocking synchronization.
-	 *
-	 * The sequencer supports both ASAP and scheduled execution via [[Doer.executeSequentially]] and [[SchedulingExtension.scheduleSequentially]].
 	 */
-	val sequencer: Doer & SchedulingExtension
+	val sequencer: Doer
 
 	inline def isInSequence: Boolean = sequencer.isInSequence
 
@@ -501,6 +504,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * - Initiating configuration transitions by calling [[Delegate.requestConfigChange]] when a change is required.
 	 * - Routing inter-participant RPCs (e.g., [[howAreYou]], [[chooseALeader]], [[appendRecords]]) to the appropriate [[Delegate]] methods.
 	 * - Delivering client commands and consensus messages to the bound [[ConsensusParticipant]] via the last [[Delegate]] set with [[setBound]] by the [[ConsensusParticipant]].
+	 * - Scheduling deferred wake-ups when requested by the [[ConsensusParticipant]] via [[requestWakeUp]], and invoking the provided callback within the [[sequencer]] after an appropriate host-determined delay.
 	 * - Ensuring all invocations occur within the [[sequencer]] thread.
 	 *
 	 * Each [[ClusterParticipant]] instance is tightly bound to a single [[ConsensusParticipant]] instance.
@@ -533,6 +537,24 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterParticipant]] service to release the resources dedicated to it. */
 		def notifyQuiesced(motive: Try[String]): Unit
+
+		/** Called by the bound [[ConsensusParticipant]] when it needs to be woken up after some host-determined delay.
+		 * The host should eventually invoke the provided `callback` within the [[sequencer]], after an appropriate delay.
+		 * The [[WakeUpReason]] conveys what the consensus algorithm needs retried so the host can choose an appropriate delay.
+		 *
+		 * Must be called within the [[sequencer]].
+		 *
+		 * @param reason describes what the consensus algorithm needs retried.
+		 * @param callback the function to invoke when the delay elapses. Must be invoked within the [[sequencer]].
+		 * @return a token that can be passed to [[cancelWakeUp]] to cancel the pending wake-up.
+		 */
+		def requestWakeUp(reason: WakeUpReason, callback: () => Unit): WakeUpToken
+
+		/** Cancels a previously requested wake-up.
+		 * After this method returns, the callback associated with the given token must never be invoked.
+		 * Must be called within the [[sequencer]].
+		 */
+		def cancelWakeUp(token: WakeUpToken): Unit
 
 		/** Defines the operations that the [[ConsensusParticipant]] exposes to this [[ClusterParticipant]] instance, specially the call-backs methods for the events that the [[ConsensusParticipant]] needs to be noticed of.
 		 *
@@ -939,8 +961,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var quiescenceGrantor: Maybe[ParticipantId] = Maybe.empty
 		/** Memory where the [[Role.onQuiescencePermitted]] method stores the [[RecordIndex]] of the last [[StableConfigChange]] for which quiescence was authorized. */
 		private var indexOfStableConfigChangeForWhichQuiescenceWasPermitted: RecordIndex = 0
-		/** Memorices the schedule used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
-		private var retryPermitQuiescenceSchedule: Maybe[sequencer.Schedule] = Maybe.empty
+		/** Memorizes the token for the pending wake-up used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
+		private var retryPermitQuiescenceWakeUp: Maybe[WakeUpToken] = Maybe.empty
 
 		/** Knows the [[RetirementDriver]]s corresponding to the participants that were excluded from the configuration and potentially have not received the appends to notice that they can leave. */
 		private val retirementDriverByParticipantId: mutable.Map[ParticipantId, RetirementDriver] = mutable.Map.empty
@@ -1762,22 +1784,21 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param seenTerm the [[Term]] to update the [[PrimaryState]] with, provided it is higher than the [[PrimaryState.currentTerm]] when the queued updater is executed.
 			 * @param previousTermRef the [[Term]] value in this reference object is overwritten with the [[PrimaryState.currentTerm]] corresponding to the [[PrimaryState]] before the causally anchored advance is performed.
 			 * @note About the safety of reusing the same [[TermRef]] instance for different calls: The value is guaranteed to reflect the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[sequencer.LatchingDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
-			protected def updateTermIfLessThan(seenTerm: Term, previousTermRef: TermRef = defaultPreviousTermRef)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = Trace.step("updateTermIfLessThan") {
-				primaryStateFence.advanceIf { (primaryState0: PrimaryState) =>
-					previousTermRef.elem = primaryState0.currentTerm
-					if seenTerm > primaryState0.currentTerm then {
-						Maybe(primaryState0.withTermUpdated(seenTerm))
-					}
-					else Maybe.empty
-				}.andThen(ps => if ps.currentTerm > previousTermRef.elem then onTermBumped(ps))
-			}
+			protected def updateTermIfLessThan(seenTerm: Term, previousTermRef: TermRef = defaultPreviousTermRef)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] =
+				Trace.step("updateTermIfLessThan") {
+					for primaryState1 <- primaryStateFence.advanceIf { (primaryState0: PrimaryState) => 
+						previousTermRef.elem = primaryState0.currentTerm
+						if seenTerm > primaryState0.currentTerm then Maybe(primaryState0.withTermUpdated(seenTerm))
+						else Maybe.empty	
+					} yield if primaryState1.currentTerm > previousTermRef.elem then onTermBumped(primaryState1) else primaryState1
+				}
 
 			private def memorizedParticipantInfosToArray(currentConfig: Configuration): IArray[StateInfo] = {
 				currentConfig.allOtherParticipants.mapWithIndex { (participantId, _) => memorizedParticipantInfos.get(participantId) }
 			}
 
 			/** Called by [[updateTermIfLessThan]] if the [[PrimaryState.currentTerm]] is updated. */
-			def onTermBumped(primaryState: PrimaryState)(using Context): Unit = ()
+			def onTermBumped(primaryState: PrimaryState)(using Context): PrimaryState = primaryState
 		}
 
 		/** A terminal [[Role]] that indicates this [[ConsensusParticipant]] service will be ready to be disposed after all the in-flight RPC calls it did have been heard.
@@ -2412,7 +2433,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** The serial number of the last replication attempt. Incremented whenever the [[attemptToUpdateOtherParticipantsLogs]] method is called. */
 			private var serialOfLastReplicationAttempt: Int = 0
 
-			private var unreachableFollowersRetrySchedule: Maybe[sequencer.Schedule] = Maybe.empty
+			private var unreachableFollowersRetryWakeUp: Maybe[WakeUpToken] = Maybe.empty
 
 			override def onEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Leader.onEnter") {
@@ -2446,8 +2467,8 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override def onLeave(newRole: Role): Unit = {
 				super.onLeave(newRole)
-				unreachableFollowersRetrySchedule.foreach(sequencer.cancel(_))
-				unreachableFollowersRetrySchedule = Maybe.empty
+				unreachableFollowersRetryWakeUp.foreach(cancelWakeUp(_))
+				unreachableFollowersRetryWakeUp = Maybe.empty
 			}
 
 			def isGhost: Boolean = indexOfConfigChangeThatExcludedThisParticipant > 0
@@ -2525,7 +2546,6 @@ trait ConsensusParticipantSdm { thisModule =>
 						val potentiallyUnappendedRecords: GenIndexedSeq[Record] = primaryState.getRecordsBetween(indexOfFirstPotentiallyUnappendedRecord, configChangeIndex + 1)
 						val retirementDriver = new RetirementDriver(
 							participantId,
-							primaryStateFence,
 							primaryState.getRecordTermAt(highestRecordIndexKnownToBeAppended),
 							potentiallyUnappendedRecords,
 							indexOfFirstPotentiallyUnappendedRecord,
@@ -2546,7 +2566,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			private def authorizeQuiescenceTo(participants: Set[ParticipantId], permittedConfigChangeIndex: RecordIndex, includeMyself: Boolean)(using Trace.Context): Unit = {
 				Trace.step("authorizeQuiescenceTo") {
-					retryPermitQuiescenceSchedule.foreach(sequencer.cancel(_))
+					retryPermitQuiescenceWakeUp.foreach(cancelWakeUp(_))
 
 					def loop(remainingParticipants: IArray[ParticipantId], retriesDone: Int = 0): Unit = {
 
@@ -2566,9 +2586,8 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 
 							if failedParticipants.length > 0 && retriesDone < MAX_PERMIT_QUIESCENCE_RETRIES then {
-								val schedule = sequencer.newDelaySchedule(QUIESCENCE_AUTHORIZATION_RETRY_PERIOD)
-								retryPermitQuiescenceSchedule = Maybe(schedule)
-								sequencer.schedule(schedule)(_ => loop(failedParticipants, retriesDone + 1))
+								val token = requestWakeUp(WakeUpReason.QuiescenceAuthorizationRetry, () => loop(failedParticipants, retriesDone + 1))
+								retryPermitQuiescenceWakeUp = Maybe(token)
 							} else {
 								if failedParticipants.length > 0 then Trace.warn(s"$boundParticipantId: The limit of retries ($retriesDone) to permit the participants ${remainingParticipants.mkString("[", ", ", "]")} to quiesce at $permittedConfigChangeIndex has been reached.")
 								if includeMyself then currentRole.onQuiescencePermitted(boundParticipantId, permittedConfigChangeIndex)
@@ -2923,9 +2942,9 @@ trait ConsensusParticipantSdm { thisModule =>
 					val indexAfterTopRecordToSend = primaryState0.firstEmptyRecordIndex
 					Trace.trace(s"starting replication until record index $indexAfterTopRecordToSend.")
 
-					// Cancel the previous schedule to retry appends to unreachable followers, if any.
-					unreachableFollowersRetrySchedule.foreach(sequencer.cancel(_))
-					unreachableFollowersRetrySchedule = Maybe.empty
+					// Cancel the previous wake-up for retrying appends to unreachable followers, if any.
+					unreachableFollowersRetryWakeUp.foreach(cancelWakeUp(_))
+					unreachableFollowersRetryWakeUp = Maybe.empty
 
 					// Then, start regular replication to all followers.
 					val config0 = deriveConfigurationFrom(primaryState0)
@@ -3205,7 +3224,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							val highestRecordIndexKnownToBeAppended = highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex)
 							val highestRecordIndexKnownToBeCommited = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
 
-							if appendResult.roleOrdinal == RETIRING then {
+							if appendResult.roleOrdinal == RETIRING && appendResult.successOrIndexForNextAttempt != 0 then {
 								val retireeExcludingConfigIndex = appendResult.successOrIndexForNextAttempt - 1 // see `Retiring.onAppendRecords`
 								// If the commitIndex of the retiree is higher than the commitIndex of this leading participant when append was called, then this leader was crowned with a still not active StableConfigChange in its log, which became active in the retiree.
 								// Else, the retiree is still retiring from a previous joint consensus and was included back, but it hasn't noticed yet.
@@ -3216,14 +3235,14 @@ trait ConsensusParticipantSdm { thisModule =>
 								AO_IS_RETIRING
 							}
 							// If the appending is obsolete (the records it intended to append are already appended), return AO_SUCCESS updating nothing.
-							else if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then AO_SUCCESS
+							else if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING else AO_SUCCESS
 							// If the appending was successful, update the local knowledge about the participant and return AO_SUCCESS.
 							else if appendResult.successOrIndexForNextAttempt == 0 then {
 								if appendRequestLeaderCommit > highestRecordIndexKnownToBeCommited then highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = appendRequestLeaderCommit
 								if indexAfterTopRecordSent > indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexAfterTopRecordSent
 								val indexOfTopRecordSent = indexAfterTopRecordSent - 1
-								if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) then highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = indexOfTopRecordSent
-								AO_SUCCESS
+								if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = indexOfTopRecordSent
+								if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING else AO_SUCCESS
 							} else { // else the rejection was because the participant needs earlier records (the previous record's does not exist in its log or its term is not the same as in this participant log then):
 								val suggestedIndexForNextAttempt = appendResult.successOrIndexForNextAttempt
 								// Clamp the index of the first record to append in the next attempt after the highest record index known to be appended.
@@ -3255,11 +3274,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param indexAfterTopRecordSent the index after the top [[Record]] of the set of [[Records]] that should be included in the attempts. */
 			private def scheduleUnreachableParticipantsRetry(correspondingParticipantIds: IArray[ParticipantId], previousAttemptOutcomes: IArray[AppendOutcome], indexAfterTopRecordSent: RecordIndex, serialOfReplicationAttempt: Int)(using Context): Unit = {
 				Trace.step("scheduleUnreachableParticipantsRetry") {
-					// if there are unreachable participants, schedule a retry that replicates the log to them.
+					// if there are unreachable participants, request a wake-up to retry replicating the log to them.
 					if serialOfReplicationAttempt == serialOfLastReplicationAttempt && previousAttemptOutcomes.contains(AO_IS_UNREACHABLE) then {
-						val schedule = sequencer.newDelaySchedule(failedReplicationsLoopInterval)
-						unreachableFollowersRetrySchedule = Maybe(schedule)
-						sequencer.schedule(schedule) { _ =>
+						val token = requestWakeUp(WakeUpReason.UnreachableFollowersRetry, () => {
 							if currentRole eq this then {
 								for {
 									primaryState1 <- primaryStateFence.causalAnchor()
@@ -3313,7 +3330,8 @@ trait ConsensusParticipantSdm { thisModule =>
 									}
 								}
 							}
-						}
+						})
+						unreachableFollowersRetryWakeUp = Maybe(token)
 					}
 				}
 			}
@@ -3341,12 +3359,17 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onTermBumped(primaryState: PrimaryState)(using Context): Unit = {
+			override def onTermBumped(primaryState: PrimaryState)(using Context): PrimaryState = {
 				Trace.step("onTermBumped") {
 					Trace.trace(s"About to hand-off due to term bump.")
 					val config = deriveConfigurationFrom(primaryState)
-					if config.allParticipants.contains(boundParticipantId) then become(Isolated(primaryStateFence))
-					else become(Retiring(primaryState.currentTerm, config.term, config.changeIndex, config.allParticipants))
+					if config.allParticipants.contains(boundParticipantId) then {
+						become(Isolated(primaryStateFence))
+						primaryState
+					} else {
+						become(Retiring(primaryState.currentTerm, config.term, config.changeIndex, config.allParticipants))
+						Inaccessible
+					}
 				}
 			}
 		}
@@ -3368,7 +3391,6 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * */
 		private class RetirementDriver(
 			id: ParticipantId,
-			primaryStateFence: sequencer.CausalFence[PrimaryState],
 			termOfHighestRecordKnownToBeAppended: Term,
 			potentiallyUnappendedRecords: GenIndexedSeq[Record],
 			indexOfFirstPotentiallyUnappendedRecord: RecordIndex,
@@ -3385,7 +3407,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Starts the process that makes a retiring participant to append the records until the [[StableConfigChange]] that caused its exclusión, passing a `leaderCommit` equal to the index of that same [[StableConfigChange]] record.
 			 * This method is called immediately after this [[RetirementDriver]] instance is created and added to the [[retirementDriverByParticipantId]] map, which happens during a [[Configuration]] transition.
 			 *
-			 *  @param currentTerm0 the [[Term]] of the current [[PrimaryState]]. In the first call is the [[PrimaryState]] from which the [[Configuration]] transition that produced this [[RetirementDriver]] is derived. In the recursión calls is the [[PrimaryState]] at when the [[AppendResponse]] arrived. */
+			 *  @param currentTerm0 the [[Term]] of the current [[PrimaryState]]. In the first call is the [[PrimaryState]] from which the [[Configuration]] transition that produced this [[RetirementDriver]] is derived. In the recursión calls is the [[PrimaryState.currentTerm]] when the [[AppendResponse]] arrived if the [[currentRole]] is [[StatefulRole]], or the highest term seen before leaving it. */
 			def driveLoop(currentTerm0: Term, retriesDone: Int)(using Context): Unit = {
 				Trace.step("driveLoop") {
 
@@ -3417,65 +3439,54 @@ trait ConsensusParticipantSdm { thisModule =>
 					inquire.trigger(true) { response =>
 						// if the driver wasn't removed...
 						for driver <- retirementDriverByParticipantId.get(id) do {
-							// if the driver instance was replaced with a newer one, ignore the response and restart. // TODO why the restart of the newer driver instance?
-							if driver ne this then primaryStateFence.causalAnchor { (currentState1, _) =>
-								if currentState1.isInstanceOf[Accessible] then driver.driveLoop(currentState1.currentTerm, 0)
-							}
-							// else handle the response.
-							else response match {
-								case Success(appendResult) =>
-									// Trace.trace(s"handleAppendResponse@${primaryState.currentTerm} from $participantId requested@$appendRequestTerm, dialog=$appendResponse, indexAfterTopRecordSent=$indexAfterTopRecordSent") // TODO delete line
-									// If the appending was rejected for an unreversible reason, terminate this driver, scribe a message and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
-									if appendResult.roleOrdinal < JOINING || appendResult.term != currentTerm0 then {
-										retirementDriverByParticipantId.remove(id)
-										becomeQuiescedIfEligible(configChangeIndex)
-										Trace.warn(s"$boundParticipantId: The replication to retiring participant $id was aborted because its response ($appendResult) tells ${if appendResult.term == currentTerm0 then "it is already retired" else "this retirement driver is obsolete"}, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
-									}
-									// Else, if the appending was successful, then: terminate this driver and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
-									else if appendResult.successOrIndexForNextAttempt == 0 then {
-										retirementDriverByParticipantId.remove(id)
-										becomeQuiescedIfEligible(configChangeIndex)
-									}
-									// Else, the rejection was because the retiree needs earlier records. So, retry including them.
-									else {
-										if assertionsEnabled then assert(appendResult.roleOrdinal >= JOINING)
+							// if the driver instance was replaced with a newer one, ignore the response. Else:
+							if driver eq this then {
 
-										val newIndexOfNextRecordToSend = appendResult.successOrIndexForNextAttempt
-										indexOfNextRecordToSend = newIndexOfNextRecordToSend
-										// if the earlier records are in the potentiallyUnappendedRecords array, then retry the appending including them.
-										if newIndexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord then {
-											primaryStateFence.causalAnchor { (currentState1, _) =>
-												if retirementDriverByParticipantId.contains(id) then currentState1 match {
-													case accessible1: Accessible => driveLoop(accessible1.currentTerm, 0)
-													case _ => illegalStateQuiesce()
-												}
-											}
-										} else {
-											Trace.error(s"$boundParticipantId: This should not happen! The retiring participant $id asks for earlier records than the expected: result=$appendResult, indexOfFirstPotentiallyUnappendedRecord=$indexOfFirstPotentiallyUnappendedRecord, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
+								// Enqueue the processing of the response in the primary state fence if the currentRole is stateful. Also get the current term.
+								for currentTerm1 <- currentRole match {
+										case stateful: StatefulRole =>
+											for primaryState1 <- stateful.primaryStateFence.causalAnchor() yield primaryState1.currentTerm
+										case _ =>
+											sequencer.LatchingDuty_ready(currentTerm0)
+								} do response match {
+									case Success(appendResult) =>
+										// If the appending was successful or the target is already retired, then: terminate this driver and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
+										if appendResult.successOrIndexForNextAttempt == 0 || appendResult.roleOrdinal < JOINING then {
 											retirementDriverByParticipantId.remove(id)
 											becomeQuiescedIfEligible(configChangeIndex)
 										}
-									}
-
-								case Failure(e) =>
-									if retriesDone > retiringParticipantMaxRetries then Trace.error(s"$boundParticipantId: The replication to the retiring participant $id is aborted because it failed too many times. The last attempt failure was:", e)
-									else {
-										val nextRetryNumber = retriesDone + 1
-										Trace.debug(s"$boundParticipantId: The replication to the retiring participant $id failed. Scheduling retry #$nextRetryNumber. The failure was:", e)
-										// TODO In order to be more deterministic and time-independent, fire the loop whenever an RPC is received, or add an "exite" RPC to fire retries.
-										sequencer.schedule(sequencer.newDelaySchedule(retiringParticipantRetryPeriod)) { _ =>
-											if retirementDriverByParticipantId.contains(id) then {
-												primaryStateFence.causalAnchor { (currentState1, _) =>
-													currentState1 match {
-														case Inaccessible =>
-															illegalStateQuiesce()
-														case accessible1: Accessible =>
-															if retirementDriverByParticipantId.contains(id) then driveLoop(accessible1.currentTerm, nextRetryNumber)
-													}
-												}
+										// If the appending was rejected for an unreversible reason, terminate this driver, scribe a message and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
+										else if appendResult.term != currentTerm0 then {
+											Trace.debug(s"$boundParticipantId: Aborting the replication to retire participant $id because its response ($appendResult) tells this retirement driver is obsolete, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
+											retirementDriverByParticipantId.remove(id)
+											becomeQuiescedIfEligible(configChangeIndex)
+										}
+										// Else, the rejection was because the retiree needs earlier records. So, retry including them.
+										else {
+											val newIndexOfNextRecordToSend = appendResult.successOrIndexForNextAttempt
+											indexOfNextRecordToSend = newIndexOfNextRecordToSend
+											// if the earlier records are in the potentiallyUnappendedRecords array, then retry the appending including them.
+											if newIndexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord then driveLoop(currentTerm1, 0)
+											else {
+												Trace.error(s"$boundParticipantId: THIS SHOULD NOT HAPPEN! The retiring participant $id asks for earlier records than the expected: result=$appendResult, indexOfFirstPotentiallyUnappendedRecord=$indexOfFirstPotentiallyUnappendedRecord, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
+												if assertionsEnabled then assert(false)
+												retirementDriverByParticipantId.remove(id)
+												becomeQuiescedIfEligible(configChangeIndex)
 											}
 										}
-									}
+
+									case Failure(e) =>
+										if retriesDone > retiringParticipantMaxRetries then Trace.error(s"$boundParticipantId: The replication to the retiring participant $id is aborted because it failed too many times. The last attempt failure was:", e)
+										else {
+											val nextRetryNumber = retriesDone + 1
+											Trace.debug(s"$boundParticipantId: The replication to the retiring participant $id failed. Scheduling retry #$nextRetryNumber. The failure was:", e)
+											requestWakeUp(
+												WakeUpReason.RetiringParticipantRetry,
+												() => if retirementDriverByParticipantId.contains(id) then driveLoop(currentTerm1, nextRetryNumber)
+											)
+										}
+									
+								}
 							}
 						}
 					}
@@ -3980,13 +3991,14 @@ trait ConsensusParticipantSdm { thisModule =>
 					var oldParticipantsThatAreReachable = 0
 					var newParticipantsThatAreReachable = 0
 					var isInOldConfig = oldParticipants.contains(participantId)
+					var candidateStateInfo = myStateInfo
 					var chosenCandidate = new CandidateInfo(participantId, isInOldConfig, myStateInfo)
 					var borrame = List(chosenCandidate) //TODO delete line
 
 					var participantIndex = allOtherParticipants.length
 					while participantIndex >= 0 do {
-						if isInOldConfig && chosenCandidate.info.rank.in(ERS_COUNT_IN_OLD) then oldParticipantsThatAreReachable += 1
-						if chosenCandidate.info.rank.in(ERS_COUNT_IN_NEW) && newParticipants.contains(participantId) then newParticipantsThatAreReachable += 1
+						if isInOldConfig && candidateStateInfo.rank.in(ERS_COUNT_IN_OLD) then oldParticipantsThatAreReachable += 1
+						if candidateStateInfo.rank.in(ERS_COUNT_IN_NEW) && newParticipants.contains(participantId) then newParticipantsThatAreReachable += 1
 
 						var goNext = true
 						participantIndex -= 1
@@ -4002,6 +4014,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									if stateInfo.currentTerm > highestTermSeen then highestTermSeen = stateInfo.currentTerm
 									isInOldConfig = oldParticipants.contains(participantId)
 									val candidateInfo = new CandidateInfo(participantId, isInOldConfig, stateInfo)
+									candidateStateInfo = stateInfo
 									chosenCandidate = chosenCandidate.getWinnerAgainst(candidateInfo)
 									borrame = candidateInfo :: borrame //TODO delete line
 									goNext = false
@@ -4009,7 +4022,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}
 					val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.rank, myStateInfo.ballot)
-					Trace.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): result=$result, among=$borrame, config=$backingConfigChange") //TODO delete line
+					Trace.debug(s"Decision: result=$result, myStateInfo=$myStateInfo, answers=${howAreYouAnswers.mkString("[", ", ", "]")}, among=$borrame, config=$backingConfigChange") //TODO the "borrame" part
 					result
 				}
 			}
