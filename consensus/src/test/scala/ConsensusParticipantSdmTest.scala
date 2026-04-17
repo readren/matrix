@@ -1248,6 +1248,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 3, true, -2370286264465510604L), // PanicException thrown in replicateTccAndThenStartSecondPhase
+			(30, 2, true, 1380848690399351272L), // The node p-1 applied the command TestClientCommand(19,A) at index 22, which is different from the command TestClientCommand(18,A) applied at the same index in node p-0.
 			(30, 3, false, -2547866549608645507L), // PanicException
 			(30, 3, true, -7417113718760886059L), // "Should never happen" assertion triggered
 			(30, 3, false, 7259924510493798812L),
@@ -1268,7 +1270,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, -7417113718760886059L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (3, true, -2370286264465510604L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend)
@@ -1278,7 +1280,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("All invariants must comply") {
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
-			Gen.choose(2, 3),
+			Gen.choose(3, 7),
 			Gen.oneOf(true, false),
 			Gen.long
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
