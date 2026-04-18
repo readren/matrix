@@ -174,7 +174,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 		override def wasActivated(schedule: Schedule): Boolean =
 			schedule.activationSerial.get != Long.MaxValue
 
-		/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
+		/** @return true if the [[Schedule]] was canceled, even if it was not activated.
 		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
 		override def isCanceled(schedule: ScheduleImpl): Boolean =
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
