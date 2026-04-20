@@ -19,8 +19,6 @@ object CooperativeWorkersDp {
 		case notStarted, keepRunning, shutdownWhenAllWorkersSleep, terminated
 	}
 
-	inline val debugEnabled = false
-
 	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].
 	 *
 	 * Design note: to reduce class-metadata of extending classes, this facade was defined as an abstract class that extends [[AbstractDoer]] instead of a trait that extends [[Doer]].
@@ -81,9 +79,9 @@ abstract class CooperativeWorkersDp(
 	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(buildWorker)
 
 	private val runningWorkersLatch: CountDownLatch = new CountDownLatch(workers.length)
-	/** Usually equal to the number of workers whose [[Worker.isSleeping]] flag is set, but may be temporarily greater. Never smaller.
-	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepingWorkersCount.get <= workers.length }}} */
-	private val sleepingWorkersCount = AtomicInteger(0)
+	/** Knows how many [[Worker]]s are in the sleep zone. Usually equal to the number of workers whose [[Worker.isSleeping]] flag is set, but may be temporarily greater. Never smaller.
+	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepZonePopulation.get <= workers.length }}} */
+	private val sleepZonePopulation = AtomicInteger(0)
 
 	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
 	private val doerThreadLocal: ThreadLocal[DoerFacade | Null] = new ThreadLocal()
@@ -111,10 +109,12 @@ abstract class CooperativeWorkersDp(
 		override def numOfPendingTasks: Int = taskQueueSize.get
 
 		override def executeSequentially(task: Runnable): Unit = {
-			if enqueueTask(task) && !wakeUpASleepingWorkerIfAny(thisDoer) then enqueueMyself()
+			if enqueueTask(task) then {
+				// assert(!queuedDoers.contains(thisDoer))
+				enqueueMyself()
+				wakeUpASleepingWorkerIfAny(lastTimeWorkerIndex)
+			}
 		}
-
-		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
 		/** Enqueues a [[Runnable]] to this [[DoerImpl]] queue.
 		 * @return true if the queue transitioned from empty to non-empty thanx to this call. */
@@ -133,6 +133,8 @@ abstract class CooperativeWorkersDp(
 			queuedDoers.offer(thisDoer)
 		}
 
+		override def currentExecutionSerial: ExecutionSerial = executionSequencer
+
 		override def currentlyRunningDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
 		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
@@ -148,7 +150,7 @@ abstract class CooperativeWorkersDp(
 		 */
 		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Unit = {
 			doerThreadLocal.set(thisDoer)
-			if debugEnabled then assert(taskQueueSize.get > 0)
+			// assert(taskQueueSize.get > 0)
 			var taskQueueSizeIsPositive = true
 			if applyMemoryFence then VarHandle.loadLoadFence()
 			try {
@@ -180,7 +182,7 @@ abstract class CooperativeWorkersDp(
 				if applyMemoryFence then VarHandle.storeStoreFence()
 				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks.
 				if taskQueueSizeIsPositive then {
-					if debugEnabled then assert(!queuedDoers.contains(thisDoer))
+					// assert(!queuedDoers.contains(thisDoer))
 					enqueueMyself()
 				}
 				// Note that, for efficiency, the `doerThreadLocal` entry corresponding to this worker thread is not cleared here as expected because it will be overwritten before anything that could access it is executed. It is overwritten either in the next call to `executePendingTasks` if there is a Doer with pending tasks, in `tryToSleep` if no Doer has visible pending tasks, or in the unhandled exception catcher.
@@ -194,29 +196,26 @@ abstract class CooperativeWorkersDp(
 		override def toString: String = s"${getTypeName[DoerImpl]}(tag=$tag)"
 	}
 
-	/** @return `true` if a worker was awakened.
+	/** @return `true` if a [[Worker]] is awakened.
 	 * The provided [[DoerImpl]] will be assigned to the awakened worker.
-	 * Asumes the provided [[DoerImpl]] is and will not be enqueued in [[queuedDoers]], which ensures it will not be assigned to any other worker simultaneously. */
-	protected def wakeUpASleepingWorkerIfAny(stimulator: DoerImpl): Boolean = {
-		if debugEnabled then assert(!queuedDoers.contains(stimulator))
-		if sleepingWorkersCount.get > 0 then {
-			val startingWorkerIndex = stimulator.lastTimeWorkerIndex
-			if workers(startingWorkerIndex).wakeUpIfSleeping(stimulator) then true
-			else {
-				var workerIndex = startingWorkerIndex - 1
-				while workerIndex != startingWorkerIndex do {
-					if workerIndex <= 0 then workerIndex = workers.length
-					workerIndex -= 1
-					if workers(workerIndex).wakeUpIfSleeping(stimulator) then return true
-				}
-				false
+	 * Asumes the provided [[DoerImpl]] is and will not be enqueued in [[queuedDoers]], which ensures it will not be assigned to any other worker simultaneously.
+	 * @param startingWorkerIndex the index of the worker to start the search with. */
+	protected def wakeUpASleepingWorkerIfAny(startingWorkerIndex: Int): Boolean = {
+		if sleepZonePopulation.get > 0 then {
+			var workerIndex = startingWorkerIndex
+			while true do {
+				if workers(workerIndex).wakeUpIfSleeping() then return true
+				if workerIndex == 0 then workerIndex = workers.length
+				workerIndex -= 1
+				if workerIndex == startingWorkerIndex then return false
 			}
-		} else false
+		}
+		false
 	}
 
 	protected def wakeUpAWorkerIfAllSleeping(): Unit = {
-		if sleepingWorkersCount.get == workers.length then {
-			workers(0).wakeUpIfSleeping(null)
+		if sleepZonePopulation.get == workers.length then {
+			workers(0).wakeUpIfSleeping()
 		}
 	}
 
@@ -230,34 +229,21 @@ abstract class CooperativeWorkersDp(
 
 		/** Set to `true` just before calling [[ReentrantLock.wait]] and to `false` just after (the second only if [[keepRunning]] is `true`).
 		 * This field is updated within a synchronized block on this [[Worker]]'s intrinsic lock. */
-		private var isSleeping: Boolean = false
+		@volatile private var isSleeping: Boolean = false
 
 		/** Usually equal to [[isSleeping]] but may be temporarily true when [[isSleeping]] is false. Not the opposite.
 		 * This field is updated exclusively within this worker [[thread]]. */
 		@volatile private var potentiallySleeping: Boolean = false
 
-		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep.
-		 * [[tryToSleep]] avoids sleeping when all other workers are either sleeping or attempting to sleep, leaving this worker as the only one awake, in order to process any pending task that was enqueued after, or was not visible during, the last call to [[areAllOtherWorkersNotCompletelyAsleep]].
+		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep due to a salient [[Doer]].
 		 * This field is updated exclusively within this worker [[thread]]. */
-		private var refusedTriesToSleepsCounter: Int = 0
+		private var salientDoerCounter: Int = 0
 
-		/**
-		 * A [[DoerImpl]] instance that jumps the [[queuedDoers]].
-		 * Should not be modified by any thread other than the [[thread]] of this worker unless this worker is sleeping.
-		 * Is set by [[wakeUpIfSleeping]] while this worker is sleeping, and by [[run]] after calling [[DoerImpl.executePendingTasks()]] if the task-queue was not completely emptied;
-		 * is read by this worker after it is awakened;
-		 * and is cleared by this worker after it is awakened. */
-		private var queueJumper: DoerImpl | Null = null
-
-		/**
-		 * Remember the greatest value that [[refusedTriesToSleepsCounter]] reached before it has been reset because a pending task becomes visible.
-		 * Used for diagnostic only to calibrate the limit of [[refusedTriesToSleepsCounter]] at which the worker can safely go to sleep.
-		 * This field is updated exclusively within this worker [[thread]]. */
-		private var maxTriesToSleepThatWereReset = 0
 		/** Tracks the number of times this worker was awakened.
 		 * Used for diagnostic only.
 		 * This field is updated exclusively within this worker [[thread]]. */
-		private var awakensCounter: Int = 0
+		private var awakeningCounter: Int = 0
+
 		/** Set to `true` after exiting the main loop gracefully because [[keepRunning]] is false.
 		 * Used for diagnostic only.
 		 * This field is updated exclusively within this worker [[thread]]. */
@@ -273,14 +259,9 @@ abstract class CooperativeWorkersDp(
 		override def run(): Unit = {
 			workerThreadLocal.set(thisWorker)
 			while keepRunning do {
-				val assignedDoer: DoerImpl | Null =
-					if queueJumper != null then queueJumper
-					else pollNextDoer()
-				queueJumper = null
-				if assignedDoer == null then tryToSleep()
-				else {
-					if refusedTriesToSleepsCounter > maxTriesToSleepThatWereReset then maxTriesToSleepThatWereReset = refusedTriesToSleepsCounter
-					refusedTriesToSleepsCounter = 0
+				var assignedDoer: DoerImpl | Null = pollNextDoer()
+				if assignedDoer == null then assignedDoer = tryToSleep()
+				if assignedDoer != null then {
 					assignedDoer.lastTimeWorkerIndex = this.index
 					assignedDoer.executePendingTasks(thisWorker)
 					completedMainLoopsCounter += 1
@@ -299,57 +280,37 @@ abstract class CooperativeWorkersDp(
 			thread.start()
 		}
 
-		/** Puts the [[thread]] into sleep unless it is the last [[Worker]]'s thread (of this [[CooperativeWorkersDp]] workers pool) that entered into this method and there is a possibility that there is pending but not yet visible work to do. */
-		private def tryToSleep(): Unit = {
+		/** Puts this [[Worker]] to sleep unless a salient [[DoerImpl]] is seen in the [[queuedDoers]], in which case such [[DoerImpl]] is immediately returned. */
+		private def tryToSleep(): DoerImpl = {
 			doerThreadLocal.set(null)
-			val sleepingCounter = sleepingWorkersCount.incrementAndGet()
-			// The purpose of this `if` is to avoid all workers go to sleep when maybe there is work to do.
-			// Refuse to sleep if all other workers' threads are also inside this method (tryToSleep) and either:
-			// - this worker (the one that incremented the counter to the top) haven't checked that no new task were enqueued during N consecutive main loops since all other workers' threads are inside this method; (this is necessary to avoid all workers go to sleep if a [[DoerImpl]] was enqueued into `enqueuedDoers` by an external thread and the addition is still not visible from the threads of the workers that were awake)
-			// - or all other worker's thread haven't reached the point inside this method where the `isSleeping` member is set to true; (this is necessary to avoid the rare situation where all workers' threads are inside this method fated to sleep but none have still entered the synchronized block, which causes calls to `wakeUpASleepingWorkerIfAny` by external threads during the interval to return false and not awake any worker, which causes the tasks enqueued during that interval never be executed unless another task is enqueued after a worker enters said synchronous block, which may not happen)
-			// The value of N should be greater than one in order to process any task enqueued between the last check and now. The chosen value of "number of workers" may be more than necessary but extra main loops are not harmful.
-			// If I am the last worker entering this section and another worker's thread is leaving the sleeping state
-			if sleepingCounter == workers.length && (refusedTriesToSleepsCounter <= workers.length || areAllOtherWorkersNotCompletelyAsleep) then {
-				// TODO analyze if a memory barrier is necessary here (or in the main loop) to force the visibility from workers' threads of elements enqueued into `queuedDoers`.
-				sleepingWorkersCount.getAndDecrement()
-				refusedTriesToSleepsCounter += 1
-			} else {
-				potentiallySleeping = true
-				if sleepingCounter == workers.length && state.get() != State.keepRunning.ordinal && sleepingWorkersCount.get() == workers.length then stopAllWorkers()
-				else {
-					var isAwakened = false
-					thisWorker.synchronized {
-						isSleeping = true
-						val waitDuration = determineWaitDurationFor(thisWorker, workers.length - sleepingCounter)
-						if waitDuration > 0 then {
-							val actualLull = if workers.length - sleepingCounter == 0 && waitDuration > 1 then 1 else waitDuration
-							if actualLull == Long.MaxValue then thisWorker.wait() else thisWorker.wait(actualLull)
-						}
-						// if a spurious wakeup occur then act as if the worker was awakened with `wakeUpIfSleeping(null)`, unless it was simultaneously stopped (very unlikely to occur if it is possible at all), in which case act as if the worker was stopped while sleeping.
-						if keepRunning == isSleeping then isSleeping = !keepRunning
-						isAwakened = !isSleeping
-					}
-					if isAwakened then {
-						potentiallySleeping = false
-						sleepingWorkersCount.getAndDecrement()
-						refusedTriesToSleepsCounter = 0
-
-						awakensCounter += 1
-					}
+			val sleepZonePopulationAtEntry = sleepZonePopulation.incrementAndGet() // Sleep zone begin
+			potentiallySleeping = true
+			val salientDoer = thisWorker.synchronized {
+				val salientDoer = pollNextDoer()
+				if salientDoer == null then {
+					isSleeping = true
+					// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
+					if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
+					else if sleepZonePopulationAtEntry < workers.length then thisWorker.wait()
+					else lull(thisWorker)
+					isSleeping = !keepRunning
 				}
+				salientDoer
 			}
+			if keepRunning then {
+				potentiallySleeping = false
+				sleepZonePopulation.getAndDecrement() // Sleep zone end
+				if salientDoer == null then awakeningCounter += 1 else salientDoerCounter += 1
+			} else stopAllWorkers(index)
+			salientDoer
 		}
 
 		/** Wakes up this [[Worker]] if it is currently sleeping.
-		 * @param stimulator the [[DoerImpl]] to be assigned to this worker upon awakening. Assumes it has not already been assigned to another [[Worker]].
-		 * @return `true` if this worker was sleeping and has been awakened, otherwise `false`.
-		 */
-		def wakeUpIfSleeping(stimulator: DoerImpl | Null): Boolean = {
+		 * @return `true` if this worker was awakened, otherwise `false`. */
+		def wakeUpIfSleeping(): Boolean = {
 			if potentiallySleeping then {
 				thisWorker.synchronized {
 					if isSleeping then {
-						queueJumper = stimulator
-						isSleeping = false
 						thisWorker.notify()
 						true
 					} else false
@@ -357,22 +318,7 @@ abstract class CooperativeWorkersDp(
 			} else false
 		}
 
-		private def areAllOtherWorkersNotCompletelyAsleep: Boolean = {
-			var workerIndex = workers.length
-			var allTheTraversedWorkersAreNotCompletelyAsleep = true
-			while workerIndex > 0 && allTheTraversedWorkersAreNotCompletelyAsleep do {
-				workerIndex -= 1
-				if workerIndex != thisWorker.index then {
-					val worker = workers(workerIndex)
-					allTheTraversedWorkersAreNotCompletelyAsleep = !worker.potentiallySleeping || !worker.synchronized(worker.isSleeping)
-				}
-			}
-			allTheTraversedWorkersAreNotCompletelyAsleep
-		}
-
-		def isAsleep: Boolean = {
-			thisWorker.potentiallySleeping && thisWorker.synchronized(thisWorker.isSleeping)
-		}
+		def isAsleep: Boolean = thisWorker.isSleeping
 
 		def stop(): Unit = thisWorker.synchronized {
 			keepRunning = false
@@ -380,22 +326,27 @@ abstract class CooperativeWorkersDp(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, maxTriesToSleepThatWereReset=$maxTriesToSleepThatWereReset, awakensCounter=$awakensCounter, completedMainLoopsCounter=$completedMainLoopsCounter, queueJumper=${queueJumper ne null}%5b")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
 		}
 	}
 
-	/** Determines the duration that a worker is set to wait when the [[queuedDoers]] is empty.
-	 * Called within a synchronization block on the provided [[Worker]].
-	 * The default implementation always returns the singular value [[Long.MaxValue]] which instructs to wait forever.
+	/** Puts the specified [[Worker]] to sleep.
+	 * Called when the last [[Worker]] to enter the sleep zone (where workers go after finding the [[queuedDoers]] queue empty) must be put to sleep.
+	 * 
+	 * Note: The condition used to determine the "last" worker (`sleepZonePopulationAtEntry == workers.length`) is an O(1) approximation. 
+	 * If a false positive occurs (i.e., a worker calls `lull` while another is still active), it safely degrades to a timed wait instead of an infinite wait, ensuring scheduled tasks are monitored without incurring the O(N) cost of checking all workers' precise states.
 	 *
-	 * The intention of this method is to allow extension to support scheduling applying the standard scheduling operations of [[java.lang.Thread]] on the [[Worker.thread]] of the [[Worker]]s. See [[CooperativeWorkersWithSyncSchedulerDp.determineWaitDurationFor]] for an example.
-	 * @return how many milliseconds to wait. [[Long.MaxValue]] for effectively infinite. Values less than or equal to zero means "don't wait". */
-	protected def determineWaitDurationFor(worker: Worker, numberOfNonSleepingWorkers: Int): Long =
-		Long.MaxValue
-
+	 * The default implementation puts the specified [[Worker]] to wait without timeout until it is awakened.
+ 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeWorkersWithSyncSchedulerDp.determineWaitDurationFor]] for an example.
+	 * @param worker the last [[Worker]] to enter the sleep zone.
+	 */
+	protected def lull(worker: Worker): Unit = 
+		worker.wait()
+	
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
-	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
+	protected def pollNextDoer(): DoerImpl | Null =
+		queuedDoers.poll()
 
 	protected inline def startAllWorkersIfNotAlready(): Unit = {
 		if state.compareAndSet(State.notStarted.ordinal, State.keepRunning.ordinal) then {
@@ -403,11 +354,24 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
-	private def stopAllWorkers(): Unit = {
-		var workerIndex = workers.length
-		while workerIndex > 0 do {
-			workerIndex -= 1
+	private def allOtherWorkersAreSleeping(workerIndex: Int): Boolean = {
+		var otherWorkerIndex = workerIndex
+		while true do {
+			if otherWorkerIndex == 0 then otherWorkerIndex = workers.length
+			otherWorkerIndex -= 1
+			if otherWorkerIndex == workerIndex then return true
+			if !workers(otherWorkerIndex).isAsleep then return false
+		}
+		true
+	}
+
+	private def stopAllWorkers(startingWorkerIndex: Int): Unit = {
+		var workerIndex = startingWorkerIndex
+		while true do {
 			workers(workerIndex).stop()
+			if workerIndex == 0 then workerIndex = workers.length
+			workerIndex -= 1
+			if workerIndex == startingWorkerIndex then return
 		}
 	}
 
@@ -425,9 +389,8 @@ abstract class CooperativeWorkersDp(
 	 * @throws SecurityException @inheritDoc
 	 */
 	override def shutdown(): Unit = {
-		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers()
+		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers(0)
 	}
-
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		runningWorkersLatch.await(timeout, unit)

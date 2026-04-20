@@ -4,12 +4,14 @@ package providers
 import providers.CooperativeWorkersDp.*
 
 import munit.ScalaCheckEffectSuite
+import org.scalacheck.Gen
+import org.scalacheck.effect.PropF
 import readren.common.ScribeConfig
 
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.compiletime.uninitialized
-import scala.concurrent.Promise
+import scala.concurrent.{ExecutionContext, Promise}
 
 /** Test suite for [[CooperativeWorkersDp]] trait using fixed samples instead of property-based testing.
  *
@@ -23,23 +25,23 @@ import scala.concurrent.Promise
 class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 
 	/** The [[DoerProvider]] being tested. */
-	private var doerProvider: CooperativeWorkersDp.Impl = uninitialized
+	private var sharedDoerProvider: CooperativeWorkersDp.Impl = uninitialized
 
 	private var sharedDoer: CooperativeWorkersDp.DoerFacade = uninitialized
 
 	override def beforeAll(): Unit = {
 		ScribeConfig.init(deleteLogFilesOnLaunch = true)
-		doerProvider = new CooperativeWorkersDp.Impl(
+		sharedDoerProvider = new CooperativeWorkersDp.Impl(
 			applyMemoryFence = false,
 			failureReporter = (doer, failure) => scribe.debug(s"Failure reported: ${failure.getMessage}"),
 			unhandledExceptionReporter = (doer, exception) => scribe.debug(s"Unhandled exception: ${exception.getMessage}")
 		)
-		sharedDoer = doerProvider.provide("shared-doer")
+		sharedDoer = sharedDoerProvider.provide("shared-doer")
 	}
 
 	override def afterAll(): Unit = {
-		doerProvider.shutdown()
-		doerProvider.awaitTermination(5, TimeUnit.SECONDS)
+		sharedDoerProvider.shutdown()
+		sharedDoerProvider.awaitTermination(5, TimeUnit.SECONDS)
 	}
 
 	/** Breaks the `promise` that this test will succeed. */
@@ -50,8 +52,8 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 	//// BASIC FUNCTIONALITY TESTS ////
 
 	test("CooperativeWorkersDp should provide unique doer instances") {
-		val doer1 = doerProvider.provide("test-doer-1")
-		val doer2 = doerProvider.provide("test-doer-2")
+		val doer1 = sharedDoerProvider.provide("test-doer-1")
+		val doer2 = sharedDoerProvider.provide("test-doer-2")
 
 		assert(doer1 ne doer2, "Different doer instances should be provided")
 		assert(doer1.tag == "test-doer-1")
@@ -165,7 +167,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		}
 
 		// Wait for all tasks to complete
-		assert(latch.await(50, TimeUnit.MILLISECONDS), s"All tasks should complete within timeout. ${doerProvider.asInstanceOf[ShutdownAble].diagnose(new StringBuilder)}")
+		assert(latch.await(50, TimeUnit.MILLISECONDS), s"All tasks should complete within timeout. ${sharedDoerProvider.asInstanceOf[ShutdownAble].diagnose(new StringBuilder)}")
 		assert(results.get == 3, "Last task should set result to 3")
 		assert(executionOrder.get == 3, "Last task should set execution order to 3")
 	}
@@ -188,6 +190,31 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		assert(sharedCounter == 5, "Counter should be incremented 5 times")
 	}
 
+	test("Worker threads should be reused efficiently") {
+		val numberOfTasksPerDoer = 999
+		val numberOfDoers = 9
+		val latch = new CountDownLatch(numberOfTasksPerDoer * numberOfDoers)
+		val threadIds = new java.util.concurrent.ConcurrentHashMap[Long, Int]()
+
+		// Submit multiple tasks in different doers and collect thread IDs
+		val doers = Array.tabulate[Doer](numberOfDoers)(i => sharedDoerProvider.provide(s"$i"))
+		for taskNumber <- 0 until numberOfTasksPerDoer do {
+			for doer <- doers do {
+				doer.executeSequentially { () =>
+					threadIds.compute(Thread.currentThread().threadId, (threadId, rep) => if rep eq null then 1 else rep + 1)
+					latch.countDown()
+				}
+			}
+		}
+
+		assert(latch.await(1, TimeUnit.SECONDS), "All tasks should complete")
+
+		// Should have used multiple threads (concurrent execution)
+		val uniqueThreads = threadIds.size
+		assert(uniqueThreads > 1, s"Should use multiple threads, used: $uniqueThreads")
+		println(threadIds)
+	}
+
 	//// EDGE CASE TESTS ////
 
 	test("Provider should handle empty task submission") {
@@ -208,33 +235,41 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 	//// SHUTDOWN TESTS ////
 
 	test("Provider should shutdown gracefully") {
-		val testProvider = new CooperativeWorkersDp.Impl(
-			applyMemoryFence = true,
-			threadPoolSize = 2
-		)
+		given ExecutionContext = ExecutionContext.global
 
-		val doer = testProvider.provide("shutdown-test")
-		val latch = new CountDownLatch(1)
+		PropF.forAllNoShrinkF (Gen.choose(1, 9), Gen.choose(1, 20), Gen.choose(1, 40)) { (poolSize: Int, numberOfDoers: Int, numberOfTasks: Int) =>
+			// println(s"Begin: poolSize=$poolSize, numberOfDoers=$numberOfDoers, numberOfTasks=$numberOfTasks")
+			val promise = Promise[Unit]()
+			val provider = new CooperativeWorkersDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize)
 
-		// Submit a task
-		doer.executeSequentially { () =>
-			Thread.sleep(50)
-			latch.countDown()
+			val doers = IArray.tabulate(numberOfDoers)(i => provider.provide(s"shutdown-test-$i"))
+			val numberOfCompletedTask = AtomicInteger(0)
+
+			// Submit a tasks
+			for i <- 0 until numberOfTasks do {
+				val doer = doers(i % numberOfDoers)
+				doer.executeSequentially { () =>
+					Thread.sleep(1)
+					numberOfCompletedTask.getAndIncrement()
+				}
+			}
+
+			// Shutdown the provider
+			provider.shutdown()
+			val termination = provider.awaitTermination(2, TimeUnit.SECONDS)
+			def diagnostic: String = s"\nDiagnostic:\nTest sample: poolSize=$poolSize, numberOfDoers=$numberOfDoers, numberOfTasks=$numberOfTasks\nProvider state:\n${provider.diagnose(new StringBuilder)}"
+			if termination then {
+				if numberOfCompletedTask.get < numberOfTasks then promise.tryFailure(new AssertionError(s"All tasks should be completed and only $numberOfCompletedTask/$numberOfTasks are.$diagnostic"))
+			} else promise.tryFailure(new AssertionError(s"Provider should shutdown within timeout.$diagnostic"))
+
+			promise.trySuccess(())
+			promise.future
 		}
-
-		// Wait for task to complete
-		assert(latch.await(1, TimeUnit.SECONDS), "Task should complete")
-
-		// Shutdown the provider
-		testProvider.shutdown()
-		val terminated = testProvider.awaitTermination(2, TimeUnit.SECONDS)
-
-		assert(terminated, "Provider should terminate within timeout")
 	}
 
 	test("Provider should handle shutdown while tasks are running") {
 		val testProvider = new CooperativeWorkersDp.Impl(
-			applyMemoryFence = true,
+			applyMemoryFence = false,
 			threadPoolSize = 2
 		)
 
@@ -257,67 +292,44 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		testProvider.shutdown()
 		val terminated = testProvider.awaitTermination(3, TimeUnit.SECONDS)
 
-		assert(terminated, "Provider should terminate even with running tasks")
+		assert(terminated, s"Provider should terminate even with running tasks: ${testProvider.diagnose(new StringBuilder)}")
 		assert(latch.await(1, TimeUnit.SECONDS), "Running task should complete")
 	}
 
-	test("Busy-spin livelock reproduction") {
-		var timedOut = false
-		var i = 1
-		val doer = doerProvider.provide("livelock-repro-shared")
+	test("No pending tasks when workers go to sleep (race condition test)") {
+		for threadPoolSize <- 1 to 4 do {
+			val testProvider = new CooperativeWorkersDp.Impl(
+				applyMemoryFence = false,
+				threadPoolSize = threadPoolSize
+			)
+			val doers = Array.tabulate(threadPoolSize)(i => testProvider.provide(s"race-doer-$i"))
 
-		// Try up to 1000 times to guarantee hitting the race condition window
-		while i <= 1000 && !timedOut do {
-			// scribe.debug(s"Begin try #$i")
-			val promise = Promise[Unit]()
-			val latch = new CountDownLatch(3)
+			val iterations = 100000
+			for i <- 1 to iterations do {
+				val latch = new CountDownLatch(threadPoolSize)
 
-			// 1. Simulate the end of the previous test EXACTLY as MUnit handles it.
-			// The Duty executes asynchronously, avoiding the artificial Thread.sleep
-			// which gave the main thread too much of a head start.
-			val duty = doer.Duty_mine { () =>
-				doer.run {
-					scribe.debug(s"#$i: test A first execute")
+				// Enqueue one task per doer to occupy all workers.
+				for j <- 0 until threadPoolSize do {
+					doers(j).executeSequentially { () =>
+						latch.countDown()
+					}
 				}
-				doer.run {
-					scribe.debug(s"#$i: test A second execute")
-					promise.trySuccess(())
+
+				// Wait for the tasks to finish.
+				// As soon as this unblocks successfuly, all workers are finishing their tasks and will poll an empty queue, transitioning to sleep. The next iteration will immediately enqueue new tasks, maximizing the probability of hitting the tryToSleep window.
+				val success = latch.await(1, TimeUnit.SECONDS)
+				if !success then {
+					val diagnostic = testProvider.diagnose(new StringBuilder)
+					assert(false, s"Tasks at iteration $i where not executed. Thread pool size: $threadPoolSize. Provider state:\n$diagnostic")
 				}
 			}
-			duty.triggerAndForget(false)
 
-			// 2. Main thread waits for the test boundary promise to resolve
-			scala.concurrent.Await.result(promise.future, scala.concurrent.duration.Duration.Inf)
+			val diagnostic = testProvider.diagnose(new StringBuilder)
+			println(s"Provider state:\n$diagnostic")
 
-			scribe.debug(s"#$i: after await")
-			// 3. Widen the race window with a variable micro-delay fuzz
-			// This perfectly simulates MUnit's invisible framework overhead between tests.
-			var busy = 0
-			val target = scala.util.Random.nextInt(500)
-			while busy < target do busy += 1
-
-			// 4. Main thread immediately enqueues new tasks, racing with the worker's queue exit
-			doer.run {
-				// scribe.debug(s"#$i: test B first execute")
-				latch.countDown()
-			}
-			doer.run {
-				// scribe.debug(s"#$i: test B second execute")
-				latch.countDown()
-			}
-			doer.run {
-				// scribe.debug(s"#$i: test C third execute")
-				latch.countDown()
-			}
-
-			// If the race causes the infinite busy-spin livelock, the 50ms will expire.
-			if !latch.await(50, TimeUnit.MILLISECONDS) then {
-				timedOut = true
-			}
-			i += 1
+			testProvider.shutdown()
+			assert(testProvider.awaitTermination(1, TimeUnit.SECONDS), "Provider did not terminate")
 		}
-
-		assert(!timedOut, "The busy-spin livelock caused a timeout")
 	}
 
 }

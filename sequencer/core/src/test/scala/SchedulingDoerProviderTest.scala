@@ -480,19 +480,23 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	}
 
 	test("Worker threads should be reused efficiently") {
-		val latch = new CountDownLatch(10)
+		val numberOfTasksPerDoer = 999
+		val numberOfDoers = 9
+		val latch = new CountDownLatch(numberOfTasksPerDoer * numberOfDoers)
 		val threadIds = new java.util.concurrent.ConcurrentLinkedQueue[Long]()
 
 		// Submit multiple tasks in different doers and collect thread IDs
-		val doers = Array.tabulate[Doer](16)(i => buildDoer(s"$i"))
-		for doer <- doers do {
-			doer.executeSequentially { () =>
-				threadIds.add(Thread.currentThread().threadId)
-				latch.countDown()
+		val doers = Array.tabulate[Doer](numberOfDoers)(i => buildDoer(s"$i"))
+		for taskNumber <- 0 until numberOfTasksPerDoer do {
+			for doer <- doers do {
+				doer.executeSequentially { () =>
+					threadIds.add(Thread.currentThread().threadId)
+					latch.countDown()
+				}
 			}
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(1, TimeUnit.SECONDS), "All tasks should complete")
 
 		// Should have used multiple threads (concurrent execution)
 		val uniqueThreads = threadIds.toArray.toSet.size

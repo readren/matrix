@@ -29,6 +29,8 @@ ThisBuild / scalacOptions ++= Seq(
 ThisBuild / fork := true
 ThisBuild / javaOptions ++= Seq("-ea")
 
+ThisBuild / run / connectInput := true // tells sbt to connect the console's input to the executed method in Test.
+
 // Avoids the key not used warning for `idePackagePrefix`.
 Global / excludeLintKeys += idePackagePrefix
 

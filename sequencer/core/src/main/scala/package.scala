@@ -22,7 +22,7 @@ package object sequencer {
 
 		def currentTimeRoundedDown: MilliTime
 
-		def currentTimeTimeRoundedUp: MilliTime
+		def currentTimeRoundedUp: MilliTime
 	}
 
 	class NanoTimeBasedMilliClock extends MonotonicClock {
@@ -32,6 +32,6 @@ package object sequencer {
 
 		override def currentTimeRoundedDown: MilliTime = nanosToMillisRoundedDown(System.nanoTime)
 
-		override def currentTimeTimeRoundedUp: MilliTime = nanosToMillisRoundedUp(System.nanoTime)
+		override def currentTimeRoundedUp: MilliTime = nanosToMillisRoundedUp(System.nanoTime)
 	}
 }

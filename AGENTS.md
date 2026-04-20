@@ -11,6 +11,8 @@ Treat the user as an adult with strong self-esteem. Be critical, honest, and dir
 
 ## Build, test, and development commands
 
+- **No Unsolicited Execution:** Do not run tests or modify code unless explicit instruction to do so. If I provide a task or output logs, rely entirely on static reasoning and analysis.
+
 ### Environment
 
 - Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).
@@ -44,6 +46,7 @@ Treat the user as an adult with strong self-esteem. Be critical, honest, and dir
     - `{subproject name} / Test / testOnly {full name of concrete suite class}`
 - Run a single test case of a test suite:
     - `{subproject name} / Test / testOnly {full name of concrete suite class} -- -z "*{test name or fragment of it}*"`
+### SBT direct mode commands
 - To run directly from the command line, wrap the sbt command in quotes, removing the inner quotes, and cropping the test name to a single word:
     - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class}"`
     - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class} -- -z *{a single word of the test name}*"`
