@@ -13,7 +13,7 @@ import scala.language.adhocExtensions
 
 object CooperativeWorkersWithAsyncSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
 
-	class Impl(
+	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),

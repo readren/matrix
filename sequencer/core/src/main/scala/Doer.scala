@@ -111,7 +111,7 @@ trait Doer { thisDoer =>
 	 * The implementation should be thread-safe.
 	 *
 	 * All the deferred actions preformed by the [[Duty]] and [[Task]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
-	 * */
+	 * @note Implementations must set their associated provider's thread-local to `this` before invoking `body`, and clear it (restore to `null`) once `body` returns or throws. Failure to uphold this contract will cause [[DoerProvider.currentDoer]] to return a value of the wrong type at runtime, as the cast in that method relies on it. */
 	def executeSequentially(runnable: Runnable): Unit
 
 	/** The [[ExecutionSerial]] of the most recently executed [[Runnable]] on this [[Doer]].

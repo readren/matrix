@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 object RoundRobinDp {
 	
-	class Impl(
+	final class Impl(
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),

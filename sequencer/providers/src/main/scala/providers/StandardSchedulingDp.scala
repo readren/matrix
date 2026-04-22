@@ -1,13 +1,12 @@
 package readren.sequencer
 package providers
 
+import Doer.ExecutionSerial
 import providers.StandardSchedulingDp.ProvidedDoerFacade
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
-import readren.sequencer.Doer.ExecutionSerial
 
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
 
 object StandardSchedulingDp {
@@ -16,7 +15,7 @@ object StandardSchedulingDp {
 		def isActive(schedule: Schedule): Boolean
 	}
 
-	class Impl(
+	final class Impl(
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 	) extends StandardSchedulingDp {

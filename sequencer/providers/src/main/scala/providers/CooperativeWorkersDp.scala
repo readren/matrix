@@ -30,7 +30,7 @@ object CooperativeWorkersDp {
 	}
 
 
-	class Impl(
+	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
@@ -92,7 +92,9 @@ abstract class CooperativeWorkersDp(
 	 *  Exposed for testing only. */
 	inline private[providers] def currentWorker: Runnable | Null = workerThreadLocal.get
 
-	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any. */
+	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any.
+	 *
+	 * @note Extensions may down-cast the return type provided the conditions mentioned in the [[DoerProvider.provide]]'s note are met. */
 	override def currentDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
 	protected open class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>

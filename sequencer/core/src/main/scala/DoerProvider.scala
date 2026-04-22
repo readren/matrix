@@ -23,16 +23,18 @@ trait DoerProvider[+D <: Doer] {
 	 *   Only implementations that return a new instance every call are able to use it.  
 	 *   Its solely goals is to help tracking to which objects the [[Doer]] is associated with, provided that said objects are also tagged.
 	 *   Implementations may use the `tag` for purposes such as debugging or tracking, but this is optional and not required for the [[DoerProvider]] functionality.
+	 *
+	 * @note Subclasses must ensure that every `D` instance returned here is exclusively associated with this [[DoerProvider]] instance: the `D`'s [[Doer.executeSequentially]] implementation must set `this` provider's thread-local (and no other provider's), and no returned `D` instance may be shared with or returned by a provider of a different concrete type. Violating this will cause [[currentDoer]] to produce a value of the wrong type at runtime.
 	 */
 	def provide(tag: Tag): D
 
 	def tagFromText(text: String): Tag
 
-	/** @return the [[Doer]] instance — among those supplied by this [[DoerProvider]] — to which the current [[Thread]] is assigned; [[Maybe.empty]] otherwise. */
+	/** @return the [[Doer]] instance — among those supplied by this [[DoerProvider]] — to which the current [[Thread]] is currently assigned, if any; [[Maybe.empty]] if the current [[Thread]] is not currently assigned to a [[Doer]] supplied by this [[DoerProvider]]. */
 	def currentDoer: Maybe[D]
 
 	/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception.
-	 * The implementation may assume that the call is withing the thread currently assigned to the provided doer. */
+	 * The implementation may assume that the call is within the thread currently assigned to the provided doer. */
 	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit
 
 	/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
