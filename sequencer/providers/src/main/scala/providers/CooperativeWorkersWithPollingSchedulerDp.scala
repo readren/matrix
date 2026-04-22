@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersWithSyncSchedulerDp.{ScheduleFacade, SchedulingDoerFacade}
+import providers.CooperativeWorkersWithPollingSchedulerDp.{ScheduleFacade, SchedulingDoerFacade}
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.{Executors, ThreadFactory}
 
 
-object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
+object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
@@ -18,7 +18,7 @@ object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSch
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeWorkersWithSyncSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+	) extends CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
 
 		override type Tag = String
 
@@ -38,7 +38,7 @@ object CooperativeWorkersWithSyncSchedulerDp extends CooperativeWorkersDpWithSch
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-abstract class CooperativeWorkersWithSyncSchedulerDp(
+abstract class CooperativeWorkersWithPollingSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
@@ -222,7 +222,7 @@ abstract class CooperativeWorkersWithSyncSchedulerDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[CooperativeWorkersWithSyncSchedulerDp]).append('\n')
+		sb.append(getTypeName[CooperativeWorkersWithPollingSchedulerDp]).append('\n')
 		sb.append("\tskippedLullsCounter = ").append(skippedLullsCounter).append('\n')
 		super.diagnose(sb)
 	}

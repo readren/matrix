@@ -339,7 +339,7 @@ abstract class CooperativeWorkersDp(
 	 * If a false positive occurs (i.e., a worker calls `lull` while another is still active), it safely degrades to a timed wait instead of an infinite wait, ensuring scheduled tasks are monitored without incurring the O(N) cost of checking all workers' precise states.
 	 *
 	 * The default implementation puts the specified [[Worker]] to wait without timeout until it is awakened.
- 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeWorkersWithSyncSchedulerDp.determineWaitDurationFor]] for an example.
+ 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeWorkersWithPollingSchedulerDp.determineWaitDurationFor]] for an example.
 	 * @param worker the last [[Worker]] to enter the sleep zone.
 	 */
 	protected def lull(worker: Worker): Unit = 

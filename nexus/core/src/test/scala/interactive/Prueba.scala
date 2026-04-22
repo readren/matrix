@@ -6,9 +6,9 @@ import core.*
 import factories.{RegularAf, SequentialInqueueAf}
 
 import readren.sequencer.Doer
-import readren.sequencer.manager.descriptors.{DefaultAsyncSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultRoundRobinDpd, DefaultSyncSchedulingDpd}
+import readren.sequencer.manager.descriptors.{DefaultThreadDrivenSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultRoundRobinDpd, DefaultPollingSchedulingDpd}
 import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager, ShutdownAbleDpm}
-import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithAsyncSchedulerDp, CooperativeWorkersWithSyncSchedulerDp, RoundRobinDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithThreadDrivenSchedulerDp, CooperativeWorkersWithPollingSchedulerDp, RoundRobinDp}
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -21,7 +21,7 @@ object Prueba {
 
 	private inline val A_MEGA = 1024 * 1024
 
-	private type TestedDoerProvider = CooperativeWorkersWithAsyncSchedulerDp
+	private type TestedDoerProvider = CooperativeWorkersWithThreadDrivenSchedulerDp
 
 	private sealed trait Report
 
@@ -59,12 +59,12 @@ object Prueba {
 	private val probes: Seq[Probe[?]] = List(
 		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularAf),
 		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularAf),
-		Probe("CooperativeWorkersWithAsyncScheduler and RegularRf", DefaultAsyncSchedulingDpd, RegularAf),
-		Probe("CooperativeWorkersWithSyncScheduler and RegularRf", DefaultSyncSchedulingDpd, RegularAf),
+		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
+		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultPollingSchedulingDpd, RegularAf),
 		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithAsyncScheduler and SequentialRf", DefaultAsyncSchedulingDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithSyncScheduler and SequentialRf", DefaultSyncSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultThreadDrivenSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultPollingSchedulingDpd, SequentialInqueueAf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {

@@ -8,7 +8,7 @@ import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer.{Doer, MilliDuration}
-import readren.sequencer.providers.CooperativeWorkersWithSyncSchedulerDp
+import readren.sequencer.providers.CooperativeWorkersWithPollingSchedulerDp
 import scribe.modify.LogModifier
 import scribe.throwable.TraceLoggableMessage
 import scribe.{LogRecord, Priority}
@@ -66,14 +66,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	private case class TestClientCommand(value: Int, clientId: String)
 
 	/** The provider of all the [[Doer]] instances used by this testing infrastructure. */
-	private val sharedDap = new CooperativeWorkersWithSyncSchedulerDp.Impl(
+	private val sharedDap = new CooperativeWorkersWithPollingSchedulerDp.Impl(
 		failureReporter = (doer, e) =>
 			scribe.error(s"Failure reported by a task executed by the sequencer tagged with ${doer.tag}", e),
 		unhandledExceptionReporter = (doer, e) =>
 			scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${doer.tag}", e)
 	)
 
-	private type ScheduSequen = CooperativeWorkersWithSyncSchedulerDp.SchedulingDoerFacade
+	private type ScheduSequen = CooperativeWorkersWithPollingSchedulerDp.SchedulingDoerFacade
 
 	/** Simulates the network environment in which the consensus participants operate.
 	 * @param clusterSize the total number of [[Node]] instances involved.

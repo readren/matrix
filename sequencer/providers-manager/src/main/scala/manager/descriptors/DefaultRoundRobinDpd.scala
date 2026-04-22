@@ -2,7 +2,7 @@ package readren.sequencer
 package manager
 package descriptors
 
-import manager.descriptors.DefaultAsyncSchedulingDpd.Tag
+import manager.descriptors.DefaultThreadDrivenSchedulingDpd.Tag
 import providers.RoundRobinDp
 
 import readren.common.CompileTime.getTypeName
