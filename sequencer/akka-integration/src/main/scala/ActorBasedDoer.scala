@@ -38,8 +38,8 @@ object ActorBasedDoer {
 	}
 
 	def buildProcedureInterceptor[A](doer: ActorBasedDoer): BehaviorInterceptor[A | Procedure, A] =
-		new BehaviorInterceptor[Any, A](classOf[Any]) {
-			override def aroundReceive(ctxU: TypedActorContext[Any], message: Any, target: BehaviorInterceptor.ReceiveTarget[A]): Behavior[A] = {
+		new BehaviorInterceptor[AnyRef, A](classOf[AnyRef]) {
+			override def aroundReceive(ctxU: TypedActorContext[AnyRef], message: AnyRef, target: BehaviorInterceptor.ReceiveTarget[A]): Behavior[A] = {
 				currentDoerThreadLocal.set(doer)
 				try {
 					message match {

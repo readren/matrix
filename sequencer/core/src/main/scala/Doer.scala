@@ -146,7 +146,7 @@ trait Doer { thisDoer =>
 	 * */
 	protected def reportFailure(cause: Throwable): Unit
 
-	private[sequencer] inline def reportFailurePortal(cause: Throwable): Unit = reportFailure(cause)
+	private[sequencer] inline final def reportFailurePortal(cause: Throwable): Unit = reportFailure(cause)
 
 	/**
 	 * Queues an execution of the specified procedure in the task-queue of this $DoSerEx. See [[Doer.executeSequentially]]
@@ -304,7 +304,8 @@ trait Doer { thisDoer =>
 		/** The eta-conversion of the [[engage]] method. TODO: replace all eta-expansion of `engage` with this function. */
 		@threadUnsafe private[sequencer] lazy val engageEta: (A => Unit) => Unit = engage
 
-		/** A bridge to access the [[engage]] method from macros in [[DoerMacros]] and sibling classes. */
+		/** A bridge to access the [[engage]] method from macros in [[DoerMacros]] and sibling classes.
+		 * @note Removing the `inline` modifier causes the compiler to crash. */
 		private[sequencer] inline final def engagePortal(onComplete: A => Unit): Unit = engage(onComplete)
 
 		/** Initiates an execution of this [[Duty]] and subscribes the provided call-back as a consumer of the execution result.

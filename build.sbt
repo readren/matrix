@@ -21,6 +21,7 @@ ThisBuild / scalacOptions ++= Seq(
 //	"-deprecation",
 	"-feature",
 	"-explain",
+	// "-Xprint-suspension" // Usefull to discover macro dependency issues like ciclic dependencies.
 	//	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 	// "-Yexplicit-nulls"
 )

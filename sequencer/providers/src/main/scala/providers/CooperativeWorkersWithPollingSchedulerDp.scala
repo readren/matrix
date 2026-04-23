@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersWithPollingSchedulerDp.{ScheduleFacade, SchedulingDoerFacade}
+import providers.CooperativeWorkersWithPollingSchedulerDp.{NOT_ACTIVATED, ScheduleFacade, SchedulingDoerFacade}
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
@@ -18,7 +18,7 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+	) extends CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
 
 		override type Tag = String
 
@@ -30,6 +30,8 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
 		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
 		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
+
+	inline def NOT_ACTIVATED: Long= Long.MaxValue
 }
 
 
@@ -50,9 +52,9 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	 * IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	private class ScheduleImpl(val owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {
 		/** Memorizes the serial number produced when this [[ScheduleImpl]] instance was activated (applied to [[SchedulingDoerImpl.scheduleSequentially]]). */
-		val activationSerial: AtomicLong = AtomicLong(Long.MaxValue)
+		val activationSerial: AtomicLong = AtomicLong(NOT_ACTIVATED)
 
-		override def wasActivated: Boolean = activationSerial.get() != Long.MaxValue
+		override def wasActivated: Boolean = activationSerial.get() != NOT_ACTIVATED
 
 		/** The routine whose execution is scheduled by this [[ScheduleImpl]].
 		 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
@@ -85,9 +87,9 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	/** The priority queue used to memorize the [[ScheduleImpl]] instances and sort them by its next scheduled-time. */
 	private val priorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
 
-	/** Memorizes the earliest scheduled-time of all the [[ScheduleImpl]] instances or [[clock.MaxValue]] if the [[priorityQueue]] is empty.
+	/** Memorizes the earliest scheduled-time of all the active [[ScheduleImpl]] instances if any. Defaults to [[clock.MaxValue]] if none is active ([[priorityQueue]] is empty).
 	 * The only purpose of this variable is to improve efficiency by minimizing synchronized accesses to [[priorityQueue.peek]].
-	 * Updates should occur within synchronized sections to avoid race conditions. */
+	 * Updates should occur within synchronized sections on this provider to avoid race conditions. */
 	@volatile private var earliestScheduledTime: MilliTime = clock.MaxValue
 
 
@@ -120,7 +122,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			val activationTime = clock.currentTimeRoundedUp
 			val activationSerial = lastActivationSerial.incrementAndGet()
-			if !schedule.activationSerial.compareAndSet(Long.MaxValue, activationSerial) then
+			if !schedule.activationSerial.compareAndSet(NOT_ACTIVATED, activationSerial) then
 				throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 			if !schedule.isCanceled then {
 				schedule.runnable = new Runnable {
@@ -145,7 +147,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		override def cancel(schedule: Schedule): Unit = {
 			schedule.isCanceled = true
 			thisProvider synchronized {
-				priorityQueue.clear()
+				priorityQueue.remove(schedule)
 			}
 		}
 
@@ -172,7 +174,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		 * An instance becomes active when is passed to the [[scheduleSequentially]] method.
 		 * An instance becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
 		override def wasActivated(schedule: Schedule): Boolean =
-			schedule.activationSerial.get != Long.MaxValue
+			schedule.activationSerial.get != NOT_ACTIVATED
 
 		/** @return true if the [[Schedule]] was canceled, even if it was not activated.
 		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
@@ -182,10 +184,11 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 
 	override def lull(worker: Worker): Unit = {
 		val est = earliestScheduledTime
-		if est == clock.MaxValue then worker.wait()
+		// scribe.trace(s"CooperativeWorkersWithPollingSchedulerDp.lull($worker): earliestScheduledTime=$est, clock.currentTimeRoundedDown=${clock.currentTimeRoundedDown}") // TODO remove
+		if est == clock.MaxValue then clock.suspend(worker)
 		else {
 			val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
-			if durationUntilEarliestScheduledTime > 0 then worker.wait(durationUntilEarliestScheduledTime)
+			if durationUntilEarliestScheduledTime > 0 then clock.suspend(worker, durationUntilEarliestScheduledTime)
 			else skippedLullsCounter += 1
 		}
 	}

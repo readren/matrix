@@ -191,6 +191,8 @@ abstract class CooperativeWorkersDp(
 			}
 		}
 
+		def enqueuedTasksIterator: java.util.Iterator[Runnable] = taskQueue.iterator
+
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"(tag=$tag, taskQueueSize=${taskQueueSize.get}%3d)")
 		}
@@ -221,7 +223,8 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
-	protected open class Worker(val index: Int) extends Runnable { thisWorker =>
+	/** @note This class is final for efficiency’s sake only. Be free to remove the `final` modifier if necessary. */
+	protected final class Worker(val index: Int) extends Runnable { thisWorker =>
 
 		/** The [[Thread]] that executes this worker. */
 		private var thread: Thread = threadFactory.newThread(thisWorker)
@@ -291,6 +294,7 @@ abstract class CooperativeWorkersDp(
 				val salientDoer = pollNextDoer()
 				if salientDoer == null then {
 					isSleeping = true
+					// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
 					// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
 					if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
 					else if sleepZonePopulationAtEntry < workers.length then thisWorker.wait()
@@ -330,9 +334,11 @@ abstract class CooperativeWorkersDp(
 		def diagnose(sb: StringBuilder): StringBuilder = {
 			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
 		}
+
+		override def toString: String = s"${getTypeName[Worker]}(index=$index, threadId=${thread.threadId()})"
 	}
 
-	/** Puts the specified [[Worker]] to sleep.
+	/** Puts the current [[Thread]] to sleep, assuming it is the [[Worker.thread]] of the provided worker and the owner of its monitor.
 	 * Called when the last [[Worker]] to enter the sleep zone (where workers go after finding the [[queuedDoers]] queue empty) must be put to sleep.
 	 * 
 	 * Note: The condition used to determine the "last" worker (`sleepZonePopulationAtEntry == workers.length`) is an O(1) approximation. 
@@ -344,7 +350,6 @@ abstract class CooperativeWorkersDp(
 	 */
 	protected def lull(worker: Worker): Unit = 
 		worker.wait()
-	
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
 	protected def pollNextDoer(): DoerImpl | Null =
@@ -383,15 +388,32 @@ abstract class CooperativeWorkersDp(
 	}
 
 	/**
-	 * Makes this [[DoerProvider]] to shut down when all the workers are sleeping.
-	 * Invocation has no additional effect if already shut down.
-	 *
-	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
+	 * Puts this [[DoerProvider]] in a state that shuts itself down when all the workers become sleeping.\
+	 * This method does not cause the workers to sleep. That must be handled externally by ceasing to call the [[Doer.executeSequentially]] method, whether directly or indirectly, on all the instances supplied by this [[DoerProvider]].\
+	 * Invocation has no additional effect if already shut down.\
+	 * This method does not wait. Use [[awaitTermination]] to do that.
 	 *
 	 * @throws SecurityException @inheritDoc
 	 */
 	override def shutdown(): Unit = {
 		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers(0)
+	}
+
+	def shutdownNow(timeout: Long, unit: TimeUnit): (Boolean,Map[Tag, Runnable]) = {
+		if state.getAndSet(State.terminated.ordinal) != State.terminated.ordinal then {
+			stopAllWorkers(0)
+			val isCompleted = awaitTermination(timeout: Long, unit: TimeUnit)
+			val builder = Map.newBuilder[Tag, Runnable]
+			val doerIterator = queuedDoers.iterator()
+			while doerIterator.hasNext do {
+				val doer = doerIterator.next()
+				val taskIterator = doer.enqueuedTasksIterator
+				while taskIterator.hasNext do {
+					builder.addOne(doer.tag, taskIterator.next)
+				}
+			}
+			(isCompleted, builder.result())
+		} else (true, Map.empty)
 	}
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {

@@ -140,7 +140,7 @@ object ConsensusParticipantSdm {
 	}
 
 	/** The participant is a follower. So, it suggests to redirect the participant it is following. */
-	class ASK_THE_LEADER(leaderId: AnyRef, override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
+	class ASK_THE_LEADER(val leaderId: AnyRef, override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[ASK_THE_LEADER](this)
 	}
 
@@ -302,14 +302,19 @@ object ConsensusParticipantSdm {
 		val newParticipants: Set[P]
 
 		def isActive(participantId: P): Boolean
+		def activeParticipants: Set[P]
 	}
 
 	private[consensus] final case class TransitionalConfigChange[P <: AnyRef](override val term: Term, override val requestId: ConfigChangeRequestId, override val oldParticipants: Set[P], override val newParticipants: Set[P]) extends ConfigChange[P] {
 		override def isActive(participantId: P): Boolean = newParticipants.contains(participantId) || oldParticipants.contains(participantId)
+
+		override def activeParticipants: Set[P] = newParticipants.union(oldParticipants)
 	}
 
 	private[consensus] final case class StableConfigChange[P <: AnyRef](override val term: Term, override val requestId: ConfigChangeRequestId, coupleTerm: Term, override val oldParticipants: Set[P], override val newParticipants: Set[P]) extends ConfigChange[P] {
 		override def isActive(participantId: P): Boolean = newParticipants.contains(participantId)
+
+		override def activeParticipants: Set[P] = newParticipants
 
 		/** @return true if the provided [[ConfigChange]] is the [[TransitionalConfigChange]] corresponding to this [[StableConfigChange]]. */
 		def isCoupleOf(cc: ConfigChange[P]): Boolean = {
@@ -3802,7 +3807,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 */
 		private final class StableConfig(override val backingConfigChange: StableConfigChange[ParticipantId], override val changeIndex: RecordIndex) extends Configuration {
 			override val term: Term = backingConfigChange.term
-			override val activeParticipants: Set[ParticipantId] = backingConfigChange.newParticipants
+			override val activeParticipants: Set[ParticipantId] = backingConfigChange.activeParticipants
 			override val electorate: IArray[ParticipantId] = IArray.unsafeFromArray(activeParticipants.toArray.sorted)
 			private val halfTheNumberOfParticipants = electorate.length / 2
 			override val peers: IArray[ParticipantId] = electorate.filter(_ != boundParticipantId)
@@ -3896,7 +3901,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			private val halfOfOldParticipants: Int = oldParticipants.size / 2
 			private val halfOfNewParticipants: Int = newParticipants.size / 2
 			override val term: Term = backingConfigChange.term
-			override val activeParticipants: Set[ParticipantId] = newParticipants.union(oldParticipants)
+			override val activeParticipants: Set[ParticipantId] = backingConfigChange.activeParticipants
 			override val electorate: IArray[ParticipantId] = IArray.unsafeFromArray(activeParticipants.toArray.sorted)
 			override val peers: IArray[ParticipantId] = electorate.filter(_ != boundParticipantId)
 			override val isBoundIncluded: Boolean = activeParticipants.contains(boundParticipantId)

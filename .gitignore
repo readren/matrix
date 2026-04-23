@@ -1,4 +1,4 @@
-target/
+**/target/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
@@ -60,11 +60,5 @@ metals.sbt
 
 ### This project ###
 /dump
-/logs
+**/logs
 
-# Ignore build.sbt of the sequencer project, which was embedded with git subtree, to maintain the original project structure in case it is separated back to a standalone project.
-sequencer/build.sbt
-sequencer/project/
-sequencer/target/
-
-/consensus/logs/app-2026-04-01.log

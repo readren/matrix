@@ -11,56 +11,26 @@ Treat the user as an adult with strong self-esteem. Be critical, honest, and dir
 
 ## Build, test, and development commands
 
-- **No Unsolicited Execution:** Do not run tests or modify code unless explicit instruction to do so. If I provide a task or output logs, rely entirely on static reasoning and analysis.
+## Hard Constraints
 
-### Environment
+These constraints are absolute. No amount of contextual reasoning justifies violating them.
 
+1. **Never edit code unless the user explicitly says to edit code.** Describing a problem, pasting logs, or asking for analysis is NOT permission to edit. The user must use words like "fix", "change", "implement", "edit", "refactor", or equivalent direct imperatives targeting code.
+2. **Never run tests or compile code unless the user explicitly says to do so.** Analyzing output or reasoning about behavior does NOT require execution. Default to static analysis.
+3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
+
+
+## Environment
 - Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).
 - Run all commands from the repository root.
 - Open and keep SBT in interactive mode to run SBT commands.
 
-### Core commands
-
-- Start SBT interactive mode:
-    - `sbt`
-- Exit SBT interactive mode:
-    - `exit`
-
-#### SBT interactive mode commands
-
-- Reload project:
-    - `reload`
-- Clean project:
-    - `clean`
-- List subprojects:
-    - `projects`
-- Compile all subprojects:
-    - `compile`
-- Run all tests:
-    - `test`
-- Compile a specific subproject:
-    - `{subproject name} / compile`
-- Test a specific subproject:
-    - `{subproject name} / test`
-- Run a single test suite:
-    - `{subproject name} / Test / testOnly {full name of concrete suite class}`
-- Run a single test case of a test suite:
-    - `{subproject name} / Test / testOnly {full name of concrete suite class} -- -z "*{test name or fragment of it}*"`
-### SBT direct mode commands
-- To run directly from the command line, wrap the sbt command in quotes, removing the inner quotes, and cropping the test name to a single word:
-    - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class}"`
-    - `sbt "{subproject name} / Test / testOnly {full name of concrete suite class} -- -z *{a single word of the test name}*"`
-
-### Lint/format
-- There is no dedicated lint/format task configured in this repo (no scalafmt/scalafix config found).
+### Lint
+- There is no dedicated lint task configured in this repo.
 - Use `compile` as the validation baseline.
-- Never wrap text. Let the container do that.
 
-### Packaging
-- Package jars:
-  - `sbt package`
-- Docker support exists via `sbt-docker` plugin and a root `dockerfile` definition in `build.sbt`.
-  - Use only when building a runnable module with a resolvable `mainClass`.
+### Format
+- Never wrap text. Let the container do that.
 
 ## High-level architecture
 
