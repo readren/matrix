@@ -94,6 +94,23 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	) { thisNet =>
 		val nodesIds: IndexedSeq[Id] = (0 until clusterSize).map(i => s"p-$i")
 
+		//// The following fields implement the communication between nodes of this net.
+		private type RequestId = (global: Int, channel: Int)
+		private val random = new Random(randomnessSeed)
+		val initialConfigMask: ConfigMask = {
+			val a = Array.fill(clusterSize)(random.nextBoolean())
+			if a.contains(true) then IArray.unsafeFromArray(a)
+			else IArray.fill(clusterSize)(true)
+		}
+		private val channelBySenderByReceiver: Array[Array[Channel]] = Array.fill(clusterSize, clusterSize)(Channel())
+		private var numberOfTravelingMessages: Int = 0
+		private var lastGlobalRequestId: Int = 0
+
+		/** Duration (expressed as the number of requests initiated by [[Node]]s) for which communication between two nodes remains in a failure state once it begins.
+		 * This value represents the square root of the intended failure duration, due to the underlying probability distribution: the actual duration is sampled as the square of a uniform random variable. */
+		private var failureMaxDurationSqrt: Int = initialConfigMask.count(identity)
+
+
 		/** Threshold for the number of traveling messages enqueued before one is delivered, even if the [[stimulusSettlingTime]] has not yet elapsed.
 		 * When this threshold is reached, a single message is selected pseudo-randomly and delivered, allowing the system to progress without waiting for full settling.
 		 * This accelerates test execution while reducing delivery reordering.
@@ -116,6 +133,36 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/** The [[Node]]s in this [[Net]], indexed by node index. */
 		private val nodeByIndex: Array[Node | Null] = new Array(clusterSize)
+
+
+		//// The following fields correspond to the mechanism that produces configuration changes. ////
+
+		type ConfigMask = IArray[Boolean]
+
+		private var isConfigNoiseEnabled: Boolean = true
+
+		private var configChangeRequestSequencer: Int = 0
+		/** Counts how many times the [[TestClientCommand]] was sent. */
+		private var commandsSentByClients_count = 0
+		/** Counts how many times the [[injectConfigurationNoise]] method was invoked in all nodes. The probability that a configuration change actually occurs in an invocation is very low. */
+		private var configNoiseInjection_count = 0
+		/** Counts how many times the [[injectConfigurationNoise]] method was invoked since the last [[TestClientCommand]] was sent. */
+		private var configNoiseInjectionsSinceLastClientCommand_count = 2 * clusterSize * clusterSize // Initialized with an estimation
+		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
+		private var lastProposedConfigMask: ConfigMask = initialConfigMask
+
+		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
+		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
+		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
+		private var activeConfigChangeAtLastSettle: ConfigChange[Id] = activeConfigChange
+
+		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
+		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
+		private var indexOfActiveConfigChange: RecordIndex = 0
+		private var indexOfActiveConfigChangeAtLastSettle: RecordIndex = indexOfActiveConfigChange
+
+
+		//// Node Management ////
 
 		def addNode(node: Node): Unit = synchronized {
 			assert(!indexById.contains(node.myId))
@@ -157,6 +204,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					for i <- 0 until clusterSize do {
 						for j <- 0 until clusterSize do channelBySenderByReceiver(i)(j).clear()
 					}
+					doerProvider.shutdown()
 				}
 				.triggerAndForget()
 		}
@@ -182,11 +230,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			override def suspend(lockObject: Object): Unit = {
-				// scribe.trace(s"Net: clock.suspend($lockObject)")
-				suspendCallSerial.incrementAndGet()
-				if numberOfTravelingMessages > 0 then netSequencer.run {
-					if numberOfTravelingMessages > 0 then chooseAChannel().dispatchNext()
-				}
+				suspend(lockObject, 0)
 			}
 
 			/** Called from [[CooperativeWorkersWithPollingSchedulerDp.lull]], within the [[Thread]] of the last worker (lockObject) that entered the sleep zone, when it sees all other workers are sleeping and there is a pending schedule. */
@@ -194,18 +238,19 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				// scribe.trace(s"Net: clock.suspend($lockObject, $duration)")
 				val callSerial = suspendCallSerial.incrementAndGet()
 				// Brief timed wait to ensure the call was not spurious due to race conditions between workers in the sleep zone. If a new call occurs soon, ignore the previous one.
-				lockObject.wait(1)
+				lockObject.wait(stimulusSettlingTime)
 				if suspendCallSerial.get == callSerial then {
-					print(":")
+					print(":") // This print is to see where the system setles an be able to compare with other executions.
 					// Arguably, this point is reached when the system is settled (all the other workers are already sleeping, and this one intention is to follow them).
+					// And arguably, the points where the system settles are deterministic with respect to the netSequencer at least. So, enqueueing a Runnable to the netSequencer here is deterministic.
 					// Instead of suspending the only non-sleeping worker's thread, exite the system with the following:
 					netSequencer.run {
 						// Update the values of deterministic variables that track nondeterministic ones.
 						onSystemSettled()
-						// If there is no message still traveling, advance the time up to the end of the suspension period.
-						if numberOfTravelingMessages == 0 then tickTime.addAndGet(duration * TICKS_PER_MILLI)
 						// If messages are still traveling, dispatch one of them.
-						else chooseAChannel().dispatchNext()
+						if numberOfTravelingMessages > 0 then chooseAChannel().dispatchNext()
+						// Else, if there is no message still traveling, advance the time up to the end of the suspension period.
+						else if duration > 0 then tickTime.addAndGet(duration * TICKS_PER_MILLI)
 					}
 				} else print(".")
 
@@ -219,25 +264,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChangeAtLastSettle.oldParticipants.size, activeConfigChangeAtLastSettle.newParticipants.size))
 		}
 
-		//// The following members implement the communication between nodes of this net.
-
-		private type RequestId = (global: Int, channel: Int)
-
-		private val random = new Random(randomnessSeed)
-
-		val initialConfigMask: ConfigMask = {
-			val a = Array.fill(clusterSize)(random.nextBoolean())
-			if a.contains(true) then IArray.unsafeFromArray(a)
-			else IArray.fill(clusterSize)(true)
-		}
-
-		private val channelBySenderByReceiver: Array[Array[Channel]] = Array.fill(clusterSize, clusterSize)(Channel())
-		@volatile private var numberOfTravelingMessages: Int = 0
-		private var lastGlobalRequestId: Int = 0
-
-		/** Duration (expressed as the number of requests initiated by [[Node]]s) for which communication between two nodes remains in a failure state once it begins.
-		 * This value represents the square root of the intended failure duration, due to the underlying probability distribution: the actual duration is sampled as the square of a uniform random variable. */
-		private var failureMaxDurationSqrt: Int = initialConfigMask.count(identity)
 
 		/** Represents a communication channel between two [[Node]]s, managing message queues and failure states.
 		 * Mimics a TCP channel by maintaining delivery order. */
@@ -409,31 +435,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			alternatives(random.between(0, alternatives.size))
 		}
 
-		//// The following members correspond to the mechanism that produces configuration changes. ////
-
-		type ConfigMask = IArray[Boolean]
-
-		private var isConfigNoiseEnabled: Boolean = true
-
-		private var configChangeRequestSequencer: Int = 0
-		/** Counts how many times the [[TestClientCommand]] was sent. */
-		private var commandsSentByClients_count = 0
-		/** Counts how many times the [[injectConfigurationNoise]] method was invoked in all nodes. The probability that a configuration change actually occurs in an invocation is very low. */
-		private var configNoiseInjection_count = 0
-		/** Counts how many times the [[injectConfigurationNoise]] method was invoked since the last [[TestClientCommand]] was sent. */
-		private var configNoiseInjectionsSinceLastClientCommand_count = 2 * clusterSize * clusterSize // Initialized with an estimation
-		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
-		private var lastProposedConfigMask: ConfigMask = initialConfigMask
-
-		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
-		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
-		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
-		private var activeConfigChangeAtLastSettle: ConfigChange[Id] = activeConfigChange
-
-		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
-		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
-		private var indexOfActiveConfigChange: RecordIndex = 0
-		private var indexOfActiveConfigChangeAtLastSettle: RecordIndex = indexOfActiveConfigChange
+		//// Configuration changes injection ////
 
 		/** Should be called when the client simulator sends a command to a consensus-participant, before it is received.
 		 * Needed to allow the [[Net]] to count the number of commands sent, which is required to adjust the configuration noise probability. */
@@ -1320,7 +1322,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (5, true, -1662716148745555172L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (7, false, 1266044004177674053L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, clusterSize * 10, clusterSize * 10, clusterSize * 10)
@@ -1328,14 +1330,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds.
 	test("All invariants must comply") {
-		Thread.sleep(10000)
+		Thread.sleep(20000)
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
-			Gen.choose(3, 7),
+			Gen.choose(1, 3), // 1, 2, 3; 2, 4, 6; 3, 6, 9; 4, 8, 12; 5, 10, 15
+			Gen.choose(1, 5),
 			Gen.oneOf(true, false),
 			Gen.long
-		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
-			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 1)
+		) { (clusterSize1, clusterSize2, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			val clusterSize = clusterSize1 * clusterSize2
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, stimulusSettlingTime = 2)
 			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, clusterSize * 10, clusterSize * 10, clusterSize * 10)
 		}

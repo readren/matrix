@@ -3328,7 +3328,7 @@ trait ConsensusParticipantSdm { thisModule =>
 												previousAttemptOutcomeIndex -= 1
 
 												if previousAttemptOutcomes(previousAttemptOutcomeIndex) == AO_IS_UNREACHABLE then {
-													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex)
+													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex) // TODO index out of bound here
 													val participantIndex = config1.participantIndexOf(participantId)
 													if participantIndex >= 0 then {
 														unreachableParticipantIds.addOne(participantId)
