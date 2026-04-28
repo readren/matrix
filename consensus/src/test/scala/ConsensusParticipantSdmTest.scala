@@ -7,8 +7,8 @@ import org.scalacheck.Gen
 import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
-import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
 import readren.sequencer.providers.CooperativeWorkersWithPollingSchedulerDp
+import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
 import scribe.modify.LogModifier
 import scribe.throwable.TraceLoggableMessage
 import scribe.{LogRecord, Priority}
@@ -39,11 +39,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override def priority: Priority = Priority.Normal
 
 		override def apply(record: LogRecord): Option[LogRecord] = {
-			val y = record.messages.filterNot {
+			val filteredMessages = record.messages.filterNot {
 				case TraceLoggableMessage(throwable) if throwable.getMessage != null && (throwable.getMessage.startsWith("Net: simulated failure") || throwable.getMessage.startsWith("Net: target node is down")) => true
 				case _ => false
 			}
-			Some(record.copy(messages = y))
+			if filteredMessages.size < record.messages.size then Some(record.copy(messages = filteredMessages)) else Some(record)
 		}
 
 
@@ -72,7 +72,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	/** Simulates the network environment in which the consensus participants operate.
 	 * @param clusterSize the total number of [[Node]] instances involved.
-	 * @param randomnessSeed the seed for the pseud-randomness of the messages fate.
+	 * @param randomnessSeed the seed for the pseudo-randomness of the messages fate.
 	 * @param requestFailurePercentage Probability (as a percentage) that a request message fails to reach its target [[Node]].
 	 * @param responseFailurePercentage Probability (as a percentage) that a response message—sent in reply to a successfully delivered request—fails to reach the originating [[Node]].
 	 * @param stimulusSettlingTime duration (in milliseconds) allotted for the system to settle after a stimulus (i.e., message delivery), before releasing the next traveling message.
@@ -151,12 +151,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
 		private var lastProposedConfigMask: ConfigMask = initialConfigMask
 
-		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
+		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
 		private var activeConfigChangeAtLastSettle: ConfigChange[Id] = activeConfigChange
 
-		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.notifyActiveConfigChanged]] of the leading node.
+		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var indexOfActiveConfigChange: RecordIndex = 0
 		private var indexOfActiveConfigChangeAtLastSettle: RecordIndex = indexOfActiveConfigChange
@@ -243,7 +243,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					print(":") // This print is to see where the system setles an be able to compare with other executions.
 					// Arguably, this point is reached when the system is settled (all the other workers are already sleeping, and this one intention is to follow them).
 					// And arguably, the points where the system settles are deterministic with respect to the netSequencer at least. So, enqueueing a Runnable to the netSequencer here is deterministic.
-					// Instead of suspending the only non-sleeping worker's thread, exite the system with the following:
+					// Instead of suspending the only non-sleeping worker's thread, excite the system with the following:
 					netSequencer.run {
 						// Update the values of deterministic variables that track nondeterministic ones.
 						onSystemSettled()
@@ -561,7 +561,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		//// Consensus services lifecycle management ////
 
 		/** Starts the participants in the Config-new-only set when the leading node active [[ConfigChange]] changes to a [[TransitionalConfigChange]].\
-		 * Called by the leading node when its [[Node.clusterParticipant.notifyActiveConfigChanged]] method is called.\ */
+		 * Called by the leading node when its [[Node.clusterParticipant.onActiveConfigChanged]] method is called.\ */
 		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onActiveConfigChanged($change, index=$changeIndex) was called") // when readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
@@ -582,7 +582,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Starts again a [[Node]] that was just [[QUIESCED]] due to a previous [[ConfigChange]], if the active [[ConfigChange]] includes it again.\
-		 * Called by the [[QUIESCED]] [[Node]] when its [[Node.clusterParticipant.notifyQuiesced]] method is called. */
+		 * Called by the [[QUIESCED]] [[Node]] when its [[Node.clusterParticipant.onQuiesced]] method is called. */
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
@@ -847,7 +847,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				this.delegate = null
 			}
 
-			override def notifyActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
+			override def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"cluster-$boundParticipantId: onConfigurationChanged($change, index=$changeIndex, ${RoleOrdinal_nameOf(roleOrdinal)}) called.")
 				if roleOrdinal == LEADER then net.onActiveConfigChanged(change, changeIndex)
@@ -899,7 +899,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def getOtherProbableParticipant: ListSet[ParticipantId] = ListSet.from(net.nodesIds) - myId
 
-			override def notifyQuiesced(motive: Try[String]): Unit = {
+			override def onQuiesced(motive: Try[String]): Unit = {
 				scribe.info(s"cluster-$myId: `notifyQuiesced` was called with motive=$motive")
 				net.onNodeQuiesced(thisNode)
 			}
@@ -1330,7 +1330,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds.
 	test("All invariants must comply") {
-		Thread.sleep(20000)
+		// Thread.sleep(20000)
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, 3), // 1, 2, 3; 2, 4, 6; 3, 6, 9; 4, 8, 12; 5, 10, 15

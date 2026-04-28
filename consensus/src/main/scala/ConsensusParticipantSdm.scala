@@ -6,7 +6,7 @@ import readren.sequencer.{CoalescedQuery, Doer, ResultIncrementalCoalescing}
 
 import java.util
 import java.util.Comparator
-import scala.annotation.{targetName, threadUnsafe}
+import scala.annotation.threadUnsafe
 import scala.collection.immutable.{ArraySeq, ListSet}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
@@ -149,17 +149,17 @@ object ConsensusParticipantSdm {
 		override def toString: String = deriveToString[CATCHING_UP](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was started. The process may complete or not depending on which participant is promoted. If completed, the [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] is called. If not, just silence. // TODO avoid the mentioned silence. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was started. The process may complete or not depending on which participant is promoted. If completed, the [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] is called. If not, just silence. // TODO avoid the mentioned silence. */
 	class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was committed (replicated to majority). The process will continue provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] calls to observe when the process completes. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was committed (replicated to majority). The process will continue provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] calls to observe when the process completes. */
 	class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the second phase was started. The process will continue anyway provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] calls to observe when the process completes. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the second phase was started. The process will continue anyway provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] calls to observe when the process completes. */
 	class REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED](this)
 	}
@@ -537,18 +537,18 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * This method is called when the [[ConsensusParticipant]] that is [[STARTING]] or [[QUIESCED]] has to respond [[Unable]] to a client. */
 		def getOtherProbableParticipant: ListSet[ParticipantId]
 
-		/** Called by the bound [[ConsensusParticipant]] to notify that its active [[ConsensusParticipant.Configuration]] has changed, and now it expects connectivity with a different set of participants.
+		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] to advise that its active [[ConsensusParticipant.Configuration]] has changed, and now it expects connectivity with the active participants of the provided [[ConfigChange]].\
 		 *
-		 * This method is invoked upon activation of a new [[ConsensusParticipant.Configuration]] to tell the cluster-layer which are the participants that the consensus-layer expects to be reachable.
-		 * Given configuration changes is a two-phase process, a call to [[Delegate.requestConfigChange]] causes two [[ConfigChange]] records to be appended and, therefore, two calls to this method per involved [[ConsensusParticipant]] service.
-		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the configuration has not changed.
+		 * This method is invoked upon activation of a new [[ConsensusParticipant.Configuration]] to tell the cluster-layer which are the participants that the consensus-layer expects to be reachable.\
+		 * Given configuration changes is a two-phase process, a call to [[Delegate.requestConfigChange]] causes two [[ConfigChange]] records to be appended and, therefore, two calls to this method per involved [[ConsensusParticipant]] service.\
+		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the configuration has not changed.\
 		 * @param change The [[ConfigChange]] that backs the activated [[ConsensusParticipant.Configuration]].
 		 * @param changeIndex the [[RecordIndex]] of the applied [[ConfigurationChange]]
 		 */
-		def notifyActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
+		def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
 
-		/** Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterParticipant]] service to release the resources dedicated to it. */
-		def notifyQuiesced(motive: Try[String]): Unit
+		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterParticipant]] service to release the resources dedicated to it. */
+		def onQuiesced(motive: Try[String]): Unit
 
 		/** Called by the bound [[ConsensusParticipant]] when it needs to be woken up after some host-determined delay.
 		 * The host should eventually invoke the provided `callback` within the [[sequencer]], after an appropriate delay.
@@ -573,7 +573,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 */
 		trait Delegate {
 
-			/** Handles a client-submitted command intended for the state machine.
+			/** **Inbound bridge**: Handles a client-submitted command intended for the state machine.
 			 *
 			 * This method is invoked by the bound [[ClusterParticipant]] when a client sends a command to this participant.
 			 * It must be called within the [[sequencer]].
@@ -588,8 +588,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[howAreYou]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[howAreYou]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[howAreYou]].
@@ -598,8 +597,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[StateInfo]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[chooseALeader]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[chooseALeader]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[chooseALeader]].
@@ -608,8 +606,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[Vote[ParticipantId]]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[appendRecords]].
@@ -622,8 +619,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[permitQuiescence]] on the [[ParticipantId]] of the owner of this [[Delegate]].
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[permitQuiescence]] on the [[ParticipantId]] of the owner of this [[Delegate]].
 			 * @param grantorId the identifier of the participant that granted permission to quiesce.
 			 * @param indexOfGrantedStableConfigChange The index of the [[StableConfigChange]] record for which the permission to quiesce was granted. Said record is the one that excludes the destination participant.
 			 */
@@ -635,9 +631,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *		1 call this method on every consensus-participant service to ensure the leader gets noticed, // TODO this is awkward. Make the configuration-change request be propagated to the leader when received by non-leaders.
 			 *		2 wait until either:
 			 *			- the returned [[sequencer.LatchingDuty]] yields either [[SUCCESSFULLY_CHANGED]] or [[ALREADY_CHANGED]] for any of the consensus-participants,
-			 *			- or the [[notifyActiveConfigChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
+			 *			- or the [[onActiveConfigChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
 			 *
-			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[notifyActiveConfigChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
+			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onActiveConfigChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
 			 * @param desiredParticipantsSet the identifiers of the participants that are going to seek consensus from now on.
 			 * @param priorAnswer should contain the response to the last request done by the inquirer to this or any other participant, if any. 
 			 * @return a [[sequencer.Duty]] that yields:
@@ -1017,7 +1013,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			initialListeners.foreach(notificationListeners.put(_, None))
 			cluster.setBound(currentRole)
 			Trace.init(() => s"$boundParticipantId: Ctor") {
-				currentRole.onEnter(currentRole)
+				currentRole.handleEnter(currentRole)
 			}
 		}
 
@@ -1046,13 +1042,13 @@ trait ConsensusParticipantSdm { thisModule =>
 		private def become(maybeNewRole: Maybe[Role])(using Trace.Context): Role = Trace.step("become") {
 			checkWithin()
 			maybeNewRole.foreach { newRole =>
-				currentRole.onLeave(newRole)
+				currentRole.handleExit(newRole)
 				val previousRole = currentRole
 				val committedTerm = currentRole.getCommittedPrimaryState.currentTerm
 				notifyListeners(_.onRoleLeft(previousRole.ordinal, committedTerm))
 				currentRole = newRole
 				cluster.setBound(newRole)
-				newRole.onEnter(previousRole)
+				newRole.handleEnter(previousRole)
 			}
 			currentRole
 		}
@@ -1104,15 +1100,15 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			final def yieldsBlankVote(term: Term, ballot: Ballot): sequencer.LatchingDuty[Vote[ParticipantId]] = sequencer.LatchingDuty_ready(blankVote(term, ballot))
 
-			/** Called by [[become]] after the previous [[Role]]'s [[Role.onLeave]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
+			/** Called by [[become]] after the previous [[Role]]'s [[Role.handleExit]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
 			 * This method is suitable to enqueue primary state updates that must happen before any updates enqueued after [[become]] returns. */
-			def onEnter(previous: Role)(using Trace.Context): Unit
+			def handleEnter(previous: Role)(using Trace.Context): Unit
 
 			/** Called by [[become]] before transitioning to another role. */
-			def onLeave(newRole: Role): Unit = ()
+			def handleExit(newRole: Role): Unit = ()
 
 			/** Updates the derived state that is stored in the [[Role]] instance and depends on the current [[Configuration]]. Only the [[Leader]] role has such state as this writing. */
-			def onActiveConfigChanged(currentPrimaryState: Accessible, currentConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = ()
+			def handleActiveConfigChange(currentPrimaryState: Accessible, currentConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = ()
 
 			def getCommittedPrimaryState: PrimaryState =
 				Inaccessible
@@ -1168,7 +1164,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * It is private and defined in the same class as the [[primaryStateFence]] to ensure that the contained [[Term]] variable reflects the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[sequencer.LatchingDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
 			protected final val defaultPreviousTermRef: TermRef = new TermRef(0)
 
-			override def onLeave(newRole: Role): Unit = {
+			override def handleExit(newRole: Role): Unit = {
 				if !newRole.isInstanceOf[StatefulRole] then {
 					workspaceReleasedCovenant = for {
 						_ <- workspaceReleasedCovenant
@@ -1787,10 +1783,10 @@ trait ConsensusParticipantSdm { thisModule =>
 							if desiredConfigChange != null && desiredConfigChange != oldConfig.backingConfigChange then {
 								val newConfig = Configuration_from(desiredConfigChange, indexOfTopConfigChange)
 								// Update the derived state stored in the `currentRole` instance. Only the Leader role has such state as of this writing.
-								currentRole.onActiveConfigChanged(accessible, oldConfig, newConfig, indexOfTopConfigChange)
+								currentRole.handleActiveConfigChange(accessible, oldConfig, newConfig, indexOfTopConfigChange)
 								currentConfig = newConfig
 								// Inform the cluster service and notify the listeners about the configuration change.
-								cluster.notifyActiveConfigChanged(desiredConfigChange, indexOfTopConfigChange, currentRole.ordinal)
+								cluster.onActiveConfigChanged(desiredConfigChange, indexOfTopConfigChange, currentRole.ordinal)
 								notifyListeners(_.onActiveConfigChanged(currentRole.ordinal, accessible.currentTerm, indexOfTopConfigChange, desiredConfigChange))
 							}
 						}
@@ -1835,11 +1831,11 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** A [[sequencer.LatchingDuty]] that is fulfilled when the all the allocated [[Workspace]]s are released. */
 			def completed: sequencer.LatchingDuty[Unit] = workspaceReleasedCovenant
 
-			override def onEnter(previousRole: Role)(using Context): Unit = {
+			override def handleEnter(previousRole: Role)(using Context): Unit = {
 				Trace.step("Quiesced.onEnter") {
 					notifyListeners(_.onBecameQuiesced(previousRole.ordinal, previousRole.getCommittedPrimaryState.currentTerm, motive))
 					retirementDriverByParticipantId.clear()
-					cluster.notifyQuiesced(motive)
+					cluster.onQuiesced(motive)
 				}
 			}
 
@@ -1909,7 +1905,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			if assertionsEnabled then assert(!excludingConfigElectorate.contains(boundParticipantId))
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onRetiring(previous.ordinal, finalTerm))
 				becomeQuiescedIfEligible(excludingConfigIndex)
 			}
@@ -2017,7 +2013,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Is fulfilled after initializing this [[ConsensusParticipant]] and becoming another [[Role]]: [[Joining]], [[Isolated]], or [[Quiesced]]. */
 			private val startingCompletedCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Starting.onEnter") {
 					notifyListeners(_.onStarting(previous.ordinal, indexOfTheIncludingConfigChange))
 
@@ -2133,7 +2129,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val ordinal: RoleOrdinal = JOINING
 			override val rank: ElectionRank = ElectionRank_from(JOINING)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onJoining(previous.ordinal, indexOfTheIncludingConfigChange))
 			}
 
@@ -2142,7 +2138,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[Vote[ParticipantId]] = {
-				Trace.init(() => s"$boundParticipantId: Joinin.onChooseALeader") {
+				Trace.init(() => s"$boundParticipantId: Joining.onChooseALeader") {
 					for {
 						primaryState <- primaryStateFence.causalAnchor()
 						response <- {
@@ -2190,7 +2186,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * If so, it becomes a follower or a candidate respectively.
 			 * If not, it stays in the isolated state and checks again after a while.
 			 */
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onBecameIsolated(previous.ordinal, psf.committedState.currentTerm))
 			}
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
@@ -2233,7 +2229,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *		- updates the [[Term]] to the provided one, and then transitions to [[Isolated]] or [[Retiring]].
 		 *
 		 * Note that this [[Role]] is not hosted when the [[Term]] is updated by the [[StatefulRole.onAppendRecords]] handler, which does the update itself.
-		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest [[Term]] seen if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
+		 * It behaves as [[Isolated]] except that, in the [[handleEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest [[Term]] seen if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
 		 *
 		 * @param endedTerm the [[Term]] that concluded, during which this participant acted as [[Leader]].
 		 * TODO Replace this class with a method that transitions to [[Isolated]] or [[Retiring]] in a synchronous manner, and then enqueues a term update. The problem with the current class approach is the incorrect isolated-like behavior during the transition to retiring.
@@ -2243,7 +2239,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override val rank: ElectionRank = ElectionRank_from(HANDING_OFF)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onHandingOff(endedTerm))
 
 				for {
@@ -2280,7 +2276,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val ordinal: RoleOrdinal = FOLLOWER
 			override val rank: ElectionRank = ElectionRank_from(FOLLOWER)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onBecameFollower(previous.ordinal, term, followeeId))
 			}
 
@@ -2330,7 +2326,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Is fulfilled after bumping the term and becoming [[Leader]] if success, or [[Quiesced]] if fails to persist the primary state. */
 			private val promotionCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit =
+			override def handleEnter(previous: Role)(using Trace.Context): Unit =
 				Trace.step("Promoting.onEnter") {
 					notifyListeners(_.onPromoting(previous.ordinal, getCommittedPrimaryState.currentTerm))
 
@@ -2421,8 +2417,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *
 		 * In this state, the participant coordinates consensus decisions.
 		 * @param leadedTerm the [[Term]] owned by this [[Leader]] instance.
-		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
-		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
+		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
+		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
 		 * @param wsf the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances.
 		 * TODO replace the `initialPrimaryState` parameter with what is obtained from it. Storing an instance of [[Accessible]] is error prone.
 		 */
@@ -2464,7 +2460,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			private var unreachableFollowersRetryWakeUp: Maybe[WakeUpToken] = Maybe.empty
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Leader.onEnter") {
 					notifyListeners(_.onBecameLeader(previous.ordinal, leadedTerm))
 
@@ -2494,8 +2490,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 
-			override def onLeave(newRole: Role): Unit = {
-				super.onLeave(newRole)
+			override def handleExit(newRole: Role): Unit = {
+				super.handleExit(newRole)
 				unreachableFollowersRetryWakeUp.foreach(_.cancel())
 				unreachableFollowersRetryWakeUp = Maybe.empty
 			}
@@ -2507,7 +2503,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *  1) Updates the [[RetiringParticipantsManager]] to include any new old-configuration-only retiring participant (those that are not part of the new [[Configuration]], but still need more appends until their [[commitIndex]] reaches the index of the [[StableConfigChange]] that excluded them).
 			 *  2) Recreates and initializes the [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] arrays keeping the elements corresponding to the participants that remain and moving them to the appropriate index.
 			 * @note This rearrangement wouldn't be necessary if maps instead of arrays were used. But considering these two collections are heavily used, efficiency was primed. */
-			override def onActiveConfigChanged(currentPrimaryState: Accessible, oldConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = Trace.step("onActiveConfigChanged") {
+			override def handleActiveConfigChange(currentPrimaryState: Accessible, oldConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = Trace.step("onActiveConfigChanged") {
 				// Step one. Must be before step two.
 				newConfig.backingConfigChange.match {
 					case scc: StableConfigChange[ParticipantId] =>
@@ -2846,7 +2842,7 @@ trait ConsensusParticipantSdm { thisModule =>
 									if assertionsEnabled then assert(currentTerm == leadedTerm)
 
 									// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-									// Note that for the result of `isGhostAndAllFollowersCommittedTheExcludingConfigChange` be fiable here, it is required that the [[deriveConfigurationFrom]] be called whenever a [[Record]] is appended to the local log. // TODO check the mentioned requirement is satisfied. Never delete this TODO. This is a candidate target for an AI based agentic source checker
+									// Note that for the result of `isGhostAndAllFollowersCommittedTheExcludingConfigChange` be reliable here, it is required that the [[deriveConfigurationFrom]] be called whenever a [[Record]] is appended to the local log. // TODO check the mentioned requirement is satisfied. Never delete this TODO. This is a candidate target for an AI based agentic source checker
 									if isGhostAndAllFollowersCommittedTheExcludingConfigChange then { // TODO using derived state here is risky and hard to maintain. Do this another way.
 										if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
 										primaryStateUpdaterResultCompanion = (0L, 0L, true)
@@ -3037,7 +3033,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														val appendOutcomes2b =
 															if config2b eq config2a then appendOutcomes2a
 															else {
-																config2a.peers.mapWithIndex { (participantId, participantIndex) =>
+																config2b.peers.mapWithIndex { (participantId, participantIndex) =>
 																	val indexFrom = config2a.participantIndexOf(participantId)
 																	if indexFrom < 0 then AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION // TODO analyse: Is it correct to include the participants that weren't in the active configuration in the previous attempt into the next attempt of this replication?
 																	else appendOutcomes2a(indexFrom)
@@ -3054,7 +3050,7 @@ trait ConsensusParticipantSdm { thisModule =>
 																val config3 = lastAppendAttemptInfo3.updatedConfig
 																Trace.trace(s"Final step: excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config3.peers.indices yield s"${config3.peers(i)}: outcome=${lastAppendAttemptInfo3.lastAttemptOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 																// If this leading participant is not included in the active configuration and all the followers in the new configuration have committed the StableConfigChange that excludes this participant, retire this participant.
-																// Note that these lines are skipped if another replication started (call to this method). Therefore, this check and the transition to retiring should be done before calling this method (attemptToUpdateOtherParticipantsLogs) in order to minimize the time a participant is leading while excluded.
+																// Note that these lines are skipped if another replication is started (call to this method). Therefore, this check and the transition to retiring should be done before calling this method (attemptToUpdateOtherParticipantsLogs) in order to minimize the time a participant is leading while excluded.
 																if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
 																	assert(config3.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
 																	authorizeQuiescenceIfVanished(config3.asInstanceOf[StableConfig])
@@ -3328,7 +3324,7 @@ trait ConsensusParticipantSdm { thisModule =>
 												previousAttemptOutcomeIndex -= 1
 
 												if previousAttemptOutcomes(previousAttemptOutcomeIndex) == AO_IS_UNREACHABLE then {
-													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex) // TODO index out of bound here
+													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex)
 													val participantIndex = config1.participantIndexOf(participantId)
 													if participantIndex >= 0 then {
 														unreachableParticipantIds.addOne(participantId)

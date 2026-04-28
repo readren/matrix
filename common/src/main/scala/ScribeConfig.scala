@@ -61,19 +61,21 @@ object ScribeConfig {
 			}
 		}
 
-		Logger.root
+		val logger = modifiers.foldLeft(Logger.root.clearHandlers().withMinimumLevel(Level.Trace)) { (l, m) =>
+			l.withModifier(m)
+		}
+
+		logger
 			.clearHandlers()
 			.withMinimumLevel(Level.Trace)
 			.withHandler(
 				minimumLevel = Some(Level.Trace),
 				formatter = formatter,
-				modifiers = modifiers
 			)
 			.withHandler(
 				minimumLevel = Some(Level.Trace),
 				writer = FileWriter("logs" / ("app-" % year % "-" % month % "-" % day % ".log")),
 				formatter = formatter,
-				modifiers = modifiers
 			).replace()
 
 		Thread.setDefaultUncaughtExceptionHandler((t: Thread, e: Throwable) => scribe.error(s"Uncaught exception in thread ${t.getName}:", e))

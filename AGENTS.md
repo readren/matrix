@@ -58,7 +58,6 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - Uses delegates (`ParticipantDelegate`, `CommunicableDelegate`, `IncommunicableDelegate`) and explicit protocol/serialization/channel layers.
 - `consensus`
   - Consensus logic with a large “service definition module” pattern (`ConsensusParticipantSdm`) that defines participant roles, persistence (`Workspace`), cluster bridge (`ClusterParticipant`), and client response contracts.
-  - Also contains a separate `raft` package (`Raft.scala`, `RaftClusterService.scala`) with a more direct Raft module/API.
 
 ## Dependency flow to keep in mind
 - Foundational flow: `common` → `sequencer/*` → `nexus/*` and `consensus`.
