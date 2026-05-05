@@ -147,7 +147,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return a [[Duty]] that yields [[Maybe.some]] containing the result of the up-chain [[Duty]] if it completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the timeout is reached.                
 		 */
 		inline def timeLimited(schedule: Schedule): Duty[Maybe[A]] = {
-			new TimeLimitedDuty[A](thisDuty.engageEta, 0, schedule)
+			new TimeLimitedDuty[A](thisDuty.engage, 0, schedule)
 		}
 
 		/**
@@ -160,7 +160,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return a [[Duty]] that yields [[Maybe.some]] containing the result of the up-chain [[Duty]] if it completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the timeout is reached.                
 		 */
 		inline def timeLimited(limit: MilliDuration): Duty[Maybe[A]] = {
-			new TimeLimitedDuty[A](thisDuty.engageEta, limit, null)
+			new TimeLimitedDuty[A](thisDuty.engage, limit, null)
 		}
 
 		/**
@@ -279,13 +279,13 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledDuty[A](duty: Duty[A], aSchedule: Schedule) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit =
-			schedule(aSchedule)(_ => duty.engagePortal(onComplete))
+			schedule(aSchedule)(_ => duty.engage(onComplete))
 	}
 
 	/** $notReusableDuty */
 	final class ScheduledMap[A, B](duty: Duty[A], aSchedule: Schedule, f: A => B) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
-			duty.engagePortal { a =>
+			duty.engage { a =>
 				schedule(aSchedule) { _ => onComplete(f(a)) }
 			}
 		}
@@ -294,28 +294,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledFlatMap[A, B](duty: Duty[A], aSchedule: Schedule, f: A => Duty[B]) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
-			duty.engagePortal { a =>
-				schedule(aSchedule) { _ => f(a).engagePortal(onComplete) }
+			duty.engage { a =>
+				schedule(aSchedule) { _ => f(a).engage(onComplete) }
 			}
 		}
 	}
 
 	final class DelayedDuty[A](duty: Duty[A], delay: MilliDuration) extends AbstractDuty[A] {
-		override protected def engage(onComplete: A => Unit): Unit =
-			schedule(newDelaySchedule(delay)) { _ => duty.engagePortal(onComplete) }
+		override def engage(onComplete: A => Unit): Unit =
+			schedule(newDelaySchedule(delay)) { _ => duty.engage(onComplete) }
 	}
 
 	final class DelayedMap[A, B](duty: Duty[A], delay: MilliDuration, f: A => B) extends AbstractDuty[B] {
-		override protected def engage(onComplete: B => Unit): Unit =
-			duty.engagePortal { a =>
+		override def engage(onComplete: B => Unit): Unit =
+			duty.engage { a =>
 				schedule(newDelaySchedule(delay)) { _ => onComplete(f(a)) }
 			}
 	}
 
 	final class DelayedFlatMap[A, B](duty: Duty[A], delay: MilliDuration, f: A => Duty[B]) extends AbstractDuty[B] {
-		override protected def engage(onComplete: B => Unit): Unit =
-			duty.engagePortal { a =>
-				schedule(newDelaySchedule(delay)) { _ => f(a).engagePortal(onComplete) }
+		override def engage(onComplete: B => Unit): Unit =
+			duty.engage { a =>
+				schedule(newDelaySchedule(delay)) { _ => f(a).engage(onComplete) }
 			}
 	}
 
@@ -361,7 +361,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class DelayedSupplierFlatDuty[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Duty[A]) extends AbstractDuty[A] {
 		override def engage(onComplete: A => Unit): Unit = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
+			schedule(timer)(_ => supplier(timer).engage(onComplete))
 		}
 	}
 
@@ -427,7 +427,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return a [[Duty]] that will complete with [[Maybe.some]] wrapping the result if it is available within the time limit, or with [[Maybe.empty]] otherwise.
 		 */
 		inline def timeBounded(schedule: Schedule): Task[Maybe[A]] =
-			new TimeLimitedTask[A](thisTask.engageEta, 0, schedule)
+			new TimeLimitedTask[A](thisTask.engage, 0, schedule)
 
 		/**
 		 * Returns a [[Task]] that waits for the up-chain [[Task]] to yield a result, but only for a limited time.
@@ -440,7 +440,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * @return a [[Duty]] that will complete with [[Maybe.some]] wrapping the result if it is available within the timeout, or with [[Maybe.empty]] if the timeout elapses first.
 		 */
 		inline def timeBounded(limit: MilliDuration): Task[Maybe[A]] =
-			new TimeLimitedTask[A](thisTask.engageEta, limit, null)
+			new TimeLimitedTask[A](thisTask.engage, limit, null)
 
 
 		/**
@@ -559,14 +559,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledTask[A](task: Task[A], aSchedule: Schedule) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(aSchedule)(_ => task.engagePortal(onComplete))
+			schedule(aSchedule)(_ => task.engage(onComplete))
 		}
 	}
 
 	/** $notReusableDuty */
 	final class ScheduledTransform[A, B](task: Task[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			task.engagePortal { tryA =>
+			task.engage { tryA =>
 				schedule(aSchedule) { _ =>
 					val tryB =
 						try f(tryA)
@@ -582,14 +582,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $notReusableDuty */
 	final class ScheduledTransformWith[A, B](taskA: Task[A], aSchedule: Schedule, f: Try[A] => Task[B]) extends AbstractTask[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			taskA.engagePortal { tryA =>
+			taskA.engage { tryA =>
 				schedule(aSchedule) { _ =>
 					val taskB =
 						try f(tryA)
 						catch {
 							case NonFatal(e) => Task_failed(e)
 						}
-					taskB.engagePortal(onComplete)
+					taskB.engage(onComplete)
 				}
 			}
 		}
@@ -597,13 +597,13 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	final class DelayedTask[A](task: Task[A], delay: MilliDuration) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(newDelaySchedule(delay)) { _ => task.engagePortal(onComplete) }
+			schedule(newDelaySchedule(delay)) { _ => task.engage(onComplete) }
 		}
 	}
 
 	final class DelayedTransform[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractTask[B] {
-		override protected def engage(onComplete: Try[B] => Unit): Unit =
-			task.engagePortal { tryA =>
+		override def engage(onComplete: Try[B] => Unit): Unit =
+			task.engage { tryA =>
 				schedule(newDelaySchedule(delay)) { _ =>
 					val tryB =
 						try f(tryA)
@@ -616,15 +616,15 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedTransformWith[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Task[B]) extends AbstractTask[B] {
-		override protected def engage(onComplete: Try[B] => Unit): Unit =
-			task.engagePortal { tryA =>
+		override def engage(onComplete: Try[B] => Unit): Unit =
+			task.engage { tryA =>
 				schedule(newDelaySchedule(delay)) { _ =>
 					val taskB =
 						try f(tryA)
 						catch {
 							case NonFatal(e) => Task_failed(e)
 						}
-					taskB.engagePortal(onComplete)
+					taskB.engage(onComplete)
 				}
 			}
 	}
@@ -673,7 +673,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			schedule(timer)(_ => supplier(timer).engagePortal(onComplete))
+			schedule(timer)(_ => supplier(timer).engage(onComplete))
 		}
 	}
 }

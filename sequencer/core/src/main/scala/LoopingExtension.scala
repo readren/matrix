@@ -191,7 +191,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	final class Duty_RepeatUntilSome[+A, +B](dutyA: Duty[A], condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[B] {
 		override def engage(onComplete: B => Unit): Unit = {
 			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
-				dutyA.engagePortal { a =>
+				dutyA.engage { a =>
 					condition(completedCycles, a).fold {
 						if recursionDepth < maxRecursionDepthPerExecutor then {
 							loop(completedCycles + 1, recursionDepth + 1)
@@ -226,7 +226,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		override def engage(onComplete: B => Unit): Unit = {
 			def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
 				condition(completedCycles, lastDutyResult).fold {
-					dutyA.engagePortal { newA =>
+					dutyA.engage { newA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
 						else run(loop(completedCycles + 1, newA, 0))
 					}
@@ -257,7 +257,7 @@ trait LoopingExtension { thisDoer: Doer =>
 				checkAndBuild(completedCycles, lastDutyResult) match {
 					case Left(b) => onComplete(b)
 					case Right(dutyA) =>
-						dutyA.engagePortal { newA =>
+						dutyA.engage { newA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
 							else run(loop(completedCycles + 1, newA, 0))
 						}
@@ -286,7 +286,7 @@ trait LoopingExtension { thisDoer: Doer =>
 		override def engage(onComplete: B => Unit): Unit = {
 			def loop(executionsCounter: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
 				val duty = buildAndCheck(executionsCounter, lastDutyResult)
-				duty.engagePortal {
+				duty.engage {
 					case Left(b) => onComplete(b)
 					case Right(a) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
@@ -320,7 +320,7 @@ trait LoopingExtension { thisDoer: Doer =>
 			def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
 				val task: Duty[Either[A, B]] = taskBuilder(attemptsAlreadyMade)
 
-				task.engagePortal {
+				task.engage {
 					case rb@(_: Right[A, B]) =>
 						onComplete(rb)
 					case la@Left(a) =>
@@ -633,7 +633,7 @@ trait LoopingExtension { thisDoer: Doer =>
 			 * @param completedCycles number of already completed cycles.
 			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
 			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
-				taskA.engagePortal { tryA =>
+				taskA.engage { tryA =>
 					val conditionResult: Maybe[Try[B]] =
 						try condition(completedCycles, tryA)
 						catch {
@@ -691,7 +691,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 
 				conditionResult.fold {
-					taskA.engagePortal { newTryA =>
+					taskA.engage { newTryA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
 						else run(loop(completedCycles + 1, newTryA, 0))
 					}
@@ -733,7 +733,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					case Left(tryB) =>
 						onComplete(tryB);
 					case Right(taskA) =>
-						taskA.engagePortal { newTryA =>
+						taskA.engage { newTryA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
 							else run(loop(completedCycles + 1, newTryA, 0));
 						}
@@ -774,7 +774,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					catch {
 						case NonFatal(e) => Task_successful(Left(Failure(e)))
 					}
-				task.engagePortal {
+				task.engage {
 					case Success(Right(a)) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
 						else run(loop(executionsCounter + 1, a, 0));
@@ -814,7 +814,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					catch {
 						case NonFatal(cause) => Task_failed(cause)
 					}
-				task.engagePortal {
+				task.engage {
 					case success@Success(aOrB) =>
 						aOrB match {
 							case _: Right[A, B] =>
