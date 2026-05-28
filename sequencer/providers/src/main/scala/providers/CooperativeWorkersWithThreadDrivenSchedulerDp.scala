@@ -41,7 +41,7 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	private class ScheduleImpl(owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](owner), ScheduleFacade {

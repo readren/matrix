@@ -15,3 +15,44 @@ DONE: ya no hay ejecutor separado para los handlers y además se agregó impleme
 MALA IDEA: No conviene porque requiere que HandleResult deje de ser contravariante y, por ende, también Behavior.
 
 8) Sequencer: Investigar si se puede hacer una especie de compilador de Duty y Task que las convierta en una función que hace lo mismo pero sin crear las instancias de Duty y Task en cada ejecución.
+
+
+9) ConsensusParticipant: Achieve non-blocking local append without throwing away the CausalFence. The next is a solution proposed by gemini flash:
+I've been analyzing the `CausalFence` implementation in `Doer.scala`, and I see exactly why you're concerned. The "sequential updater" invariant (line 1100) and the way `step` (line 1256) is implemented create a strict bottleneck:
+
+1.  Each `advance` or `advanceIf` enqueues a new `Covenant` that is the **tail** of the causal chain.
+2.  The next transition (or even a `causalAnchor` for network replication) cannot see the updated state until the `newStateProviderDuty` from the previous `advance` is fulfilled.
+3.  If that `Duty` includes a local disk write, the entire causal chain is stalled until the disk acknowledges. This prevents the network replication from even "starting" for that record until it's already durable locally.
+
+### How to achieve parallel appending without losing the `CausalFence`
+
+To keep the `CausalFence` and its "game-changing invariant" (which ensures all derived states see a consistent sequence), you need to separate **In-Memory Visibility** from **Durable Commitment**.
+
+Here is an architectural pattern that could work:
+
+**1. The "In-Memory" Primary State**
+Redefine your `PrimaryState` to represent the **In-Memory Log**.
+- The `advanceIf` for a new command should perform the in-memory append **instantly**.
+- It should return a `ReadyDuty(newState)`.
+- This fulfills the `CausalFence` link immediately.
+
+**2. The "Durable" and "Replicated" Derived States**
+Now, the network replication AND the local disk write become **derived processes** that anchor to the fence:
+- **Network:** Anchors to the latest record and starts sending.
+- **Disk:** Also anchors to the latest record and starts the asynchronous write.
+- **Consensus Logic:** Only moves the `commitIndex` forward (another `advanceIf`) when it receives a majority of acknowledgments, where the "Local Disk Ack" is treated just like a "Follower Ack."
+
+**Why this preserves the CausalFence:**
+- The **deterministic lineage** of the log is still perfectly preserved.
+- Any derived state (like the `Leader` logic) still sees the records in the exact order they were appended.
+- The `CausalFence` continues to provide the "Single-threaded execution" guarantee for your core logic.
+
+**The "Risk":**
+If the leader crashes before the disk write finishes, the "In-Memory" state is lost. But this is standard Raft! If the record wasn't committed (because it wasn't durable on a majority), it's okay if it disappears. If it WAS durable on a majority of followers but not the leader, a new leader will eventually overwrite it or the old leader will catch up.
+
+### Is `Workspace.appendRecord` blocking you?
+I noticed that `withSingleRecordAppended` (line 3157) currently calls `workspace.appendRecord`, which returns `Unit`. If this implementation is performing a synchronous disk write, that's where your bottleneck is.
+
+If you change your `Workspace` to return a `Duty[Unit]` (or better yet, separate `appendInMemory` from `flushToDisk`), you could move the `flushToDisk` out of the `advanceIf` loop entirely.
+
+Does this "In-Memory Primary" approach seem like it would satisfy your need for speed without compromising the safety of the `CausalFence`?

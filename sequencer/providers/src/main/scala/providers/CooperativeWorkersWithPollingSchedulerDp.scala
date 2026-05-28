@@ -45,7 +45,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
-) extends CooperativeWorkersDp, DoerProvider[SchedulingDoerFacade] { thisProvider =>
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	/**
 	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed.

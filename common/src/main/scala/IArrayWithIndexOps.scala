@@ -77,4 +77,13 @@ extension [A](array: IArray[A]) {
 		IArray.unsafeFromArray(Array.copyOf(intermediateArray, resultSize))
 	}
 
+	inline def ++(other: IArray[A])(using ClassTag[A]): IArray[A] = {
+		val thisLength = array.length
+		if thisLength == 0 then other
+		else if other.length == 0 then array
+		else IArray.tabulate(thisLength + other.length) { i =>
+			if i < thisLength then array(i) else other(i - thisLength)
+		}
+	}
+
 }

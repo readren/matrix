@@ -222,6 +222,18 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		providedDoers.clear()
 	}
 
+	def shutdownNow(timeout: Long, unit: TimeUnit): (Boolean, Map[Tag, java.util.Iterator[Runnable]]) = {
+		val builder = Map.newBuilder[Tag, java.util.Iterator[Runnable]]
+		val iterator = providedDoers.iterator()
+		while iterator.hasNext do {
+			val doer = iterator.next()
+			builder.addOne(doer.tag, doer.doSerEx.shutdownNow().iterator())
+		}
+		providedDoers.clear()
+		val isCompleted = awaitTermination(timeout, unit)
+		(isCompleted, builder.result())
+	}
+
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		val timeoutMillis: MilliDuration = unit.toMillis(timeout)
 		val startingTime = System.currentTimeMillis()

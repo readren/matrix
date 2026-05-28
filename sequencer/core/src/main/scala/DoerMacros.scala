@@ -14,7 +14,7 @@ object DoerMacros {
 
 			'{
 				new Runnable {
-					override def run(): Unit = $dutyExpr.engagePortal($onCompleteExpr)
+					override def run(): Unit = $dutyExpr.engage($onCompleteExpr)
 
 					override def toString: String = s"${$dutyExpr.toString}${$sourceInfo}"
 				}
@@ -25,7 +25,7 @@ object DoerMacros {
 			case Some(isWithinDoSerEx) =>
 				if isWithinDoSerEx then '{
 					$doerExpr.checkWithin()
-					$dutyExpr.engagePortal($onCompleteExpr)
+					$dutyExpr.engage($onCompleteExpr)
 				}
 				else '{ $doerExpr.executeSequentially($runnable) }
 
@@ -33,7 +33,7 @@ object DoerMacros {
 				'{
 					if $isWithinDoSerExExpr then {
 						$doerExpr.checkWithin()
-						$dutyExpr.engagePortal($onCompleteExpr)
+						$dutyExpr.engage($onCompleteExpr)
 					}
 					else $doerExpr.executeSequentially($runnable)
 				}
@@ -48,29 +48,29 @@ object DoerMacros {
 	def triggerImpl_hacked[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], dutyExpr: Expr[Any], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
-		/** Builds a `Term` corresponding to `dutyExpr.engagePortal(onCompleteExpr)`. */
-		def engagePortalCall: Term = {
+		/** Builds a `Term` corresponding to `dutyExpr.engage(onCompleteExpr)`. */
+		def engageCall: Term = {
 			val dutyTerm = dutyExpr.asTerm
-			val engagePortalSymbol = dutyTerm.tpe.typeSymbol.memberMethod("engagePortal").head
-			Apply(Select(dutyTerm, engagePortalSymbol), List(onCompleteExpr.asTerm))
+			val engageSymbol = dutyTerm.tpe.typeSymbol.methodMember("engage").head
+			Apply(Select(dutyTerm, engageSymbol), List(onCompleteExpr.asTerm))
 		}
 
 		/** Builds an `Expr[String]` corresponding to `dutyExpr.toString`. */
 		def dutyToStringExpr: Expr[String] = {
 			val dutyTerm = dutyExpr.asTerm
-			val toStringSymbol = dutyTerm.tpe.typeSymbol.memberMethod("toString").head
+			val toStringSymbol = dutyTerm.tpe.typeSymbol.methodMember("toString").head
 			Apply(Select(dutyTerm, toStringSymbol), Nil).asExprOf[String]
 		}
 
 		def runnable: Expr[Runnable] = {
 			val pos: Position = onCompleteExpr.asTerm.pos
 			val sourceInfo: Expr[String] = Expr(s".engage(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
-			val engageCall = engagePortalCall.asExprOf[Unit]
+			val engage = engageCall.asExprOf[Unit]
 			val dts = dutyToStringExpr
 
 			'{
 				new Runnable {
-					override def run(): Unit = $engageCall
+					override def run(): Unit = $engage
 
 					override def toString: String = s"${$dts}${$sourceInfo}"
 				}
@@ -80,20 +80,20 @@ object DoerMacros {
 		isWithinDoSerExExpr.value match {
 			case Some(isWithinDoSerEx) =>
 				if isWithinDoSerEx then {
-					val engageCall = engagePortalCall.asExprOf[Unit]
+					val engage = engageCall.asExprOf[Unit]
 					'{
 						$doerExpr.checkWithin()
-						$engageCall
+						$engage
 					}
 				}
 				else '{ $doerExpr.executeSequentially($runnable) }
 
 			case None =>
-				val engageCall = engagePortalCall.asExprOf[Unit]
+				val engage = engageCall.asExprOf[Unit]
 				'{
 					if $isWithinDoSerExExpr then {
 						$doerExpr.checkWithin()
-						$engageCall
+						$engage
 					}
 					else $doerExpr.executeSequentially($runnable)
 				}

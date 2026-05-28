@@ -382,6 +382,9 @@ abstract class CooperativeWorkersDp(
 		}
 	}
 
+	/** Supplies a brand new [[DoerFacade]] instance.\
+	 * The [[DoerFacade]] instance returned is not referenced by this [[CooperativeWorkersDp]] instance unless a task associated with it is currently executing or queued for execution. Therefore, no action is required for it to be garbage-collected.
+	 * @param tag A tag attached to the returned [[DoerFacade]], for purposes such as debugging or tracking. */
 	override def provide(tag: Tag): DoerFacade = {
 		startAllWorkersIfNotAlready()
 		new DoerImpl(tag)
@@ -399,21 +402,19 @@ abstract class CooperativeWorkersDp(
 		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers(0)
 	}
 
-	def shutdownNow(timeout: Long, unit: TimeUnit): (Boolean,Map[Tag, Runnable]) = {
-		if state.getAndSet(State.terminated.ordinal) != State.terminated.ordinal then {
+	def shutdownNow(timeout: Long, unit: TimeUnit): (Boolean, Map[Tag, java.util.Iterator[Runnable]]) = {
+		if state.getAndSet(State.terminated.ordinal) == State.terminated.ordinal then (true, Map.empty)
+		else {
 			stopAllWorkers(0)
 			val isCompleted = awaitTermination(timeout: Long, unit: TimeUnit)
-			val builder = Map.newBuilder[Tag, Runnable]
+			val builder = Map.newBuilder[Tag, java.util.Iterator[Runnable]]
 			val doerIterator = queuedDoers.iterator()
 			while doerIterator.hasNext do {
 				val doer = doerIterator.next()
-				val taskIterator = doer.enqueuedTasksIterator
-				while taskIterator.hasNext do {
-					builder.addOne(doer.tag, taskIterator.next)
-				}
+				builder.addOne(doer.tag, doer.enqueuedTasksIterator)
 			}
 			(isCompleted, builder.result())
-		} else (true, Map.empty)
+		}
 	}
 
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {

@@ -6,8 +6,8 @@ import readren.sequencer.{CoalescedQuery, Doer, ResultIncrementalCoalescing}
 
 import java.util
 import java.util.Comparator
-import scala.annotation.{targetName, threadUnsafe}
-import scala.collection.immutable.{ArraySeq, ListSet}
+import scala.annotation.{threadUnsafe, publicInBinary}
+import scala.collection.immutable.{ArraySeq, ListSet, StringOps}
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.{mutable, IndexedSeq as GenIndexedSeq}
 import scala.compiletime.asMatchable
@@ -91,12 +91,7 @@ object ConsensusParticipantSdm {
 
 	opaque final type ElectionRanksSet = Int
 
-	final val ERS_COUNT_IN_OLD: ElectionRanksSet = ER_RETIREE | ER_CANDIDATE | ER_LEADING
-	final val ERS_COUNT_IN_NEW: ElectionRanksSet = ER_JOINER | ER_CANDIDATE | ER_LEADING
-
 	inline def ElectionRank_from(ordinal: RoleOrdinal): ElectionRank = (ordinal & 0xFC).toByte
-
-	extension (rank: ElectionRank) inline def in(mask: ElectionRanksSet): Boolean = (rank & mask) != 0
 
 	def ElectionRank_nameOf(rank: ElectionRank): String = {
 		rank match {
@@ -149,17 +144,17 @@ object ConsensusParticipantSdm {
 		override def toString: String = deriveToString[CATCHING_UP](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was started. The process may complete or not depending on which participant is promoted. If completed, the [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] is called. If not, just silence. // TODO avoid the mentioned silence. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was started. The process may complete or not depending on which participant is promoted. If completed, the [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] is called. If not, just silence. // TODO avoid the mentioned silence. */
 	class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was committed (replicated to majority). The process will continue provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] calls to observe when the process completes. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the first phase was committed (replicated to majority). The process will continue provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] calls to observe when the process completes. */
 	class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED](this)
 	}
 
-	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the second phase was started. The process will continue anyway provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.notifyActiveConfigChanged]] calls to observe when the process completes. */
+	/** The tracking of the [[Configuration]] change request was lost due to a leader change after the second phase was started. The process will continue anyway provided the system is sufficiently incited by client commands or further configuration change requests. Listen to [[ConsensusParticipantSdm.ClusterParticipant.onActiveConfigChanged]] calls to observe when the process completes. */
 	class REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(override val latestBallotSeen: Ballot) extends ConfigChangeResponse {
 		override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED](this)
 	}
@@ -181,7 +176,7 @@ object ConsensusParticipantSdm {
 
 	/** Informs a participant receiving a command about the outcome of the client's previous attempt to send that command to the consensus group.
 	 * This flag typically refers to an attempt made toward a different [[ConsensusParticipantSdm.ConsensusParticipant]] and informs something about the resulting [[ConsensusParticipantSdm.ResponseToClient]].
-	 * The client is responsible of setting the appropriate value of this flag. See the values documentation, below. */
+	 * The client is responsible for setting the appropriate value of this flag. See the values documentation, below. */
 	opaque final type CommandAttemptFlag = Byte
 
 	/** The client has not previously attempted to send the command to any participant. */
@@ -196,7 +191,7 @@ object ConsensusParticipantSdm {
 	/** Indicates the client previously sent the command to a participant that was leading at the time, but that participant relinquished leadership and responded with [[ConsensusParticipantSdm.Unable]].
 	 * A curious client may notice about the deposition comparing the [[ConsensusParticipantSdm.Unable.nextAttemptFlag]] field with this value.
 	 * The client does not set this value manually; it is retrieved from the [[ConsensusParticipantSdm.Unable.nextAttemptFlag]] field of the response from the deposed participant.
-	 * @note This flag must be propagated through the client and participants until a new leader is established. Note that bitwise or-ing the this value with [[FALLBACK]] returns this value. */
+	 * @note This flag must be propagated through the client and participants until a new leader is established. Note that bitwise or-ing this value with [[FALLBACK]] returns this value. */
 	inline def LEADERSHIP_VACATED: CommandAttemptFlag = 0x06
 
 	/** Internal flag passed between roles within the same participant when a leader delegates command-handling during leadership vacating.
@@ -221,7 +216,7 @@ object ConsensusParticipantSdm {
 
 	final val assertionsEnabled: Boolean = classOf[ConsensusParticipantSdm].desiredAssertionStatus()
 
-	//// STANDALONE DATA TYPES
+	//// STANDALONE DATA TYPES ////
 
 	/**
 	 * A vote for a leader.
@@ -232,16 +227,16 @@ object ConsensusParticipantSdm {
 	 *            Although [[Vote]] is designed to travel between participants, it remains path-dependent and must be instantiated within a module that resolves [[ParticipantId]] to a concrete type.
 	 * @param term The term for which the vote is cast.
 	 * @param votedId The id of the voted candidate.
-	 * @param reachableCandidatesOfOldConf The number of candidates of the current or old set of participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was quiesced.
-	 * @param reachableCandidatesOfNewConf The number of candidates new the new set or participants that were reachable by the voter (including the voter itself) when the vote was cast. Zero means the voter is still initializing or was quiesced.
-	 * @param rank The [[ElectionRank]] of the [[Role]] of the voted candidate.
-	 * @param ballot the election round to which this [[Vote]] belongs to, or zero to indicate this [[Vote]] is blank.
-	 */
-	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCandidatesOfOldConf: Int, reachableCandidatesOfNewConf: Int, rank: ElectionRank, ballot: Ballot) {
-		inline def isBlank: Boolean = reachableCandidatesOfOldConf == 0 && reachableCandidatesOfNewConf == 0
+	 * @param reachableCommonCount The number of reachable and viable participatns (including the voter itself) in the common set. The common set is [[ConfigChange.newParticipants]] if the voter active configuration is stable, and [[ConfigChange.oldParticipants]] if the voter active configuration is transitional.
+	 * @param reachableTargetCount The number of reachable and viable participatns (including the voter itself) in the target set. The target set is the empty set if the voter active configuration is stable, and [[ConfigChange.newParticipants]] if the voter active configuration is transitional.
+	 * @param votedRank The [[ElectionRank]] of the [[Role]] of the voted candidate.
+	 * @param ballot the election round to which this [[Vote]] belongs to. */
+	final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCommonCount: Int, reachableTargetCount: Int, votedRank: ElectionRank, ballot: Ballot) {
+		inline def isBlank: Boolean = reachableCommonCount == 0 && reachableTargetCount == 0
 
 		inline def isNonBlank: Boolean = !isBlank
-		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachOld=$reachableCandidatesOfOldConf, reachNew=$reachableCandidatesOfNewConf, rank=${ElectionRank_nameOf(rank)}, ballot=$ballot)"
+
+		override def toString: String = s"Vote(term=$term, votedId=$votedId, reachableCommon=$reachableCommonCount, reachableTarget=$reachableTargetCount, rank=${ElectionRank_nameOf(votedRank)}, ballot=$ballot)"
 	}
 
 	/** The result of an append operation.
@@ -264,27 +259,51 @@ object ConsensusParticipantSdm {
 	 * @param rank The [[ElectionRank]] of the [[ConsensusParticipantSdm.ConsensusParticipant.Role]] of the participant.
 	 * @param termAtCommitIndex The term of the last committed record in the log of the participant that is answering.
 	 * @param commitIndex The index of the last committed record in the log of the participant that is answering.
+	 * @param lastRecordTerm The [[Term]] of the last [[Record]] in the log.
+	 * @param lastRecordIndex The [[RecordIndex]] of the latt [[Record]] in the log.
 	 * @param configIndex The index of the active [[ConfigChange]].
 	 * @param ballot the election round to which this [[StateInfo]] belongs to.
 	 * TODO add something that changes when the active configuration changes, like its index.
 	 */
-	final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, configIndex: RecordIndex, ballot: Ballot) {
+	final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex, configIndex: RecordIndex, ballot: Ballot) {
 		if assertionsEnabled then assert(currentTerm >= termAtCommitIndex)
 
 		/** @return true if this and the other istance are equal ignoring the [[ballot]]. */
 		inline def isTyingWith(other: StateInfo): Boolean = {
-			tiesWith(other.currentTerm, other.rank, other.termAtCommitIndex, other.commitIndex, other.configIndex)
+			tiesWith(other.currentTerm, other.rank, other.termAtCommitIndex, other.commitIndex, other.lastRecordTerm, other.lastRecordIndex, other.configIndex)
 		}
 
 		/** @return true if this instance fields match the provided values. Note that the [[ballot]] is not considered. */
-		inline def tiesWith(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, configIndex: RecordIndex): Boolean = {
-			this.commitIndex == commitIndex && this.rank == rank && this.configIndex == configIndex && this.currentTerm == currentTerm && this.termAtCommitIndex == termAtCommitIndex
+		inline def tiesWith(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex, configIndex: RecordIndex): Boolean = {
+			this.lastRecordTerm == lastRecordTerm && this.lastRecordIndex == lastRecordIndex && this.commitIndex == commitIndex && this.rank == rank && this.configIndex == configIndex && this.currentTerm == currentTerm && this.termAtCommitIndex == termAtCommitIndex
+		}
+
+		def compareCompleteness(other: StateInfo): Int = {
+			if this.lastRecordTerm > other.lastRecordTerm then 1
+			else if this.lastRecordTerm < other.lastRecordTerm then -1
+			else if this.lastRecordIndex > other.lastRecordIndex then 1
+			else if this.lastRecordIndex < other.lastRecordIndex then -1
+			else 0
 		}
 
 		override def toString: String = s"StateInfo(@$currentTerm, ${ElectionRank_nameOf(rank)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex, configIndex=$configIndex, ballot=$ballot)"
 	}
 
-	//// LOG RECORD
+	/** A [[ConsensusParticipantSdm.StateMachine]] state's snapshot and related log metadata.
+	 * @param lastIncludedRecordIndex the index of the last log entry included in the snapshot.
+	 * @param lastIncludedRecordTerm the term of the last log entry included in the snapshot.
+	 * @param latestConfigChange the most recent configuration change as of the snapshot.
+	 * @param latestConfigChangeIndex the log index of `latestConfigChange`.
+	 * @param stateMachineSnapshot opaque serialized state of the state machine. */
+	final case class SnapshotData[P <: AnyRef](
+		lastIncludedRecordIndex: RecordIndex,
+		lastIncludedRecordTerm: Term,
+		latestConfigChange: ConfigChange[P],
+		latestConfigChangeIndex: RecordIndex,
+		stateMachineSnapshot: IArray[Byte]
+	)
+
+	//// LOG RECORD ////
 
 	sealed trait Record {
 		def term: Term
@@ -293,8 +312,6 @@ object ConsensusParticipantSdm {
 	private[consensus] final case class CommandRecord[+C <: AnyRef](override val term: Term, command: C) extends Record
 
 	private[consensus] final case class LeaderTransition(override val term: Term) extends Record
-
-	private[consensus] final case class SnapshotPoint(override val term: Term) extends Record
 
 	sealed trait ConfigChange[P <: AnyRef] extends Record {
 		val requestId: ConfigChangeRequestId
@@ -327,6 +344,8 @@ object ConsensusParticipantSdm {
 		def recreateCouple: TransitionalConfigChange[P] = TransitionalConfigChange(coupleTerm, requestId, oldParticipants, newParticipants)
 	}
 
+	//// WAKE UP ////
+
 	/** Describes what the consensus algorithm needs retried when it requests a deferred wake-up via [[ClusterParticipant.requestWakeUp]].
 	 * The host uses this to choose an appropriate delay before invoking the callback. */
 	enum WakeUpReason {
@@ -336,6 +355,8 @@ object ConsensusParticipantSdm {
 		case UnreachableFollowersRetry
 		/** Retry sending records to a retiring participant that was unreachable. */
 		case RetirementDriveRetry
+		/** Retry the replication loop after insufficient quorum. */
+		case ReplicationLoopRetry
 	}
 
 	/** An opaque token returned by [[ClusterParticipant.requestWakeUp]], used to cancel a pending wake-up via [[ClusterParticipant.cancelWakeUp]]. */
@@ -394,25 +415,25 @@ trait ConsensusParticipantSdm { thisModule =>
 	 */
 	type ClientCommand <: AnyRef
 
-	/** Defines a total ordering over [[ClientCommand]] instances.
-	 *
-	 * This ordering is used to determine the relative freshness of commands from the same client.
-	 * Implementations must ensure that:
-	 *
-	 *   - For any two commands `a` and `b` from the same client, if `a` is issued *after* `b`, then `clientCommandOrdering.compare(a, b) > 0`.
-	 *   - If `a` and `b` are semantically identical (e.g., same request ID), then `clientCommandOrdering.compare(a, b) == 0`.
-	 *   - If `a` is issued *before* `b`, then `clientCommandOrdering.compare(a, b) < 0`.
-	 *
-	 * The ordering must be consistent and total for commands from the same client.
-	 * Ordering between commands from different clients may be arbitrary or undefined.
-	 */
-	val clientCommandOrdering: Ordering[ClientCommand]
+	//	/** Defines a total ordering over [[ClientCommand]] instances.
+	//	 *
+	//	 * This ordering is used to determine the relative freshness of commands from the same client.
+	//	 * Implementations must ensure that:
+	//	 *
+	//	 *   - For any two commands `a` and `b` from the same client, if `a` is issued *after* `b`, then `clientCommandOrdering.compare(a, b) > 0`.
+	//	 *   - If `a` and `b` are semantically identical (e.g., same request ID), then `clientCommandOrdering.compare(a, b) == 0`.
+	//	 *   - If `a` is issued *before* `b`, then `clientCommandOrdering.compare(a, b) < 0`.
+	//	 *
+	//	 * The ordering must be consistent and total for commands from the same client.
+	//	 * Ordering between commands from different clients may be arbitrary or undefined.
+	//	 */
+	//	val clientCommandOrdering: Ordering[ClientCommand]
 
-	/** Extracts the client identifier from a given [[ClientCommand]].
-	 *
-	 * This enables the consensus module to group commands by origin and apply per-client deduplication and retry logic.
-	 */
-	def clientIdOf(command: ClientCommand): ClientId
+	//	/** Extracts the client identifier from a given [[ClientCommand]].
+	//	 *
+	//	 * This enables the consensus module to group commands by origin and apply per-client deduplication and retry logic.
+	//	 */
+	//	def clientIdOf(command: ClientCommand): ClientId
 
 	/** The type of the state-machine's [[StateMachine.applyClientCommand]] method's responses. */
 	type StateMachineResponse
@@ -427,7 +448,12 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	def retiringParticipantMaxRetries: Int = 9
 
-	def isEager: Boolean = false
+	/** Maximum number of log entries to retain before triggering compaction.
+	 * Once the log exceeds this size and the commitIndex is sufficiently advanced, entries up to the highest applied command index are discarded and a snapshot is taken. */
+	def logCompactionThreshold: Int = 1000
+
+	/** Determines how many [[Redords]] to retain in the log when a compaction is fired. */
+	def logRetentionAfterSnapshot: Int = 10
 
 	//// THREADING
 
@@ -444,17 +470,27 @@ trait ConsensusParticipantSdm { thisModule =>
 
 	/** Describes the interface that a [[ConsensusParticipant]] relies on to interact with the state machine. */
 	trait StateMachine {
-		/** Applies the given [[ClientCommand]] to the state machine.
+		/** Applies the given [[ClientCommand]] to the state machine.\
 		 * @return a [[sequencer.LatchingDuty]] that yields the [[StateMachineResponse]]
 		 */
 		def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.LatchingDuty[StateMachineResponse]
 
-		/** Returns a [[sequencer.Task]] that yields the [[RecordIndex]] most recently passed to [[applyClientCommand]] whose corresponding [[sequencer.LatchingDuty]] completed has been completed.
-		 * If the implementation cannot determine this index, it should return zero, indicating that all commands must be replayed.
-		 *
+		/** Returns a [[sequencer.Duty]] that yields the [[RecordIndex]] most recently passed to [[applyClientCommand]] whose corresponding [[sequencer.LatchingDuty]] is completed.\
+		 * If the implementation cannot determine this index or prefers to relay on the [[Workspace]]'s log, it should return zero. That instructs the [[ConsensusParticipant]] to install the [[Workspace]]'s latest snapshot and replay all the commands in its log.\
 		 * This method is invoked only during recovery after restarts or persistence failures.
 		 */
 		def recoverIndexOfLastAppliedCommand: sequencer.LatchingDuty[RecordIndex]
+
+		/** Creates a snapshot of the state machine state at the moment of the call.\
+		 * The implementation should support calls to [[StateMachine.applyClientCommand]] while this method is running, keeping the result invariant.\
+		 * This method is called when the log exceeds the compaction threshold and all entries up to the highest applied command index have been applied.\
+		 * @return a [[sequencer.LatchingDuty]] that yields the serialized state machine state. */
+		def takeSnapshot(): sequencer.LatchingDuty[IArray[Byte]]
+
+		/** Installs a snapshot received from the leader, replacing the current state machine state.\
+		 * @param data the serialized state machine state.
+		 * @return a [[sequencer.LatchingDuty]] that completes when the snapshot has been installed. */
+		def installSnapshot(data: IArray[Byte]): sequencer.LatchingTask[Unit]
 	}
 
 	//// RESPONSE TO CLIENT
@@ -463,8 +499,8 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * @see [[ClusterParticipant.Delegate.onCommandFromClient]]. */
 	sealed trait ResponseToClient
 
-	/** The command was appended at the specified [[recordIndex]] to a majority of the participants persistent logs, and applied to the [[StateMachine]] which responded with the specified [[content]]. */
-	final case class Processed(recordIndex: RecordIndex, content: StateMachineResponse) extends ResponseToClient
+	/** The command was appended to a majority of the participants persistent logs, and applied to the leader's [[StateMachine]] which responded with the specified [[content]]. */
+	final case class Processed(content: StateMachineResponse) extends ResponseToClient
 
 	/** The client has to repeat the command to the specified participant. This happens when the receiver is or becomes a [[FOLLOWER]]. */
 	final case class RedirectTo(participantId: ParticipantId) extends ResponseToClient
@@ -475,33 +511,33 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * @param otherParticipants A set of alternative participant identifiers for the client to attempt. This list is provided on a best-effort basis and may be incomplete or contain stale/unavailable participants. The first elements of the list are more probable to be correct and up-to-date than the last ones. */
 	final case class Unable(nextAttemptFlag: CommandAttemptFlag, otherParticipants: ListSet[ParticipantId]) extends ResponseToClient
 
-	/** The command was rejected because a newer command from the same origin has already been processed, while this one was never received earlier.
-	 *
-	 * The client should discard this command, assuming the [[StateMachine]] does not require contiguous, gap‑free, monotonic ordering of command identifiers.
-	 *
-	 * If the [[StateMachine]] does require strict contiguous ordering, it must enforce that policy itself by rejecting non‑contiguous commands with a special [[StateMachineResponse]], which the client will receive wrapped inside a [[Processed]].
-	 * @param command the [[ClientCommand]] received in the request
-	 * @param lastCommandIndex the [[RecordIndex]] of the last [[ClientCommand]] received from the same client (same [[ClientId]]).
-	 */
-	final case class Superseded(command: ClientCommand, lastCommandIndex: RecordIndex) extends ResponseToClient
+	//	/** The command was rejected because a newer command from the same origin has already been processed, while this one was never received earlier.
+	//	 *
+	//	 * The client should discard this command, assuming the [[StateMachine]] does not require contiguous, gap‑free, monotonic ordering of command identifiers.
+	//	 *
+	//	 * If the [[StateMachine]] does require strict contiguous ordering, it must enforce that policy itself by rejecting non‑contiguous commands with a special [[StateMachineResponse]], which the client will receive wrapped inside a [[Processed]].
+	//	 * @param command the [[ClientCommand]] received in the request
+	//	 * @param lastCommandIndex the [[RecordIndex]] of the last [[ClientCommand]] received from the same client (same [[ClientId]]).
+	//	 */
+	//	final case class Superseded(command: ClientCommand, lastCommandIndex: RecordIndex) extends ResponseToClient
 
-	/** The command predates the last snapshot boundary, so the leader cannot determine whether it was ever processed, nor can it replay the corresponding [[StateMachineResponse]].
-	 *
-	 * The client must resolve this situation (e.g. by resynchronizing or discarding).
-	 * @param command the [[ClientCommand]] received in the request
-	 */
-	final case class TooOld(command: ClientCommand) extends ResponseToClient
+	//	/** The command predates the last snapshot boundary, so the leader cannot determine whether it was ever processed, nor can it replay the corresponding [[StateMachineResponse]].
+	//	 *
+	//	 * The client must resolve this situation (e.g. by resynchronizing or discarding).
+	//	 * @param command the [[ClientCommand]] received in the request
+	//	 */
+	//	final case class TooOld(command: ClientCommand) extends ResponseToClient
 
-	/** The command was previously processed, but its response is not replayed because replayability of responses to commands older than the last received has been disabled by the [[ConsensusParticipantSdm.Workspace.indexOf]] implementation returning 0.
-	 *
-	 * The client should treat this as a stale retry and discard it.
-	 * @param command the [[ClientCommand]] received in the request
-	 * @param lastCommandIndex the [[RecordIndex]] of the last [[ClientCommand]] received from the same client (same [[ClientId]]).
-	 */
-	final case class Stale(command: ClientCommand, lastCommandIndex: RecordIndex) extends ResponseToClient
+	//	/** The command was previously processed, but its response is not replayed because replayability of responses to commands older than the last received has been disabled by the [[ConsensusParticipantSdm.Workspace.indexOf]] implementation returning 0.
+	//	 *
+	//	 * The client should treat this as a stale retry and discard it.
+	//	 * @param command the [[ClientCommand]] received in the request
+	//	 * @param lastCommandIndex the [[RecordIndex]] of the last [[ClientCommand]] received from the same client (same [[ClientId]]).
+	//	 */
+	//	final case class Stale(command: ClientCommand, lastCommandIndex: RecordIndex) extends ResponseToClient
 
-	/** Tells that the [[Workspace]] of the [[ConsensusParticipant]] service is inconsistent. Should never happen. TODO consider restarting the service in this situation, instead. */
-	final case class InconsistentState(detail: String) extends ResponseToClient
+	//	/** Tells that the [[Workspace]] of the [[ConsensusParticipant]] service is inconsistent. Should never happen. TODO consider restarting the service in this situation, instead. */
+	//	final case class InconsistentState(detail: String) extends ResponseToClient
 
 	//// CLUSTER
 
@@ -535,20 +571,20 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		/** The implementation should return the identifiers of the participants that this [[ClusterParticipant]] optimistically suspect are members of the consensus set, excluding the bound one.
 		 * This method is called when the [[ConsensusParticipant]] that is [[STARTING]] or [[QUIESCED]] has to respond [[Unable]] to a client. */
-		def getOtherProbableParticipant: ListSet[ParticipantId]
+		def getOtherProbableParticipants: ListSet[ParticipantId]
 
-		/** Called by the bound [[ConsensusParticipant]] to notify that its active [[ConsensusParticipant.Configuration]] has changed, and now it expects connectivity with a different set of participants.
+		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] to advise that its active [[ConsensusParticipant.Configuration]] has changed, and now it expects connectivity with the active participants of the provided [[ConfigChange]].\
 		 *
-		 * This method is invoked upon activation of a new [[ConsensusParticipant.Configuration]] to tell the cluster-layer which are the participants that the consensus-layer expects to be reachable.
-		 * Given configuration changes is a two-phase process, a call to [[Delegate.requestConfigChange]] causes two [[ConfigChange]] records to be appended and, therefore, two calls to this method per involved [[ConsensusParticipant]] service.
-		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the configuration has not changed.
+		 * This method is invoked upon activation of a new [[ConsensusParticipant.Configuration]] to tell the cluster-layer which are the participants that the consensus-layer expects to be reachable.\
+		 * Given configuration changes is a two-phase process, a call to [[Delegate.requestConfigChange]] causes two [[ConfigChange]] records to be appended and, therefore, two calls to this method per involved [[ConsensusParticipant]] service.\
+		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the configuration has not changed.\
 		 * @param change The [[ConfigChange]] that backs the activated [[ConsensusParticipant.Configuration]].
 		 * @param changeIndex the [[RecordIndex]] of the applied [[ConfigurationChange]]
 		 */
-		def notifyActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
+		def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
 
-		/** Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterParticipant]] service to release the resources dedicated to it. */
-		def notifyQuiesced(motive: Try[String]): Unit
+		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterParticipant]] service to release the resources dedicated to it. */
+		def onQuiesced(motive: Try[String]): Unit
 
 		/** Called by the bound [[ConsensusParticipant]] when it needs to be woken up after some host-determined delay.
 		 * The host should eventually invoke the provided `callback` within the [[sequencer]], after an appropriate delay.
@@ -557,10 +593,11 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Must be called within the [[sequencer]].
 		 *
 		 * @param reason describes what the consensus algorithm needs retried.
+		 * @param wakeupsDone the number of calls to this method done before the current one to delay the next attempt.
 		 * @param callback the function to invoke when the delay elapses. Must be invoked within the [[sequencer]].
 		 * @return a token that can be passed to [[cancelWakeUp]] to cancel the pending wake-up.
 		 */
-		def requestWakeUp(reason: WakeUpReason, callback: () => Unit): WakeUpToken
+		def requestWakeUp(reason: WakeUpReason, wakeupsDone: Int, callback: () => Unit): WakeUpToken
 
 		/** Defines the operations that the [[ConsensusParticipant]] exposes to this [[ClusterParticipant]] instance, specially the call-backs methods for the events that the [[ConsensusParticipant]] needs to be noticed of.
 		 *
@@ -573,7 +610,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 */
 		trait Delegate {
 
-			/** Handles a client-submitted command intended for the state machine.
+			/** **Inbound bridge**: Handles a client-submitted command intended for the state machine.
 			 *
 			 * This method is invoked by the bound [[ClusterParticipant]] when a client sends a command to this participant.
 			 * It must be called within the [[sequencer]].
@@ -588,8 +625,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[howAreYou]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[howAreYou]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[howAreYou]].
@@ -598,8 +634,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[StateInfo]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[chooseALeader]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[chooseALeader]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[chooseALeader]].
@@ -608,22 +643,30 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[Vote[ParticipantId]]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[appendRecords]].
 			 * @param inquirerTerm The term of the participant that called [[appendRecords]].
 			 * @param prevRecordIndex The index of record after which the specified `records` should be appended.
 			 * @param prevRecordTerm The term of the record after which the specified `records` should be appended.
-			 * @param records The records to append.
+			 * @param batch The records to append.
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
-			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult]
+			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult]
 
-			/**
-			 * This method is invoked by this [[ClusterParticipant]] when another participant calls [[permitQuiescence]] on the [[ParticipantId]] of the owner of this [[Delegate]].
+			/** **Inbound bridge**: Handles an InstallSnapshot RPC from the leader.
+			 * Invoked when the leader has discarded log entries that this follower needs.
+			 *
+			 * Must be called within the [[sequencer]].
+			 * @param inquirerId the leader's participant ID.
+			 * @param inquirerTerm the leader's current term.
+			 * @param snapshot the snapshot data including state machine state and metadata.
+			 * @return A [[sequencer.LatchingDuty]] that yields a rejecting [[AppendResult]] equivalent to the one that [[onAppendRecords]] would return when asks for earlier records starting from [[SnapshotData.lastIncludedRecordIndex]] + 1. */
+			def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult]
+
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[permitQuiescence]] on the [[ParticipantId]] of the owner of this [[Delegate]].
 			 * @param grantorId the identifier of the participant that granted permission to quiesce.
 			 * @param indexOfGrantedStableConfigChange The index of the [[StableConfigChange]] record for which the permission to quiesce was granted. Said record is the one that excludes the destination participant.
 			 */
@@ -635,9 +678,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *		1 call this method on every consensus-participant service to ensure the leader gets noticed, // TODO this is awkward. Make the configuration-change request be propagated to the leader when received by non-leaders.
 			 *		2 wait until either:
 			 *			- the returned [[sequencer.LatchingDuty]] yields either [[SUCCESSFULLY_CHANGED]] or [[ALREADY_CHANGED]] for any of the consensus-participants,
-			 *			- or the [[notifyActiveConfigChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
+			 *			- or the [[onActiveConfigChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
 			 *
-			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[notifyActiveConfigChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
+			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onActiveConfigChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
 			 * @param desiredParticipantsSet the identifiers of the participants that are going to seek consensus from now on.
 			 * @param priorAnswer should contain the response to the last request done by the inquirer to this or any other participant, if any. 
 			 * @return a [[sequencer.Duty]] that yields:
@@ -689,11 +732,21 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param inquirerTerm The term of the participant that is asking.
 			 * @param prevLogIndex the [[RecordIndex]] of the [[Record]] after which the records should be appended.
 			 * @param prevLogTerm the expected [[Term]] of the [[Record]] at `prevLogIndex`.
-			 * @param records The records to append.
+			 * @param batch The records to append.
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Task]] that yields the result of the append operation.
 			 */
-			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] // TODO consider returning a LatchingTask instead
+			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] // TODO consider returning a LatchingTask instead
+
+			/**
+			 * Sends a snapshot to the destination participant, replacing its log and state machine state. Only leaders call this method.
+			 * The implementation should make, somehow, the destination participant's [[Delegate.onInstallSnapshot]] to be called with the same parameter values, and return what it returns.
+			 * This method is called within the [[sequencer]].
+			 * @param inquirerTerm The term of the participant that is sending the snapshot.
+			 * @param snapshot the snapshot data including state machine state and metadata.
+			 * @return A [[sequencer.Task]] that yields the result of the installation operation.
+			 */
+			def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] // TODO consider returning a LatchingTask instead
 
 
 			/**
@@ -726,9 +779,12 @@ trait ConsensusParticipantSdm { thisModule =>
 		//		 * Contains the records since the last snapshot. */
 		//		private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 
-		/** The implementation should return the index of the [[ConfigChange]] instance with greater index in the log.
+		/** The implementation should return the index of the [[ConfigChange]] instance with greater index in the log, or zero if none.
 		 * This method is called very frequently so the implementation should strive to be efficient. */
-		def indexOfTopConfigChange: RecordIndex
+		def indexOfLatestConfigChange: RecordIndex
+
+		/** The implementation should returnn the latest [[ConfigChange]] in the log. */
+		def latestConfigChange: Maybe[ConfigChange[ParticipantId]]
 
 		/** The current term according to this participant.
 		 * The Initial value is zero.
@@ -745,40 +801,35 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		def getRecordAt(index: RecordIndex): Record // = logBuffer((index - logBufferOffset).toInt)
 
-		/** Returns the records in the log starting at `from` and up to `until` exclusive.
-		 */
+		/** Returns the records in the log starting at `from` and up to `until` exclusive. */
 		def getRecordsBetween(from: RecordIndex, until: RecordIndex): IArray[Record] // = logBuffer.slice((from - logBufferOffset).toInt, (until - logBufferOffset).toInt)
 
 		/** Appends a record and returns it index. */
 		def appendRecord(record: Record): Unit
 
 		/** Appends any new record not already in the log starting at the specified index.
-		 * If a conflict is detected (i.e., a stored record and a new record at the same index have different terms), all stored records from that index onward are removed before appending the new records.
-		 * */
-		def appendResolvingConflicts(records: GenIndexedSeq[Record], from: RecordIndex): Unit
+		 * If a conflict is detected (i.e., a stored record and a new record at the same index have different terms), all stored records from that index onward are removed before appending the new records. */
+		def appendResolvingConflicts(records: IArray[Record], from: RecordIndex): Unit
 
 		/** Should be called whenever the [[ConsensusParticipant.highestAppliedCommandIndex]] changes to allow this [[Workspace]] to release the storage used to memorize the records that are pending to be applied to the [[StateMachine]]. */
 		def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit
 
-		/** Should return the index of the last [[CommandRecord]] in the log whose [[ClientId]] is the provided one, or zero if none. */
-		def indexOfLastAppendedCommandFrom(clientId: ClientId): RecordIndex
+		/** @return the index of the last [[Record]] with [[RecordIndex]] greater or equal to a [[RecordIndex]] and with [[Term]] equal to a [[Term]]. Returns `from - 1` if none is found.
+		 * The implementation may assume that the provided `from` [[RecordIndex]] is within the log buffer. */
+		def indexOfLastRecordWithTerm(term: Term, from: RecordIndex): RecordIndex
 
-		/** The implementation should return one of:
-		 * - the index of the provided [[ClientCommand]] in the Raft log if it is found
-		 * - `-1` if it is not present
-		 * - `0` if clients do not require response replayability for commands older than
-		 *   the last received from the same client
-		 *
-		 * This method is invoked when the leader receives a command that is older (according to [[ConsensusParticipantSdm.clientCommandOrdering]]) than the most recently received command from the same client.
-		 *
-		 * If replayability is required, return the index of the original occurrence so that the same response can be deterministically replayed.
-		 * If the command is not found — either because it was never appended or was appended before the last snapshot point — return `-1`. In this case the command is rejected as [[TooOld]] (if it predates the last received at the snapshot) or	[[Superseded]] (if it was never in the log).
-		 * If replayability is not required for commands older than the last received, return `0`, in which case the command is rejected as [[Stale]].
-		 *
-		 * @param clientCommand the command received from the client
-		 * @return the Raft log index of the original command for replay, `-1` if not found, or `0` to reject as stale when replayability of responses to commands older than the last received is not required
-		 */
-		def indexOf(clientCommand: ClientCommand): RecordIndex
+		/** Replaces the whole log with the provided snapshot. */
+		def resetLog(snapshot: SnapshotData[ParticipantId], tailRecords: IArray[Record]): Unit
+
+		/** Truncates the log by replacing its earlier records (up to and including the provided index) with a snapshot of the [[StateMachine]].
+		 * After this call, [[logBufferOffset]] must return `lastIncludedIndex + 1`.
+		 * @param lastIncludedRecordIndex the index of the last [[Record]] applied to the [[StateMachine]] before the provided snapshot was taken.
+		 * @param stateMachineSnapshot a snapshot of the [[StateMachine]]'s state.
+		 * @return a [[SnapshotData]] that consolidates the [[StateMachine]]'s snapshot with the log metadata */
+		def truncateLogUpTo(lastIncludedRecordIndex: RecordIndex, stateMachineSnapshot: IArray[Byte]): Unit
+
+		/** @return the [[SnapshotData]] produced by the last call to [[truncateLogUpTo]]. */
+		def latestSnapshot: Maybe[SnapshotData[ParticipantId]]
 
 		/** The [[ConsensusParticipant]] triggers the returned [[Duty]] to inform that it will not reference this instance anymore and this [[Workspace]] may be purged. */
 		def releases: sequencer.Duty[Unit]
@@ -823,7 +874,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		def onRoleLeft(left: RoleOrdinal, term: Term): Unit
 
-		def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex): Unit
+		def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit
 
 		def onActiveConfigChanged(currentRole: RoleOrdinal, currentTerm: Term, configChangeIndex: RecordIndex, configChange: ConfigChange[ParticipantId]): Unit
 	}
@@ -857,7 +908,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		override def onRoleLeft(left: RoleOrdinal, term: Term): Unit = ()
 
-		override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex): Unit = ()
+		override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = ()
 
 		override def onActiveConfigChanged(currentRole: RoleOrdinal, currentTerm: Term, configChangeIndex: RecordIndex, configChange: ConfigChange[ParticipantId]): Unit = ()
 	}
@@ -923,6 +974,9 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		import cluster.*
 
+		/** The [[sequencer.Task]] returned by a call to [[ClusterParticipant.appendRecords]]. */
+		private type AppendRequest = sequencer.Task[AppendResult]
+
 		private type AppendOutcome = Int
 		private inline val AO_IS_LAGGING_MASK = 16
 		private inline val AO_SUCCESS = 0
@@ -932,36 +986,41 @@ trait ConsensusParticipantSdm { thisModule =>
 		private inline val AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION = 4
 		private inline val AO_IS_RETIRING = 5
 		private inline val AO_IS_QUIESCED = 6
-		private inline val AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT = 7
 		private inline val AO_IS_UNREACHABLE = 8
 		private inline val AO_UNEXPECTED_RETIRING = 9
+
+		/** [[Accessible.tryFusingRecords]]'s fusion report: The [[PrimaryState]] is not accessible or the term is stale. */
+		private inline val FR_IGNORED = 0
+		/** [[Accessible.tryFusingRecords]]'s fusion report: The records were appended. */
+		private inline val FR_RECORD_FUSED = 1
+		/** [[Accessible.tryFusingRecords]]'s fusion report: The [[Term]] was updated. */
+		private inline val FR_TERM_UPDATED = 2
+		/** The snapshot was updated and the records were appended. */
+		inline val FR_SNAPSHOT_UPDATED = 4
+		/** The snapshot is useful but the [[StateMachine]]'s commands applier is currently running. */
+		inline val FR_HAVE_TO_WAIT_COMMAND_APPLIER = 8
 
 		/** The index of the highest entry known to be committed according to this participant.
 		 * A log record is committed once the leader that created the record has replicated it on a majority of the participants.
 		 * This also commits all preceding records in the leader’s log, including records created by previous leaders.
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
+		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
 		private var commitIndex: RecordIndex = 0
 
 		/** The index of the [[CommandRecord]] with the highest index whose command was successfully applied to the [[StateMachine]] of this [[ConsensusParticipant]].
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
+		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
 		private var highestAppliedCommandIndex: RecordIndex = 0
 
 		/** The current role of this [[ConsensusParticipant]].
 		 * @note The [[currentRole]] state is neither entirely derived from the [[PrimaryState]] nor orthogonal to it. They are interrelated.
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
+		 * CAUTION: [[PrimaryState]] mutations depend on the value of this variable. Therefore, this variable value must be in sync with the [[PrimaryState]] by means of the [[StatefulRole.primaryStateFence]] game changing invariant. */
 		private var currentRole: Role = new Starting(indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange)
 
 		private var workspaceReleasedCovenant: sequencer.LatchingDuty[Unit] = sequencer.ReadyDuty(())
 
-		/** The current, not causally anchored, [[Configuration]] of this [[ConsensusParticipant]].
-		 * To obtain a causally anchored [[Configuration]] use [[StatefulRole.deriveConfigurationFrom]] instead.
-		 * This variable is updated by the [[StatefulRole.deriveConfigurationFrom]] method.
-		 * CAUTION: This variable depends on the [[PrimaryState]]; mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
-		private var currentConfig: Configuration = NoConfig
+		/** Memorizes the latest [[Configuration]] derived by the [[StatefulRole.deriveConfigurationFrom]] method.\
+		 * It is initialized by [[Starting.handleEnter]] with a synthetic [[TransitionalConfig]] before transitioning to a [[StatefullRole]] and stays defined as long as the [[currentRole]] is stateful.\
+		 * CAUTION: This variable depends on the [[PrimaryState]]; mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
+		private var latestDerivedConfig: Maybe[Configuration] = Maybe.empty
 
 		/** Memory where the [[Role.onQuiescencePermitted]] method stores the [[ParticipantId]] of the last quiescence grantor. */
 		private var quiescenceGrantor: Maybe[ParticipantId] = Maybe.empty
@@ -969,20 +1028,20 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var indexOfStableConfigChangeForWhichQuiescenceWasPermitted: RecordIndex = 0
 		/** Memorizes the token for the pending wake-up used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
 		private var retryPermitQuiescenceWakeUp: Maybe[WakeUpToken] = Maybe.empty
+		/** Knows the participants that are waiting for an acknowledge to the quiescence authorizations, and the corresponding [[RecordIndex]] of the [[StableConfigChange]] for which the permission granted. */
+		private val nonAcknowledgedQuiescencePermissions: mutable.Map[ParticipantId, RecordIndex] = mutable.Map.empty
 
 		/** Knows the [[RetirementDriver]]s corresponding to the participants that were excluded from the configuration and potentially have not received the appends to notice that they can leave. */
 		private val retirementDriverByParticipantId: mutable.Map[ParticipantId, RetirementDriver] = mutable.Map.empty
 
 		/** The current election round.
 		 * Should be bumped whenever the part of the state of this participant that is exposed in questions to other participants (term and commitIndex as of this writing) changes.
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
+		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
 		private var currentBallot: Ballot = INITIAL_BALLOT
 
 		/** Stores the last [[StateInfo]] instance returned by [[Role.syncLocalStateInfo]]
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * */
-		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(PRE_INIT, ER_NONE, PRE_INIT, 0, 0, INITIAL_BALLOT)
+		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
+		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(PRE_INIT, ER_NONE, PRE_INIT, 0, PRE_INIT, 0, 0, INITIAL_BALLOT)
 
 		/** Memorizes the [[StateInfo]] of the other participants seen during the [[currentBallot]].
 		 * The [[StateInfo.ballot]] field of contained instances should match the [[currentBallot]].
@@ -991,9 +1050,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.LatchingDuty]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
 		 * @note uses a java map to improve efficiency.
 		 * TODO make values be [[Covenant]]s of [[StateInfo]] so that received questions that include a [[StateInfo]] fulfill the howAreYou questions done by this participant. */
-		private val memorizedParticipantInfos: java.util.Map[ParticipantId, StateInfo] = new java.util.HashMap()
+		private val memorizedPeersInfos: java.util.Map[ParticipantId, StateInfo] = new java.util.HashMap()
 
-		private var decoupledCommandsApplierIsRunning: Boolean = false
+		/** CAUTION: [[PrimaryState]] mutations depend on the value of this variable. Therefore, this variable value must be in sync with the [[PrimaryState]] by means of the [[StatefulRole.primaryStateFence]] game changing invariant. */
+		private var decoupledCommandsApplierCompletion: sequencer.LatchingDuty[Unit] = sequencer.LatchingDuty_unit
 
 		private val notificationListeners: java.util.WeakHashMap[NotificationListener, None.type] = new util.WeakHashMap()
 
@@ -1017,12 +1077,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			initialListeners.foreach(notificationListeners.put(_, None))
 			cluster.setBound(currentRole)
 			Trace.init(() => s"$boundParticipantId: Ctor") {
-				currentRole.onEnter(currentRole)
+				currentRole.handleEnter(currentRole)
 			}
 		}
 
 		/** @return the ordinal of the current behavior. */
-		inline def getRoleOrdinal: RoleOrdinal = currentRole.ordinal
+		def getRoleOrdinal: RoleOrdinal = currentRole.ordinal
 
 		/** @return a [[sequencer.Duty]] that quiesces this [[ConsensusParticipant]] instance. */
 		def quiesces: sequencer.Duty[Unit] = {
@@ -1046,41 +1106,41 @@ trait ConsensusParticipantSdm { thisModule =>
 		private def become(maybeNewRole: Maybe[Role])(using Trace.Context): Role = Trace.step("become") {
 			checkWithin()
 			maybeNewRole.foreach { newRole =>
-				currentRole.onLeave(newRole)
+				currentRole.handleExit(newRole)
 				val previousRole = currentRole
 				val committedTerm = currentRole.getCommittedPrimaryState.currentTerm
 				notifyListeners(_.onRoleLeft(previousRole.ordinal, committedTerm))
 				currentRole = newRole
 				cluster.setBound(newRole)
-				newRole.onEnter(previousRole)
+				newRole.handleEnter(previousRole)
 			}
 			currentRole
 		}
 
-		/** Starts a new ballot by incrementing the [[currentBallot]] and clearing the [[memorizedParticipantInfos]]. */
+		/** Starts a new ballot by incrementing the [[currentBallot]] and clearing the [[memorizedPeersInfos]]. */
 		private inline def startNewBallot(): Unit = {
 			currentBallot = currentBallot.bumped
-			memorizedParticipantInfos.clear()
+			memorizedPeersInfos.clear()
 		}
 
-		/** Updates the [[currentBallot]] and clears the [[memorizedParticipantInfos]] if it is lower than the `seenBallot`.
+		/** Updates the [[currentBallot]] and clears the [[memorizedPeersInfos]] if it is lower than the `seenBallot`.
 		 * @return true if the [[currentBallot]] was updated. */
 		private def updateBallotIfLowerThan(myStateInfo: StateInfo, seenBallot: Ballot): Boolean = {
 			if seenBallot laterThan myStateInfo.ballot then {
 				currentBallot = seenBallot
-				memorizedParticipantInfos.clear()
+				memorizedPeersInfos.clear()
 				true
 			} else false
 		}
 
-		/** Updates the [[currentBallot]] and the [[memorizedParticipantInfos]] based on the bound participant's current [[StateInfo]] (which must be provided) and a seen [[StateInfo]] of another participant.
+		/** Updates the [[currentBallot]] and the [[memorizedPeersInfos]] based on the bound participant's current [[StateInfo]] (which must be provided) and a seen [[StateInfo]] of another participant.
 		 * Assumes that [[StateInfo.ballot]] behaves as a primary key among all the instances of [[StateInfo]] created by the same participant.
-		 * @return true if either the [[currentBallot]] or the [[memorizedParticipantInfos]] are updated. */
+		 * @return true if either the [[currentBallot]] or the [[memorizedPeersInfos]] are updated. */
 		private def updateSeenStateInfo(myCurrentStateInfo: StateInfo, seenParticipantId: ParticipantId, seenStateInfo: StateInfo): Boolean = {
 			if updateBallotIfLowerThan(myCurrentStateInfo, seenStateInfo.ballot)
-				|| (seenStateInfo.ballot == myCurrentStateInfo.ballot && !memorizedParticipantInfos.containsKey(seenParticipantId))
+				|| (seenStateInfo.ballot == myCurrentStateInfo.ballot && !memorizedPeersInfos.containsKey(seenParticipantId))
 			then {
-				memorizedParticipantInfos.put(seenParticipantId, seenStateInfo)
+				memorizedPeersInfos.put(seenParticipantId, seenStateInfo)
 				true
 			} else false
 		}
@@ -1104,20 +1164,20 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			final def yieldsBlankVote(term: Term, ballot: Ballot): sequencer.LatchingDuty[Vote[ParticipantId]] = sequencer.LatchingDuty_ready(blankVote(term, ballot))
 
-			/** Called by [[become]] after the previous [[Role]]'s [[Role.onLeave]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
+			/** Called by [[become]] after the previous [[Role]]'s [[Role.handleExit]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
 			 * This method is suitable to enqueue primary state updates that must happen before any updates enqueued after [[become]] returns. */
-			def onEnter(previous: Role)(using Trace.Context): Unit
+			def handleEnter(previous: Role)(using Trace.Context): Unit
 
 			/** Called by [[become]] before transitioning to another role. */
-			def onLeave(newRole: Role): Unit = ()
+			def handleExit(newRole: Role): Unit = ()
 
 			/** Updates the derived state that is stored in the [[Role]] instance and depends on the current [[Configuration]]. Only the [[Leader]] role has such state as this writing. */
-			def onActiveConfigChanged(currentPrimaryState: Accessible, currentConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = ()
+			def handleActiveConfigChange(currentPrimaryState: Accessible, currentConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = ()
 
 			def getCommittedPrimaryState: PrimaryState =
 				Inaccessible
 
-			/** Returns a [[StateInfo]] that reflects the provided [[PrimaryState]], the [[commitIndex]], the [[rank]], and the [[currentBallot]] of the bound participant; and, if the returned value differs from the one returned in the previous call (stored in [[stateInfoExposedInLastInteraction]]), bumps the [[currentBallot]] and clears the [[memorizedParticipantInfos]]. */
+			/** Returns a [[StateInfo]] that reflects the provided [[PrimaryState]], the [[commitIndex]], the [[rank]], and the [[currentBallot]] of the bound participant; and, if the returned value differs from the one returned in the previous call (stored in [[stateInfoExposedInLastInteraction]]), bumps the [[currentBallot]] and clears the [[memorizedPeersInfos]]. */
 			def syncLocalStateInfo(primaryState: PrimaryState)(using Trace.Context): StateInfo
 
 			final def updateLocalStateInfo(primaryState: PrimaryState, seenParticipantId: ParticipantId, seenStateInfo: StateInfo)(using Trace.Context): StateInfo = {
@@ -1126,35 +1186,32 @@ trait ConsensusParticipantSdm { thisModule =>
 				updatedStateInfo
 			}
 
-			/** Returns a [[StateInfo]] that indicates disability to participate; and, if the returned value differs from [[stateInfoExposedInLastInteraction]], bumps the [[currentBallot]] and clears the [[memorizedParticipantInfos]]. */
+			/** Returns a [[StateInfo]] that indicates disability to participate; and, if the returned value differs from [[stateInfoExposedInLastInteraction]], bumps the [[currentBallot]] and clears the [[memorizedPeersInfos]]. */
 			protected final def buildIneligibleInfo(term: Term): StateInfo = {
 				val rememberedInfo = stateInfoExposedInLastInteraction
 				val newInfo =
-					if rememberedInfo.tiesWith(term, this.rank, PRE_INIT, 0, 0) then {
-						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(term, this.rank, PRE_INIT, 0, 0, currentBallot)
+					if rememberedInfo.tiesWith(term, this.rank, PRE_INIT, 0, PRE_INIT, 0, 0) then {
+						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(term, this.rank, PRE_INIT, 0, PRE_INIT, 0, 0, currentBallot)
 					} else {
 						currentBallot = currentBallot.bumped
-						memorizedParticipantInfos.clear()
-						StateInfo(term, this.rank, PRE_INIT, 0, 0, currentBallot)
+						memorizedPeersInfos.clear()
+						StateInfo(term, this.rank, PRE_INIT, 0, PRE_INIT, 0, 0, currentBallot)
 					}
 				stateInfoExposedInLastInteraction = newInfo
 				newInfo
 			}
 
-			/**
-			 * Asks the other participants how they are and decides which should be the leader based on their answers.
+			/** Asks the other participants how they are and decides which should be the leader based on their answers.\
 			 * @note This process updates the [[PrimaryState.currentTerm]] if a later one is seen, which may cause a [[currentRole]] update.
-			 *
-			 * @param primaryState0 a causally anchored [[PrimaryState]]
+			 * @param primaryState0 the current local [[PrimaryState]]
+			 * @param currentStateInfo the current local [[StateInfo]]
 			 * @param blankVoteIfRoleChanges instructs to yield a [[blankVote]] if the [[currentRole]] is changed by other process before this process completes.
-			 * @return A [[sequencer.LatchingDuty]] that yields a [[Vote]] with the chosen leader.
-			 */
-			def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]]
+			 * @return A [[sequencer.LatchingDuty]] that yields a [[Vote]] with the chosen leader. */
+			def determineMyVote(primaryState0: PrimaryState, currentStateInfo: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]]
 
-			/** Must be called before transitioning to [[Retiring]] to handle the special case when the active [[Configuration]] in an empty [[StableConfig]].
-			 * The [[Leader]] role should start the process that authorizes others to transition to the terminal [[QUIESCED]] state.
-			 *
-			 * "Vanished" means the new config has zero participants. In that case there will be no successor leader to authorize quiescence, so the current (ghost) leader must do it itself before retiring.
+			/** Must be called before transitioning to [[Retiring]] to handle the special case when the active [[Configuration]] in an empty [[StableConfig]].\
+			 * The [[Leader]] role should start the process that authorizes others to transition to the terminal [[QUIESCED]] state.\
+			 * "Vanished" means the new config has zero participants. In that case there will be no successor leader to authorize quiescence, so the current (ghost) leader must do it itself before retiring.\
 			 * @param config The currently active [[Configuration]]. */
 			def authorizeQuiescenceIfVanished(config: StableConfig)(using Trace.Context): Unit = ()
 		}
@@ -1164,11 +1221,11 @@ trait ConsensusParticipantSdm { thisModule =>
 		private abstract class StatefulRole(val primaryStateFence: sequencer.CausalFence[PrimaryState]) extends Role {
 
 			private type TermRef = IntRef
-			/** The default argument for the [[updateTermIfLessThan]] method's second parameter.
+			/** The default argument for the [[updateTermIfLessThan]] method's second parameter.\
 			 * It is private and defined in the same class as the [[primaryStateFence]] to ensure that the contained [[Term]] variable reflects the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[sequencer.LatchingDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
 			protected final val defaultPreviousTermRef: TermRef = new TermRef(0)
 
-			override def onLeave(newRole: Role): Unit = {
+			override def handleExit(newRole: Role): Unit = {
 				if !newRole.isInstanceOf[StatefulRole] then {
 					workspaceReleasedCovenant = for {
 						_ <- workspaceReleasedCovenant
@@ -1192,14 +1249,16 @@ trait ConsensusParticipantSdm { thisModule =>
 					case accessible: Accessible =>
 						val rememberedInfo = stateInfoExposedInLastInteraction
 						val termAtCommitIndex = accessible.getRecordTermAt(commitIndex)
+						val lastRecordIndex = accessible.firstEmptyRecordIndex - 1
+						val lastRecordTerm = accessible.getRecordTermAt(lastRecordIndex)
 						val activeConfigChangeIndex = deriveConfigurationFrom(accessible).changeIndex
 						val newInfo =
-							if rememberedInfo.tiesWith(primaryState.currentTerm, this.rank, termAtCommitIndex, commitIndex, activeConfigChangeIndex) then {
-								if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(accessible.currentTerm, this.rank, termAtCommitIndex, commitIndex, activeConfigChangeIndex, currentBallot)
+							if rememberedInfo.tiesWith(primaryState.currentTerm, this.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex, activeConfigChangeIndex) then {
+								if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(accessible.currentTerm, this.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex, activeConfigChangeIndex, currentBallot)
 							} else {
 								currentBallot = currentBallot.bumped
-								memorizedParticipantInfos.clear()
-								StateInfo(accessible.currentTerm, this.rank, termAtCommitIndex, commitIndex, activeConfigChangeIndex, currentBallot)
+								memorizedPeersInfos.clear()
+								StateInfo(accessible.currentTerm, this.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex, activeConfigChangeIndex, currentBallot)
 							}
 						stateInfoExposedInLastInteraction = newInfo
 						if assertionsEnabled then assert(newInfo.rank != ER_NONE)
@@ -1207,73 +1266,113 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
+			override def determineMyVote(primaryState0: PrimaryState, stateInfo0a: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
 				Trace.step("determineMyVote") {
-					checkWithin()
+					primaryState0 match {
+						case Inaccessible =>
+							yieldsBlankVote(primaryState0.currentTerm, stateInfo0a.ballot)
 
-					val config0 = deriveConfigurationFrom(primaryState0)
-					// get the updated StateInfo of the bound participant, which also updates the `memorizedParticipantsInfos`
-					val myStateInfo0 = syncLocalStateInfo(primaryState0)
-					// Yield a blank vote if this participant is not included in the current configuration.
-					if !config0.isBoundIncluded then yieldsBlankVote(primaryState0.currentTerm, myStateInfo0.ballot)
-					else {
-						// Create the howAreYou questions
-						val howAreYouQuestions0 = askHowOtherParticipantsAre(config0.peers, myStateInfo0, memorizedParticipantInfos)
-						// determine my vote based on the answers to the howAreYou questions
-						for {
-							howAreYouAnswers0 <- sequencer.LatchingDuty_sequenceTasksToArray(howAreYouQuestions0, true)
-							primaryState1 <- {
-								val highestTermSeen = IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(primaryState0.currentTerm) { (latestTermSeen, answer, _) =>
-									answer match {
-										case Success(info) => if info.currentTerm > latestTermSeen then info.currentTerm else latestTermSeen
-										case _: Failure[StateInfo] => latestTermSeen
-									}
-								}
-								updateTermIfLessThan(highestTermSeen)
-							}
-							myVote <- {
-								val config1 = deriveConfigurationFrom(primaryState1)
-								var myStateInfo1 = syncLocalStateInfo(primaryState1)
-								// Update the memorizedParticipantInfos (by filling the missing entries with the StateInfo instances in the answers), and count the failed answers.
-								val numberOfFailedAnswers = {
-									IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(0) { (failedAnswersCounter, answer, participantIndex) =>
-										val participantId = config0.peers(participantIndex)
-										answer match {
-											case Success(info) =>
-												if updateSeenStateInfo(myStateInfo1, participantId, info) then myStateInfo1 = syncLocalStateInfo(primaryState1)
-												failedAnswersCounter
-
-											case _: Failure[StateInfo] =>
-												if memorizedParticipantInfos.containsKey(participantId) then failedAnswersCounter
-												else failedAnswersCounter + 1
-										}
-									}
-								}
-
-								if blankVoteIfRoleChanges && currentRole != this then currentRole.yieldsBlankVote(primaryState1.currentTerm, myStateInfo0.ballot)
-								else currentRole match {
-									case sf: StatefulRole =>
-
-										// if the bound participant is excluded, yield a blank vote.
-										if !config1.isBoundIncluded then currentRole.yieldsBlankVote(primaryState1.currentTerm, myStateInfo1.ballot)
-										// ask again if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot.
-										else {
-											// if either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot; then ignore this `determineMyVote` execution replacing it with a new fresh one.
-											if (config1 ne config0) || memorizedParticipantInfos.size + numberOfFailedAnswers < config0.peers.length then {
-												Trace.trace(s"Restarting my vote determination due to ${if config1 ne config0 then s"a concurrent configuration change (${config0.changeIndex}->${config1.changeIndex})" else s"an obsolete answer, currentBallot=$currentBallot, memorizedInfosSize=${memorizedParticipantInfos.size}, numberOfFailedAnswers=$numberOfFailedAnswers, numberOfRequests=${config1.peers.size}"}")
-												// TODO analyze if memorizedParticipantInfos should be cleared here.
-												sf.determineMyVote(primaryState1, blankVoteIfRoleChanges)
+						case accessible0: Accessible =>
+							val config0 = deriveConfigurationFrom(accessible0)
+							// Yield a blank vote if this participant is not included in the current configuration.
+							if !config0.isBoundIncluded then yieldsBlankVote(accessible0.currentTerm, stateInfo0a.ballot)
+							else {
+								// Update the local commitIndex to the highest peer's commitIndex, provided its term at that index is consistent with the local log. If the commitIndex is updated, refresh the local StateInfo.
+								val stateInfo0b = if absorbHigherCommitIndexFromPeers(accessible0, stateInfo0a) then syncLocalStateInfo(accessible0) else stateInfo0a
+								// Create the howAreYou questions
+								val howAreYouQuestions0 = askHowOtherParticipantsAre(config0.peers, stateInfo0b, memorizedPeersInfos)
+								// determine my vote based on the answers to the howAreYou questions
+								for {
+									howAreYouAnswers0 <- sequencer.LatchingDuty_sequenceTasksToArray(howAreYouQuestions0, true)
+									primaryState1 <- {
+										val highestTermSeen = IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(accessible0.currentTerm) { (latestTermSeen, answer, _) =>
+											answer match {
+												case Success(info) => if info.currentTerm > latestTermSeen then info.currentTerm else latestTermSeen
+												case _: Failure[StateInfo] => latestTermSeen
 											}
-											// else, decide the vote based on the `StateInfo` stored in the `memorizedParticipantInfos`.
-											else sequencer.LatchingDuty_ready(config1.decideMyVote(syncLocalStateInfo(primaryState1), memorizedParticipantInfosToArray(config1)))
+										}
+										updateTermIfLessThan(highestTermSeen) // Note that this may change the role
+									}
+									myVote <- {
+										var stateInfo1 = currentRole.syncLocalStateInfo(primaryState1)
+										// Update the memorizedPeersInfos (by filling the missing entries with the StateInfo instances in the answers), and count the failed answers.
+										val numberOfFailedAnswers = {
+											IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(0) { (failedAnswersCounter, answer, participantIndex) =>
+												val participantId = config0.peers(participantIndex)
+												answer match {
+													case Success(info) =>
+														if updateSeenStateInfo(stateInfo1, participantId, info) then stateInfo1 = currentRole.syncLocalStateInfo(primaryState1)
+														failedAnswersCounter
+
+													case _: Failure[StateInfo] =>
+														if memorizedPeersInfos.containsKey(participantId) then failedAnswersCounter
+														else failedAnswersCounter + 1
+												}
+											}
 										}
 
-									case _ =>
-										currentRole.yieldsBlankVote(primaryState1.currentTerm, myStateInfo1.ballot)
-								}
+										if blankVoteIfRoleChanges && currentRole != this then currentRole.yieldsBlankVote(primaryState1.currentTerm, stateInfo1.ballot)
+										else primaryState1 match {
+											case accessible1: Accessible =>
+												// Update the local commitIndex to the highest peer's commitIndex, provided its term at that index is consistent with the local log. If the commitIndex is updated, restart.
+												if absorbHigherCommitIndexFromPeers(accessible1, stateInfo1) then determineMyVote(accessible1, syncLocalStateInfo(accessible1), blankVoteIfRoleChanges)
+												else {
+													val config1 = deriveConfigurationFrom(accessible1)
+													// if the bound participant is included, then:
+													if config1.isBoundIncluded || (currentRole.isInstanceOf[Leader] && currentRole.asInstanceOf[Leader].isGhost) then {
+														// If either, the active configuration changed while waiting the responses to the howAreYou questions, or a successful answer has an obsolete ballot; then ignore this `determineMyVote` execution replacing it with a new fresh one.
+														if (config1 ne config0) || memorizedPeersInfos.size + numberOfFailedAnswers < config0.peers.length then {
+															Trace.trace(s"Restarting my vote determination due to ${if config1 ne config0 then s"a concurrent configuration change (${config0.changeIndex}->${config1.changeIndex})" else s"an obsolete answer, currentBallot=$currentBallot, memorizedInfosSize=${memorizedPeersInfos.size}, numberOfFailedAnswers=$numberOfFailedAnswers, numberOfRequests=${config1.peers.size}"}")
+															// TODO analyze if memorizedPeersInfos should be cleared here.
+															currentRole.determineMyVote(accessible1, stateInfo1, blankVoteIfRoleChanges)
+														}
+														// else, decide the vote based on the `StateInfo` stored in the `memorizedPeersInfos`.
+														else sequencer.LatchingDuty_ready(
+															config1.decideMyVote(stateInfo1, memorizedPeersInfosToArray(config1))
+																.fold(currentRole.blankVote(stateInfo1.currentTerm, stateInfo1.ballot))(identity)
+														)
+													}
+													// If the bound participant is excluded, then yield a blank vote.
+													else yieldsBlankVote(accessible1.currentTerm, stateInfo1.ballot)
+												}
+
+											case Inaccessible =>
+												currentRole.yieldsBlankVote(primaryState1.currentTerm, stateInfo1.ballot)
+										}
+									}
+								} yield myVote
+
 							}
-						} yield myVote
 					}
+				}
+			}
+
+			/** Advances the local [[commitIndex]] as far as the peers provided the [[Term]] of the local [[Record]] at the peer's [[StateInfo.commitIndex]] matches the peer's [[StateInfo.termAtCommitIndex]].\
+			 * This advancement safety is guaranteed by Raft's Log Matching Property.
+			 * @param primaryState the current [[PrimaryState]]
+			 * @param stateInfo the current [[StateInfo]]. Not referenced in the body but present as parameter to require [[memorizedPeersInfos]] be up-to-date. */
+			protected final def absorbHigherCommitIndexFromPeers(primaryState: Accessible, stateInfo: StateInfo)(using Trace.Context): Boolean = {
+				if memorizedPeersInfos.isEmpty then false
+				else {
+					val firstEmptyRecordIndex = primaryState.firstEmptyRecordIndex
+					var currentCommitIndex = commitIndex
+					var absorbed = false
+					val iterator = memorizedPeersInfos.values.iterator()
+					while iterator.hasNext do {
+						val peerStateInfo = iterator.next()
+						val peerCommitIndex = peerStateInfo.commitIndex
+						// Using Raft's Log Matching Property, we can safely advance our commitIndex if a peer has a higher commitIndex and our logs match up to that index.
+						if firstEmptyRecordIndex > peerCommitIndex
+							&& peerCommitIndex > currentCommitIndex
+							&& primaryState.getRecordTermAt(peerCommitIndex) == peerStateInfo.termAtCommitIndex
+						then {
+							commitIndex = peerCommitIndex
+							notifyListeners(_.onCommitIndexChanged(currentCommitIndex, peerCommitIndex, currentRole.ordinal, primaryState.currentTerm))
+							currentCommitIndex = peerCommitIndex
+							absorbed = true
+						}
+					}
+					absorbed
 				}
 			}
 
@@ -1281,7 +1380,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.init(() => s"$boundParticipantId: onHowAreYou") {
 					checkWithin()
 					for {
-						primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm)
+						primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm) // Note that this may change the role.
 						response <- {
 							if currentRole ne this then currentRole.onHowAreYou(inquirerId, inquirerInfo)
 							else sequencer.LatchingDuty_ready(updateLocalStateInfo(primaryState1, inquirerId, inquirerInfo))
@@ -1296,12 +1395,12 @@ trait ConsensusParticipantSdm { thisModule =>
 					val term0Ref = new TermRef(0)
 					for {
 						// if the term is stale, update it persistently before interacting with other participants so that they see this participant with its updated and persisted state.
-						primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm, term0Ref)
+						primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm, term0Ref) // Note that this may change the role.
 						myVote <- {
-							if currentRole ne this then onChooseALeader(inquirerId, inquirerInfo)
+							if currentRole ne this then currentRole.onChooseALeader(inquirerId, inquirerInfo)
 							else {
-								updateLocalStateInfo(primaryState1, inquirerId, inquirerInfo)
-								currentRole.determineMyVote(primaryState1, false)
+								val currentStateInfo = updateLocalStateInfo(primaryState1, inquirerId, inquirerInfo)
+								currentRole.determineMyVote(primaryState1, currentStateInfo, false)
 							}
 						}
 					} yield myVote
@@ -1331,155 +1430,330 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *
 			 *   - Starts, in a decoupled manner, the process that silently applies committed commands to the state machine in log order.
 			 *
-			 * @param inquirerId         ID of the leader sending the AppendEntries request
-			 * @param inquirerTerm       Term of the leader
-			 * @param prevRecordIndex    Index of the record preceding the new entries
-			 * @param prevRecordTerm     Term of the preceding record
-			 * @param records            New records to append
+			 * @param inquirerId ID of the leader sending the AppendEntries request
+			 * @param inquirerTerm Term of the leader
+			 * @param prevRecordIndex Index of the record preceding the new entries
+			 * @param prevRecordTerm Term of the preceding record
+			 * @param batch The batch of records to append
 			 * @param leaderCommit       Commit index reported by the leader
-			 * @return a [[sequencer.LatchingDuty]] yielding the [[AppendResult]] where:
-			 *         - `success` is true if, and only if, all the following are true when the appending was processed (specifically, when this participant's `primaryStateFence` was crossed):
-			 *         		- the [[PrimaryState]] is valid;
-			 *         		- `inquirerTerm >= currentTerm`;
-			 *         		- the role is either ISOLATED or FOLLOWER;
-			 *         		- the term of the log record at `prevRecordIndex` is equal to `prevRecordTerm`;
-			 *         - `term = max(inquirerTerm, currentTerm)` when the appending was processed (causal fence crossed).
-			 *         - `roleOrdinal` tells which was the role of this participant when the appending was processed (causal fence crossed).
-			 */
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+			 * @return a [[sequencer.LatchingDuty]] yielding the [[AppendResult]] with:
+			 *  - the `success` field with true if, and only if, all the following are true when the appending was processed (specifically, when this participant's `primaryStateFence` was crossed):
+			 *    * the [[PrimaryState]] is valid;
+			 *    * `inquirerTerm >= currentTerm`;
+			 *    * the role is either ISOLATED or FOLLOWER;
+			 *    * the term of the log record at `prevRecordIndex` is equal to `prevRecordTerm`;
+			 *  - the `term` field with `max(inquirerTerm, currentTerm)`.
+			 *  - the `roleOrdinal` field tells the current role of this participant. */
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				Trace.init(() => s"$boundParticipantId: onAppendRecords") {
 					checkWithin()
-					Trace.trace(s"onAppendRecords($inquirerId, s$inquirerTerm, $prevRecordIndex, $prevRecordTerm, $records, $leaderCommit, $termAtLeaderCommit) called")
-					var primaryUpdateResult: (isTermUpdated: Boolean, appendSuccess: Boolean) = null
-					for primaryState1 <- primaryStateFence.advanceIf {
-						case Inaccessible =>
-							primaryUpdateResult = (isTermUpdated = false, appendSuccess = false)
-							Maybe.empty
+					Trace.trace(s"onAppendRecords($inquirerId, @$inquirerTerm, $prevRecordIndex, $prevRecordTerm, ${batch.mkString("[", ", ", "]")}, $leaderCommit, $termAtLeaderCommit) called")
 
-						case accessible0: Accessible =>
-							val currentTerm = accessible0.currentTerm
-							if inquirerTerm < currentTerm then {
-								primaryUpdateResult = (isTermUpdated = false, appendSuccess = false)
-								Maybe.empty
-							} else {
-								val isTermUpdated = inquirerTerm > currentTerm
-								val appendSuccess =
-									JOINING <= currentRole.ordinal && (isTermUpdated || currentRole.ordinal <= FOLLOWER) // Note that even a leader appends records when received from another leader with a higher term. The role of the deposed participant is changed below, in the yield block, within the same Doer execution; so these two mutations are viewed as atomic from other executions of the same Doer.
-										&& prevRecordIndex < accessible0.firstEmptyRecordIndex
-										&& prevRecordTerm == accessible0.getRecordTermAt(prevRecordIndex)
-								primaryUpdateResult = (isTermUpdated, appendSuccess)
-								if appendSuccess && records.nonEmpty then Maybe(accessible0.withRecordsAppended(inquirerTerm, records, prevRecordIndex + 1))
-								else if isTermUpdated then Maybe(accessible0.withTermUpdated(inquirerTerm))
-								else Maybe.empty
-							}
-					} yield {
-						primaryState1 match {
+					val fusionReport = new IntRef(FR_IGNORED)
+					for {
+						primaryState1 <- primaryStateFence.advanceIf {
 							case Inaccessible =>
-								illegalStateQuiesce()
-								AppendResult(PRE_INIT, Long.MaxValue, currentRole.ordinal)
+								Maybe.empty
 
-							case accessible1: Accessible =>
-								val successOrIndexForNextAttempt: RecordIndex =
-									if primaryUpdateResult.appendSuccess then 0
-									else if accessible1.firstEmptyRecordIndex < prevRecordIndex then accessible1.firstEmptyRecordIndex
-									else if prevRecordIndex > 0 then prevRecordIndex
-									else 1
+							case accessible0: Accessible =>
+								val currentTerm = accessible0.currentTerm
+								// If the appending is not allowed (either the inquirer term is stale, the current role isn't stateful, or the this participant is and will continue leading); then do not mutate the primary state.
+								if inquirerTerm < currentTerm || (currentRole ne this) || (currentRole.rank == ER_LEADING && inquirerTerm == currentTerm) then Maybe.empty
+								// Else (if inquirerTerm >= currentTerm && currentRole.isInstanceOf[StatefulRole] && (currentRole.rank != ER_LEADING || inquirerTerm > currentTerm)), do the appending.
+								else accessible0.tryFusingRecords(inquirerTerm, prevRecordIndex, prevRecordTerm, batch, fusionReport)
 
-								// At this point the primary state is already updated and the response is almost entirely determined, except the roleOrdinal field. All the following actions are causally-anchored derived-state updates.
-
-								val previousCommitIndex = commitIndex
-								if primaryUpdateResult.appendSuccess then {
-									// Update the commitIndex
-									if commitIndex < leaderCommit then commitIndex = if leaderCommit < accessible1.firstEmptyRecordIndex then leaderCommit else accessible1.firstEmptyRecordIndex - 1
-									// if the commitIndex is bumped then:
-									if commitIndex != previousCommitIndex then {
-										// notify the change
-										notifyListeners(_.onCommitIndexChanged(previousCommitIndex, commitIndex))
-										// start the "apply committed commands" process if it isn't already started.
-										if !decoupledCommandsApplierIsRunning then startApplyingCommittedCommands(accessible1)
-									}
-								}
-
-								if primaryUpdateResult.appendSuccess || primaryUpdateResult.isTermUpdated then {
-									val cro = currentRole.ordinal
-
-									// get the updated configuration. Note that this must be done after updating the commitIndex.
-									val config1 = deriveConfigurationFrom(accessible1)
-
-
-									// If not joining or the catching-up is complete then:
-									if cro != JOINING || (accessible1.firstEmptyRecordIndex > currentRole.asInstanceOf[Joining].indexOfTheIncludingConfigChange) then {
-										// If this participant belongs to the active configuration, then:
-										if config1.isBoundIncluded then {
-											// Become follower of the inquirer if it belongs to the active configuration.
-											if config1.peers.contains(inquirerId) then become(Follower(accessible1.currentTerm, inquirerId, primaryStateFence))
-											// Become isolated if this participant is joining, the catching-up is complete, and the inquirer is not in the active configuration.
-											else if cro == JOINING then become(Isolated(primaryStateFence))
-											// Keep the current role otherwise.
-											// Note that, if the inquirer is excluded and the current role is follower of an excluded participant, the role is not changed to isolated here because it might be following a ghost leader.
-										}
-										// If this participant does not belong to the active configuration, then retire it.
-										else {
-											if assertionsEnabled then assert(config1.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
-											currentRole.authorizeQuiescenceIfVanished(config1.asInstanceOf[StableConfig])
-											become(Retiring(accessible1.currentTerm, config1.term, config1.changeIndex, config1.electorate))
-										}
-									}
-								}
-
-								AppendResult(primaryState1.currentTerm, successOrIndexForNextAttempt, currentRole.ordinal)
 						}
+						response <- {
+							if currentRole ne this then currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)
+							else handleAppendOutcome(primaryState1, inquirerId, inquirerTerm, Maybe.empty, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit, fusionReport.elem)
+						}
+					} yield response
+				}
+			}
+
+			/** Handles an [[ClusterParticipant.Delegate.onInstallSnapshot]] RPC from a peer by replacing the local log and the [[StateMachine]]' state with the snapshot data; provided some conditions are met.
+			 *
+			 * This method performs the following steps:
+			 *   - Rejects the request if the primary state is inaccessible or the leader's term is stale.
+			 *   - Updates the [[PrimaryState]] by truncating the [[Workspace]]' log, updating the snapshot and current term, and appending the provided records after the snapshot point.
+			 *   - Persists the updated [[PrimaryState]].
+			 *   - Installs the snapshot into the state machine.
+			 *   - Updates the `commitIndex`, and `highestAppliedCommandIndex`.
+			 *   - Derives the configuration from the updated [[PrimaryState]] and [[commitIndex]]
+			 *   - Updates the role accordingly.
+			 * If the [[StateMachine]]'s commands applier is running, then waits the applier to finish before doing anything other than updating the [[PrimaryState.currentTerm]] with is updated immediately without wait.
+			 */
+			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+				Trace.init(() => s"$boundParticipantId: onInstallSnapshot") { // TODO consider new parameters
+					checkWithin()
+					Trace.trace(s"onInstallSnapshot(inquirerId=$inquirerId, inquirerTerm=$inquirerTerm, $snapshot, ${batch.mkString("[", ", ", "]")}, leaderCommit=$leaderCommit, termAtCommitIndex=$termAtLeaderCommit) called")
+					val fusionReport = new IntRef(FR_IGNORED)
+					for {
+						primaryState1 <- primaryStateFence.advanceIf {
+							case Inaccessible =>
+								Maybe.empty
+
+							case accessible0: Accessible =>
+								val currentTerm = accessible0.currentTerm
+								val currentRole = thisConsensusParticipant.currentRole
+								// If the appending is not allowed (either the inquirer term is stale, the current role isn't stateful, or the this participant is and will continue leading); then do not mutate the primary state.
+								if inquirerTerm < currentTerm || (currentRole ne this) || (currentRole.rank == ER_LEADING && inquirerTerm == currentTerm) then Maybe.empty
+								// If the received snapshot is older than what we already have in the local log, then fusion the batch records only.
+								else if snapshot.lastIncludedRecordIndex <= accessible0.indexOfLastRecordWithTerm(inquirerTerm, commitIndex) then {
+									accessible0.tryFusingRecords(inquirerTerm, snapshot.lastIncludedRecordIndex, snapshot.lastIncludedRecordTerm, batch, fusionReport)
+								}
+								// The following `if` breaks determinism unless the commands applier completion is externally synchronized with the primary state mutations.
+								// If the snapshot is useful but the commands applier is running:
+								else if decoupledCommandsApplierCompletion.isPending then {
+									if inquirerTerm > currentTerm then {
+										fusionReport.elem = FR_HAVE_TO_WAIT_COMMAND_APPLIER | FR_TERM_UPDATED
+										Maybe(accessible0.withTermUpdated(inquirerTerm))
+									} else {
+										fusionReport.elem = FR_HAVE_TO_WAIT_COMMAND_APPLIER
+										Maybe.empty
+									}
+								}
+								// Else, update the snapshot, truncate the log, update the term, and append the tail records.
+								else {
+									fusionReport.elem = if inquirerTerm > currentTerm then FR_SNAPSHOT_UPDATED | FR_RECORD_FUSED | FR_TERM_UPDATED else FR_SNAPSHOT_UPDATED | FR_RECORD_FUSED
+									Maybe(accessible0.withLogReplaced(inquirerTerm, snapshot, batch))
+								}
+						}
+						response <- {
+							if currentRole ne this then currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
+							else handleAppendOutcome(primaryState1, inquirerId, inquirerTerm, Maybe(snapshot), snapshot.lastIncludedRecordIndex, snapshot.lastIncludedRecordTerm, batch, leaderCommit, termAtLeaderCommit, fusionReport.elem)
+						}
+					} yield response
+				}
+			}
+
+			/** Finalizes the participant's state and formulates the response after either [[onAppendRecords]] or [[onInstallSnapshot]] has been invoked.
+			 *
+			 * This method synchronizes the derived state (role, commit index, active configuration) with the outcome of a primary state mutation (log fusion or snapshot installation) and handles any necessary side effects like triggering the command applier or role transitions.
+			 *
+			 * Specifically, it performs the following:
+			 *  - Updates the local `commitIndex` based on the leader's commit and the local log's first empty index.
+			 *  - Updates the current role (e.g., becoming [[Follower]], [[Isolated]], or [[Retiring]]) based on the new configuration and term.
+			 *  - Notifies listeners of commit index changes and starts the [[decoupledCommandsApplier]] if needed.
+			 *  - If the mutation was rejected or deferred (e.g., waiting for the command applier), it schedules a retry or calculates a "smart rejection" hint (`successOrIndexForNextAttempt`) to help the leader reach a verifiable point in the log.
+			 *
+			 * @param primaryState1    The [[PrimaryState]] resulting from the mutation attempt.
+			 * @param inquirerId       The identifier of the participant that initiated the replication.
+			 * @param inquirerTerm     The term of the inquirer.
+			 * @param maybeSnapshot    The snapshot data received, if any (only provided during snapshot installation).
+			 * @param prevRecordIndex  The index of the record immediately before the received batch.
+			 * @param prevRecordTerm   The term of the record at `prevRecordIndex`.
+			 * @param batch            The batch of records received.
+			 * @param leaderCommit     The highest commit index known by the leader.
+			 * @param termAtLeaderCommit The term of the record at the leader's commit index.
+			 * @param fusionReport     A bitmask of outcome flags (e.g., [[FR_RECORD_FUSED]], [[FR_TERM_UPDATED]], [[FR_SNAPSHOT_UPDATED]]) describing what happened during the primary state update.
+			 * @return A [[sequencer.LatchingDuty]] yielding the [[AppendResult]] to be sent back to the leader. */
+			private def handleAppendOutcome(primaryState1: PrimaryState, inquirerId: ParticipantId, inquirerTerm: Term, maybeSnapshot: Maybe[SnapshotData[ParticipantId]], prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term, fusionReport: Int)(using Trace.Context): sequencer.LatchingDuty[AppendResult] = {
+				assert(primaryState1 eq primaryStateFence.committedState)
+				primaryState1 match {
+					case Inaccessible =>
+						illegalStateQuiesce()
+						sequencer.LatchingDuty_ready(AppendResult(PRE_INIT, Long.MaxValue, this.ordinal))
+
+					case accessible1: Accessible =>
+						// If the local snapshot was updated or a record was fused.
+						if (fusionReport & FR_RECORD_FUSED) != 0 then {
+							val previousCommitIndex = commitIndex
+							val newCommitIndex = if leaderCommit < accessible1.firstEmptyRecordIndex then leaderCommit else accessible1.firstEmptyRecordIndex - 1
+							// If the commitIndex is bumped, update it.
+							if newCommitIndex > previousCommitIndex then commitIndex = newCommitIndex
+							// Derive the active configuration from the updated primary state and commitIndex.
+							val config1 = deriveConfigurationFrom(accessible1)
+							// Update the currentRole:
+							val cro = currentRole.ordinal
+							// If not joining or the catching-up is complete then:
+							if cro != JOINING || (accessible1.firstEmptyRecordIndex > currentRole.asInstanceOf[Joining].indexOfTheIncludingConfigChange) then {
+								// If this participant belongs to the active configuration, then become a Follower or Isolated, depending on whether the inquirer belongs to the active configuration or not.
+								if config1.isBoundIncluded then {
+									// Become follower of the inquirer if it belongs to the active configuration.
+									if config1.peers.contains(inquirerId) then become(Follower(accessible1.currentTerm, inquirerId, primaryStateFence))
+									// Become isolated if this participant is joining, the catching-up is complete, and the inquirer is not in the active configuration.
+									else if cro == JOINING then become(Isolated(primaryStateFence))
+									// Keep the current role otherwise.
+									// Note that, if the inquirer is excluded and the current role is follower of an excluded participant, the role is not changed to isolated here because it might be following a ghost leader.
+								}
+								// If this participant is excluded and ...
+								else config1 match {
+									case stable: StableConfig => // ... the active configuration is stable, then become Retiring.
+										this.authorizeQuiescenceIfVanished(stable)
+										become(Retiring(accessible1.currentTerm, stable.term, stable.changeIndex, stable.electorate))
+
+									case transitional: TransitionalConfig => // ... the active configuration is transitional, then something is wrong.
+										illegalStateQuiesce(s"$inquirerId=$inquirerId, inquirerTerm=$inquirerTerm, prevRecordIndex=$prevRecordIndex, batch=$batch, leaderCommit=$leaderCommit, termAtLeaderCommit=$termAtLeaderCommit, fusionReport=$fusionReport")
+									// if this.ordinal != JOINING || accessible1.firstEmptyRecordIndex > currentRole.asInstanceOf[Joining].indexOfTheIncludingConfigChange then become(Isolated(primaryStateFence))
+								}
+							}
+							if newCommitIndex > previousCommitIndex then {
+								// Notify the commitIndex bump.
+								notifyListeners(_.onCommitIndexChanged(previousCommitIndex, newCommitIndex, currentRole.ordinal, accessible1.currentTerm))
+								// Start the "apply committed commands" process if it isn't already started.
+								if decoupledCommandsApplierCompletion.isCompleted && currentRole.isInstanceOf[StatefulRole] then startApplyingCommittedCommands(accessible1, (fusionReport & FR_SNAPSHOT_UPDATED) != 0)
+							}
+							sequencer.LatchingDuty_ready(AppendResult(accessible1.currentTerm, 0L, currentRole.ordinal))
+						}
+						// If the snapshot was not updated nor a record was fused, then:
+						else {
+							// If the term was updated and the current role is sensible to term updates, then update the role.
+							if (fusionReport & FR_TERM_UPDATED) != 0 then this.onTermUpdated(accessible1, Maybe(inquirerId))
+
+							// If the received snapshot is useful but not installed because the commands-applier is running, then wait it to finish and then restart. // TODO Is it necessary to signal the commands-applier to stop because whatever it is doing will be discarded?
+							if (fusionReport & FR_HAVE_TO_WAIT_COMMAND_APPLIER) != 0 then {
+								decoupledCommandsApplierCompletion.flatMap { _ =>
+									maybeSnapshot.fold(currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)) { snapshot =>
+										currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
+									}
+								}
+							}
+							// Else, surely either the inquirer's term is stale, the terms at prevRecordIndex do not match, the batch fully predates the local latest snapshot, or the cluster is in an illegal state with two leaders. So, respond with a rejection asking for earlier records, pointing to the first record that is missig or we known the term does not match.
+							else {
+								// This point is reached if either the inquirer's term is stale, earlier records are needed, the terms at prevRecordIndex do not match, the batch fully predates the local latest snapshot, or the cluster is in an illegal state with two leaders. So, respond with a rejection asking for earlier records, pointing to the first record that is missig or we known the term does not match.
+								val successOrIndexForNextAttempt: RecordIndex =
+									if accessible1.firstEmptyRecordIndex < prevRecordIndex then accessible1.firstEmptyRecordIndex // This happens when no snapshot was received and earlier records are needed. Tell the leader to start from the local log's first empty index.
+									else if prevRecordIndex + batch.length < accessible1.logBufferOffset - 1L then accessible1.firstEmptyRecordIndex // This happens when the batch fully predates the local latest snapshot. Suggesting firstEmptyRecordIndex helps the inquirer to jump to a verifiable point.
+									else if prevRecordIndex > 0L then prevRecordIndex // This happens when the terms do not match.
+									else 1L // This happens when the terms do not match at the first record of the log.
+								sequencer.LatchingDuty_ready(AppendResult(accessible1.currentTerm, successOrIndexForNextAttempt, currentRole.ordinal))
+							}
+						}
+				}
+			}
+
+
+			/** Applies committed [[CommandRecord]]s silently and in a decoupled manner until reaching [[commitIndex]].\
+			 * This method assumes that the [[PrimaryState]]'s log is not turncated while this method is running: log truncation must wait until the [[decoupledCommandsApplierCompletion]] is fulfilled.\
+			 * CAUTION: This process may synchronously advance the [[primaryStateFence]] and therofore will cause causal safety assertions like `primaryState0 eq primaryStateFence.committedState` to fail. This problem can be avoided moving the call to this method after the check line, preferably to the end of the block that uses a [[PrimaryState]] instance.
+			 * @param primaryState0 the current [[PrimaryState]].
+			 * @param mustInstallSnapshot instructs to reset the [[StateMachine]]' state from the latest snapshot in the current [[Workspace]]. */
+			protected def startApplyingCommittedCommands(primaryState0: Accessible, mustInstallSnapshot: Boolean)(using Trace.Context): Unit = {
+				assert(decoupledCommandsApplierCompletion.isCompleted)
+
+				val completionCovenant = sequencer.Covenant[Unit]()
+				decoupledCommandsApplierCompletion = completionCovenant
+
+				def applyBehind(primaryState1: Accessible): Unit = {
+					applyCommittedCommands(primaryState1, Long.MaxValue, 0).engage { _ =>
+						// If log compaction is needed, compact it in a decoupled way.
+						if highestAppliedCommandIndex - primaryState1.logBufferOffset > logCompactionThreshold && currentRole.isInstanceOf[StatefulRole] then startLogCompaction()
+						completionCovenant.fulfillUnsafe(())
+					}
+				}
+
+				/** Resets the [[StateMachine]]' state from the latest snapshot in the log, and updates the [[highestAppliedCommandIndex]] accordingly.\
+				 * Also notifies about the command application to the [[PrimaryState]] observers. */
+				def startFromSnapshot(snapshotData: SnapshotData[ParticipantId]): Unit = {
+					for {
+						_ <- machine.installSnapshot(snapshotData.stateMachineSnapshot)
+						primaryState1 <- {
+							highestAppliedCommandIndex = snapshotData.lastIncludedRecordIndex
+							primaryStateFence.causalAnchor()
+						}
+					} do primaryState1 match {
+						case Inaccessible =>
+							Trace.debug("The committed commands applier stopped after installing a snapshot because the primary state is inaccessible.")
+							completionCovenant.fulfillUnsafe(())
+						case accessible1: Accessible =>
+							accessible1.informAppliedCommandIndex(snapshotData.lastIncludedRecordIndex)
+							applyBehind(accessible1)
+					}
+				}
+
+				// If instructed to install the latest snapshot or the `highestAppliedCommandIndex` predates the latest snapshot, then reset the state machine's state with it and start applying the commands after the snapshot point.
+				if mustInstallSnapshot || primaryState0.latestSnapshot.exists(_.lastIncludedRecordIndex > highestAppliedCommandIndex) then startFromSnapshot(primaryState0.latestSnapshot.get)
+				// Else, if we are not starting from scratch (a command was applied before), then start applying the commands after the last applied one.
+				else if highestAppliedCommandIndex > 0 then applyBehind(primaryState0)
+				// Else, if we are starting from scratch or recovering from a crash, then ask the state machine if it knows the index of the last applied command and then refresh the primary state.
+				else for {
+					index <- machine.recoverIndexOfLastAppliedCommand
+					primaryState1 <- {
+						highestAppliedCommandIndex = index
+						primaryStateFence.causalAnchor()
+					}
+				} do primaryState1 match {
+					case Inaccessible =>
+						Trace.debug(s"The commited commands applier stopped during recovery because the primary state is inaccessible.")
+						completionCovenant.fulfillUnsafe(())
+					case accessible1: Accessible =>
+						// If the state machine knows the index of the last applied command, then start applying the commands after it.
+						if index > 0 then {
+							accessible1.informAppliedCommandIndex(index)
+							applyBehind(accessible1)
+						}
+						// Else, replay the commands from the log. If a snapshot exists, install it on the state machine and start applying the commands that are after the snapshot point. Otherwise, start applying the commands from the very beginning of the log.
+						else {
+							accessible1.latestSnapshot.fold {
+								highestAppliedCommandIndex = 0
+								applyBehind(accessible1)
+							}(startFromSnapshot)
+						}
+				}
+			}
+
+			/** Applies to the [[StateMachine]] the already commited but still not applied commands whose index is lower or equal to the provided bound.\
+			 * They are applied one after the other as long as the [[currentRole]] is statefull, assuming the log isn't truncated while this method is running.
+			 * @param primaryState any reference to an [[Accessible]] instance produced by [[primaryStateFence]]. It is not necessary it be the current, causally anchored one. It is used to read committed records, which don't mutate.
+			 * @param upTo the upper inclusive bound of [[RecordIndex]] to apply, together with [[commitIndex]]. */
+			def applyCommittedCommands(primaryState: Accessible, upTo: RecordIndex, recursionDepth: Int): sequencer.LatchingDuty[Unit] = {
+				val indexOfCommandToApply = highestAppliedCommandIndex + 1
+				if indexOfCommandToApply > upTo || indexOfCommandToApply > commitIndex then sequencer.LatchingDuty_unit
+				else {
+					primaryState.getRecordAt(indexOfCommandToApply) match {
+						case command: CommandRecord[ClientCommand] @unchecked =>
+							val previousExecutionSerial = sequencer.currentExecutionSerial
+							for {
+								_ <- machine.applyClientCommand(indexOfCommandToApply, command.command)
+								_ <- {
+									highestAppliedCommandIndex = indexOfCommandToApply
+									// It is not necessary to have an updated primary state here because committed records are never mutated and we are not mutating the primary state here. We only need to know if the current role is statefull.
+									if currentRole.isInstanceOf[StatefulRole] then {
+										primaryState.informAppliedCommandIndex(indexOfCommandToApply)
+
+										if sequencer.currentExecutionSerial != previousExecutionSerial then applyCommittedCommands(primaryState, upTo, 0)
+										else if recursionDepth < MAX_RECURSION_DEPTH then applyCommittedCommands(primaryState, upTo, recursionDepth + 1)
+										else sequencer.Covenant_mineFlat(() => applyCommittedCommands(primaryState, upTo, 0))
+									} else sequencer.LatchingDuty_unit
+								}
+							} yield ()
+						case _ =>
+							highestAppliedCommandIndex = indexOfCommandToApply
+							primaryState.informAppliedCommandIndex(indexOfCommandToApply)
+							applyCommittedCommands(primaryState, upTo, recursionDepth + 1)
 					}
 				}
 			}
 
-			/** Applies committed [[CommandRecord]]s silently and in a decoupled manner until reaching [[commitIndex]].
-			 * @param primaryState the causally anchored [[PrimaryState]]. */
-			private def startApplyingCommittedCommands(primaryState: Accessible): Unit = {
-				decoupledCommandsApplierIsRunning = true
-
-				def applyCommittedCommandsLoop(recursionDepth: Int): Unit = {
-					if highestAppliedCommandIndex >= commitIndex then decoupledCommandsApplierIsRunning = false
-					else {
-						val indexOfCommandToApply = highestAppliedCommandIndex + 1
-						primaryState.getRecordAt(indexOfCommandToApply) match {
-							case command: CommandRecord[ClientCommand] @unchecked =>
-								val previousExecutionSerial = sequencer.currentExecutionSerial
-								for _ <- machine.applyClientCommand(indexOfCommandToApply, command.command) do {
-									highestAppliedCommandIndex = indexOfCommandToApply
-									primaryState.informAppliedCommandIndex(indexOfCommandToApply)
-									if sequencer.currentExecutionSerial != previousExecutionSerial then applyCommittedCommandsLoop(0)
-									else if recursionDepth < MAX_RECURSION_DEPTH then applyCommittedCommandsLoop(recursionDepth + 1)
-									else sequencer.run(applyCommittedCommandsLoop(0))
-								}
-							case _ =>
-								highestAppliedCommandIndex = indexOfCommandToApply
-								primaryState.informAppliedCommandIndex(indexOfCommandToApply)
-								if recursionDepth < MAX_RECURSION_DEPTH then applyCommittedCommandsLoop(recursionDepth + 1)
-								else sequencer.run(applyCommittedCommandsLoop(0))
-						}
+			/** Starts a process that compacts the log assuming the [[RecordIndex]] of last [[Record]] applied to the [[machine]] is the provided one.
+			 * Assumes the [[machine]] supports calls to [[StateMachine.applyClientCommand]] while [[StateMachine.takeSnapshot]] is running.
+			 * @return a [[sequencer.LatchingDuty]] that yields the current [[PrimaryState]] with the log truncated. */
+			protected final def startLogCompaction()(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
+				val lastIncludedIndex = highestAppliedCommandIndex - logRetentionAfterSnapshot
+				for {
+					snapshot <- machine.takeSnapshot()
+					primaryState1 <- primaryStateFence.advanceIf {
+						case Inaccessible =>
+							Maybe.empty
+						case accessible1: Accessible =>
+							Maybe(accessible1.withLogTruncated(accessible1.currentTerm, lastIncludedIndex, snapshot))
 					}
-				}
-
-				if highestAppliedCommandIndex > 0 then applyCommittedCommandsLoop(0)
-				else {
-					for index <- machine.recoverIndexOfLastAppliedCommand yield {
-						highestAppliedCommandIndex = index
-						primaryState.informAppliedCommandIndex(index)
-						applyCommittedCommandsLoop(0)
-					}
+				} yield {
+					Trace.trace(s"$boundParticipantId: Compacted log up to index $lastIncludedIndex (term ${primaryState1.currentTerm}).")
+					primaryState1
 				}
 			}
 
 			/** @inheritdoc
 			 * Wait in line for the [[PrimaryState]] and then delegate the request to the concrete stateful role. */
 			override final def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], priorAnswer: Maybe[ConfigChangeResponse]): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.init(() => s"$boundParticipantId: requestConfigChange") {
-					Trace.trace(s"Handling $requestId to $desiredParticipants, priorAnswer=$priorAnswer.")
+				Trace.init(() => s"$boundParticipantId: requestConfigChange-$requestId") {
+					Trace.trace(s"Handling change to $desiredParticipants, priorAnswer=$priorAnswer.")
 					for {
 						primaryState <- primaryStateFence.causalAnchor()
 						response <- {
-							// If a prior answer is provided, update the ballot and memorizedParticipantInfos 
+							// If a prior answer is provided, update the ballot and memorizedPeersInfos
 							val ballotWasUpdated = priorAnswer.fold(false) { priorResponse =>
 								updateBallotIfLowerThan(currentRole.syncLocalStateInfo(primaryState), priorResponse.latestBallotSeen)
 							}
@@ -1498,7 +1772,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 						}
 					} yield {
-						Trace.trace(s"response to config change request $requestId is: $response")
+						Trace.trace(s"response: $response")
 						response
 					}
 				}
@@ -1535,29 +1809,31 @@ trait ConsensusParticipantSdm { thisModule =>
 				checkWithin()
 				if assertionsEnabled then assert(currentRole eq this)
 
+				// Identify this execution.
 				serialOfLastUpdateRoleExecution += 1
 				val serial = serialOfLastUpdateRoleExecution
 
 				Trace.step(() => s"updateRole#$serial") {
 
+					/** Checks if this specific execution of `updateRole` has become obsolete and must be aborted. This condition is met if the participant has transitioned to a different role or if a newer concurrent execution of `updateRole` has started. */
 					inline def haveToAbort: Boolean = (currentRole ne this) || incumbentUpdateRoleSerial != serial
 
-					/** Logic when the vote is for another participant. */
+					/** Role decision logic when my vote is for a peer and got the [[StateInfo]] of a majority. */
 					def whenVotingAnother(currentState: Accessible, vote: Vote[ParticipantId]): sequencer.LatchingDuty[Unit] = {
-						if vote.rank == ER_LEADING then {
+						if vote.votedRank == ER_LEADING then {
 							become(Follower(currentState.currentTerm, vote.votedId, primaryStateFence))
 							sequencer.LatchingDuty_unit
 						}
 						// If the voted participant isn't retiring, become Isolated.
-						else if vote.rank != ER_RETIREE then {
+						else if vote.votedRank != ER_RETIREE then {
 							become(Isolated(primaryStateFence))
 							sequencer.LatchingDuty_unit
 						}
 						// If the voted participant is Retiring, then:
 						else {
-							val votedStateInfo = memorizedParticipantInfos.get(vote.votedId)
+							val votedStateInfo = memorizedPeersInfos.get(vote.votedId)
 							// If a retiree wins the election, active candidates would get stuck indefinitely, as the retiree will never become Leader to advance their commitIndex via AppendEntries.
-							// To unstuck the cluster, we attempt to safely absorb the retiree's commitIndex out-of-band using Raft's Log Matching Property: "If two entries in different logs have the same index and term, the logs are identical in all preceding entries."
+							// To unstick the cluster, we attempt to safely absorb the retiree's commitIndex out-of-band using Raft's Log Matching Property: "If two entries in different logs have the same index and term, the logs are identical in all preceding entries."
 							// By verifying our local log has the exact same term at the retiree's commitIndex, we mathematically prove our log holds all the entries the retiree knew to be committed, making it unequivocally safe to advance our own commitIndex.
 							if currentState.firstEmptyRecordIndex > votedStateInfo.commitIndex
 								&& currentState.getRecordTermAt(votedStateInfo.commitIndex) == votedStateInfo.termAtCommitIndex
@@ -1572,77 +1848,72 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}
 
-					def updateRoleKnowingMyVote(currentState1: Accessible, myVote1: Vote[ParticipantId]): sequencer.LatchingDuty[Unit] = {
-						if assertionsEnabled then {
-							assert(myVote1.term == currentState1.currentTerm || myVote1.isBlank, s"myVote=$myVote1, currentTerm=${currentState1.currentTerm}")
-						}
+					/** Continue the role update process assuming my vote is non-blank. */
+					def updateRoleKnowingMyNonBlankVote(currentState2: Accessible, config2: Configuration, myVote2: Vote[ParticipantId]): sequencer.LatchingDuty[Unit] = {
+						if assertionsEnabled then assert(myVote2.term == currentState2.currentTerm)
 
-						// Trace.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) was called") // TODO delete line
-						val config1 = deriveConfigurationFrom(currentState1)
-						// Trace.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - configChange=${config1.correspondingConfigChange}") // TODO delete line
-
-						if !config1.isBoundIncluded then {
-							if assertionsEnabled then assert(config1.isInstanceOf[StableConfig]) // because is required by Retiring. // TODO analyze if the config1 is always a stable one here.
-							this.authorizeQuiescenceIfVanished(config1.asInstanceOf[StableConfig])
-							become(Retiring(currentState1.currentTerm, config1.term, config1.changeIndex, config1.electorate))
+						// If excluded and not leading as ghost, then retire immediately.
+						if !config2.isBoundIncluded && !this.isInstanceOf[Leader] then {
+							this.authorizeQuiescenceIfVanished(config2.asInstanceOf[StableConfig]) // The downcast is safe because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
+							become(Retiring(currentState2.currentTerm, config2.term, config2.changeIndex, config2.electorate))
 							sequencer.LatchingDuty_unit
 						}
-						// If all the participants successfully answered the howAreYou RPC, then decide the vote omnisciently.
-						else if config1.reachedAll(myVote1) then {
-							if myVote1.votedId == boundParticipantId then {
-								become(Promoting(currentState1.currentTerm, primaryStateFence))
+						// If got the StateInfo of all the active participants, then decide the vote omnisciently.
+						else if config2.reachedAll(myVote2) then {
+							if myVote2.votedId == boundParticipantId then {
+								become(Promoting(currentState2.currentTerm, primaryStateFence))
 								sequencer.LatchingDuty_unit
-							} else whenVotingAnother(currentState1, myVote1)
+							} else whenVotingAnother(currentState2, myVote2)
 						}
-						// else, if a majority of the participants successfully answered the howAreYou RPC, then:
-						else if config1.reachedAMajority(myVote1) then {
+						// else, if got the StateInfo of a majority of the active participants, then:
+						else if config2.reachedAMajority(myVote2) then {
 							// If my vote is for other participant, become follower or isolated depending on the other is leading or not.
-							if myVote1.votedId != boundParticipantId then whenVotingAnother(currentState1, myVote1)
+							if myVote2.votedId != boundParticipantId then whenVotingAnother(currentState2, myVote2)
 							// If my vote is for myself and I am leading, abort the role update.
 							else if this.ordinal >= PROMOTING then sequencer.LatchingDuty_unit
 							// If the vote is for myself and I am not leading, decide based on everyone’s votes.
 							else {
-								val myStateInfoAtChooseALeaderRequest = syncLocalStateInfo(currentState1)
-								// Trace.trace(s"$boundParticipantId: updateRoleKnowingMyVote($myVote) - myStateInfo1=$myStateInfo1") // TODO delete line
-								val inquires = for replierId <- config1.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
+								val myStateInfoAtChooseALeaderRequest = syncLocalStateInfo(currentState2)
+								val inquires = for replierId <- config2.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
 								for {
 									replies <- sequencer.LatchingDuty_sequenceTasksToArray(inquires, true)
-									primaryState2 <- {
-										val latestTermSeen = IArray.unsafeFromArray(replies).foldLeftWithIndex(currentState1.currentTerm)((latestTermSeen, reply, _) => reply match {
+									primaryState3 <- {
+										val latestTermSeen = IArray.unsafeFromArray(replies).foldLeftWithIndex(currentState2.currentTerm)((latestTermSeen, reply, _) => reply match {
 											case Success(replierVote) => if replierVote.term > latestTermSeen then replierVote.term else latestTermSeen
 											case _: Failure[Vote[ParticipantId]] => latestTermSeen
 										})
-										Trace.trace(s"Replied votes=${replies.zip(config1.peers).mkString("[", ", ", "]")}, latestTermSeen=$latestTermSeen, myVote=$myVote1") // TODO delete line
-										updateTermIfLessThan(latestTermSeen)
+										Trace.trace(s"Replied votes=${replies.zip(config2.peers).mkString("[", ", ", "]")}, latestTermSeen=$latestTermSeen, myVote=$myVote2") // TODO delete line
+										updateTermIfLessThan(latestTermSeen) // Note that this may change the role.
 									}
 									_ <- {
 										if haveToAbort then sequencer.LatchingDuty_unit
-										else primaryState2 match {
+										else primaryState3 match {
 											case Inaccessible =>
 												illegalStateQuiesce()
 												sequencer.LatchingDuty_unit
 
-											case accessible2: Accessible =>
+											case accessible3: Accessible =>
 												// If the term was bumped (while waiting the votes from the other participants or due to a higher term seen in them), then the role update is responsibility of `StatefulRole.onTermBumped`; so abort this update. Restarting the role update here might collide with role changes caused by the bump.
-												if accessible2.currentTerm > currentState1.currentTerm then {
+												if accessible3.currentTerm > currentState2.currentTerm then {
 													if assertionsEnabled then assert(this.ordinal < PROMOTING) // because while leading the term should never change.
 													sequencer.LatchingDuty_unit
 												} else {
-													val myStateInfo2 = syncLocalStateInfo(accessible2)
-													val highestBallotSeenInVotes = IArray.unsafeFromArray(replies).foldLeftWithIndex(myStateInfo2.ballot)((highestBallot, reply, _) => reply match {
+													val myStateInfo3 = syncLocalStateInfo(accessible3)
+													val highestBallotSeenInVotes = IArray.unsafeFromArray(replies).foldLeftWithIndex(myStateInfo3.ballot)((highestBallot, reply, _) => reply match {
 														case Success(replierVote) => if replierVote.ballot laterThan highestBallot then replierVote.ballot else highestBallot
 														case _: Failure[Vote[ParticipantId]] => highestBallot
 													})
-													val aHigherBallotHaveBeenSeenInVotes = updateBallotIfLowerThan(myStateInfo2, highestBallotSeenInVotes)
-													if aHigherBallotHaveBeenSeenInVotes || myStateInfo2.ballot != myStateInfoAtChooseALeaderRequest.ballot then {
+													val aHigherBallotHaveBeenSeenInVotes = updateBallotIfLowerThan(myStateInfo3, highestBallotSeenInVotes)
+													if aHigherBallotHaveBeenSeenInVotes || myStateInfo3.ballot != myStateInfoAtChooseALeaderRequest.ballot then {
 														// TODO consider the inclusion of the StateInfo in Vote in order to keep the StateInfo instances with the highest ballot seen. This would save howAreYou calls to participants for which the StateInfo in the Vote already corresponds to the new ballot. Note that this safe would occur only when restarting the role update due to a higher ballot seen in votes.
 														Trace.trace(s"Restarting due ${if aHigherBallotHaveBeenSeenInVotes then "a higher ballot seen in votes" else "to a ballot bump"}.")
-														updateRole(accessible2)
+														updateRole(accessible3)
 													} else {
-														val config2 = deriveConfigurationFrom(accessible2)
+														val config3 = deriveConfigurationFrom(accessible3)
 														// TODO make decideMyVote support the commitIndex-auto-bump like the `updateRoleOmnisciently` if possible
-														val myVote2 = config2.decideMyVote(syncLocalStateInfo(accessible2), memorizedParticipantInfosToArray(config2))
-														become(config2.determineRole(accessible2, primaryStateFence, myVote2, replies))
+														val myVote3 = config3.decideMyVote(syncLocalStateInfo(accessible3), memorizedPeersInfosToArray(config3))
+															.fold(blankVote(myStateInfo3.currentTerm, myStateInfo3.ballot))(identity)
+														become(config3.determineRole(accessible3, primaryStateFence, myVote3, replies))
 														sequencer.LatchingDuty_unit
 													}
 												}
@@ -1658,43 +1929,64 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}
 
+					/** Continue the role update process by treating blank vote cases. */
+					def udateRoleKnowingMyVote(accessible2: Accessible, myVote: Vote[ParticipantId]): sequencer.LatchingDuty[Unit] = {
+						val config2 = deriveConfigurationFrom(accessible2)
+
+						// If my vote is blank, then:
+						if myVote.isBlank then {
+							// if we are included, then:
+							if config2.isBoundIncluded then {
+								// Advance our commitIndex by absorbing it from a more complete peer and, if successful, restart the role update. This is necessary again here because to handle the situation when a concurrent RPC (such as onHowAreYou or onChooseALeader from another peer) updates memorizedPeersInfos with a higher commit index after determineMyVote has returned but before primaryState2 is causally anchored.
+								if absorbHigherCommitIndexFromPeers(accessible2, syncLocalStateInfo(accessible2)) then updateRole(accessible2)
+								// else become Isolated.
+								else {
+									become(Isolated(primaryStateFence))
+									sequencer.LatchingDuty_unit
+								}
+							}
+							// if we are not included, the become Retiring.
+							else {
+								if assertionsEnabled then assert(config2.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
+								become(Retiring(accessible2.currentTerm, config2.term, config2.changeIndex, config2.electorate))
+								sequencer.LatchingDuty_unit
+							}
+						}
+						// if my vote is non-blank...
+						else {
+							val stateInfo2 = syncLocalStateInfo(accessible2)
+							// ... and no StateInfo has changed, continue the role update knowing the vote is non blank.
+							if stateInfo2.ballot == myVote.ballot then updateRoleKnowingMyNonBlankVote(accessible2, config2, myVote)
+							// else start the role process again (superseding this execution).
+							else {
+								Trace.trace(s"Restarting due to a ballot bump: currentBallot=${stateInfo2.ballot}, myVote.ballot=${myVote.ballot}")
+								updateRole(accessible2)
+							}
+						}
+					}
+
+					/** Starts a role update process by decicing the local vote. */
 					def start(primaryState1: PrimaryState): sequencer.LatchingDuty[Unit] = {
 						incumbentUpdateRoleSerial = serial
-						// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) was called") // TODO delete line
+						memorizedPeersInfos.clear()
 						if currentRole ne this then sequencer.LatchingDuty_unit
 						else {
 							val myStateInfo1 = syncLocalStateInfo(primaryState1)
-							// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - primaryState=$primaryState") // TODO delete line
 							for {
-								myVote <- determineMyVote(primaryState1, true)
+								myVote <- determineMyVote(primaryState1, myStateInfo1, true)
 								_ <- {
 									if haveToAbort then sequencer.LatchingDuty_unit
-									// if the leader is a ghost
 									else for {
 										primaryState2 <- primaryStateFence.causalAnchor()
 										_ <- {
-											// Trace.trace(s"$boundParticipantId: updateRole($inquirerId, $inquirerInfo) - myVote=$myVote") // TODO delete line
 											if haveToAbort then sequencer.LatchingDuty_unit
-											// else if excluded
 											else primaryState2 match {
 												case Inaccessible =>
 													illegalStateQuiesce()
 													sequencer.LatchingDuty_unit
 
 												case accessible2: Accessible =>
-													if myVote.isBlank then {
-														val config2 = deriveConfigurationFrom(accessible2)
-														if assertionsEnabled then assert(config2.isInstanceOf[StableConfig] && !config2.targetSet.contains(boundParticipantId))
-														become(Retiring(accessible2.currentTerm, config2.term, config2.changeIndex, config2.electorate))
-														sequencer.LatchingDuty_unit
-													} else {
-														val stateInfo2 = syncLocalStateInfo(accessible2)
-														if stateInfo2.ballot == myVote.ballot then updateRoleKnowingMyVote(accessible2, myVote)
-														else {
-															Trace.trace(s"Restarting due to a ballot bump: currentBallot=${stateInfo2.ballot}, myVote.ballot=${myVote.ballot}")
-															updateRole(accessible2)
-														}
-													}
+													udateRoleKnowingMyVote(accessible2, myVote)
 											}
 										}
 									} yield ()
@@ -1703,6 +1995,7 @@ trait ConsensusParticipantSdm { thisModule =>
 						}
 					}
 
+					// Coalesce the result of concurrent calls either, superseding ongoing executions started with obsolete StateInfo, or merging to the execution started with the same StateInfo.
 					val updateCovenant = updateRoleCoalescing.contend(true) {
 						maybePreviousUpdateRoleExecution =>
 							val myCurrentStateInfo = syncLocalStateInfo(primaryState0)
@@ -1730,7 +2023,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @return a [[sequencer.Task]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
 			final def updateRoleAndThenCallsOnCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Context): sequencer.LatchingDuty[ResponseToClient] = {
 				Trace.step("updateRoleAndThenCallsOnCommandFromClient") {
-					Trace.trace(s"Current role=${RoleOrdinal_nameOf(ordinal)}, attemptFlag=$attemptFlag, memorizedInfos=$memorizedParticipantInfos.")
+					Trace.trace(s"Current role=${RoleOrdinal_nameOf(ordinal)}, attemptFlag=$attemptFlag, memorizedInfos=$memorizedPeersInfos.")
 					if !attemptFlag.isInternalVacateHandoff && attemptFlag != FIRST_ATTEMPT then startNewBallot() // TODO this ballot bump may cause unnecessary "determineVote" restarts that may never converge when many clients call concurrently. The ballot should be bumped only if it is equal to the ballot used by the previous participant. So, the ballot should be included in the data propagated through the client to the next participant.
 					for {
 						_ <- updateRole()
@@ -1740,17 +2033,20 @@ trait ConsensusParticipantSdm { thisModule =>
 								val nextAttemptFlag = if attemptFlag == REDIRECTED then LEADERSHIP_VACATED else attemptFlag.withInternalBitsCleared
 								currentRole match {
 									case stateful: StatefulRole =>
-										for primaryState <- stateful.primaryStateFence.causalAnchor() yield Unable(
-											nextAttemptFlag,
-											deriveConfigurationFrom(primaryState).otherProbableParticipants
-										)
+										for primaryState <- stateful.primaryStateFence.causalAnchor() yield primaryState match {
+											case accessible: Accessible =>
+												Unable(nextAttemptFlag, deriveConfigurationFrom(accessible).otherProbableParticipants)
+											case Inaccessible =>
+												illegalStateQuiesce()
+												Unable(nextAttemptFlag, cluster.getOtherProbableParticipants)
+										}
 									case retiring: Retiring =>
 										sequencer.LatchingDuty_ready(Unable(
 											nextAttemptFlag,
-											ListSet.newBuilder[ParticipantId].addAll(retiring.excludingConfigElectorate).addAll(cluster.getOtherProbableParticipant).result()
+											ListSet.newBuilder[ParticipantId].addAll(retiring.excludingConfigElectorate).addAll(cluster.getOtherProbableParticipants).result()
 										))
 									case stateless =>
-										sequencer.LatchingDuty_ready(Unable(nextAttemptFlag, cluster.getOtherProbableParticipant))
+										sequencer.LatchingDuty_ready(Unable(nextAttemptFlag, cluster.getOtherProbableParticipants))
 								}
 							}
 
@@ -1760,48 +2056,46 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 
-			/** Derives the active [[Configuration]] state from the current [[PrimaryState]] and the [[commitIndex]].
-			 * Depends on, and updates, the [[currentConfig]]. Also updates other derived state.
+			/** Derives the active [[Configuration]] state from the current [[PrimaryState]] and [[commitIndex]].
+			 * Depends on, and updates, the [[latestDerivedConfig]]. Also updates other derived state.
 			 *
 			 * CAUTION: the provided [[PrimaryState]] instance must be the current one. So, this method must be called only within the synchronous part of consumers subscribed synchronously to the [[sequencer.LatchingDuty]] returned by either [[sequencer.CausalFence.advance]]-like or [[sequencer.CausalFence.causalAnchor]] methods, passing the [[PrimaryState]] provided to the consumer. This requirement is needed becase this method's side effects update derived state.
 			 *  @note Accessing the current [[Configuration]] through this method ensures that the current [[Configuration]] is updated before any other derived-state update that depend on it.
-			 * @param currentPrimaryState the instance of the causally anchored [[PrimaryState]].
-			 * @return a [[Configuration]] derived from the provided [[PrimaryState]]. */
-			def deriveConfigurationFrom(currentPrimaryState: PrimaryState)(using Context): Configuration = {
-				if assertionsEnabled then assert(currentPrimaryState eq primaryStateFence.committedState)
+			 * @param currentPrimaryState the current [[PrimaryState]].
+			 * @return a [[Configuration]] derived from the provided [[Accessible]]. */
+			def deriveConfigurationFrom(currentPrimaryState: Accessible)(using Context): Configuration = {
+				assert(currentPrimaryState eq primaryStateFence.committedState) // Fails if the primaryStateFence was touched after yielding the PrimaryState instance received as parameter.
 
-				currentPrimaryState match {
-					case accessible: Accessible =>
-						val indexOfTopConfigChange = accessible.indexOfTopConfigChange
-						if indexOfTopConfigChange > 0 then {
-							val oldConfig = currentConfig
-							val desiredConfigChange: ConfigChange[ParticipantId] | Null = accessible.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
-								case stable: StableConfigChange[ParticipantId] @unchecked =>
-									if commitIndex >= indexOfTopConfigChange then stable
-									else if stable.isCoupleOf(oldConfig.backingConfigChange) then null
-									else stable.recreateCouple
+				val indexOfLatestConfigChange = currentPrimaryState.indexOfLatestConfigChange
+				if indexOfLatestConfigChange == 0 then latestDerivedConfig.get
+				else {
+					val oldConfig = latestDerivedConfig.get
+					val activeConfigChange: ConfigChange[ParticipantId] | Null = currentPrimaryState.latestConfigChange.get match {
+						case stable: StableConfigChange[ParticipantId] @unchecked =>
+							if commitIndex >= indexOfLatestConfigChange then stable
+							else if stable.isCoupleOf(oldConfig.backingConfigChange) then null // null indicates to keep the current configuration as the active one.
+							else stable.recreateCouple
 
-								case transitional: TransitionalConfigChange[ParticipantId] @unchecked =>
-									transitional
-							}
-							if desiredConfigChange != null && desiredConfigChange != oldConfig.backingConfigChange then {
-								val newConfig = Configuration_from(desiredConfigChange, indexOfTopConfigChange)
-								// Update the derived state stored in the `currentRole` instance. Only the Leader role has such state as of this writing.
-								currentRole.onActiveConfigChanged(accessible, oldConfig, newConfig, indexOfTopConfigChange)
-								currentConfig = newConfig
-								// Inform the cluster service and notify the listeners about the configuration change.
-								cluster.notifyActiveConfigChanged(desiredConfigChange, indexOfTopConfigChange, currentRole.ordinal)
-								notifyListeners(_.onActiveConfigChanged(currentRole.ordinal, accessible.currentTerm, indexOfTopConfigChange, desiredConfigChange))
-							}
-						}
-
-					case Inaccessible =>
-						currentConfig = NoConfig
+						case transitional: TransitionalConfigChange[ParticipantId] @unchecked =>
+							transitional
+					}
+					if activeConfigChange == null || activeConfigChange == oldConfig.backingConfigChange then oldConfig
+					else {
+						val newConfig = Configuration_from(activeConfigChange, indexOfLatestConfigChange)
+						// Update the derived state stored in the `currentRole` instance. Only the Leader role has such state as of this writing.
+						currentRole.handleActiveConfigChange(currentPrimaryState, oldConfig, newConfig, indexOfLatestConfigChange)
+						latestDerivedConfig = Maybe(newConfig)
+						// Inform the cluster service and notify the listeners about the configuration change.
+						cluster.onActiveConfigChanged(activeConfigChange, indexOfLatestConfigChange, currentRole.ordinal)
+						notifyListeners(_.onActiveConfigChanged(currentRole.ordinal, currentPrimaryState.currentTerm, indexOfLatestConfigChange, activeConfigChange))
+						newConfig
+					}
 				}
-				currentConfig
 			}
 
-			/** Queues an updater of the [[PrimaryState.currentTerm]] that does the following: updates the [[PrimaryState.currentTerm]] if the provided [[Term]] is higher than it at the moment the updater is executed.
+			/** Queues an updater of the [[PrimaryState.currentTerm]] that does the following:
+			 * - updates the [[PrimaryState.currentTerm]] if the provided [[Term]] is higher than it at the moment the updater is executed.
+			 * - if the role is sensible to term updates, the [[currentRole]] is changed.
 			 * @param seenTerm the [[Term]] to update the [[PrimaryState]] with, provided it is higher than the [[PrimaryState.currentTerm]] when the queued updater is executed.
 			 * @param previousTermRef the [[Term]] value in this reference object is overwritten with the [[PrimaryState.currentTerm]] corresponding to the [[PrimaryState]] before the causally anchored advance is performed.
 			 * @note About the safety of reusing the same [[TermRef]] instance for different calls: The value is guaranteed to reflect the expected value provided it is read within the synchronous part of a synchronously subscribed consumer to the [[sequencer.LatchingDuty]] returned by [[updateTermIfLessThan]]. See the game-changing-invariant in [[Doer.CausalFence]]. */
@@ -1809,17 +2103,22 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.step("updateTermIfLessThan") {
 					for primaryState1 <- primaryStateFence.advanceIf { (primaryState0: PrimaryState) => 
 						previousTermRef.elem = primaryState0.currentTerm
-						if seenTerm > primaryState0.currentTerm then Maybe(primaryState0.withTermUpdated(seenTerm))
-						else Maybe.empty	
-					} yield if primaryState1.currentTerm > previousTermRef.elem then onTermBumped(primaryState1) else primaryState1
+						if seenTerm > primaryState0.currentTerm then primaryState0 match {
+							case accessible0: Accessible => Maybe(accessible0.withTermUpdated(seenTerm))
+							case Inaccessible => Maybe.empty
+						}
+						else Maybe.empty
+					} yield if primaryState1.currentTerm > previousTermRef.elem then onTermUpdated(primaryState1, Maybe.empty) else primaryState1
 				}
 
-			private def memorizedParticipantInfosToArray(currentConfig: Configuration): IArray[StateInfo] = {
-				currentConfig.peers.mapWithIndex { (participantId, _) => memorizedParticipantInfos.get(participantId) }
+			private def memorizedPeersInfosToArray(currentConfig: Configuration): IArray[StateInfo] = {
+				currentConfig.peers.mapWithIndex { (peerId, _) => memorizedPeersInfos.get(peerId) }
 			}
 
-			/** Called by [[updateTermIfLessThan]] if the [[PrimaryState.currentTerm]] is updated. */
-			def onTermBumped(primaryState: PrimaryState)(using Context): PrimaryState = primaryState
+			/** Called by [[updateTermIfLessThan]] and [[onInstallSnapshot]] when the [[PrimaryState.currentTerm]] is updated because a higher term was observed.\
+			 * @param primaryState the current [[PrimaryState]]
+			 * @param maybeLeaderId the identifier of the leader, if known. */
+			def onTermUpdated(primaryState: PrimaryState, maybeLeaderId: Maybe[ParticipantId])(using Context): PrimaryState = primaryState
 		}
 
 		/** A terminal [[Role]] that indicates this [[ConsensusParticipant]] service will be ready to be disposed after all the in-flight RPC calls it did have been heard.
@@ -1835,19 +2134,22 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** A [[sequencer.LatchingDuty]] that is fulfilled when the all the allocated [[Workspace]]s are released. */
 			def completed: sequencer.LatchingDuty[Unit] = workspaceReleasedCovenant
 
-			override def onEnter(previousRole: Role)(using Context): Unit = {
+			override def handleEnter(previousRole: Role)(using Context): Unit = {
 				Trace.step("Quiesced.onEnter") {
 					notifyListeners(_.onBecameQuiesced(previousRole.ordinal, previousRole.getCommittedPrimaryState.currentTerm, motive))
 					retirementDriverByParticipantId.clear()
-					cluster.notifyQuiesced(motive)
+					retryPermitQuiescenceWakeUp.foreach(_.cancel())
+					retryPermitQuiescenceWakeUp = Maybe.empty
+					nonAcknowledgedQuiescencePermissions.clear()
+					cluster.onQuiesced(motive)
 				}
 			}
 
 			override def syncLocalStateInfo(primaryState: PrimaryState)(using Context): StateInfo =
 				buildIneligibleInfo(PRE_INIT)
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] =
-				yieldsBlankVote(PRE_INIT, currentBallot)
+			override def determineMyVote(primaryState0: PrimaryState, currentStateInfo: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] =
+				yieldsBlankVote(PRE_INIT, currentStateInfo.ballot)
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[StateInfo] = {
 				checkWithin()
@@ -1862,7 +2164,12 @@ trait ConsensusParticipantSdm { thisModule =>
 				yieldsBlankVote(PRE_INIT, myStateInfo.ballot)
 			}
 
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+				checkWithin()
+				sequencer.LatchingDuty_ready(AppendResult(PRE_INIT, Long.MaxValue, ordinal))
+			}
+
+			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				checkWithin()
 				sequencer.LatchingDuty_ready(AppendResult(PRE_INIT, Long.MaxValue, ordinal))
 			}
@@ -1872,12 +2179,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * Why the [[FALLBACK]] bit? Because the behavior of a [[Quiesced]] and a non-existent participant should be similar, given [[Quiesced]] is just a transient state before becoming inexistent. */
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
 				checkWithin()
-				sequencer.LatchingDuty_ready(Unable(attemptFlag.withInternalBitsCleared | FALLBACK, cluster.getOtherProbableParticipant))
+				sequencer.LatchingDuty_ready(Unable(attemptFlag.withInternalBitsCleared | FALLBACK, cluster.getOtherProbableParticipants))
 			}
 
 			override def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ConfigChangeResponse]): sequencer.LatchingDuty[ConfigChangeResponse] = {
 				var myCurrentStateInfo = buildIneligibleInfo(PRE_INIT)
-				// If a prior answer is provided, update the current ballot and memorizedParticipantInfos
+				// If a prior answer is provided, update the current ballot and memorizedPeersInfos
 				priorAnswer.foreach { priorResponse =>
 					if updateBallotIfLowerThan(myCurrentStateInfo, priorResponse.latestBallotSeen) then myCurrentStateInfo = buildIneligibleInfo(PRE_INIT)
 				}
@@ -1892,15 +2199,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			else Maybe(new Quiesced(motive))
 		}
 
-		/** A transitional [[Role]] before [[Quiesced]] to which a participant transitions to when a [[StableConfigChange]] that excludes it becomes active.
-		 * The life of this [[Role]] last until a stable [[Leader]] of a subsequent [[Term]] authorizes this participant to quiesce.
-		 *
-		 * This [[Role]] is part of the **Retiring Quorum-Buffering** mechanism.
-		 * The purpose of this mechanism is to maintain the quorum safety of the old participant set during joint consensus.
-		 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute toward the old set's quorum. Although they do not cast a specific vote, they effectively lower the required threshold of active votes by one, acting as a neutral "don't care" participant until a succeeding leader (líder sucesor) establishes a stable majority in the new configuration.
-		 *
-		 * Since this role must exist for that reason, we also take advantage of its presence to wait for the [[RetirementDriver]]s to conclude their job. In this scenario, the job of the [[RetirementDriver]]s of this retiring ex-leader will overlap with the job of the [[RetirementDriver]]s of the succeeding [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].
-		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]].
+		/** A transitional [[Role]] before [[Quiesced]] to which a participant transitions to when a [[StableConfigChange]] that excludes it becomes active.\
+		 * The life of this [[Role]] last until a stable [[Leader]] of a subsequent [[Term]] authorizes this participant to quiesce.\
+		 * This [[Role]] is part of the **Retiring Quorum-Buffering** mechanism.\
+		 * The purpose of this mechanism is to maintain the quorum safety of the old participant set during joint consensus.\
+		 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute toward the old set's quorum. Although they do not cast a specific vote, they effectively lower the required threshold of active votes by one, acting as a neutral "don't care" participant until a succeeding leader (líder sucesor) establishes a stable majority in the new configuration.\
+		 * Since this role must exist for that reason, we also take advantage of its presence to wait for the [[RetirementDriver]]s to conclude their job. In this scenario, the job of the [[RetirementDriver]]s of this retiring ex-leader will overlap with the job of the [[RetirementDriver]]s of the succeeding [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].\
+		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]]. Used only as argument for the [[NotificationListener.onRetiring]] method, and [[AppendResult]] responses.
+		 * @param termAtExcludingConfigIndex the [[Term]] of the [[StableConfigChange]] that excluded this participant causing its retirement. This is the term that a [[Retiring]] participant exposes in [[StateInfo]] during elections.
 		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
 		 * @param excludingConfigElectorate The electorate of the [[StableConfigChange]] that excluded this participant. */
 		private final class Retiring(val finalTerm: Term, val termAtExcludingConfigIndex: Term, val excludingConfigIndex: RecordIndex, val excludingConfigElectorate: IArray[ParticipantId]) extends Role {
@@ -1909,7 +2215,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			if assertionsEnabled then assert(!excludingConfigElectorate.contains(boundParticipantId))
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onRetiring(previous.ordinal, finalTerm))
 				becomeQuiescedIfEligible(excludingConfigIndex)
 			}
@@ -1918,17 +2224,17 @@ trait ConsensusParticipantSdm { thisModule =>
 				syncLocalStateInfo()
 
 			private def syncLocalStateInfo(): StateInfo = {
-				if stateInfoExposedInLastInteraction.tiesWith(finalTerm, rank, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex) then {
-					if stateInfoExposedInLastInteraction.ballot != currentBallot then stateInfoExposedInLastInteraction = StateInfo(finalTerm, rank, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex, currentBallot)
+				if stateInfoExposedInLastInteraction.tiesWith(termAtExcludingConfigIndex, rank, termAtExcludingConfigIndex, excludingConfigIndex, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex) then {
+					if stateInfoExposedInLastInteraction.ballot != currentBallot then stateInfoExposedInLastInteraction = StateInfo(termAtExcludingConfigIndex, rank, termAtExcludingConfigIndex, excludingConfigIndex, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex, currentBallot)
 				} else {
 					currentBallot = currentBallot.bumped
-					stateInfoExposedInLastInteraction = StateInfo(finalTerm, rank, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex, currentBallot)
+					stateInfoExposedInLastInteraction = StateInfo(termAtExcludingConfigIndex, rank, termAtExcludingConfigIndex, excludingConfigIndex, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigIndex, currentBallot)
 				}
 				stateInfoExposedInLastInteraction
 			}
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
-				yieldsBlankVote(finalTerm, syncLocalStateInfo(primaryState0).ballot)
+			override def determineMyVote(primaryState0: PrimaryState, currentStateInfo: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
+				yieldsBlankVote(termAtExcludingConfigIndex, currentStateInfo.ballot)
 			}
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[StateInfo] = {
@@ -1942,13 +2248,13 @@ trait ConsensusParticipantSdm { thisModule =>
 				checkWithin()
 				var myStateInfo = syncLocalStateInfo()
 				if updateSeenStateInfo(myStateInfo, inquirerId, inquirerInfo) then myStateInfo = syncLocalStateInfo()
-				yieldsBlankVote(finalTerm, myStateInfo.ballot)
+				yieldsBlankVote(termAtExcludingConfigIndex, myStateInfo.ballot)
 			}
 
 			override def requestConfigChange(requestId: ConfigChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ConfigChangeResponse]): sequencer.LatchingDuty[ConfigChangeResponse] = {
 				Trace.init(() => s"$boundParticipantId: Retiring.requestConfigChange") {
 					var myCurrentStateInfo = syncLocalStateInfo()
-					// If a prior answer is provided, update the current ballot and memorizedParticipantInfos
+					// If a prior answer is provided, update the current ballot and memorizedPeersInfos
 					priorAnswer.foreach { priorResponse =>
 						if updateBallotIfLowerThan(myCurrentStateInfo, priorResponse.latestBallotSeen) then myCurrentStateInfo = syncLocalStateInfo()
 					}
@@ -1961,27 +2267,57 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
 				sequencer.LatchingDuty_ready(Unable(
 					attemptFlag.withInternalBitsCleared,
-					ListSet.newBuilder[ParticipantId].addAll(excludingConfigElectorate).addAll(cluster.getOtherProbableParticipant).result()
+					ListSet.newBuilder[ParticipantId].addAll(excludingConfigElectorate).addAll(cluster.getOtherProbableParticipants).result()
 				))
 			}
 
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				Trace.init(() => s"$boundParticipantId: Retiring.onAppendRecords") {
 					// Check if the received records contain a later [[TransitionalConfigChange]] that includes this participant.
-					val relativeIndexOfTheIncludingConfigChange = records.lastIndexWhere {
-						case tcc: TransitionalConfigChange[ParticipantId] @unchecked => tcc.newParticipants.contains(boundParticipantId)
-						case _ => false
+					findLastIncludingConfigChangeIn(prevRecordIndex + 1, batch).fold(
+						// If not, return a rejection.
+						sequencer.LatchingDuty_ready(AppendResult(finalTerm, excludingConfigIndex + 1, ordinal))
+					) { findResult =>
+						// If yes, become starting and redirect the append records request to the new role.
+						val activeParticipants = ListSet.newBuilder.addAll(findResult.tcc.oldParticipants).addAll(findResult.tcc.newParticipants).result()
+						become(Starting(findResult.index, activeParticipants))
+							.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)
 					}
-					val indexOfTheIncludingConfigChange = prevRecordIndex + 1 + relativeIndexOfTheIncludingConfigChange
-					// If not, return a rejection.
-					if relativeIndexOfTheIncludingConfigChange < 0 || indexOfTheIncludingConfigChange <= excludingConfigIndex
-					then sequencer.LatchingDuty_ready(AppendResult(finalTerm, excludingConfigIndex + 1, ordinal))
-					// If yes, become starting and redirect the append records request to the new role.
-					else {
-						val includingConfigChange = records(relativeIndexOfTheIncludingConfigChange).asInstanceOf[TransitionalConfigChange[ParticipantId]] // Safe: the element at this index was matched as TransitionalConfigChange[ParticipantId] by lastIndexWhere above.
-						val activeParticipants = ListSet.newBuilder.addAll(includingConfigChange.oldParticipants).addAll(includingConfigChange.newParticipants).result()
-						become(Starting(indexOfTheIncludingConfigChange, activeParticipants))
-							.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
+				}
+			}
+
+			/** Finds the last [[TransitionalConfigChange]] that includes this participant among the provided records.
+			 * @param offset the [[RecordIndex]] of the first record.
+			 * @param records the records to sarch in. */
+			private def findLastIncludingConfigChangeIn(offset: RecordIndex, records: IArray[Record]): Maybe[(index: RecordIndex, tcc: TransitionalConfigChange[ParticipantId])] = {
+				val excludingConfigRelativeIndex = (this.excludingConfigIndex - offset).toInt
+				var relativeIndex = records.length - 1
+				while relativeIndex >= 0 && relativeIndex > excludingConfigRelativeIndex do {
+					records(relativeIndex) match {
+						case tcc: TransitionalConfigChange[ParticipantId] @unchecked if tcc.newParticipants.contains(boundParticipantId) => return Maybe((relativeIndex + offset, tcc))
+						case _ => relativeIndex -= 1
+					}
+				}
+				Maybe.empty
+			}
+
+			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+				checkWithin()
+				Trace.init(() => s"$boundParticipantId: Retiring.onInstallSnapshot") {
+					// Check if the received records or the snapshot contain a later [[TransitionalConfigChange]] that includes this participant.
+					findLastIncludingConfigChangeIn(snapshot.lastIncludedRecordIndex + 1, batch).orElse(
+						snapshot.latestConfigChange match {
+							case tcc: TransitionalConfigChange[ParticipantId] if tcc.newParticipants.contains(boundParticipantId) && snapshot.latestConfigChangeIndex > excludingConfigIndex => Maybe((snapshot.lastIncludedRecordIndex, tcc))
+							case _ => Maybe.empty
+						}
+					).fold(
+						// If not, return a rejection.
+						sequencer.LatchingDuty_ready(AppendResult(finalTerm, excludingConfigIndex + 1, ordinal))
+					) { findResult =>
+						// If yes, become starting and redirect the append records request to the new role.
+						val activeParticipants = ListSet.newBuilder.addAll(findResult.tcc.oldParticipants).addAll(findResult.tcc.newParticipants).result()
+						become(Starting(findResult.index, activeParticipants))
+							.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
 					}
 				}
 			}
@@ -1996,12 +2332,13 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/**
-		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]].
+		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]]. Used only as argument for the [[NotificationListener.onRetiring]] method, and [[AppendResult]] responses.
+		 * @param termAtExcludingConfigIndex the [[Term]] of the [[StableConfigChange]] that excluded this participant causing its retirement. This is the term that a [[Retiring]] participant exposes in [[StateInfo]] during elections.
 		 * @param excludingConfigIndex the index of the [[StableConfigChange]] that excluded this participant causing its retirement.
 		 * @param excludingConfigElectorate the electorate of the [[StableConfigChange]] that excluded this participant. */
 		private final def Retiring(finalTerm: Term, termAtExcludingConfigIndex: Term, excludingConfigIndex: RecordIndex, excludingConfigElectorate: IArray[ParticipantId]): Maybe[Retiring] = {
 			currentRole match {
-				case retiring: Retiring if retiring.finalTerm == finalTerm && retiring.excludingConfigIndex == excludingConfigIndex => Maybe.empty
+				case retiring: Retiring if retiring.excludingConfigIndex == excludingConfigIndex && retiring.termAtExcludingConfigIndex == termAtExcludingConfigIndex && retiring.finalTerm == finalTerm => Maybe.empty
 				case _ => Maybe(new Retiring(finalTerm, termAtExcludingConfigIndex, excludingConfigIndex, excludingConfigElectorate))
 			}
 		}
@@ -2017,22 +2354,23 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Is fulfilled after initializing this [[ConsensusParticipant]] and becoming another [[Role]]: [[Joining]], [[Isolated]], or [[Quiesced]]. */
 			private val startingCompletedCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Starting.onEnter") {
 					notifyListeners(_.onStarting(previous.ordinal, indexOfTheIncludingConfigChange))
 
 					storage.load.subscribe {
 						case Success(loadedWorkspace) =>
-							val indexOfTopConfigChange = loadedWorkspace.indexOfTopConfigChange
+							val indexOfLatestConfigChange = loadedWorkspace.indexOfLatestConfigChange
+							val primaryState = new Accessible(loadedWorkspace)
 							val rulingConfigChange = {
-								if indexOfTopConfigChange == 0 then {
+								if indexOfLatestConfigChange == 0 then {
 									loadedWorkspace.setCurrentTerm(PRE_INIT)
 									new TransitionalConfigChange[ParticipantId](PRE_INIT, "Initial-Config", Set.empty, cluster.getInitialParticipants) // TODO consider using the set provided in the Starting constructor instead, and remove the `getInitialParticipants` method.
 
-								} else loadedWorkspace.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
+								} else loadedWorkspace.latestConfigChange.get match {
 									// If the top configuration change in the log is a stable one, then the previous transitional configuration change rules until the commitIndex crosses the index of top stable one, which is not happening now because the commitIndex is initialized with zero.
 									case stableConfigChange: StableConfigChange[ParticipantId] @unchecked =>
-										if commitIndex >= indexOfTopConfigChange then stableConfigChange
+										if commitIndex >= indexOfLatestConfigChange then stableConfigChange
 										else stableConfigChange.recreateCouple
 
 									// If the top configuration change in the log is a transitional one, then it rules immediately.
@@ -2040,15 +2378,14 @@ trait ConsensusParticipantSdm { thisModule =>
 										transitionalConfigChange
 								}
 							}
-							val config = Configuration_from(rulingConfigChange, indexOfTopConfigChange)
+							val config = Configuration_from(rulingConfigChange, indexOfLatestConfigChange)
 							val isSeed = indexOfTheIncludingConfigChange == 0
 							if isSeed && !config.isBoundIncluded then {
 								become(Quiesced(Success(s"Start-up aborted because this ConsensusParticipant instance does not belong to the active cluster-configuration.")))
 								startingCompletedCovenant.fulfillUnsafe(Inaccessible)
 							}
 							else {
-								currentConfig = config
-								val primaryState = new Accessible(loadedWorkspace)
+								latestDerivedConfig = Maybe(config)
 								val primaryStateFence = sequencer.CausalFence[PrimaryState](primaryState)
 								notifyListeners(_.onStarted(previous.ordinal, primaryState.currentTerm, rulingConfigChange, isSeed))
 								if isSeed then become(Isolated(primaryStateFence))
@@ -2067,11 +2404,11 @@ trait ConsensusParticipantSdm { thisModule =>
 			override def syncLocalStateInfo(primaryState: PrimaryState)(using Context): StateInfo =
 				buildIneligibleInfo(primaryState.currentTerm)
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
+			override def determineMyVote(primaryState0: PrimaryState, dummy: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
 				checkWithin()
 				for {
 					primaryState1 <- startingCompletedCovenant // TODO ignoring the received primary state is suspicious. Analyze it.
-					response <- currentRole.determineMyVote(primaryState1, blankVoteIfRoleChanges)
+					response <- currentRole.determineMyVote(primaryState1, currentRole.syncLocalStateInfo(primaryState1), blankVoteIfRoleChanges)
 				} yield response
 			}
 
@@ -2091,11 +2428,19 @@ trait ConsensusParticipantSdm { thisModule =>
 				} yield response
 			}
 
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				checkWithin()
 				for {
 					_ <- startingCompletedCovenant
-					response <- currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
+					response <- currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)
+				} yield response
+			}
+
+			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+				checkWithin()
+				for {
+					_ <- startingCompletedCovenant
+					response <- currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
 				} yield response
 			}
 
@@ -2133,16 +2478,16 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val ordinal: RoleOrdinal = JOINING
 			override val rank: ElectionRank = ElectionRank_from(JOINING)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onJoining(previous.ordinal, indexOfTheIncludingConfigChange))
 			}
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
-				yieldsBlankVote(primaryState0.currentTerm, syncLocalStateInfo(primaryState0).ballot)
+			override def determineMyVote(primaryState0: PrimaryState, currentStateInfo: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
+				yieldsBlankVote(primaryState0.currentTerm, currentStateInfo.ballot)
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[Vote[ParticipantId]] = {
-				Trace.init(() => s"$boundParticipantId: Joinin.onChooseALeader") {
+				Trace.init(() => s"$boundParticipantId: Joining.onChooseALeader") {
 					for {
 						primaryState <- primaryStateFence.causalAnchor()
 						response <- {
@@ -2161,9 +2506,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def requestConfigChange(primaryState: Accessible, requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Trace.Context): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.step("Joining.requestConfigChange") {
-					sequencer.LatchingDuty_ready(CATCHING_UP(syncLocalStateInfo(primaryState).ballot))
-				}
+				sequencer.LatchingDuty_ready(CATCHING_UP(syncLocalStateInfo(primaryState).ballot))
 			}
 		}
 
@@ -2190,7 +2533,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * If so, it becomes a follower or a candidate respectively.
 			 * If not, it stays in the isolated state and checks again after a while.
 			 */
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onBecameIsolated(previous.ordinal, psf.committedState.currentTerm))
 			}
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
@@ -2207,17 +2550,15 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def requestConfigChange(primaryState0: Accessible, requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.step("Isolated.requestConfigChange") {
-					Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request. ")
-					for {
-						_ <- updateRole(primaryState0) // TODO consider making updateRole return the current primary state, so that the causalAnchor method call is not needed here (and other places also).
-						primaryState <- primaryStateFence.causalAnchor()
-						response <- {
-							if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-							else sequencer.LatchingDuty_ready(SECLUDED(syncLocalStateInfo(primaryState).ballot))
-						}
-					} yield response
-				}
+				Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request. ")
+				for {
+					_ <- updateRole(primaryState0) // TODO consider making updateRole return the current primary state, so that the causalAnchor method call is not needed here (and other places also).
+					primaryState <- primaryStateFence.causalAnchor()
+					response <- {
+						if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+						else sequencer.LatchingDuty_ready(SECLUDED(syncLocalStateInfo(primaryState).ballot))
+					}
+				} yield response
 			}
 		}
 
@@ -2233,7 +2574,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *		- updates the [[Term]] to the provided one, and then transitions to [[Isolated]] or [[Retiring]].
 		 *
 		 * Note that this [[Role]] is not hosted when the [[Term]] is updated by the [[StatefulRole.onAppendRecords]] handler, which does the update itself.
-		 * It behaves as [[Isolated]] except that, in the [[onEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest [[Term]] seen if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
+		 * It behaves as [[Isolated]] except that, in the [[handleEnter]] life-cycle stage it enqueues an updater of the [[PrimaryState.currentTerm]] that sets it to the latest [[Term]] seen if not already; and then transitions to [[Retiring]] if this participant is excluded from the active [[Configuration]], or to [[Isolated]] otherwise.
 		 *
 		 * @param endedTerm the [[Term]] that concluded, during which this participant acted as [[Leader]].
 		 * TODO Replace this class with a method that transitions to [[Isolated]] or [[Retiring]] in a synchronous manner, and then enqueues a term update. The problem with the current class approach is the incorrect isolated-like behavior during the transition to retiring.
@@ -2243,12 +2584,16 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			override val rank: ElectionRank = ElectionRank_from(HANDING_OFF)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onHandingOff(endedTerm))
 
 				for {
 					primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
-						if primaryState0.currentTerm < latestTermSeen then Maybe(primaryState0.withTermUpdated(latestTermSeen)) else Maybe.empty
+						if primaryState0.currentTerm >= latestTermSeen then Maybe.empty
+						else primaryState0 match {
+							case accessible0: Accessible => Maybe(accessible0.withTermUpdated(latestTermSeen))
+							case Inaccessible => Maybe.empty
+						}
 					}
 				} do if currentRole eq this then primaryState1 match {
 					case Inaccessible =>
@@ -2273,14 +2618,14 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * Behavior when the participant has the follower role. Taken when reachability to a majority of the participants is achieved and one of them has the [[Leader]] role and is in a higher or equal term.
 		 *
 		 * In this state, the participant acknowledges the specified leader.
-		 *
-		 * @param followeeId The ID of the participant this participant is following.
+		 * @param term the [[Term]] during which the followed participant is the leader. This field exists to differentiate [[Follower]] instances. // TODO explain why is necessary to differentiate them.
+		 * @param followeeId The ID of the participant this follower is following.
 		 */
 		private final class Follower(val term: Term, val followeeId: ParticipantId, psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
 			override val ordinal: RoleOrdinal = FOLLOWER
 			override val rank: ElectionRank = ElectionRank_from(FOLLOWER)
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				notifyListeners(_.onBecameFollower(previous.ordinal, term, followeeId))
 			}
 
@@ -2299,17 +2644,20 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def requestConfigChange(primaryState0: Accessible, requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.step("Follower.requestConfigChange") {
-					Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request.")
-					for {
-						_ <- updateRole(primaryState0)
-						primaryState1 <- primaryStateFence.causalAnchor()
-						response <- {
-							if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-							else sequencer.LatchingDuty_ready(ASK_THE_LEADER(followeeId, syncLocalStateInfo(primaryState1).ballot))
-						}
-					} yield response
-				}
+				Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due to a configuration change request.")
+				for {
+					_ <- updateRole(primaryState0)
+					primaryState1 <- primaryStateFence.causalAnchor()
+					response <- {
+						if currentRole ne this then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+						else sequencer.LatchingDuty_ready(ASK_THE_LEADER(followeeId, syncLocalStateInfo(primaryState1).ballot))
+					}
+				} yield response
+			}
+
+			override def onTermUpdated(primaryState: PrimaryState, maybeLeaderId: Maybe[ParticipantId])(using Context): PrimaryState = {
+				become(maybeLeaderId.fold(Isolated(primaryStateFence))(Follower(primaryState.currentTerm, _, primaryStateFence)))
+				primaryState
 			}
 		}
 
@@ -2321,7 +2669,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/** A hidden (not seen by other participants) and transitional substate of a leading participant that last until the term bump is stored.
-		 * During this interval, all the RPC calls this [[ConsensusParticipant]] receives are put in standby until the bumped term is stored and role transitioned, such that responses to queries form the outside never completed in this role and, therefore, the role ordinal in responses is never [[PROMOTING]]. */
+		 * During this interval, all the RPC calls this [[ConsensusParticipant]] receives are put in standby until the bumped term is stored and the role transitioned. This means that responses to queries form the outside never complete in this role and, therefore, the role ordinal in responses is never [[PROMOTING]].
+		 * Also, given the [[currentRole]] is changed to [[Leader]] synchronously in a consumer synchronously subscribed to the [[LatchingDuty]] returned by [[primaryStateFence.advanceIf]], sections of code guarded by the same fence will never see [[currentRole]] referencing a [[Promoting]] instance. See the [[CausalFence]]'s game changing invariant. */
 		private final class Promoting(fromTerm: Term, psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
 			/** The ordinal corresponding to this [[Role]] */
 			override val ordinal: RoleOrdinal = PROMOTING
@@ -2330,8 +2679,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Is fulfilled after bumping the term and becoming [[Leader]] if success, or [[Quiesced]] if fails to persist the primary state. */
 			private val promotionCovenant: sequencer.Covenant[PrimaryState] = sequencer.Covenant()
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit =
+			override def handleEnter(previous: Role)(using Trace.Context): Unit =
 				Trace.step("Promoting.onEnter") {
+					// Notifiy the listeners
 					notifyListeners(_.onPromoting(previous.ordinal, getCommittedPrimaryState.currentTerm))
 
 					for {
@@ -2340,7 +2690,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							if currentRole ne this then Maybe.empty
 							else primaryState0 match {
 								case Inaccessible => Maybe.empty
-								case accessible0: Accessible => Maybe(primaryState0.withTermUpdated(primaryState0.currentTerm.incremented))
+								case accessible0: Accessible => Maybe(accessible0.withTermUpdated(primaryState0.currentTerm.incremented))
 							}
 						}
 					} do {
@@ -2350,21 +2700,23 @@ trait ConsensusParticipantSdm { thisModule =>
 									illegalStateQuiesce()
 
 								case accessible1: Accessible =>
-									become(Maybe(new Leader(accessible1.currentTerm, accessible1, deriveConfigurationFrom(accessible1), primaryStateFence)))
+									// Become the leader.
+									val config1 = deriveConfigurationFrom(accessible1)
+									become(Maybe(new Leader(accessible1.currentTerm, accessible1, config1, primaryStateFence)))
+								// // Start the commited-commands-applier to apply any potentially unapplied record commited by the previous role. This is necessary because the Leader applies the commands directly to the state machine and therefore, never starts the commited-commands-applier.
+								// if decoupledCommandsApplierCompletion.isCompleted then startApplyingCommittedCommands(accessible1, false)
 							}
 						}
 						promotionCovenant.fulfillUnsafe(primaryState1)
 					}
 				}
 
-			override def determineMyVote(primaryState0: PrimaryState, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
-				Trace.step("Promoting.determineMyVote") {
-					checkWithin()
-					for {
-						primaryState1 <- promotionCovenant
-						vote <- currentRole.determineMyVote(primaryState1, blankVoteIfRoleChanges)
-					} yield vote
-				}
+			override def determineMyVote(primaryState0: PrimaryState, dummy: StateInfo, blankVoteIfRoleChanges: Boolean)(using Context): sequencer.LatchingDuty[Vote[ParticipantId]] = {
+				checkWithin()
+				for {
+					primaryState1 <- promotionCovenant
+					vote <- currentRole.determineMyVote(primaryState1, currentRole.syncLocalStateInfo(primaryState1), blankVoteIfRoleChanges)
+				} yield vote
 			}
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingDuty[StateInfo] = {
@@ -2383,11 +2735,11 @@ trait ConsensusParticipantSdm { thisModule =>
 				} yield vote
 			}
 
-			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, records: GenIndexedSeq[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
+			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingDuty[AppendResult] = {
 				checkWithin()
 				for {
 					_ <- promotionCovenant
-					response <- currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, records, leaderCommit, termAtLeaderCommit)
+					response <- currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)
 				} yield response
 			}
 
@@ -2400,16 +2752,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def requestConfigChange(primaryState: Accessible, requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Trace.Context): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.step("Promoting.requestConfigChange") {
-					for {
-						_ <- promotionCovenant
-						response <- currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-					} yield response
-				}
+				for {
+					_ <- promotionCovenant
+					response <- currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+				} yield response
 			}
 		}
 
-		private inline def Promoting(fromTerm: Term, psf: sequencer.CausalFence[PrimaryState]): Maybe[Promoting] = {
+		private final def Promoting(fromTerm: Term, psf: sequencer.CausalFence[PrimaryState]): Maybe[Promoting] = {
 			currentRole match {
 				case leader: Leader if leader.leadedTerm == fromTerm && (leader.primaryStateFence eq psf) => Maybe.empty
 				case _ => Maybe(new Promoting(fromTerm, psf))
@@ -2421,15 +2771,12 @@ trait ConsensusParticipantSdm { thisModule =>
 		 *
 		 * In this state, the participant coordinates consensus decisions.
 		 * @param leadedTerm the [[Term]] owned by this [[Leader]] instance.
-		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
-		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[onEnter]] method only. Do not use elsewhere.
+		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
+		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
 		 * @param wsf the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances.
 		 * TODO replace the `initialPrimaryState` parameter with what is obtained from it. Storing an instance of [[Accessible]] is error prone.
 		 */
 		private final class Leader(val leadedTerm: Term, initialPrimaryState: Accessible, initialConfig: Configuration, wsf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(wsf) { thisLeader =>
-			/** The [[sequencer.Task]] returned by a call to [[ClusterParticipant.appendRecords]]. */
-			private type AppendRequest = sequencer.Task[AppendResult]
-
 			/** The outcome of the [[sequencer.Task]] returned by a call to [[ClusterParticipant.appendRecords]]. */
 			private type AppendResponse = Try[AppendResult]
 
@@ -2463,41 +2810,47 @@ trait ConsensusParticipantSdm { thisModule =>
 			private var serialOfLastReplicationAttempt: Int = 0
 
 			private var unreachableFollowersRetryWakeUp: Maybe[WakeUpToken] = Maybe.empty
+			private var sccReplicationRetryWakeUp: Maybe[WakeUpToken] = Maybe.empty
+			private var tccReplicationRetryWakeup: Maybe[WakeUpToken] = Maybe.empty
 
-			override def onEnter(previous: Role)(using Trace.Context): Unit = {
+			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Leader.onEnter") {
 					notifyListeners(_.onBecameLeader(previous.ordinal, leadedTerm))
 
-					val indexOfTopConfigChange = initialPrimaryState.indexOfTopConfigChange
-					// if the log lacks a ConfigChange record (is empty), create a synthetic one with the seed participants of the initial synthetic configuration (appointed in `currentConfig` during Starting).
-					if indexOfTopConfigChange == 0 then {
+					val indexOfLatestConfigChange = initialPrimaryState.indexOfLatestConfigChange
+					// if the log lacks a ConfigChange record (is empty), create a synthetic one with the seed participants of the initial synthetic configuration (appointed in `latestDerivedConfig` during Starting).
+					if indexOfLatestConfigChange == 0 then {
 						for primaryState1 <- primaryStateFence.advanceIf {
 							case Inaccessible => Maybe.empty
-							case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, currentConfig.backingConfigChange))
-						} yield startConfigChangeSecondPhase(currentConfig.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
+							case accessible0: Accessible => Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, latestDerivedConfig.get.backingConfigChange))
+						} yield startConfigChangeSecondPhase(latestDerivedConfig.get.backingConfigChange.asInstanceOf[TransitionalConfigChange[ParticipantId]], 1)
 					}
-					// if the log contains a ConfigChange record then:
-					else initialPrimaryState.getRecordAt(indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]] match {
+					// if the log contains a ConfigChange then:
+					else initialPrimaryState.latestConfigChange.get match {
 						// If the top configuration change in the local log is a transitional one, continue the configuration transition process. This happens when the leader that started the first phase of the configuration change crashed or left the leadership before achieving the replication of the TransitionalConfigChange to a majority, or while storing the StableConfigChange in his persistent log.
 						case tcc: TransitionalConfigChange[ParticipantId @unchecked] =>
-							startConfigChangeSecondPhase(tcc, indexOfTopConfigChange)
+							startConfigChangeSecondPhase(tcc, indexOfLatestConfigChange)
 
 						// If, on the contrary, is a stable one
 						case scc: StableConfigChange[ParticipantId @unchecked] =>
-							// ... and it was committed (commitIndex >= its index in the log), program the driving of excluded participants to retirement and authorize retiring participants to quiesce.
-							if commitIndex >= indexOfTopConfigChange then thisLeader.driveTheRetirements(initialPrimaryState, initialConfig, scc, indexOfTopConfigChange)
+							// ... and it was committed (commitIndex >= its index in the log), program the driving of excluded participants to retirement.
+							if commitIndex >= indexOfLatestConfigChange then thisLeader.driveTheRetirements(initialPrimaryState, Maybe.empty, scc, indexOfLatestConfigChange)
 							// ... and it wasn't committed (commitIndex < its index in the log), drive its commitment eagerly.
-							else replicateUntilSuccessOrLeaderRoleIsAbandoned(initialPrimaryState, indexOfTopConfigChange)
+							else replicateSccUntilSuccessOrLeaderRoleIsAbandoned(initialPrimaryState, indexOfLatestConfigChange, 0)
 							
 					}
 				}
 			}
 
 
-			override def onLeave(newRole: Role): Unit = {
-				super.onLeave(newRole)
+			override def handleExit(newRole: Role): Unit = {
+				super.handleExit(newRole)
 				unreachableFollowersRetryWakeUp.foreach(_.cancel())
 				unreachableFollowersRetryWakeUp = Maybe.empty
+				sccReplicationRetryWakeUp.foreach(_.cancel())
+				sccReplicationRetryWakeUp = Maybe.empty
+				tccReplicationRetryWakeup.foreach(_.cancel())
+				tccReplicationRetryWakeup = Maybe.empty
 			}
 
 			def isGhost: Boolean = indexOfConfigChangeThatExcludedThisParticipant > 0
@@ -2505,13 +2858,14 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** @inheritdoc
 			 *  This implementation does two different things:
 			 *  1) Updates the [[RetiringParticipantsManager]] to include any new old-configuration-only retiring participant (those that are not part of the new [[Configuration]], but still need more appends until their [[commitIndex]] reaches the index of the [[StableConfigChange]] that excluded them).
-			 *  2) Recreates and initializes the [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] arrays keeping the elements corresponding to the participants that remain and moving them to the appropriate index.
+			 *  2) Recreates and initializes the [[indexOfNextRecordToSend_ByParticipantIndex]], [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and [[highestRecordIndexKnowToBeCommitted_ByParticipantIndex]] arrays keeping the elements corresponding to the participants that remain and moving them to the appropriate index.
+			 * @param oldConfig the [[Configuration]] that determines which participants corresponds to each element of the [[indexOfNextRecordToSend_ByParticipantIndex]], [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and [[highestRecordIndexKnowToBeCommitted_ByParticipantIndex]] arrays.
 			 * @note This rearrangement wouldn't be necessary if maps instead of arrays were used. But considering these two collections are heavily used, efficiency was primed. */
-			override def onActiveConfigChanged(currentPrimaryState: Accessible, oldConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = Trace.step("onActiveConfigChanged") {
+			override def handleActiveConfigChange(currentPrimaryState: Accessible, oldConfig: Configuration, newConfig: Configuration, indexOfNewConfigChange: RecordIndex)(using Context): Unit = Trace.step("onActiveConfigChanged") {
 				// Step one. Must be before step two.
 				newConfig.backingConfigChange.match {
 					case scc: StableConfigChange[ParticipantId] =>
-						thisLeader.driveTheRetirements(currentPrimaryState, oldConfig, scc, indexOfNewConfigChange)
+						thisLeader.driveTheRetirements(currentPrimaryState, Maybe(oldConfig), scc, indexOfNewConfigChange)
 					case tcc: TransitionalConfigChange[ParticipantId] =>
 						// If a previous configuration change excluded this leading participant but a later configuration change includes it, clear the mark that instructs itself to retire (when it sees that the previous config change is committed).
 						if indexOfConfigChangeThatExcludedThisParticipant > 0 && newConfig.isBoundIncluded then indexOfConfigChangeThatExcludedThisParticipant = 0
@@ -2544,46 +2898,72 @@ trait ConsensusParticipantSdm { thisModule =>
 				highestRecordIndexKnowToBeCommitted_ByParticipantIndex = newHighestRecordIndexKnowToBeCommitted_ByParticipantIndex
 			}
 
-			/** Drives the excluded participant (the ones that are not active in the provided [[StableConfigChange]]) to retirement.
+			/** Drives the excluded participants (the ones that are not active in the provided [[StableConfigChange]]) to retirement.
 			 *		- If this [[Leader]] is excluded, sets the threshold [[indexOfConfigChangeThatExcludedThisParticipant]]. The replication logic checks it after successful appends to decide if a transition to the [[Retiring]] [[Role]] is needed.
 			 *		- Creates and registers an instance of [[RetirementDriver]] for each excluded follower that needs more appends to become [[Retiring]].
 			 * Must be called a single time whenever the participant becomes [[Leader]] with a [[StableConfig]] or the participant is leading and the active [[Configuration]] transitions to a [[StableConfig]].
 			 *
 			 * @param primaryState the [[PrimaryState]] from which the transition is derived.
-			 * @param oldConfig the [[Configuration]] that is being abandoned and on which the [[Leader]] derived state is based. Needed to know what is in each element of the [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]].
-			 * @param configChange the [[ConfigChange]] that caused the transition.
-			 * @param configChangeIndex the log index where the provided [[ConfigChange]] is stored. */
-			private def driveTheRetirements(primaryState: Accessible, oldConfig: Configuration, configChange: StableConfigChange[ParticipantId], configChangeIndex: RecordIndex)(using Context): Unit = {
-				assert(commitIndex >= configChangeIndex)
+			 * @param maybeStandingConfig the [[Configuration]] on which the [[Leader]] derived state is based. May be the same as the received in the `stableConfigChange` parameter. It is needed to know what is in each element of the [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]].
+			 * @param stableConfigChange the [[StableConfigChange]] that might exclude participants.
+			 * @param stableConfigChangeIndex the log index where the provided [[StableConfigChange]] is stored. */
+			private def driveTheRetirements(primaryState: Accessible, maybeStandingConfig: Maybe[Configuration], stableConfigChange: StableConfigChange[ParticipantId], stableConfigChangeIndex: RecordIndex)(using Context): Unit = {
+				assert(commitIndex >= stableConfigChangeIndex && maybeStandingConfig.fold(true)(_.isInstanceOf[TransitionalConfig]))
 
 				// Stop the RetirementDriver instances corresponding to the participants that become included.
-				retirementDriverByParticipantId.filterInPlace { (retireeId, driver) => configChange.newParticipants.contains(retireeId) }
+				retirementDriverByParticipantId.filterInPlace { (retireeId, driver) => !stableConfigChange.newParticipants.contains(retireeId) }
 
 				// Find out which are the participants that become excluded.
-				val newRetiringParticipants = configChange.oldParticipants.diff(configChange.newParticipants)
+				val newRetiringParticipants = stableConfigChange.oldParticipants.diff(stableConfigChange.newParticipants)
 
 				// If this leader is excluded, set the threshold until which this leader will continue leading as a ghost.
-				if newRetiringParticipants.contains(boundParticipantId) then thisLeader.indexOfConfigChangeThatExcludedThisParticipant = configChangeIndex
+				if newRetiringParticipants.contains(boundParticipantId) then thisLeader.indexOfConfigChangeThatExcludedThisParticipant = stableConfigChangeIndex
 				// If this leader continues as a stable leader (not a ghost), authorize the quiescence of the retiring followers.
-				else authorizeQuiescenceTo(configChange.oldParticipants - boundParticipantId, configChangeIndex, false)
+				else {
+					val notNewParticipants = newRetiringParticipants.union(cluster.getOtherProbableParticipants).diff(stableConfigChange.newParticipants)
+					authorizeQuiescenceTo(notNewParticipants, stableConfigChangeIndex, false)
+				}
 
-				// Create and register a retirement driver for each follower that is excluded.
-				oldConfig.peers.foreachWithIndex { (participantId, participantIndex) =>
-					if highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) < configChangeIndex && newRetiringParticipants.contains(participantId) then {
-						val highestRecordIndexKnownToBeAppended = thisLeader.highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex)
-						val indexOfFirstPotentiallyUnappendedRecord = highestRecordIndexKnownToBeAppended + 1
-						val potentiallyUnappendedRecords: GenIndexedSeq[Record] = primaryState.getRecordsBetween(indexOfFirstPotentiallyUnappendedRecord, configChangeIndex + 1)
-						val retirementDriver = new RetirementDriver(
-							participantId,
-							primaryState.getRecordTermAt(highestRecordIndexKnownToBeAppended),
-							potentiallyUnappendedRecords,
-							indexOfFirstPotentiallyUnappendedRecord,
-							configChangeIndex,
-							primaryState.getRecordTermAt(configChangeIndex),
-							thisLeader.indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
-						)
-						retirementDriverByParticipantId.put(participantId, retirementDriver)
-						retirementDriver.driveLoop(primaryState.currentTerm, 0)
+				val minCommitIndexOfExcludedParticipants: RecordIndex = maybeStandingConfig.fold(0L) { standingConfig =>
+					// Find the minimum of the `highestRecordIndexKnowToBeCommitted_ByParticipantIndex` array among the excluded participants.
+					standingConfig.peers.foldLeftWithIndex(commitIndex) { (minCommitIndex, participantId, participantIndex) =>
+						val highestRecordIndexKnowToBeCommitted = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
+						if highestRecordIndexKnowToBeCommitted < minCommitIndex && newRetiringParticipants.contains(participantId) then highestRecordIndexKnowToBeCommitted
+						else minCommitIndex
+					}
+				}
+				val termBeforeFirstPotentiallyUnappendedPlainRecord =
+					if minCommitIndexOfExcludedParticipants >= primaryState.logBufferOffset then primaryState.getRecordTermAt(minCommitIndexOfExcludedParticipants)
+					else primaryState.latestSnapshot.fold(PRE_INIT)(_.lastIncludedRecordTerm)
+				val indexOfFirstPotentiallyUnappendedRecord = minCommitIndexOfExcludedParticipants + 1
+				val indexOfFirstPotentiallyUnappendedPlainRecord = if indexOfFirstPotentiallyUnappendedRecord >= primaryState.logBufferOffset then indexOfFirstPotentiallyUnappendedRecord else primaryState.logBufferOffset
+				val potentiallyUnappendedPlainRecords: IArray[Record] = primaryState.getRecordsBetween(indexOfFirstPotentiallyUnappendedPlainRecord, stableConfigChangeIndex + 1)
+
+				/** Creates and registers a [[RetirementDriver]] for the specified participant. */
+				def start(participantId: ParticipantId, indexOfNextRecordToSend: RecordIndex): Unit = {
+					val retirementDriver = new RetirementDriver(
+						participantId,
+						termBeforeFirstPotentiallyUnappendedPlainRecord,
+						potentiallyUnappendedPlainRecords,
+						indexOfFirstPotentiallyUnappendedPlainRecord,
+						stableConfigChangeIndex,
+						primaryState.getRecordTermAt(stableConfigChangeIndex),
+						primaryState.latestSnapshot,
+						indexOfNextRecordToSend
+					)
+					retirementDriverByParticipantId.put(participantId, retirementDriver)
+					retirementDriver.driveLoop(primaryState.currentTerm, 0)
+				}
+
+				// Create and register a retirement driver for each follower that both, is excluded, and we are not certain that it has commited the `stableConfigChange`.
+				maybeStandingConfig.fold(
+					newRetiringParticipants.foreach { participantId =>
+						if participantId != boundParticipantId then start(participantId, stableConfigChangeIndex) // The exclusion of the bound participants is currently not necessary but is harmless and may be necessary and hard to catch if the logic is modified.
+					}
+				) { standingConfig =>
+					standingConfig.peers.foreachWithIndex { (participantId, participantIndex) =>
+						if highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) < stableConfigChangeIndex && newRetiringParticipants.contains(participantId)
+						then start(participantId, thisLeader.indexOfNextRecordToSend_ByParticipantIndex(participantIndex))
 					}
 				}
 			}
@@ -2595,154 +2975,161 @@ trait ConsensusParticipantSdm { thisModule =>
 			 */
 			private def authorizeQuiescenceTo(participants: Set[ParticipantId], permittedConfigChangeIndex: RecordIndex, includeMyself: Boolean)(using Trace.Context): Unit = {
 				Trace.step("authorizeQuiescenceTo") {
-					retryPermitQuiescenceWakeUp.foreach(_.cancel())
-
-					def loop(remainingParticipants: IArray[ParticipantId], retriesDone: Int = 0): Unit = {
-
-						val calls = for participantId <- remainingParticipants yield participantId.permitQuiescence(permittedConfigChangeIndex)
+					def loop(attemptsDone: Int = 0): Unit = {
+						val persmissionsArray = nonAcknowledgedQuiescencePermissions.toArray
+						val calls = for (participantId, indexOfAuthorizedScc) <- persmissionsArray yield participantId.permitQuiescence(indexOfAuthorizedScc)
 						for responses <- sequencer.LatchingDuty_sequenceTasksToArray(calls) do {
-
-							val failedParticipants = IArray.unsafeFromArray(responses).collectWithIndex { (response, index) =>
+							IArray.unsafeFromArray(responses).foreachWithIndex { (response, arrayIndex) =>
+								val permissionEntry = persmissionsArray(arrayIndex)
+								val participantId = permissionEntry._1
 								response match {
 									case Failure(e) =>
-										val participantId = remainingParticipants(index)
-										Trace.debug(s"$boundParticipantId: An attempt to permit $participantId to quiesce at $permittedConfigChangeIndex failed after $retriesDone retries with:", e)
-										Maybe(participantId)
-
+										val permittedCci = permissionEntry._2
+										Trace.debug(s"$boundParticipantId: An attempt to permit $participantId to quiesce at $permittedCci failed after $attemptsDone attempts ${if permittedCci == permittedConfigChangeIndex then "" else s"(since the configuration change at $permittedConfigChangeIndex)"} with:", e)
 									case _ =>
-										Maybe.empty
+										nonAcknowledgedQuiescencePermissions.remove(participantId)
 								}
 							}
-
-							if failedParticipants.length > 0 && retriesDone < MAX_PERMIT_QUIESCENCE_RETRIES then {
-								val token = requestWakeUp(WakeUpReason.QuiescenceAuthorizationRetry, () => loop(failedParticipants, retriesDone + 1))
+							if nonAcknowledgedQuiescencePermissions.nonEmpty && attemptsDone < MAX_PERMIT_QUIESCENCE_RETRIES then {
+								val token = requestWakeUp(WakeUpReason.QuiescenceAuthorizationRetry, attemptsDone, () => loop(attemptsDone + 1))
 								retryPermitQuiescenceWakeUp = Maybe(token)
 							} else {
-								if failedParticipants.length > 0 then Trace.warn(s"$boundParticipantId: The limit of retries ($retriesDone) to permit the participants ${remainingParticipants.mkString("[", ", ", "]")} to quiesce at $permittedConfigChangeIndex has been reached.")
+								if nonAcknowledgedQuiescencePermissions.nonEmpty then {
+									Trace.warn(s"$boundParticipantId: The limit of attempts ($attemptsDone) to permit the participants $nonAcknowledgedQuiescencePermissions to quiesce at $permittedConfigChangeIndex has been reached.")
+									nonAcknowledgedQuiescencePermissions.clear()
+								}
 								if includeMyself then currentRole.onQuiescencePermitted(boundParticipantId, permittedConfigChangeIndex)
+								else becomeQuiescedIfEligible(permittedConfigChangeIndex)
 							}
 						}
 					}
 
-					loop(IArray.from(participants))
+					retryPermitQuiescenceWakeUp.foreach(_.cancel())
+					participants.foreach { participantId => nonAcknowledgedQuiescencePermissions.put(participantId, permittedConfigChangeIndex) }
+					loop(0)
 				}
 			}
 
 			override def authorizeQuiescenceIfVanished(config: StableConfig)(using Trace.Context): Unit = {
-				if config.electorate.length == 0 then authorizeQuiescenceTo(config.backingConfigChange.oldParticipants - boundParticipantId, config.changeIndex, true)
+				if config.electorate.length == 0 then {
+					val notBoundParticipantId = config.backingConfigChange.oldParticipants.union(cluster.getOtherProbableParticipants) - boundParticipantId
+					authorizeQuiescenceTo(notBoundParticipantId, config.changeIndex, true)
+				}
 			}
 
 			/** Handles configuration-change request for [[Leader]]
 			 * Attempts a [[Configuration]] change, starting with the first phase and, if successful, continuing with the second. */
 			override def requestConfigChange(primaryState0: Accessible, requestId: ConfigChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.LatchingDuty[ConfigChangeResponse] = {
-				Trace.step("Leader.requestConfigChange") {
 
-					def startSecondPhase(tcc: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex): sequencer.LatchingDuty[ConfigChangeResponse] = {
-						for {
-							isSccReplicatedToMajority <- startConfigChangeSecondPhase(tcc, tccIndex)
-							primaryState1 <- primaryStateFence.causalAnchor()
-						} yield {
-							val ballot1 = syncLocalStateInfo(primaryState1).ballot
-							if isSccReplicatedToMajority then SUCCESSFULLY_CHANGED(ballot1) else REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(ballot1)
-						}
+				def startSecondPhase(tcc: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex): sequencer.LatchingDuty[ConfigChangeResponse] = {
+					for {
+						isSccReplicatedToMajority <- startConfigChangeSecondPhase(tcc, tccIndex)
+						primaryState1 <- primaryStateFence.causalAnchor()
+					} yield {
+						val ballot1 = syncLocalStateInfo(primaryState1).ballot
+						if isSccReplicatedToMajority then SUCCESSFULLY_CHANGED(ballot1) else REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(ballot1)
 					}
+				}
 
-					/** This method recurses whenever it fails and the consequent [[updateRole]] does not change the [[Role]] (stays as leader) */
-					def replicateTccAndThenStartSecondPhase(primaryState1: PrimaryState, tcc: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex): sequencer.LatchingDuty[ConfigChangeResponse] = {
-						if currentRole ne this then sequencer.LatchingDuty_ready(REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(syncLocalStateInfo(primaryState1).ballot))
-						else primaryState1 match {
-							case Inaccessible =>
-								illegalStateQuiesce()
-								sequencer.LatchingDuty_ready(STOPPED(buildIneligibleInfo(leadedTerm).ballot))
+				/** This method recurses whenever it fails and the consequent [[updateRole]] does not change the [[Role]] (stays as leader) */
+				def replicateTccAndThenStartSecondPhase(primaryState1: PrimaryState, tcc: TransitionalConfigChange[ParticipantId], tccIndex: RecordIndex, attemptsDone: Int): sequencer.LatchingDuty[ConfigChangeResponse] = {
+					if currentRole ne this then sequencer.LatchingDuty_ready(REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(syncLocalStateInfo(primaryState1).ballot))
+					else primaryState1 match {
+						case Inaccessible =>
+							illegalStateQuiesce()
+							sequencer.LatchingDuty_ready(STOPPED(buildIneligibleInfo(leadedTerm).ballot))
 
-							case accessible0: Accessible =>
-								if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
-								Trace.trace(s"Replicating TCC at index $tccIndex")
-								for {
-									// Replicate to other participants.
-									isTccReplicatedToMajority <- attemptToUpdateOtherParticipantsLogs(accessible0)
-									primaryState2 <- primaryStateFence.causalAnchor()
-									response <- {
-										if currentRole ne this then {
-											val ballot1 = syncLocalStateInfo(primaryState2).ballot
-											sequencer.LatchingDuty_ready(if isTccReplicatedToMajority then REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED(ballot1) else REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(ballot1))
-										}
+						case accessible0: Accessible =>
+							if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
+							Trace.trace(s"Replicating TCC at index $tccIndex")
+							tccReplicationRetryWakeup.foreach(_.cancel())
+							for {
+								// Replicate to other participants.
+								isTccReplicatedToMajority <- attemptToUpdateOtherParticipantsLogs(accessible0)
+								primaryState2 <- primaryStateFence.causalAnchor()
+								response <- {
+									if currentRole ne this then {
+										val ballot1 = syncLocalStateInfo(primaryState2).ballot
+										sequencer.LatchingDuty_ready(if isTccReplicatedToMajority then REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED(ballot1) else REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(ballot1))
+									}
+									else {
+										if assertionsEnabled then assert(primaryState2.currentTerm == leadedTerm)
+										if isTccReplicatedToMajority then startSecondPhase(tcc, tccIndex)
 										else {
-											if assertionsEnabled then assert(primaryState2.currentTerm == leadedTerm)
-											if isTccReplicatedToMajority then startSecondPhase(tcc, tccIndex)
-											else {
-												startNewBallot()
-												Trace.trace(s"Updating role (in a new ballot=$currentBallot) due to insufficient quorum when replicating the TCC at $tccIndex.")
-												for {
-													_ <- updateRole(primaryState2)
-													primaryState3 <- primaryStateFence.causalAnchor()
-													response <- replicateTccAndThenStartSecondPhase(primaryState3, tcc, tccIndex)
-												} yield response
-											}
+											// Wait some time before trying again.
+											val covenant = sequencer.Covenant[ConfigChangeResponse]()
+											val token = requestWakeUp(WakeUpReason.ReplicationLoopRetry, attemptsDone, () => {
+												if commitIndex >= tccIndex then covenant.fulfillWith(startSecondPhase(tcc, tccIndex))
+												else {
+													Trace.trace(s"Updating role due to insufficient quorum when replicating the TCC at $tccIndex. Attempt #$attemptsDone")
+													for {
+														_ <- updateRole()
+														primaryState3 <- primaryStateFence.causalAnchor()
+														response <- replicateTccAndThenStartSecondPhase(primaryState3, tcc, tccIndex, attemptsDone + 1)
+													} do covenant.fulfillUnsafe(response)
+												}
+											})
+											tccReplicationRetryWakeup = Maybe(token)
+											covenant
 										}
 									}
-								} yield response
-						}
+								}
+							} yield response
 					}
+				}
 
-					if assertionsEnabled then assert(primaryState0.currentTerm == leadedTerm)
+				if assertionsEnabled then assert(primaryState0.currentTerm == leadedTerm)
 
-					// First, synchronize the [[StateInfo]] of the bound participant and memorize the current ballot round.
-					val myStateInfo0 = syncLocalStateInfo(primaryState0)
-					Trace.trace(s"StateInfo=$myStateInfo0")
-					val ballot0 = myStateInfo0.ballot
-					deriveConfigurationFrom(primaryState0) match {
-						case stable0: StableConfig =>
-							if desiredParticipants == stable0.targetSet then sequencer.LatchingDuty_ready(ALREADY_CHANGED(ballot0))
-							// Do not start a configuration transition if excluded from both, the current, and the new configuration.
-							else if !stable0.isBoundIncluded && !desiredParticipants.contains(boundParticipantId) then {
-								// Also, become retiring immediately if all followers have committed the excluding config change. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-								if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
-									if assertionsEnabled then assert(indexOfConfigChangeThatExcludedThisParticipant == stable0.changeIndex)
-									authorizeQuiescenceIfVanished(stable0)
-									become(Retiring(primaryState0.currentTerm, stable0.term, stable0.changeIndex, stable0.electorate)).requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-								}
-								// If leading as a ghost and some follower hasn't commited the excluding config change, make them commit it.
-								else {
-									for {
-										isCurrentConfigReplicationCommited <- attemptToUpdateOtherParticipantsLogs(primaryState0)
-										primaryState1 <- primaryStateFence.causalAnchor()
-										response <- {
-											if isCurrentConfigReplicationCommited then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
-											else sequencer.LatchingDuty_ready(WAIT_GHOST_LEADER_IS_DEPOTED(syncLocalStateInfo(primaryState1).ballot))
-										}
-									} yield response
-								}
-							} else {
-								// start the first phase of the configuration change
-								val tcc = new TransitionalConfigChange[ParticipantId](primaryState0.currentTerm, requestId, stable0.targetSet, desiredParticipants)
-								Trace.trace(s"About to append TCC $tcc")
+				// First, synchronize the [[StateInfo]] of the bound participant and memorize the current ballot round.
+				val myStateInfo0 = syncLocalStateInfo(primaryState0)
+				Trace.trace(s"StateInfo=$myStateInfo0")
+				deriveConfigurationFrom(primaryState0) match {
+					case stable0: StableConfig =>
+						if desiredParticipants == stable0.stableParticipants then sequencer.LatchingDuty_ready(ALREADY_CHANGED(myStateInfo0.ballot))
+						// Do not start a configuration transition if excluded from both, the current, and the new configuration.
+						else if !stable0.isBoundIncluded && !desiredParticipants.contains(boundParticipantId) then {
+							// Also, become retiring immediately if all followers have committed the excluding config change. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
+							if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
+								if assertionsEnabled then assert(indexOfConfigChangeThatExcludedThisParticipant == stable0.changeIndex)
+								authorizeQuiescenceIfVanished(stable0)
+								become(Retiring(primaryState0.currentTerm, stable0.term, stable0.changeIndex, stable0.electorate)).requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+							}
+							// If leading as a ghost and some follower hasn't commited the excluding config change, make them commit it.
+							else {
 								for {
-									// Update primary state
-									primaryState2 <- primaryStateFence.advanceIf { primaryState1 =>
-										if currentRole ne this then Maybe.empty
-										else primaryState1 match {
-											case Inaccessible =>
-												Maybe.empty
-											case accessible1: Accessible =>
-												if assertionsEnabled then assert(primaryState1.currentTerm == leadedTerm)
-												Maybe(accessible1.withSingleRecordAppended(tcc.term, tcc))
-										}
+									isCurrentConfigReplicationCommited <- attemptToUpdateOtherParticipantsLogs(primaryState0)
+									primaryState1 <- primaryStateFence.causalAnchor()
+									response <- {
+										if isCurrentConfigReplicationCommited then currentRole.requestConfigChange(requestId, desiredParticipants, Maybe.empty)
+										else sequencer.LatchingDuty_ready(WAIT_GHOST_LEADER_IS_DEPOTED(syncLocalStateInfo(primaryState1).ballot))
 									}
-
-									// replicate the TransitionalConfigChange and then start the second phase.
-									response <- replicateTccAndThenStartSecondPhase(primaryState2, tcc, primaryState2.firstEmptyRecordIndex - 1)
 								} yield response
 							}
+						} else {
+							// start the first phase of the configuration change
+							val tcc = new TransitionalConfigChange[ParticipantId](primaryState0.currentTerm, requestId, stable0.stableParticipants, desiredParticipants)
+							Trace.trace(s"About to append TCC $tcc")
+							for {
+								// Update primary state
+								primaryState2 <- primaryStateFence.advanceIf { primaryState1 =>
+									if currentRole ne this then Maybe.empty
+									else primaryState1 match {
+										case Inaccessible =>
+											Maybe.empty
+										case accessible1: Accessible =>
+											if assertionsEnabled then assert(primaryState1.currentTerm == leadedTerm)
+											Maybe(accessible1.withSingleRecordAppended(tcc.term, tcc))
+									}
+								}
+								// replicate the TransitionalConfigChange and then start the second phase.
+								response <- replicateTccAndThenStartSecondPhase(primaryState2, tcc, primaryState2.firstEmptyRecordIndex - 1, 0)
+							} yield response
+						}
 
-						case transitional0: TransitionalConfig =>
-							// TODO use a coalescer to avoid this lazy answers.
-							val response = if desiredParticipants == transitional0.targetSet then ALREADY_IN_PROGRESS(ballot0) else WAIT_PREVIOUS_CHANGE_TO_COMPLETE(ballot0)
-							sequencer.LatchingDuty_ready(response)
-
-						case NoConfig =>
-							sequencer.LatchingDuty_ready(STOPPED(ballot0))
-					}
+					case transitional0: TransitionalConfig =>
+						// TODO use a coalescer to avoid this lazy answers.
+						val response = if desiredParticipants == transitional0.stableParticipants then ALREADY_IN_PROGRESS(myStateInfo0.ballot) else WAIT_PREVIOUS_CHANGE_TO_COMPLETE(myStateInfo0.ballot)
+						sequencer.LatchingDuty_ready(response)
 				}
 			}
 
@@ -2758,42 +3145,55 @@ trait ConsensusParticipantSdm { thisModule =>
 							else primaryState0 match {
 								case accessible0: Accessible =>
 									if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
-									val scc = new StableConfigChange[ParticipantId](accessible0.currentTerm, correspondingTransitionalConfigChange.requestId, correspondingTransitionalConfigChange.term, correspondingTransitionalConfigChange.oldParticipants, correspondingTransitionalConfigChange.newParticipants)
-									Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, scc))
+									if accessible0.indexOfLatestConfigChange > tccIndex then Maybe.empty
+									else {
+										val scc = new StableConfigChange[ParticipantId](accessible0.currentTerm, correspondingTransitionalConfigChange.requestId, correspondingTransitionalConfigChange.term, correspondingTransitionalConfigChange.oldParticipants, correspondingTransitionalConfigChange.newParticipants)
+										Maybe(accessible0.withSingleRecordAppended(accessible0.currentTerm, scc))
+									}
 								case Inaccessible =>
 									Maybe.empty
 							}
 						}
 
 						isSecondPhaseChangeReplicatedToMajority <- {
-							val sccIndex = primaryState1.firstEmptyRecordIndex - 1
-							Trace.trace(s"Starting replication of SCC at $sccIndex. The corresponding TCC is $correspondingTransitionalConfigChange at $tccIndex")
-							replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, sccIndex)
+							primaryState1 match {
+								case Inaccessible =>
+									sequencer.LatchingDuty_false
+								case accessible1: Accessible =>
+									// TODO add a coupleIndex field in StableConfiChange and use it in the next if condition instead of the requestId (whose uniqueness depends on the user).
+									if accessible1.latestConfigChange.get.requestId == correspondingTransitionalConfigChange.requestId then {
+										val sccIndex = accessible1.indexOfLatestConfigChange
+										Trace.trace(s"Starting replication of SCC at $sccIndex. The corresponding TCC is $correspondingTransitionalConfigChange at $tccIndex")
+										replicateSccUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, sccIndex, 0)
+									} else sequencer.LatchingDuty_true
+							}
 						}
 					} yield isSecondPhaseChangeReplicatedToMajority
 				}
 			}
 
-			/** Replicates all the records in this [[ConsensusParticipant]], retrying until either:
-			 *		- the [[Record]]s up to the provided index are replicated to a majority ([[commitIndex]] equals or greater than the provided index).
-			 *		- the [[currentRole]] stops being this [[Leader]] instance.
+			/** Replicates all the uncommitted records in the local log to the peers, retrying until either:
+			 *  - the [[Record]]s up to the provided index are replicated to a majority ([[commitIndex]] equals or greater than the provided index).
+			 *  - the [[currentRole]] stops being this [[Leader]] instance.
+			 *
 			 * A no-op [[LeaderTransition]] record is appended if [[Record]]s of a previous [[Term]] are blocking the [[commitIndex]] advancement due to the Raft safety rule (§5.4.2): "A leader cannot determine commitment using entries from previous terms". This contraint is implemented in [[TransitionalConfig.indexOfTheCommittedRecordWithHighestIndex]].
 			 * This method recurses whenever it fails and the consequent [[updateRole]] does not change the [[Role]] (stays as leader) */
-			private def replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState0: PrimaryState, targetIndex: RecordIndex)(using Context): sequencer.LatchingDuty[Boolean] = {
-				Trace.step("replicateUntilSuccessOrLeaderRoleIsAbandoned") {
+			private def replicateSccUntilSuccessOrLeaderRoleIsAbandoned(primaryState0: PrimaryState, sccIndex: RecordIndex, attemptsDone: Int)(using Context): sequencer.LatchingDuty[Boolean] = {
+				Trace.step("replicateSccUntilSuccessOrLeaderRoleIsAbandoned") {
 					if currentRole ne this then sequencer.LatchingDuty_false
 					else primaryState0 match {
 						case Inaccessible =>
 							sequencer.LatchingDuty_false
 						case accessible0: Accessible =>
-							if assertionsEnabled then assert(accessible0.currentTerm == leadedTerm)
+							assert(accessible0.currentTerm == leadedTerm)
+							sccReplicationRetryWakeUp.foreach(_.cancel())
 							for {
 								isReplicationSuccessful <- {
-									if commitIndex < targetIndex then attemptToUpdateOtherParticipantsLogs(accessible0)
+									if commitIndex < sccIndex then attemptToUpdateOtherParticipantsLogs(accessible0)
 									else sequencer.LatchingDuty_true
 								}
 								result <- {
-									if isReplicationSuccessful && commitIndex >= targetIndex then sequencer.LatchingDuty_true
+									if isReplicationSuccessful && commitIndex >= sccIndex then sequencer.LatchingDuty_true
 									else if currentRole ne this then sequencer.LatchingDuty_false
 									else if isReplicationSuccessful then {
 										Trace.trace(s"Appending a no-op record to be able to commit records of previous [[Term]] transitively.")
@@ -2804,21 +3204,24 @@ trait ConsensusParticipantSdm { thisModule =>
 												case accessible1: Accessible =>
 													Maybe(accessible1.withSingleRecordAppended(accessible0.currentTerm, LeaderTransition(accessible1.currentTerm)))
 											}
-											result <- replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState2, targetIndex)
+											result <- replicateSccUntilSuccessOrLeaderRoleIsAbandoned(primaryState2, sccIndex, 0)
 										} yield result
 									} else {
-										Trace.trace(s"Updating role (in a new ballot) due to insufficient quorum when replicating records up-to-index $targetIndex.")
-										startNewBallot()
-										for {
-											_ <- updateRole()
-											result <- {
-												if currentRole ne this then sequencer.LatchingDuty_false
-												else for {
+										// Wait some time before trying again.
+										val covenant = sequencer.Covenant[Boolean]()
+										val token = requestWakeUp(WakeUpReason.ReplicationLoopRetry, attemptsDone, () => {
+											if commitIndex >= sccIndex then covenant.fulfillUnsafe(true)
+											else {
+												Trace.trace(s"Updating role due to insufficient quorum when replicating records up-to-index $sccIndex. Attempt #$attemptsDone")
+												for {
+													_ <- updateRole()
 													primaryState1 <- primaryStateFence.causalAnchor()
-													recursionResult <- replicateUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, targetIndex)
-												} yield recursionResult
+													result <- replicateSccUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, sccIndex, attemptsDone + 1)
+												} do covenant.fulfillUnsafe(result)
 											}
-										} yield result
+										})
+										sccReplicationRetryWakeUp = Maybe(token)
+										covenant
 									}
 								}
 							} yield result
@@ -2826,13 +3229,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onCommandFromClient(clientCommand: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
+			def onCommandFromClient(clientCommand: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingDuty[ResponseToClient] = {
+				checkWithin()
 				Trace.init(() => s"$boundParticipantId: Leader.onCommandFromClient") {
-					checkWithin()
-
-					val clientId = clientIdOf(clientCommand)
-					type PrimaryStateUpdaterResult = (recordIndex: RecordIndex, indexOfLastAppendedCommandFromClient: RecordIndex, shouldRetire: Boolean)
-					var primaryStateUpdaterResultCompanion: PrimaryStateUpdaterResult | Null = null // secondary return value of the causal fence exclusive section
+					var commandRecordIndex: RecordIndex = 0
 					for {
 						// First, append the command to the log if it wasn't already
 						primaryState1 <- primaryStateFence.advanceIf { primaryState0 =>
@@ -2840,131 +3240,84 @@ trait ConsensusParticipantSdm { thisModule =>
 							else primaryState0 match {
 								case Inaccessible =>
 									Maybe.empty
-
 								case accessible0: Accessible =>
 									val currentTerm = accessible0.currentTerm
-									if assertionsEnabled then assert(currentTerm == leadedTerm)
-
-									// Do not append the command if the bound participant is excluded and ready to retire. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
-									// Note that for the result of `isGhostAndAllFollowersCommittedTheExcludingConfigChange` be fiable here, it is required that the [[deriveConfigurationFrom]] be called whenever a [[Record]] is appended to the local log. // TODO check the mentioned requirement is satisfied. Never delete this TODO. This is a candidate target for an AI based agentic source checker
-									if isGhostAndAllFollowersCommittedTheExcludingConfigChange then { // TODO using derived state here is risky and hard to maintain. Do this another way.
-										if assertionsEnabled then assert(accessible0.indexOfTopConfigChange == indexOfConfigChangeThatExcludedThisParticipant || accessible0.getRecordAt(accessible0.indexOfTopConfigChange).asInstanceOf[ConfigChange[ParticipantId]].newParticipants.contains(boundParticipantId)) // because Leader.requestConfigChange never starts a configuration transition if the bound participant is not present in neither the current nor the desired participants set.
-										primaryStateUpdaterResultCompanion = (0L, 0L, true)
-										Maybe.empty
-									} else {
-										val indexOfLastAppendedCommandFromClient = accessible0.indexOfLastAppendedCommandFrom(clientId)
-
-										// If this is the first command received from the client, proceed normally (append, replicate, apply)
-										if indexOfLastAppendedCommandFromClient == 0 then {
-											primaryStateUpdaterResultCompanion = (primaryState0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
-											Maybe(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
-										}
-										// else, check if the command was received before:
-										else {
-											// @formatter:off
-											accessible0.getRecordAt(indexOfLastAppendedCommandFromClient) match {
-												case CommandRecord[ClientCommand @unchecked](lastClientCommandTerm, lastClientCommand) =>
-													val comparison = clientCommandOrdering.compare(clientCommand, lastClientCommand)
-													// if the command is newer than the last received from the same client, append it to the log memorizing the index.
-													if comparison > 0 then {
-														primaryStateUpdaterResultCompanion = (accessible0.firstEmptyRecordIndex, indexOfLastAppendedCommandFromClient, false)
-														Maybe.some(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
-													}
-													// if the command is the same as the last received, memorize the index of the last received.
-													else if comparison == 0 then {
-														primaryStateUpdaterResultCompanion = (indexOfLastAppendedCommandFromClient, indexOfLastAppendedCommandFromClient, false)
-														Maybe.empty
-													}
-													// if the command is older than the last received, obtain its index and memorize it.
-													else {
-														primaryStateUpdaterResultCompanion = (accessible0.indexOf(clientCommand), indexOfLastAppendedCommandFromClient, false)
-														Maybe.empty
-													}
-												case _ => // State inconsistency between the client and the log exposed by the bound ClusterParticipant: the record at indexOfLastAppendedCommandFrom(clientId) isn't a CommandRecord.
-													Maybe.empty
-											}
-											// @formatter:on
-										}
-									}
+									assert(currentTerm == leadedTerm) // Assumes that the demotion due to higher term seen is always applied synchronously within a section causally ordered by the primaryStateFence. See the CausalFence's game changing invariant.
+									commandRecordIndex = accessible0.firstEmptyRecordIndex
+									Maybe(accessible0.withSingleRecordAppended(currentTerm, CommandRecord(currentTerm, clientCommand)))
 							}
 						}
 						// Second, replicate it if not already, and then, if replication was successful, apply the command to the state machine assuming it is idempotent.
-						response <- {
-							if currentRole ne this then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
-							else primaryState1 match {
-								case Inaccessible =>
-									sequencer.LatchingDuty_ready(Unable(LEADERSHIP_VACATED, cluster.getOtherProbableParticipant))
-
-								case accessible1: Accessible =>
-									if assertionsEnabled then assert(accessible1.currentTerm == leadedTerm)
-
-									primaryStateUpdaterResultCompanion.asMatchable match {
-										case null => // Reaches here when the last known log-entry index for the client does not point to a CommandRecord.
-											sequencer.LatchingDuty_ready(InconsistentState(s"Inconsistency between the client $clientId and the log exposed by the bound `ClusterParticipant`: the log record at `ClusterParticipant.indexOfLastAppendedCommandFrom(clientId)` isn't a `CommandRecord`."))
-
-										case (recordIndex, indexOfLastAppendedCommandFromClient, shouldRetire) =>
-											if shouldRetire then {
-												val config1 = deriveConfigurationFrom(accessible1)
-												if assertionsEnabled then {
-													assert(config1.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
-													assert(indexOfConfigChangeThatExcludedThisParticipant == config1.changeIndex) // because `shouldRetire == true` implies that `indexOfConfigChangeThatExcludedThisParticipant > 0` and the primary state was not mutated (=> `primaryState1 eq primaryState0` and `config1 eq config0`). And given it is assumed that [[deriveConfigurationFrom]] is called whenever a [[Record]] is appended to the local log, then `indexOfConfigChangeThatExcludedThisParticipant == config0.changeIndex`.
-												}
-												authorizeQuiescenceIfVanished(config1.asInstanceOf[StableConfig])
-												become(Retiring(accessible1.currentTerm, config1.term, config1.changeIndex, config1.electorate)).onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
-											}
-											else if recordIndex == 0L then sequencer.LatchingDuty_ready(Stale(clientCommand, indexOfLastAppendedCommandFromClient))
-											else if recordIndex == -1L then sequencer.LatchingDuty_ready(TooOld(clientCommand))
-											else {
-												assert(recordIndex > 0)
-												for {
-													isCommitSuccessful <- {
-														// if the command is not already committed, attempt the replication to a majority.
-														if recordIndex > commitIndex then attemptToUpdateOtherParticipantsLogs(accessible1)
-														else sequencer.LatchingDuty_true
-													}
-													response <- {
-														if currentRole ne this then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
-														else if isCommitSuccessful then {
-															// if the command is committed, apply it to the state machine to get the result assuming it is idempotent.
-															for smr <- machine.applyClientCommand(recordIndex, clientCommand) yield {
-																if recordIndex > highestAppliedCommandIndex then highestAppliedCommandIndex = recordIndex
-																Processed(recordIndex, smr)
-															}
-														} else {
-															// if not able to replicate then start a new ballot, update the role, and start again.
-															startNewBallot() // TODO analyze if this ballot bump is necessary.
-															Trace.trace(s"Updating role (in a new ballot=$currentBallot) due to insufficient quorum when replicating a command record.")
-															for {
-																_ <- updateRole()
-																response <- currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
-															} yield response
-														}
-													}
-												} yield response
-											}
-									}
-							}
-						}
+						response <- handleCommandReplication(primaryState1, clientCommand, commandRecordIndex)
 					} yield response
 				}
 			}
 
-			/**
-			 * Attempts to append the [[Record]]s that this participant has, to the logs of the participants that lack them.
+			private def handleCommandReplication(primaryState1: PrimaryState, clientCommand: ClientCommand, commandRecordIndex: RecordIndex)(using Trace.Context): sequencer.LatchingDuty[ResponseToClient] = {
+				// The role may have changed due to a failure while storing the primary state. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
+				if currentRole ne this then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+				else primaryState1 match {
+					case Inaccessible =>
+						// This should never happen, but just in case, respond appropriately.
+						sequencer.LatchingDuty_ready(Unable(LEADERSHIP_VACATED, cluster.getOtherProbableParticipants))
+
+					case accessible1: Accessible =>
+						assert(accessible1.currentTerm == leadedTerm) // Assumes that the demotion due to higher term seen is always applied synchronously within a section causally ordered by the primaryStateFence. See the CausalFence's game changing invariant.
+						val logBufferOffset1 = accessible1.logBufferOffset
+						for {
+							isCommitSuccessful <- attemptToUpdateOtherParticipantsLogs(accessible1)
+							response <- {
+								// The role may have changed while atempting the replication. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
+								if currentRole ne this then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+								else if isCommitSuccessful then {
+									// If the command is committed, apply it to the state machine to get the result, assuming the state machine handles idempotency and deduplication.
+									for {
+										_ <- decoupledCommandsApplierCompletion // Waits the committed-commands-applier to complete any work left by a previous role.
+										response <- {
+											// It is not necessary to have an updated primary state here because committed records are never mutated and we are not mutating the primary state here. We only need to know if we are still leading.
+											if currentRole ne this then onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+											else for {
+												_ <- applyCommittedCommands(accessible1, commandRecordIndex - 1, 0)
+												response <- {
+													if currentRole ne this then onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+													else for smr <- machine.applyClientCommand(commandRecordIndex, clientCommand) yield {
+														highestAppliedCommandIndex = commandRecordIndex
+														if commandRecordIndex - logBufferOffset1 > logCompactionThreshold then startLogCompaction()
+														Processed(smr)
+													}
+												}
+											} yield response
+										}
+									} yield response
+								} else {
+									// If not able to replicate then update the role and start again.
+									Trace.trace(s"Updating role due to insufficient quorum when replicating a command record.")
+									for {
+										// TODO: Implement customizable direct Append retries (hybrid retry strategy). Instead of calling updateRole() immediately on replication failure, retry the Append RPC directly up to a configurable number of times (e.g., 1 or 2 attempts) to absorb transient glitches on the fast path before escalating to role check/demotion. Idealy, the retry delay should discount the failure timeout.
+										_ <- updateRole()
+										primaryState2 <- primaryStateFence.causalAnchor()
+										response <- handleCommandReplication(primaryState2, clientCommand, commandRecordIndex)
+									} yield response
+								}
+							}
+						} yield response
+				}
+			}
+
+			/** Attempts to append the [[Record]]s that this participant has, to the logs of the participants that lack them.\
 			 * Detailed behavior:
-			 *		- If [[Record]]s weren't appended to another participant, attempt to append them.
-			 *			- If successful: update the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]].
-			 *			- If AppendEntries fails because of log inconsistency: decrement the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and retry.
-			 *		- If there exists an N such that N > [[commitIndex]], a majority of the [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] entries is ≥ N, and log[N].term == [[currentTerm]]: set commitIndex = N
-			 *		- If there are unreachable participants (a minority whose corresponding entry in [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] trails the leader's [[commitIndex]]), initiate targeted retries to catch them up.
+			 *  - If [[Record]]s weren't appended to another participant, attempt to append them.
+			 *    - If successful: update the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]].
+			 *    - If AppendEntries fails because of log inconsistency: decrement the corresponding entry of [[indexOfNextRecordToSend_ByParticipantIndex]] and [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and retry.
+			 *  - If there exists an N such that N > [[commitIndex]], a majority of the [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] entries is ≥ N, and log[N].term == [[currentTerm]]: set commitIndex = N
+			 *  - If there are unreachable participants (a minority whose corresponding entry in [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]] trails the leader's [[commitIndex]]), initiate targeted retries to catch them up.
 			 * @return a [[sequencer.LatchingDuty]] that yields true if, and only if, all the following are true:
-			 *		- the [[currentRole]] is not changed during this process;
-			 *		- none of the responses has a higher [[Term]];
-			 *		- for all the participants sets of the current [[Configuration]], all the records in this participant's log are successfully appended to at least:
-			 *			- half of the other participants of the set, if this participant belongs to the set;
-			 *			- a majority of the other participants of the set, if this participant does not belong to the set.
-			 *		TODO coalesce calls with same argument. */
-			private def attemptToUpdateOtherParticipantsLogs(primaryState0: Accessible)(using Context): sequencer.LatchingDuty[Boolean] = {
+			 *  - the [[currentRole]] is not changed during this process;
+			 *  - none of the responses has a higher [[Term]];
+			 *  - for all the participants sets of the current [[Configuration]], all the records in this participant's log are successfully appended to at least:
+			 *    - half of the other participants of the set, if this participant belongs to the set;
+			 *    - a majority of the other participants of the set, if this participant does not belong to the set. */
+			private def attemptToUpdateOtherParticipantsLogs(primaryState0: Accessible)(using Context): sequencer.LatchingDuty[Boolean] = { // TODO coalesce calls with same argument.
 				assert(primaryState0 eq primaryStateFence.committedState, s"$primaryState0 eq ${primaryStateFence.committedState}")
 				// Set the serial number of this method execution.
 				serialOfLastReplicationAttempt += 1
@@ -3001,7 +3354,7 @@ trait ConsensusParticipantSdm { thisModule =>
 										case Inaccessible =>
 											sequencer.LatchingDuty_false
 										case accessible1: Accessible =>
-											if assertionsEnabled then assert(accessible1.currentTerm == leadedTerm) // because the Leader Role should never bump the term before leaving transitioning to another Role.
+											assert(accessible1.currentTerm == leadedTerm) // because the Leader Role should never bump the term before leaving transitioning to another Role.
 											val config1 = deriveConfigurationFrom(accessible1)
 											// Rearrange the responses according to the current configuration. Discard any responses from excluded participants.
 											// TODO: Find a way for the [[RetirementDriver]]s created for those excluded participants (by `deriveConfigurationFrom`) to make use of the discarded responses. The only approach that comes to mind is passing those responses into `deriveConfigurationFrom`.
@@ -3014,21 +3367,21 @@ trait ConsensusParticipantSdm { thisModule =>
 											Trace.trace(s"The append responses until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.peers.indices yield s"${config1.peers(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 											for maybeLastAppendAttemptInfo2 <- retryLaggingLearners(accessible1, config1, appendOutcomes1, indexAfterTopRecordToSend, false, false, serialOfReplicationAttempt)
 												yield {
-													// If the behavior changed while waiting the result or the number of successful appends isn't enough to achieve quorum, return false.
-													if (currentRole ne this) || maybeLastAppendAttemptInfo2.isEmpty then false
+													// If the role changed while waiting the result or the number of successful appends isn't enough to achieve quorum, return false.
+													if (currentRole ne this) || !maybeLastAppendAttemptInfo2.exists(_.quorumAchieved) then false
 													// If the number of successful appends is enough to achieve quorum, then: update the `commitIndex`, retry laggards, and schedule retries for the unreachable participants, and yield true.
 													else {
 														// At this point, the result of the method is already determined (true). The following lines update derived state and start uncoupled retry processes.
 
-														val (appendOutcomes2a, accessible2, config2a) = maybeLastAppendAttemptInfo2.get
-														// Update the commitIndex if a majority of the followers have replicated the uncommitted records.
-														// If there exists an N such that N > commitIndex, the highest log-entry index known to be replicated is > N in a majority of the servers, and getRecordAt[N].term == currentTerm: set commitIndex = N
+														val (noParticipantIsLagging, isQuorumAchieved, appendOutcomes2a, accessible2, config2a) = maybeLastAppendAttemptInfo2.get
+														// Update the commitIndex if a majority has replicated the uncommitted records.
+														// If there exists an N such that N > commitIndex, the highest log-entry index known to be replicated is >= N for a majority of the servers, and getRecordAt[N].term == currentTerm: set commitIndex = N
 														val previousCommitIndex = commitIndex
 														commitIndex = config2a.indexOfTheCommittedRecordWithHighestIndex(accessible2, previousCommitIndex, IArray.unsafeFromArray(highestRecordIndexKnownToBeAppended_ByParticipantIndex), appendOutcomes2a)
 														val config2b =
 															if commitIndex == previousCommitIndex then config2a
 															else {
-																notifyListeners(_.onCommitIndexChanged(previousCommitIndex, commitIndex))
+																notifyListeners(_.onCommitIndexChanged(previousCommitIndex, commitIndex, LEADER, accessible2.currentTerm))
 																// The active configuration depends on the commitIndex, so, update it
 																deriveConfigurationFrom(accessible2)
 															}
@@ -3037,7 +3390,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														val appendOutcomes2b =
 															if config2b eq config2a then appendOutcomes2a
 															else {
-																config2a.peers.mapWithIndex { (participantId, participantIndex) =>
+																config2b.peers.mapWithIndex { (participantId, participantIndex) =>
 																	val indexFrom = config2a.participantIndexOf(participantId)
 																	if indexFrom < 0 then AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION // TODO analyse: Is it correct to include the participants that weren't in the active configuration in the previous attempt into the next attempt of this replication?
 																	else appendOutcomes2a(indexFrom)
@@ -3049,19 +3402,19 @@ trait ConsensusParticipantSdm { thisModule =>
 															// For those minority of participants that responded asking for earlier records, attempt the appends again including earlier records. And for those that weren't in the active configuration during the previous attempt, attempt the first append.
 															maybeLastAppendAttemptInfo3 <- retryLaggingLearners(accessible2, config2b, appendOutcomes2b, indexAfterTopRecordToSend, true, true, serialOfReplicationAttempt)
 														} yield {
-															// If no newer call to attemptToUpdateOtherParticipantsLogs was done, then:
+															// If still leading
 															maybeLastAppendAttemptInfo3.foreach { lastAppendAttemptInfo3 =>
 																val config3 = lastAppendAttemptInfo3.updatedConfig
 																Trace.trace(s"Final step: excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config3.peers.indices yield s"${config3.peers(i)}: outcome=${lastAppendAttemptInfo3.lastAttemptOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
 																// If this leading participant is not included in the active configuration and all the followers in the new configuration have committed the StableConfigChange that excludes this participant, retire this participant.
-																// Note that these lines are skipped if another replication started (call to this method). Therefore, this check and the transition to retiring should be done before calling this method (attemptToUpdateOtherParticipantsLogs) in order to minimize the time a participant is leading while excluded.
 																if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
+																	// This point is reached if this leading participant was able to make the followers commit the StableConfigChange that excludes it before receiving an "appendRecords" call from the new leader (which is the other way to leave the gohst leader state)..
 																	assert(config3.isInstanceOf[StableConfig]) // because exclusion is checked every record and transitional configurations are never more restrictive than the contiguos stable ones.
 																	authorizeQuiescenceIfVanished(config3.asInstanceOf[StableConfig])
 																	become(Retiring(leadedTerm, lastAppendAttemptInfo3.currentPrimaryState.getRecordTermAt(indexOfConfigChangeThatExcludedThisParticipant), indexOfConfigChangeThatExcludedThisParticipant, config3.electorate))
-																} // This point is reached if this participant was able to make the followers commit the StableConfigChange that excludes this leader before receiving an "appendRecords" call from the new leader.
-																/// Else (if not retiring), for those minority of participants whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because append failed with IS_UNREACHABLE), retry the append records RPC. This retry is indefinite until the outer method (attemptToUpdateOtherParticipantsLogs) is called again (as the effect of an external stimulus).
-																else scheduleUnreachableParticipantsRetry(config3.peers, lastAppendAttemptInfo3.lastAttemptOutcomes, indexAfterTopRecordToSend, serialOfReplicationAttempt)
+																}
+																/// If not retiring and this method wasn't called again, then, for those minority of participants whose highestRecordIndexKnowToBeReplicated is less than the commitIndex (because append failed with IS_UNREACHABLE), retry the append records RPC. This retry is indefinite until the outer method (attemptToUpdateOtherParticipantsLogs) is called again (as the effect of an external stimulus).
+																else if serialOfLastReplicationAttempt == serialOfReplicationAttempt then scheduleUnreachableParticipantsRetry(config3.peers, lastAppendAttemptInfo3.lastAttemptOutcomes, indexAfterTopRecordToSend, serialOfReplicationAttempt, 0)
 															}
 														}
 
@@ -3076,7 +3429,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			/** Creates a [[sequencer.Task]] that appends the specified range of [[Record]]s from this participant log to the specified destination participant.
+			/** Creates an [[AppendRequest]] that appends the specified range of [[Record]]s from this participant log to the specified destination participant.
 			 * CAUTION: requires that the derived state variables had been updated by applying the [[deriveConfigurationFrom]] method to the provided [[PrimaryState]].
 			 * @param primaryState the current [[PrimaryState]]
 			 * @param destinationParticipantId the [[ParticipantId]] of the [[ConsensusParticipant]] to append the records to.
@@ -3085,20 +3438,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param untilIndex the [[RecordIndex]] after the last [[Record]] to include in the [[ClusterParticipant.appendRecords]] call. */
 			private def appendsRecordsToParticipant(primaryState: Accessible, destinationParticipantId: ParticipantId, destinationParticipantIndex: Int, fromIndex: RecordIndex, untilIndex: RecordIndex)(using Trace.Context): AppendRequest = {
 				Trace.step("appendsRecordsToParticipant") {
-					if assertionsEnabled then {
-						assert(isInSequence)
-						assert(currentConfig eq deriveConfigurationFrom(primaryState))
-					}
-
 					// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skip it and fake a successful response.
-					if fromIndex >= untilIndex && commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex) && untilIndex <= 1 + highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex)
+					if commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex) && untilIndex <= 1 + highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex)
 					then sequencer.Task_successful(AppendResult(primaryState.currentTerm, 0, ISOLATED))
-					else {
-						val previousRecordIndex = fromIndex - 1
-						val recordsToSend = primaryState.getRecordsBetween(fromIndex, untilIndex)
-						val previousRecordTerm = primaryState.getRecordTermAt(previousRecordIndex)
-						destinationParticipantId.appendRecords(primaryState.currentTerm, previousRecordIndex, previousRecordTerm, recordsToSend, commitIndex, primaryState.getRecordTermAt(commitIndex))
-					}
+					else thisConsensusParticipant.appendRecordsToParticipant(primaryState, destinationParticipantId, fromIndex, untilIndex, commitIndex)
 				}
 			}
 
@@ -3127,8 +3470,9 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/** Retry the [[ClusterParticipant.appendRecords]] call for each participant that needs earlier records or was not present in the [[Configuration]] when the previous attempt was done, until either:
-			 *		- if `untilNoneLags` is `true`, strictly until there is no lagging follower.
-			 *		- else,	relaxedly until there is no lagging follower or a majority of the appends is successful.
+			 * - `abortIfAnotherReplicationStarts` is true and another execution of [[attemptToUpdateOtherParticipantsLogs]] has been started after the one that called this method.
+			 * - if `untilNoneLags` is `true`, strictly until there is no lagging follower.
+			 * - else,	relaxedly until there is no lagging follower or a majority of the appends is successful.
 			 *
 			 * This method is called solely from [[attemptToUpdateOtherParticipantsLogs]] and twice: before and after the top sent record is committed.
 			 * @param accessible1 the current, accessible, and causally anchored [[PrimaryState]] of this [[ConsensusParticipant]].
@@ -3138,13 +3482,13 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param untilNoneLags instructs if the retries must continue until no learner is lagging (true), or until a majority of the appends is successful (false).
 			 * @param serialOfReplicationAttempt the serial number of the call to [[attemptToUpdateOtherParticipantsLogs]] that initiated this method execution.
 			 * @return a [[sequencer.LatchingDuty]] that yields either:
-			 *		- [[Maybe.empty]] if either:
-			 *			- `abortIfAnotherReplicationStarts` is true and another execution of [[attemptToUpdateOtherParticipantsLogs]] has been started after the one that called this method.
-			 *			- no learner is lagging but the successful append outcomes is not enough to achieve quorum.
-			 *		- otherwise [[Maybe.some]] containing:
-			 *			- the causally anchored [[PrimaryState]],
-			 *			- the active [[Configuration]] derived from it,
-			 *			- and an array of [[AppendOutcome]] values representing the responses to the [[ClusterParticipant.appendRecords]] calls, stored as a parallel array with index correspondence to the [[Configuration.peers]] array of the accompanying [[Configuration]].
+			 *  - [[Maybe.empty]] if the role changed while waiting the result:
+			 *  - otherwise [[Maybe.some]] containing:
+			 *    - a boolean telling if no participant is lagging,
+			 *    - a boolean telling if quarum was achieved,
+			 *    - the current [[PrimaryState]],
+			 *    - the active [[Configuration]] derived from it,
+			 *    - and an array of [[AppendOutcome]] values representing the responses to the [[ClusterParticipant.appendRecords]] calls, stored as a parallel array with index correspondence to the [[Configuration.peers]] array of the accompanying [[Configuration]].
 			 *	TODO when `abortIfAnotherReplicationStarts==false`, couple with the appends requests done by the newer replication to avoid repeating requests.
 			 * */
 			private def retryLaggingLearners(
@@ -3155,72 +3499,68 @@ trait ConsensusParticipantSdm { thisModule =>
 				untilNoneLags: Boolean,
 				abortIfAnotherReplicationStarts: Boolean,
 				serialOfReplicationAttempt: Int
-			)(using Context): sequencer.LatchingDuty[Maybe[(lastAttemptOutcomes: IArray[AppendOutcome], currentPrimaryState: Accessible, updatedConfig: Configuration)]] = {
+			)(using Context): sequencer.LatchingDuty[Maybe[(noParticipantIsLagging: Boolean, quorumAchieved: Boolean, lastAttemptOutcomes: IArray[AppendOutcome], currentPrimaryState: Accessible, updatedConfig: Configuration)]] = {
 				Trace.step("retryLaggingLearners") {
-					assert((accessible1 eq primaryStateFence.committedState) && (config1 eq currentConfig), s"$accessible1 eq ${primaryStateFence.committedState} && $config1 eq $currentConfig")
+					assert((accessible1 eq primaryStateFence.committedState) && (config1 eq latestDerivedConfig.get), s"$accessible1 eq ${primaryStateFence.committedState} && $config1 eq $latestDerivedConfig")
 					// Trace.trace(s"retryLaggingLearners($accessible1, $config1, ${previousAttemptAppendOutcomes.mkString("[", ", ", "]")}, $indexAfterTopRecordSent, $untilNoneLags, $serialOfReplicationAttempt)") // TODO delete line
 
-					// If [[attemptToUpdateOtherParticipantsLogs]] was called again after the call that initiated this `retryLaggingLearners` execution, then there is no need to continue this execution because the later call to `attemptToUpdateOtherParticipantsLogs` will start a new one if necessary.
-					if abortIfAnotherReplicationStarts && serialOfReplicationAttempt != serialOfLastReplicationAttempt then emptyLatchedDuty
+					val noParticipantIsLagging = previousAttemptAppendOutcomes.forallWithIndex((previousOutcome, _) => (previousOutcome & AO_IS_LAGGING_MASK) == 0)
+					val quorumAchieved = config1.achievesQuorumWhen(previousAttemptAppendOutcomes)
+					if noParticipantIsLagging
+						|| !untilNoneLags && quorumAchieved
+						|| abortIfAnotherReplicationStarts && serialOfReplicationAttempt != serialOfLastReplicationAttempt // If [[attemptToUpdateOtherParticipantsLogs]] was called again after the call that initiated this `retryLaggingLearners` execution, then there is no need to continue this execution because the later call to `attemptToUpdateOtherParticipantsLogs` will start a new one if necessary.
+					then sequencer.LatchingDuty_ready(Maybe((noParticipantIsLagging, quorumAchieved, previousAttemptAppendOutcomes, accessible1, config1)))
 					else {
+						val laggingParticipants: mutable.ArrayBuffer[ParticipantId] = new mutable.ArrayBuffer(config1.peers.length)
 
-						val noParticipantIsLagging = previousAttemptAppendOutcomes.forallWithIndex((previousOutcome, _) => (previousOutcome & AO_IS_LAGGING_MASK) == 0)
-						if noParticipantIsLagging then {
-							if untilNoneLags || config1.achievesQuorumWhen(previousAttemptAppendOutcomes) then sequencer.LatchingDuty_ready(Maybe((previousAttemptAppendOutcomes, accessible1, config1)))
-							else emptyLatchedDuty
-						}
-						else if !untilNoneLags && config1.achievesQuorumWhen(previousAttemptAppendOutcomes) then sequencer.LatchingDuty_ready(Maybe((previousAttemptAppendOutcomes, accessible1, config1)))
-						else {
-
-							val laggingParticipants: mutable.ArrayBuffer[ParticipantId] = new mutable.ArrayBuffer(config1.peers.length)
-							val newAppendRequests: mutable.ArrayBuffer[AppendRequest] = new mutable.ArrayBuffer(config1.peers.length)
-							config1.peers.foreachWithIndex { (participantId, participantIndex) =>
-								if (previousAttemptAppendOutcomes(participantIndex) & AO_IS_LAGGING_MASK) != 0 then {
-									laggingParticipants.addOne(participantId)
-									val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
-									newAppendRequests.addOne(appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRecordToSend, indexAfterTopRecordSent))
-								}
+						val newAppendRequests: mutable.ArrayBuffer[AppendRequest] = new mutable.ArrayBuffer(config1.peers.length)
+						config1.peers.foreachWithIndex { (participantId, participantIndex) =>
+							if (previousAttemptAppendOutcomes(participantIndex) & AO_IS_LAGGING_MASK) != 0 then {
+								laggingParticipants.addOne(participantId)
+								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
+								val appendRequest = appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRecordToSend, indexAfterTopRecordSent)
+								newAppendRequests.addOne(appendRequest)
 							}
-							// Trace.trace(s"retrying the lagging learners $laggingParticipants, newAppendRequests=$newAppendRequests") // TODO delete line
-							val commitIndexAtAppendRequest = commitIndex
-							for {
-								newAppendResponses <- sequenceAppendRequests(newAppendRequests)
-								newAppendAttemptInfo <- {
-									if currentRole ne this then emptyLatchedDuty
-									else if handoffAndBumpTermIfLessThan(highestTermIn(newAppendResponses)) ne this then emptyLatchedDuty
-									else for {
-										primaryState2 <- primaryStateFence.causalAnchor()
-										newAppendAttemptInfo <- {
-											// Trace.trace(s"newAppendResponses=${newAppendResponses.mkString("[", ", ", "]")}, primaryState2=$primaryState2") // TODO delete line
-											if currentRole ne this then emptyLatchedDuty
-											else primaryState2 match {
-												case Inaccessible => emptyLatchedDuty
-												case accessible2: Accessible =>
-													if assertionsEnabled then assert(accessible2.currentTerm == leadedTerm) // because the Leader Role should never bump the term before transitioning to another Role.
+						}
+						// Trace.trace(s"retrying the lagging learners $laggingParticipants, newAppendRequests=$newAppendRequests") // TODO delete line
+						val commitIndexAtAppendRequest = commitIndex
+						for {
+							newAppendResponses <- sequenceAppendRequests(newAppendRequests)
+							newAppendAttemptInfo <- {
+								if currentRole ne this then emptyLatchedDuty
+								else if handoffAndBumpTermIfLessThan(highestTermIn(newAppendResponses)) ne this then emptyLatchedDuty
+								else for {
+									primaryState2 <- primaryStateFence.causalAnchor()
+									newAppendAttemptInfo <- {
+										// Trace.trace(s"newAppendResponses=${newAppendResponses.mkString("[", ", ", "]")}, primaryState2=$primaryState2") // TODO delete line
+										if currentRole ne this then emptyLatchedDuty
+										else primaryState2 match {
+											case Inaccessible => emptyLatchedDuty
+											case accessible2: Accessible =>
+												if assertionsEnabled then assert(accessible2.currentTerm == leadedTerm) // because the Leader Role should never bump the term before transitioning to another Role.
 
-													val config2 = deriveConfigurationFrom(accessible2)
-													// Handle the new appends responses and merge the old and new summaries. Note that the appends are handled even if a later replication attempt was started.
-													val newOutcomes: IArray[AppendOutcome] = config2.peers.mapWithIndex { (participantId, participantIndex2) =>
-														val participantIndex1 = if config2 eq config1 then participantIndex2 else config1.participantIndexOf(participantId)
-														if participantIndex1 < 0 then AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION
+												val config2 = deriveConfigurationFrom(accessible2)
+												// Handle the new appends responses and merge the old and new summaries. Note that the appends are handled even if a later replication attempt was started.
+												val newOutcomes: IArray[AppendOutcome] = config2.peers.mapWithIndex { (participantId, participantIndex2) =>
+													val participantIndex1 = if config2 eq config1 then participantIndex2 else config1.participantIndexOf(participantId)
+													if participantIndex1 < 0 then AO_MISSING_BECAUSE_PARTICIPANT_WAS_NOT_PART_OF_THE_CONFIGURATION
+													else {
+														val previousOutcome = previousAttemptAppendOutcomes(participantIndex1)
+														if (previousOutcome & AO_IS_LAGGING_MASK) == 0 then previousOutcome
 														else {
-															val previousOutcome = previousAttemptAppendOutcomes(participantIndex1)
-															if (previousOutcome & AO_IS_LAGGING_MASK) == 0 then previousOutcome
-															else {
-																val newRequestIndex = laggingParticipants.indexOf(participantId)
-																assert(newRequestIndex >= 0)
-																handleAppendResponse(accessible2, config2, participantId, participantIndex2, newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
-															}
+															val newRequestIndex = laggingParticipants.indexOf(participantId)
+															assert(newRequestIndex >= 0)
+															handleAppendResponse(accessible2, config2, participantId, participantIndex2, newAppendResponses(newRequestIndex), accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
 														}
 													}
-													Trace.trace(s"The append responses to the laggard-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config2.peers.indices yield s"${config2.peers(i)}: outcome=${newOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
-													retryLaggingLearners(accessible2, config2, newOutcomes, indexAfterTopRecordSent, untilNoneLags, abortIfAnotherReplicationStarts, serialOfReplicationAttempt)
-											}
+												}
+												Trace.trace(s"The append responses to the laggard-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config2.peers.indices yield s"${config2.peers(i)}: outcome=${newOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
+												retryLaggingLearners(accessible2, config2, newOutcomes, indexAfterTopRecordSent, untilNoneLags, abortIfAnotherReplicationStarts, serialOfReplicationAttempt)
 										}
-									} yield newAppendAttemptInfo
-								}
-							} yield newAppendAttemptInfo
-						}
+									}
+								} yield newAppendAttemptInfo
+							}
+						} yield newAppendAttemptInfo
 					}
 				}
 			}
@@ -3258,13 +3598,12 @@ trait ConsensusParticipantSdm { thisModule =>
 
 							if appendResult.roleOrdinal == RETIRING && appendResult.successOrIndexForNextAttempt != 0 then {
 								val retireeExcludingConfigIndex = appendResult.successOrIndexForNextAttempt - 1 // see `Retiring.onAppendRecords`
-								// If the commitIndex of the retiree is higher than the commitIndex of this leading participant when append was called, then this leader was crowned with a still not active StableConfigChange in its log, which became active in the retiree.
-								// Else, the retiree is still retiring from a previous joint consensus and was included back, but it hasn't noticed yet.
-								// In both cases it must be considered as a wild-card voter.
 								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
-								if retireeExcludingConfigIndex >= indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = appendResult.successOrIndexForNextAttempt
+								indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = appendResult.successOrIndexForNextAttempt
 								highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
-								AO_IS_RETIRING
+								// If the commitIndex of the retiree is higher than the commitIndex of this leading participant when append was called, then this leader was crowned during joint consensus with the commitIndex behind the retiree's and, therefore, needs to consider it as a wildcard-voter.
+								// Else, the retiree is still retiring from a previous joint consensus and was included back but hasn't noticed yet. Therefore it needs missing records to catch up.
+								if retireeExcludingConfigIndex > commitIndex then AO_IS_RETIRING else AO_NEEDS_EARLIER_RECORDS
 							}
 							// If the appending is obsolete (the records it intended to append are already appended), return AO_SUCCESS updating nothing.
 							else if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING else AO_SUCCESS
@@ -3279,17 +3618,9 @@ trait ConsensusParticipantSdm { thisModule =>
 								val suggestedIndexForNextAttempt = appendResult.successOrIndexForNextAttempt
 								// Clamp the index of the first record to append in the next attempt after the highest record index known to be appended.
 								val indexForNextAttempt = if suggestedIndexForNextAttempt <= highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended + 1 else suggestedIndexForNextAttempt
-								// If the earlier record predates the snapshot, report an error.
-								if indexForNextAttempt < primaryState.logBufferOffset then {
-									// inform about the illegal state. // TODO analyze a better way to inform this problem after implementing the log snapshot mechanism if this situation is possible to happen at all (because highestRecordIndexKnownToBeAppended_ByParticipantIndex would always be greater than or equal to the lobBufferOffset).
-									Trace.error(s"$boundParticipantId: Unable to append records to $participantId because its log has inconsistencies at records that predate the last snapshot. They are at indexes less than the logBufferOffset=${primaryState.logBufferOffset}. THIS SHOULD NOT HAPPEN. PLEASE REPORT THIS AS A BUG.")
-									// return false without any change to the corresponding entry in indexOfNextRecordToSend_ByParticipantIndex and highestRecordIndexKnownToBeAppended_ByParticipantIndex.
-									AO_NEEDS_RECORDS_THAT_PREDATE_SNAPSHOT
-								} else {
-									if assertionsEnabled then assert(indexForNextAttempt > highestRecordIndexKnownToBeCommited)
-									indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexForNextAttempt
-									AO_NEEDS_EARLIER_RECORDS
-								}
+								if assertionsEnabled then assert(indexForNextAttempt > highestRecordIndexKnownToBeCommited)
+								indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexForNextAttempt
+								AO_NEEDS_EARLIER_RECORDS
 							}
 						}
 
@@ -3301,14 +3632,14 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			/**
 			 * Schedule [[ClusterParticipant.appendRecords]] calls for the participants that were [[AO_IS_UNREACHABLE]] in the previous attempt.
-			 * @param correspondingParticipantIds the [[ParticipantId]] corresponding to the provided [[AppendOutcome]] array.
+			 * @param correspondingParticipantIds the [[ParticipantId]] corresponding to the provided [[AppendOutcome]]s array.
 			 * @param previousAttemptOutcomes the [[AppendOutcome]]s of the previous attempt.
-			 * @param indexAfterTopRecordSent the index after the top [[Record]] of the set of [[Records]] that should be included in the attempts. */
-			private def scheduleUnreachableParticipantsRetry(correspondingParticipantIds: IArray[ParticipantId], previousAttemptOutcomes: IArray[AppendOutcome], indexAfterTopRecordSent: RecordIndex, serialOfReplicationAttempt: Int)(using Context): Unit = {
+			 * @param indexAfterTopRecordToSend the index after the top [[Record]] of the set of [[Records]] that should be included in the attempts. */
+			private def scheduleUnreachableParticipantsRetry(correspondingParticipantIds: IArray[ParticipantId], previousAttemptOutcomes: IArray[AppendOutcome], indexAfterTopRecordToSend: RecordIndex, serialOfReplicationAttempt: Int, attemptsDone: Int)(using Context): Unit = {
 				Trace.step("scheduleUnreachableParticipantsRetry") {
 					// if there are unreachable participants, request a wake-up to retry replicating the log to them.
 					if serialOfReplicationAttempt == serialOfLastReplicationAttempt && previousAttemptOutcomes.contains(AO_IS_UNREACHABLE) then {
-						val token = requestWakeUp(WakeUpReason.UnreachableFollowersRetry, () => {
+						val token = requestWakeUp(WakeUpReason.UnreachableFollowersRetry, attemptsDone, () => {
 							if currentRole eq this then {
 								for {
 									primaryState1 <- primaryStateFence.causalAnchor()
@@ -3328,16 +3659,16 @@ trait ConsensusParticipantSdm { thisModule =>
 												previousAttemptOutcomeIndex -= 1
 
 												if previousAttemptOutcomes(previousAttemptOutcomeIndex) == AO_IS_UNREACHABLE then {
-													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex) // TODO index out of bound here
+													val participantId = correspondingParticipantIds(previousAttemptOutcomeIndex)
 													val participantIndex = config1.participantIndexOf(participantId)
 													if participantIndex >= 0 then {
 														unreachableParticipantIds.addOne(participantId)
-														val indexOfNextRectorToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
-														appendRequests.addOne(appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRectorToSend, indexAfterTopRecordSent))
+														val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
+														appendRequests.addOne(appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRecordToSend, indexAfterTopRecordToSend))
 													}
 												}
 											}
-											Trace.trace(s"Retrying the appendRecords RPCs to the unreachable participants $unreachableParticipantIds in replication #$serialOfReplicationAttempt")
+											Trace.trace(s"Retrying the appendRecords RPCs to the unreachable participants $unreachableParticipantIds in replication #$serialOfReplicationAttempt until $indexAfterTopRecordToSend after #$attemptsDone failed attempts.")
 											// Execute the tasks, handle the results, and schedule a retry for the still unreachable participants.
 											val commitIndexAtAppendRequest = commitIndex
 											for {
@@ -3353,10 +3684,10 @@ trait ConsensusParticipantSdm { thisModule =>
 															val participantId = unreachableParticipantIds(resultIndex)
 															val participantIndex = config2.participantIndexOf(participantId)
 															if participantIndex < 0 then AO_SKIPPED_BECAUSE_OUT_OF_CONFIGURATION
-															else handleAppendResponse(accessible2, config2, participantId, participantIndex, appendResult, accessible1.currentTerm, indexAfterTopRecordSent, commitIndexAtAppendRequest)
+															else handleAppendResponse(accessible2, config2, participantId, participantIndex, appendResult, accessible1.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 														}
-														Trace.trace(s"The append responses to the unreachable-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, outcomes=${unreachableParticipantIds.zip(appendsOutcomes)}") // TODO delete
-														scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendsOutcomes, indexAfterTopRecordSent, serialOfReplicationAttempt)
+														Trace.trace(s"The append responses to the unreachable-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, outcomes=${unreachableParticipantIds.zip(appendsOutcomes)}") // TODO delete
+														scheduleUnreachableParticipantsRetry(IArray.from(unreachableParticipantIds), appendsOutcomes, indexAfterTopRecordToSend, serialOfReplicationAttempt, attemptsDone + 1)
 												}
 											}
 									}
@@ -3391,17 +3722,11 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def onTermBumped(primaryState: PrimaryState)(using Context): PrimaryState = {
+			override def onTermUpdated(primaryState: PrimaryState, maybeLeaderId: Maybe[ParticipantId])(using Context): PrimaryState = {
 				Trace.step("onTermBumped") {
 					Trace.trace(s"About to hand-off due to term bump.")
-					val config = deriveConfigurationFrom(primaryState)
-					if config.isBoundIncluded then {
-						become(Isolated(primaryStateFence))
-						primaryState
-					} else {
-						become(Retiring(primaryState.currentTerm, config.term, config.changeIndex, config.electorate))
-						Inaccessible
-					}
+					become(maybeLeaderId.fold(Isolated(primaryStateFence))(Follower(primaryState.currentTerm, _, primaryStateFence)))
+					primaryState
 				}
 			}
 		}
@@ -3414,7 +3739,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * In other words: pushes uncommitted records + leaderCommit to followers so they can enter [[Retiring]]; authorizeQuiescenceTo/PermitQuiesce grants them permission to transition from [[Retiring]] → [[Quiesced]]. Neither alone is sufficient.
 		 *
 		 * @param id the [[ParticipantId]] of the retiring participant.
-		 * @param termOfHighestRecordKnownToBeAppended the term of the [[Record]] immediately preceding the first potentially unappended [[Record]].
+		 * @param precedingTerm the term of the [[Record]] immediately preceding the first potentially unappended [[Record]].
 		 * @param potentiallyUnappendedRecords a sequence of [[Record]]s starting from the lowest potentially unappended [[RecordIndex]], up to the [[StableConfigChange]] record.
 		 * @param indexOfFirstPotentiallyUnappendedRecord the index of the first [[Record]] in the potentially unappended records sequence.
 		 * @param configChangeIndex the index of the [[StableConfigChange]] record that caused the exclusión.
@@ -3423,50 +3748,42 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * */
 		private class RetirementDriver(
 			id: ParticipantId,
-			termOfHighestRecordKnownToBeAppended: Term,
-			potentiallyUnappendedRecords: GenIndexedSeq[Record],
+			precedingTerm: Term,
+			potentiallyUnappendedRecords: IArray[Record],
 			indexOfFirstPotentiallyUnappendedRecord: RecordIndex,
 			configChangeIndex: RecordIndex,
 			configChangeTerm: Term,
+			maybeSnapshot: Maybe[SnapshotData[ParticipantId]],
 			private var indexOfNextRecordToSend: RecordIndex
 		) {
 			if assertionsEnabled then {
 				assert(commitIndex >= configChangeIndex)
 				assert(potentiallyUnappendedRecords.isEmpty || indexOfFirstPotentiallyUnappendedRecord + potentiallyUnappendedRecords.length - 1 == configChangeIndex)
-				assert(indexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord)
+				assert(indexOfNextRecordToSend >= indexOfFirstPotentiallyUnappendedRecord || maybeSnapshot.isDefined)
 			}
 
-			/** Starts the process that makes a retiring participant to append the records until the [[StableConfigChange]] that caused its exclusión, passing a `leaderCommit` equal to the index of that same [[StableConfigChange]] record.
+			/** Starts the process that makes a retiring participant to append the records up to the [[StableConfigChange]] that caused its exclusión, passing a `leaderCommit` equal to the index of that same [[StableConfigChange]] record.
 			 * This method is called immediately after this [[RetirementDriver]] instance is created and added to the [[retirementDriverByParticipantId]] map, which happens during a [[Configuration]] transition.
 			 *
 			 *  @param currentTerm0 the [[Term]] of the current [[PrimaryState]]. In the first call is the [[PrimaryState]] from which the [[Configuration]] transition that produced this [[RetirementDriver]] is derived. In the recursión calls is the [[PrimaryState.currentTerm]] when the [[AppendResponse]] arrived if the [[currentRole]] is [[StatefulRole]], or the highest term seen before leaving it. */
-			def driveLoop(currentTerm0: Term, retriesDone: Int)(using Context): Unit = {
+			def driveLoop(currentTerm0: Term, attemptsDone: Int)(using Context): Unit = {
 				Trace.step("driveLoop") {
 
-					Trace.trace(s"RetirementDriver($id, term=$termOfHighestRecordKnownToBeAppended, records=$potentiallyUnappendedRecords, firstIndex=$indexOfFirstPotentiallyUnappendedRecord, changeIndex=$configChangeIndex, changeTerm=$configChangeTerm, indexOfNextRecordToSend=$indexOfNextRecordToSend).startAppendLoop(retriesDone=$retriesDone) called") // TODO delete line
+					Trace.trace(s"RetirementDriver($id, term=$precedingTerm, records=${potentiallyUnappendedRecords.mkString("[", ", ", "]")}, firstIndex=$indexOfFirstPotentiallyUnappendedRecord, changeIndex=$configChangeIndex, changeTerm=$configChangeTerm, indexOfNextRecordToSend=$indexOfNextRecordToSend).startAppendLoop(attemptsDone=$attemptsDone) called") // TODO delete line
 					val inquire =
 						if indexOfNextRecordToSend > configChangeIndex then {
-							id.appendRecords(
-								currentTerm0,
-								configChangeIndex,
-								configChangeTerm,
-								IndexedSeq.empty,
-								configChangeIndex,
-								configChangeTerm
-							)
+							id.appendRecords(currentTerm0, configChangeIndex, configChangeTerm, IArray.empty, configChangeIndex, configChangeTerm)
+						} else if indexOfNextRecordToSend < indexOfFirstPotentiallyUnappendedRecord then {
+							id.installSnapshot(currentTerm0, maybeSnapshot.get, potentiallyUnappendedRecords, configChangeIndex, configChangeTerm)
 						} else {
 							val previousRecordIndex = indexOfNextRecordToSend - 1
-							val previousRecordTerm =
-								if previousRecordIndex < indexOfFirstPotentiallyUnappendedRecord then termOfHighestRecordKnownToBeAppended
-								else potentiallyUnappendedRecords((previousRecordIndex - indexOfFirstPotentiallyUnappendedRecord).toInt).term
-							id.appendRecords(
-								currentTerm0,
-								previousRecordIndex,
-								previousRecordTerm,
-								potentiallyUnappendedRecords.drop((indexOfNextRecordToSend - indexOfFirstPotentiallyUnappendedRecord).toInt),
-								configChangeIndex,
-								configChangeTerm
-							)
+							val previousRecordTerm = {
+								if previousRecordIndex >= indexOfFirstPotentiallyUnappendedRecord then potentiallyUnappendedRecords((previousRecordIndex - indexOfFirstPotentiallyUnappendedRecord).toInt).term
+								else if previousRecordIndex == indexOfFirstPotentiallyUnappendedRecord - 1 then precedingTerm
+								else throw new IndexOutOfBoundsException(previousRecordIndex.toInt)
+							}
+							val records = potentiallyUnappendedRecords.drop((indexOfNextRecordToSend - indexOfFirstPotentiallyUnappendedRecord).toInt)
+							id.appendRecords(currentTerm0, previousRecordIndex, previousRecordTerm, records, configChangeIndex, configChangeTerm)
 						}
 					inquire.trigger(true) { response =>
 						// if the driver wasn't removed...
@@ -3487,8 +3804,8 @@ trait ConsensusParticipantSdm { thisModule =>
 											retirementDriverByParticipantId.remove(id)
 											becomeQuiescedIfEligible(configChangeIndex)
 										}
-										// If the appending was rejected for an unreversible reason, terminate this driver, scribe a message and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
-										else if appendResult.term != currentTerm0 then {
+										// If the appending was rejected due to an unreversible reason, terminate this driver, scribe a message and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
+										else if appendResult.term > currentTerm1 then {
 											Trace.debug(s"$boundParticipantId: Aborting the replication to retire participant $id because its response ($appendResult) tells this retirement driver is obsolete, configChangeIndex=$configChangeIndex, configChangeTerm=$configChangeTerm")
 											retirementDriverByParticipantId.remove(id)
 											becomeQuiescedIfEligible(configChangeIndex)
@@ -3508,13 +3825,23 @@ trait ConsensusParticipantSdm { thisModule =>
 										}
 
 									case Failure(e) =>
-										if retriesDone > retiringParticipantMaxRetries then Trace.error(s"$boundParticipantId: The replication to the retiring participant $id is aborted because it failed too many times. The last attempt failure was:", e)
+										if attemptsDone >= retiringParticipantMaxRetries then Trace.error(s"$boundParticipantId: The replication to the retiring participant $id is aborted because it failed too many times. The last attempt failure was:", e)
 										else {
-											val nextRetryNumber = retriesDone + 1
-											Trace.debug(s"$boundParticipantId: The replication to the retiring participant $id failed. Scheduling retry #$nextRetryNumber. The failure was:", e)
+											val updatedAttemptsDone = attemptsDone + 1
+											Trace.debug(s"$boundParticipantId: The replication attempt #$updatedAttemptsDone to the retiring participant $id failed with:", e)
 											requestWakeUp(
 												WakeUpReason.RetirementDriveRetry,
-												() => if retirementDriverByParticipantId.contains(id) then driveLoop(currentTerm1, nextRetryNumber)
+												attemptsDone,
+												() => if retirementDriverByParticipantId.contains(id) then {
+													currentRole match {
+														case stateful: StatefulRole =>
+															stateful.primaryStateFence.causalAnchor { (primaryState2, _) => driveLoop(primaryState2.currentTerm, updatedAttemptsDone) }
+														case retiring: Retiring =>
+															driveLoop(retiring.finalTerm, updatedAttemptsDone)
+														case _ =>
+															driveLoop(currentTerm1, updatedAttemptsDone)
+													}
+												}
 											)
 										}
 									
@@ -3526,15 +3853,45 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		/** Attempts to transition this participant to the [[QUIESCED]] role.
-		 *
-		 * This check is performed whenever a potential prerequisite for quiescence is met (e.g., is retiring, a [[RetirementDriver]] finishes, or permission is granted).
-		 * The transition only proceeds if the participant is in the [[RETIRING]] role, no [[RetirementDriver]] is active, and protocol permission was granted.
-		 * Three independent async processes must converge: (a) all RetirementDrivers must complete/be removed, (b) role must be RETIRING, (c) quiescence permission must be granted. And that these are fulfilled by different mechanisms (RetirementDriver.driveLoop, become(Retiring), authorizeQuiescenceTo).
-		 */
+		/** Creates an [[AppendRequest]] that appends the specified range of [[Record]]s from this participant log to the specified destination participant.
+		 * @param primaryState the current [[PrimaryState]]
+		 * @param destinationParticipantId the [[ParticipantId]] of the [[ConsensusParticipant]] to append the records to.
+		 * @param fromIndex the [[RecordIndex]] of the first [[Record]] to include in the [[ClusterParticipant.appendRecords]] call.
+		 * @param untilIndex the [[RecordIndex]] after the last [[Record]] to include in the [[ClusterParticipant.appendRecords]] call.
+		 * @param leaderCommit the `leaderCommit` argument for the [[ClusterParticipant.appendRecords]] call. */
+		private def appendRecordsToParticipant(primaryState: Accessible, destinationParticipantId: ParticipantId, fromIndex: RecordIndex, untilIndex: RecordIndex, leaderCommit: RecordIndex)(using Trace.Context): AppendRequest = {
+			Trace.step("appendsRecordsToParticipant") {
+				// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skip it and fake a successful response.
+				if fromIndex >= primaryState.logBufferOffset then {
+					val previousRecordIndex = fromIndex - 1
+					val previousRecordTerm = primaryState.getRecordTermAt(previousRecordIndex)
+					destinationParticipantId.appendRecords(
+						primaryState.currentTerm,
+						previousRecordIndex,
+						previousRecordTerm,
+						primaryState.getRecordsBetween(fromIndex, untilIndex),
+						leaderCommit,
+						primaryState.getRecordTermAt(leaderCommit)
+					)
+				} else {
+					destinationParticipantId.installSnapshot(
+						primaryState.currentTerm,
+						primaryState.latestSnapshot.get,
+						primaryState.getRecordsBetween(primaryState.logBufferOffset, untilIndex),
+						leaderCommit,
+						primaryState.getRecordTermAt(leaderCommit)
+					)
+				}
+			}
+		}
+
+		/** Attempts to transition this participant to the [[QUIESCED]] role.\
+		 * This check is performed whenever a potential prerequisite for quiescence is met (e.g., is retiring, a [[RetirementDriver]] finishes, or permission to quiesce is granted).\
+		 * The transition only proceeds if the participant is in the [[RETIRING]] role, no [[RetirementDriver]] is active, and protocol permission was granted.\
+		 * Three independent async processes must converge: (a) all RetirementDrivers must complete/be removed, (b) role must be RETIRING, (c) quiescence permission must be granted. And that these are fulfilled by different mechanisms (RetirementDriver.driveLoop, become(Retiring), authorizeQuiescenceTo). */
 		private def becomeQuiescedIfEligible(indexOfExcludingConfigChange: RecordIndex)(using Trace.Context): Unit = {
 			Trace.step("becomeQuiescedIfEligible") {
-				if retirementDriverByParticipantId.isEmpty && currentRole.ordinal == RETIRING && indexOfExcludingConfigChange == indexOfStableConfigChangeForWhichQuiescenceWasPermitted
+				if retirementDriverByParticipantId.isEmpty && nonAcknowledgedQuiescencePermissions.isEmpty && currentRole.ordinal == RETIRING && indexOfExcludingConfigChange <= indexOfStableConfigChangeForWhichQuiescenceWasPermitted
 				then become(Quiesced(Success(s"The incoming leader ${quiescenceGrantor.value} authorized quiescence and no retirement driver exists.")))
 
 			}
@@ -3557,79 +3914,93 @@ trait ConsensusParticipantSdm { thisModule =>
 			/** Index of the first empty record in the log. Should be immutable because it is accessed after updates of the [[Workspace]].
 			 * This is trivially derived state. */
 			val firstEmptyRecordIndex: RecordIndex
-
-			def withTermUpdated(term: Term)(using Trace.Context): sequencer.LatchingDuty[PrimaryState]
 		}
 
 		/** The [[PrimaryState]] value when this [[ConsensusParticipant]] does not have access to the [[Storage]] where the primary state is persisted. Either because it does not need it (gracefully [[Quiesced]]), is [[Starting]], or became [[Quiesced]] due to a failure. */
 		private object Inaccessible extends PrimaryState {
 			override val currentTerm: Term = PRE_INIT
 			override val firstEmptyRecordIndex: RecordIndex = 0
-
-			override def withTermUpdated(term: Term)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = sequencer.LatchingDuty_ready(this)
 		}
 
 		/** Defines the [[PrimaryState]] when this [[ConsensusParticipant]] has access to the [[Storage]] where the primary state is persisted. */
-		private final class Accessible(workspace: WS) extends PrimaryState {
+		private final class Accessible(@publicInBinary protected val workspace: WS) extends PrimaryState { thisAccessible =>
 
 			override val currentTerm: Term = workspace.getCurrentTerm
 			override val firstEmptyRecordIndex: RecordIndex = workspace.firstEmptyRecordIndex
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def getRecordAt(index: RecordIndex): Record =
-				workspace.getRecordAt(index)
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			def getRecordAt(index: RecordIndex): Record = {
+				if index >= logBufferOffset then workspace.getRecordAt(index)
+				else latestSnapshot.fold(throw IndexOutOfBoundsException(s"Record at index $index is below lower bound 1.")) { snapshot =>
+					if index == snapshot.latestConfigChangeIndex then snapshot.latestConfigChange
+					else throw IndexOutOfBoundsException(s"Record at index $index is below logBufferOffset=$logBufferOffset and is not the latest config change.")
+				}
+			}
 
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def getRecordTermAt(index: RecordIndex): Term =
-				if index == 0 then PRE_INIT
-				else workspace.getRecordAt(index).term
-
-			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def getRecordsBetween(from: RecordIndex, until: RecordIndex): GenIndexedSeq[Record] = {
-				workspace.getRecordsBetween(from, until)
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			def getRecordTermAt(index: RecordIndex): Term = {
+				if index >= logBufferOffset then getRecordAt(index).term
+				else if index == 0 then PRE_INIT
+				else latestSnapshot.fold(throw IndexOutOfBoundsException(s"Record's term at index $index is below lower bound zero.")) { snapshot =>
+					if index == snapshot.latestConfigChangeIndex then snapshot.latestConfigChange.term
+					else if index == snapshot.lastIncludedRecordIndex then snapshot.lastIncludedRecordTerm
+					else throw IndexOutOfBoundsException(s"Record at index $index is below logBufferOffset=$logBufferOffset and is not the latest config change")
+				}
 			}
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			inline def getRecordsBetween(from: RecordIndex, until: RecordIndex): IArray[Record] =
+				workspace.getRecordsBetween(from, until)
+
+			/** @return the index of the last [[Record]] with term equal to, and index greater than, the provided [[Term]] and [[RecordIndex]]. Returns `after` if none is found.
+			 * CAUTION: This method accesses mutable state of the [[PrimaryState] so it should be called either:
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			def indexOfLastRecordWithTerm(term: Term, after: RecordIndex): RecordIndex = {
+				val offset = workspace.logBufferOffset
+				val boundedAfter = if after >= offset then after else offset
+				val index = workspace.indexOfLastRecordWithTerm(term, boundedAfter)
+				if index >= boundedAfter then index
+				else workspace.latestSnapshot.fold(after) { snapshot =>
+					if snapshot.lastIncludedRecordIndex > after && snapshot.lastIncludedRecordTerm == term then snapshot.lastIncludedRecordIndex
+					else after
+				}
+			}
+
+			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
 			inline def logBufferOffset: RecordIndex =
 				workspace.logBufferOffset
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def indexOfTopConfigChange: RecordIndex =
-				workspace.indexOfTopConfigChange
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			inline def indexOfLatestConfigChange: RecordIndex =
+				workspace.indexOfLatestConfigChange
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def indexOfLastAppendedCommandFrom(clientId: ClientId): RecordIndex = {
-				workspace.indexOfLastAppendedCommandFrom(clientId)
-			}
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			inline def latestConfigChange: Maybe[ConfigChange[ParticipantId]] =
+				workspace.latestConfigChange
 
 			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
-			inline def indexOf(clientCommand: ClientCommand): RecordIndex =
-				workspace.indexOf(clientCommand)
-
-			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
-			 *   - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
-			 *   - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
 			inline def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = {
 				workspace.informAppliedCommandIndex(appliedCommandIndex)
 			}
 
 			/** CAUTION: This method mutates of the [[PrimaryState]], so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
-			override def withTermUpdated(newTerm: Term)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
+			def withTermUpdated(newTerm: Term)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
 				val currentTerm = workspace.getCurrentTerm
 				if newTerm < currentTerm then sequencer.LatchingDuty_ready(new Accessible(workspace))
 				else if newTerm == currentTerm then sequencer.LatchingDuty_ready(this)
@@ -3646,12 +4017,79 @@ trait ConsensusParticipantSdm { thisModule =>
 				saveWorkspace()
 			}
 
-			/** CAUTION: This method mutates of the [[PrimaryState]], so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
-			def withRecordsAppended(term: Term, records: GenIndexedSeq[Record], from: RecordIndex)(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
+			/** Tries to fuse the provided batch of [[Records]] with the local log.
+			 * @param term the [[Term]] of the provider of the batch of records.
+			 * @param prevRecordIndex the index of the [[Record]] immediately before the first entry in the batch.
+			 * @param prevRecordTerm the term of the [[Record]] immediately before the first entry in the batch.
+			 * @param batch the [[Record]]s to fuse.
+			 * @param report an [[IntRef]] whose value is mutated by this method to communicate the outcome flags: The [[FR_RECORD_FUSED]] bit is set if a record was fused; the [[FR_TERM_UPDATED]] is set if the local term was updated.
+			 * @return a [[Maybe]] containing:
+			 *  - a [[sequencer.LatchingDuty]] that yields the updated [[Accessible]] after successfully saving it in the [[Storage]];
+			 *  - a [[sequencer.LatchingDuty]] that yields [[Inaccessible]] if the saving failed;
+			 *  - nothing ([[Maybe.empty]]) if either earlier [[Record]]s are needed, the term mismatches, or the batch fully predates the latest snapshot. */
+			def tryFusingRecords(term: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], report: IntRef)(using Trace.Context): Maybe[sequencer.LatchingDuty[PrimaryState]] = {
+				val lbo = this.workspace.logBufferOffset
+				val batchFirstRecordIndex = prevRecordIndex + 1L
+
+				var indexOfFirstRecordToFuseInBatch: Int = 0
+				// 1. Verify consistency assuming the Log Matching invariant holds.
+				val isConsistent = {
+					if prevRecordIndex >= lbo then prevRecordIndex < firstEmptyRecordIndex && prevRecordTerm == workspace.getRecordAt(prevRecordIndex).term
+					else {
+						val latestSnapshotLastIncludedRecordIndex = lbo - 1L
+						val latestSnapshotLastIncludedRecordTerm = this.latestSnapshot.fold(PRE_INIT)(_.lastIncludedRecordTerm)
+						if prevRecordIndex == latestSnapshotLastIncludedRecordIndex then prevRecordTerm == latestSnapshotLastIncludedRecordTerm
+						else {
+							val latestSnapshotLastIncludedRecordIndexInBatch = (latestSnapshotLastIncludedRecordIndex - batchFirstRecordIndex).toInt
+							indexOfFirstRecordToFuseInBatch = latestSnapshotLastIncludedRecordIndexInBatch + 1
+							latestSnapshotLastIncludedRecordIndexInBatch < batch.length && batch(latestSnapshotLastIncludedRecordIndexInBatch).term == latestSnapshotLastIncludedRecordTerm
+						}
+					}
+				}
+
+				val isTermUpdated = term > this.currentTerm
+				if isTermUpdated then {
+					report.elem |= FR_TERM_UPDATED
+					workspace.setCurrentTerm(term)
+				}
+				if isConsistent then {
+					report.elem |= FR_RECORD_FUSED
+					if indexOfFirstRecordToFuseInBatch == 0 then {
+						workspace.appendResolvingConflicts(batch, batchFirstRecordIndex)
+					} else {
+						val truncatedBatchLength = batch.length - indexOfFirstRecordToFuseInBatch
+						val truncatedBatch = new Array[Record](truncatedBatchLength)
+						System.arraycopy(batch, indexOfFirstRecordToFuseInBatch, truncatedBatch, 0, truncatedBatchLength)
+						workspace.appendResolvingConflicts(IArray.unsafeFromArray(truncatedBatch), batchFirstRecordIndex + indexOfFirstRecordToFuseInBatch)
+					}
+				}
+				if isConsistent || isTermUpdated then Maybe(saveWorkspace()) else Maybe.empty
+			}
+
+			/** Truncates the log's by replacing the earlier records (up to and including the provided [[RecordIndex]]) with the provided snapshot.\
+			 * The snapshot must be taken immediately after the last [[ClientCommand]] of the removed records was applied.\
+			 * CAUTION: This method mutates the [[PrimaryState]] so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
+			def withLogTruncated(term: Term, lastIncludedRecordIndex: RecordIndex, stateMachineSnapshot: IArray[Byte])(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
 				workspace.setCurrentTerm(term)
-				workspace.appendResolvingConflicts(records, from)
+				workspace.truncateLogUpTo(lastIncludedRecordIndex, stateMachineSnapshot)
 				saveWorkspace()
 			}
+
+			/** Replaces the whole log's with the provided snapshot followed with the provided records.\
+			 * The snapshot must have been taken immediately after the last [[ClientCommand]] of the removed records was applied.\
+			 * CAUTION: This method mutates the [[PrimaryState]] so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
+			def withLogReplaced(term: Term, snapshot: SnapshotData[ParticipantId], tailRecords: IArray[Record])(using Trace.Context): sequencer.LatchingDuty[PrimaryState] = {
+				workspace.resetLog(snapshot, tailRecords)
+				workspace.setCurrentTerm(term)
+				saveWorkspace()
+			}
+
+			/** CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called either:
+			 * - within an [[StatefulRole.primaryStateFence.advance]] section. In this case, the call must occur before or during the completion of the [[sequencer.LatchingDuty]] returned by the function passed	to `advance`; once that duty has completed, the causal fence is closed and later calls are unsafe.
+			 * - within a causally anchored consumer (i.e. consumers subscribed to the [[sequencer.LatchingDuty]] returned by either [[StatefulRole.primaryStateFence.advance]] or [[StatefulRole.primaryStateFence.causalAnchor]]). In this case, the call must occur synchronously during the consumer’s execution; it must not be deferred to code scheduled after the consumer has returned, since such deferred code would no longer be causally anchored. */
+			inline def latestSnapshot: Maybe[SnapshotData[ParticipantId]] =
+				workspace.latestSnapshot
+
 
 			/** CAUTION: This method mutates of the [[PrimaryState]], so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
 			def withWorkspaceReleased(): sequencer.Duty[Inaccessible.type] =
@@ -3678,31 +4116,26 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 			}
 
-			override def toString: String = s"Accessible(currentTerm=$currentTerm, firstEmptyRecordIndex=$firstEmptyRecordIndex, indexOfTopConfigChange=$indexOfTopConfigChange)"
+			override def toString: String = s"Accessible(currentTerm=$currentTerm, firstEmptyRecordIndex=$firstEmptyRecordIndex, indexOfTopConfigChange=$indexOfLatestConfigChange)"
 		}
 
-		/** Knows which are the participants involved in the consensus and defines rules pertaining to elections and replication that govern the participant's behavior.
-		 *
-		 * It has exactly three concrete subclasses:
-		 *
-		 *	- [[NoConfig]]: Active when quiesced or lack of access to the persistent state (log, term, etc), which drives the participant to [[Quiesced]].
-		 *
-		 *	- [[TransitionalConfig]]: Active during joint consensus (`Cold` ∪ `Cnew`).
-		 *     This behavior begins immediately once the transitional entry is appended to the participant's log.
-		 *     Replication and election quorum require majorities across both `Cold` and `Cnew`.
+		/** Knows which are the participants involved in the consensus and defines rules pertaining to elections and replication that govern the participant's behavior.\
+		 * It has exactly two concrete subclasses:
+		 *  - [[TransitionalConfig]]: Active during joint consensus (`Cold` ∪ `Cnew`).\
+		 *     This behavior begins immediately once the transitional entry is appended to the participant's log.\
+		 *     Replication and election quorum require majorities across both `Cold` and `Cnew`.\
 		 *     Transitional behavior remains active until the corresponding [[StableConfigChange]] entry is replicated to a majority of both `Cold` and `Cnew` ([[commitIndex]] >= indexOfCorrespondingStableConfigChange).
+		 *  - [[StableConfig]]: Active during non-joint consensus (Cnew).\
+		 *     This behavior begins only once the backing [[StableConfigChange]] entry is committed (i.e. when [[commitIndex]] ≥ indexOfBackingStableConfigChange).\
+		 *     Replication and election quorum require the majority of `Cnew` only.\
+		 *     Non-leader `Cold` only participants having commited the [[StableConfigChange]] entry that excluded them, do transition to [[Retiring]] and wait authorization to quiesce from a stable leader of a succeeding term.\
+		 *     A leader `Cold` only participant having commited the [[StableConfigChange]] entry that excluded it, do stay leading as ghost leader until either: it sees all the other participants had commited said [[StableConfigChange]]; or it receives either an "append records" or "authorization to quiesce" RPC from a leader of a higher term.\
 		 *
-		 *	- [[StableConfig]]: Active during non-joint consensus (Cnew).
-		 *     This behavior begins only once the backing [[StableConfigChange]] entry is committed (i.e. when [[commitIndex]] ≥ indexOfBackingStableConfigChange).
-		 *     Replication and election quorum require the majority of `Cnew` only.
-		 *     Non-leader `Cold` only participants having commited the [[StableConfigChange]] entry that excluded them, do transition to [[Retiring]] and wait authorization to quiesce from a stable leader of a succeeding term.
-		 *     A leader `Cold` only participant having commited the [[StableConfigChange]] entry that excluded it, do stay leading as ghost leader until either: it sees all the other participants had commited said [[StableConfigChange]]; or it receives either an "append records" or "authorization to quiesce" RPC from a leader of a higher term.
+		 * **Commit Index Dependency**
+		 *  - [[TransitionalConfig]] behavior starts on append of its [[backingConfigChange]], but ends when the stable entry is committed.
+		 *  - [[StableConfig]] behavior starts only when its [[backingConfigChange]] is committed.
 		 *
-		 * === Commit Index Dependency ===
-		 * - [[TransitionalConfig]] behavior starts on append of its entry, but ends when the stable entry is committed.
-		 * - [[StableConfig]] behavior starts only when its entry is committed.
-		 * Thus, despite each of these two behaviors depend only on primary state (the log), the whole configuration behavior is commit-sensitive because the transition instant between them depends on [[commitIndex]].
-		 * */
+		 * Thus, despite each of these two behaviors depend only on primary state (the log), the whole configuration behavior is commit-sensitive because the transition instant between them depends on [[commitIndex]]. */
 		private sealed trait Configuration {
 			/** The [[Term]] of the backing [[ConfigChange]]. */
 			val term: Term
@@ -3721,10 +4154,10 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * A [[ConfigChange]]s is a snapshots, so it contain all the information needed. */
 			val backingConfigChange: ConfigChange[ParticipantId]
 
-			/** The identifiers of the target [[StableConfiguration]] (backing [[ConfigChange.newParticipants]]). */
-			val targetSet: Set[ParticipantId]
+			/** The identifiers of the stable participants. Equivalent to [[backingConfigChange.newParticipants]]. */
+			val stableParticipants: Set[ParticipantId]
 
-			inline def isInNew(participantId: ParticipantId): Boolean = targetSet.contains(participantId)
+			inline def isInNew(participantId: ParticipantId): Boolean = stableParticipants.contains(participantId)
 
 			/** The set of participants to include in [[Unable]] responses. */
 			def otherProbableParticipants: ListSet[ParticipantId]
@@ -3740,16 +4173,16 @@ trait ConsensusParticipantSdm { thisModule =>
 			def achievesQuorumWhen(appendOutcomes: IArray[AppendOutcome]): Boolean
 
 			/** Determines the [[Role]] to become based on the votes of all the participants. */
-			def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role]
+			def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role]
 
 			/**
 			 * Determines the best leader candidate based on the [[StateInfo]]s of all the participants, including itself.
 			 * This method only queries. Does not mutate anything.
 			 *
-			 * @param howAreYouAnswers the answers to the [[ClusterParticipant.howAreYou]] questions done to the other participants, stored as a parallel array with index correspondence [[peers]].
+			 * @param peersStateInfos the answers to the [[ClusterParticipant.howAreYou]] questions done to the other participants, stored as a parallel array with index correspondence [[peers]].
 			 * @return A task that yields a [[Vote]] with the chosen leader for the current term.
 			 */
-			def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null])(using Trace.Context): Vote[ParticipantId]
+			def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]]
 
 			/** @return the index of the provided [[ParticipantId]] in the [[peers]]' [[IndexedSeq]] or a negative number if not present.
 			 * @param otherParticipantId the id of the participant to find. */
@@ -3758,45 +4191,6 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override def toString: String = backingConfigChange.toString
-		}
-
-		private object NoConfig extends Configuration {
-			override val term: Term = PRE_INIT
-
-			override val changeIndex: RecordIndex = 0
-
-			override val activeParticipants: Set[ParticipantId] = Set.empty
-
-			override val electorate: IArray[ParticipantId] = IArray(boundParticipantId)
-
-			override val peers: IArray[ParticipantId] = IArray.empty
-
-			override val isBoundIncluded: Boolean = false
-
-			override val backingConfigChange: ConfigChange[ParticipantId] = null
-
-			override val targetSet: Set[ParticipantId] = Set.empty
-
-			override def otherProbableParticipants: ListSet[ParticipantId] =
-				cluster.getOtherProbableParticipant
-
-			override def reachedAll(vote: Vote[ParticipantId]): Boolean =
-				false
-
-			override def reachedAMajority(vote: Vote[ParticipantId]): Boolean =
-				false
-
-			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex =
-				from
-
-			override def achievesQuorumWhen(appendOutcomes: IArray[AppendOutcome]): Boolean =
-				false
-
-			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] =
-				Maybe(illegalStateQuiesce())
-
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null])(using Trace.Context): Vote[ParticipantId] =
-				currentRole.blankVote(myStateInfo.currentTerm, myStateInfo.ballot)
 		}
 
 		/** Pure new configuration (`Cnew`).
@@ -3813,21 +4207,21 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val peers: IArray[ParticipantId] = electorate.filter(_ != boundParticipantId)
 			override val isBoundIncluded: Boolean = activeParticipants.contains(boundParticipantId)
 
-			override val targetSet: Set[ParticipantId] = backingConfigChange.newParticipants
+			override val stableParticipants: Set[ParticipantId] = backingConfigChange.newParticipants
 
 			def otherProbableParticipants: ListSet[ParticipantId] = {
 				ListSet.newBuilder
 					.addAll(peers)
-					.addAll(cluster.getOtherProbableParticipant)
+					.addAll(cluster.getOtherProbableParticipants)
 					.result()
 			}
 
 			override def reachedAll(vote: Vote[ParticipantId]): Boolean = {
-				vote.reachableCandidatesOfOldConf == electorate.length
+				vote.reachableCommonCount == electorate.length
 			}
 
 			override def reachedAMajority(vote: Vote[ParticipantId]): Boolean = {
-				vote.reachableCandidatesOfOldConf > halfTheNumberOfParticipants || electorate.length == 0
+				vote.reachableCommonCount > halfTheNumberOfParticipants || electorate.length == 0
 			}
 
 			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex = {
@@ -3846,44 +4240,45 @@ trait ConsensusParticipantSdm { thisModule =>
 				if isBoundIncluded then othersAttendance >= halfTheNumberOfParticipants else othersAttendance > halfTheNumberOfParticipants
 			}
 
-			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
+			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
 				var votesMatchingMyVoteCount = 1 // includes my vote
 				var newParticipantsJoining = 0
-				for case Success(replierVote) <- votesFromOthers do {
+				for case Success(replierVote) <- peerVotes do {
 					if replierVote.votedId == myVote.votedId && replierVote.isNonBlank then votesMatchingMyVoteCount += 1
-					else if replierVote.rank == ER_JOINER then newParticipantsJoining += 1
+					else if replierVote.votedRank == ER_JOINER then newParticipantsJoining += 1
 				}
 				if votesMatchingMyVoteCount + newParticipantsJoining <= halfTheNumberOfParticipants then Isolated(primaryStateFence)
 				else if myVote.votedId == boundParticipantId then Promoting(primaryState.currentTerm, primaryStateFence)
 				else Follower(primaryState.currentTerm, myVote.votedId, primaryStateFence)
 			}
 
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null])(using Trace.Context): Vote[ParticipantId] = {
-				Trace.step("decideMyVote") {
-					var latestTermSeen = myStateInfo.currentTerm
-					var chosenCandidate = new CandidateInfo(boundParticipantId, true, myStateInfo)
-					var borrame = List(chosenCandidate) //TODO delete line
-					var reachableCandidatesCounter = if myStateInfo.rank.in(ERS_COUNT_IN_NEW) then 1 else 0 // includes itself
+			override def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+				Trace.step(() => s"${this.toString}.decideMyVote") {
+					var participantsCount = 0
 
-					howAreYouAnswers.foreachWithIndex { (reply, replierIndex) =>
-						val replierId = peers(replierIndex)
-						reply match {
-							case null =>
-								Trace.debug(s"$boundParticipantId: `$replierId.howAreYou` failed while deciding vote")
+					var contender_id = boundParticipantId
+					var contender_stateInfo = myStateInfo
+					val decider = new CandidateDecider(contender_id, contender_stateInfo, true)
+					var contender_index = peers.length
+					while contender_index >= 0 do {
+						if contender_stateInfo.rank != ER_NONE then participantsCount += 1
 
-							case replierInfo: StateInfo =>
-								if replierInfo.rank.in(ERS_COUNT_IN_NEW) then reachableCandidatesCounter += 1
-								if replierInfo.currentTerm > latestTermSeen then {
-									latestTermSeen = replierInfo.currentTerm
-								}
-								val candidateInfo = new CandidateInfo(replierId, true, replierInfo)
-								borrame = candidateInfo :: borrame //TODO delete line
-								chosenCandidate = chosenCandidate.getWinnerAgainst(candidateInfo)
-
+						var goNext = true
+						contender_index -= 1
+						// navigate to the next successfully replied StateInfo and contend it.
+						while contender_index >= 0 && goNext do {
+							peersStateInfos(contender_index) match {
+								case null =>
+									contender_index -= 1
+								case peerStateInfo: StateInfo =>
+									contender_id = peers(contender_index)
+									contender_stateInfo = peerStateInfo
+									decider.contend(contender_id, contender_stateInfo, true)
+									goNext = false
+							}
 						}
 					}
-					Trace.debug(s"$boundParticipantId: decideMyVote($myStateInfo, ${howAreYouAnswers.mkString("[", ", ", "]")}): chosen=$chosenCandidate, among: $borrame, config=$backingConfigChange") //TODO delete line
-					Vote(latestTermSeen, chosenCandidate.id, reachableCandidatesCounter, 0, chosenCandidate.info.rank, myStateInfo.ballot)
+					decider.castVote(participantsCount, 0, myStateInfo.ballot)
 				}
 			}
 		}
@@ -3906,22 +4301,22 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val peers: IArray[ParticipantId] = electorate.filter(_ != boundParticipantId)
 			override val isBoundIncluded: Boolean = activeParticipants.contains(boundParticipantId)
 
-			override val targetSet: Set[ParticipantId] = newParticipants
+			override val stableParticipants: Set[ParticipantId] = newParticipants
 
 			def otherProbableParticipants: ListSet[ParticipantId] = {
 				ListSet.newBuilder
 					.addAll(peers)
-					.addAll(cluster.getOtherProbableParticipant)
+					.addAll(cluster.getOtherProbableParticipants)
 					.result()
 			}
 
 			override def reachedAll(vote: Vote[ParticipantId]): Boolean = {
-				vote.reachableCandidatesOfOldConf == oldParticipants.size && vote.reachableCandidatesOfNewConf == newParticipants.size
+				vote.reachableCommonCount == oldParticipants.size && vote.reachableTargetCount == newParticipants.size
 			}
 
 			override def reachedAMajority(vote: Vote[ParticipantId]): Boolean = {
-				(vote.reachableCandidatesOfOldConf > halfOfOldParticipants || oldParticipants.isEmpty)
-					&& (vote.reachableCandidatesOfNewConf > halfOfNewParticipants || newParticipants.isEmpty)
+				(vote.reachableCommonCount > halfOfOldParticipants || oldParticipants.isEmpty)
+					&& (vote.reachableTargetCount > halfOfNewParticipants || newParticipants.isEmpty)
 			}
 
 			override def indexOfTheCommittedRecordWithHighestIndex(primaryState: Accessible, from: RecordIndex, highestRecordIndexKnowToBeAppended_ByParticipantIndex: IArray[RecordIndex], appendOutcomes: IArray[AppendOutcome]): RecordIndex = {
@@ -3989,34 +4384,35 @@ trait ConsensusParticipantSdm { thisModule =>
 					&& (newParticipantsWithSuccessfulAppendResult > halfOfNewParticipants || newParticipants.isEmpty)
 			}
 
-			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], votesFromOthers: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
+			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
 				var oldParticipantsVotesMatchingMyVote = 0
 				var newParticipantsVotesMatchingMyVote = 0
 				var oldParticipantsRetiring = 0
 				var newParticipantsJoining = 0
-				var otherVote = myVote
+
+				var participantVote = myVote
 				var participantId = boundParticipantId
-				var otherParticipantIndex = votesFromOthers.length
-				while otherParticipantIndex >= 0 do {
-					if otherVote.votedId == myVote.votedId && otherVote.isNonBlank then {
+				var participantIndex = peerVotes.length
+				while participantIndex >= 0 do {
+					if participantVote.votedId == myVote.votedId && participantVote.isNonBlank then {
 						if oldParticipants.contains(participantId) then oldParticipantsVotesMatchingMyVote += 1
 						if newParticipants.contains(participantId) then newParticipantsVotesMatchingMyVote += 1
 					} else {
-						if otherVote.rank == ER_RETIREE && oldParticipants.contains(otherVote.votedId) then oldParticipantsRetiring += 1
-						if otherVote.rank == ER_JOINER && newParticipants.contains(otherVote.votedId) then newParticipantsJoining += 1
+						if participantVote.votedRank == ER_RETIREE && oldParticipants.contains(participantId) then oldParticipantsRetiring += 1
+						if participantVote.votedRank == ER_JOINER && newParticipants.contains(participantId) then newParticipantsJoining += 1
 					}
 					var goNext = true
-					otherParticipantIndex -= 1
+					participantIndex -= 1
 					// navigate to the next successful vote and get it.
-					while otherParticipantIndex >= 0 && goNext do {
-						votesFromOthers(otherParticipantIndex) match {
+					while participantIndex >= 0 && goNext do {
+						peerVotes(participantIndex) match {
 							case s: Success[Vote[ParticipantId]] =>
-								otherVote = s.value
-								participantId = peers(otherParticipantIndex)
+								participantVote = s.value
+								participantId = peers(participantIndex)
 								goNext = false
 
 							case _: Failure[Vote[ParticipantId]] =>
-								otherParticipantIndex -= 1
+								participantIndex -= 1
 						}
 					}
 				}
@@ -4026,47 +4422,38 @@ trait ConsensusParticipantSdm { thisModule =>
 				else Follower(primaryState.currentTerm, myVote.votedId, primaryStateFence)
 			}
 
-			override def decideMyVote(myStateInfo: StateInfo, howAreYouAnswers: IArray[StateInfo | Null])(using Trace.Context): Vote[ParticipantId] = {
-				Trace.step("decideMyVote") {
-					var participantId = boundParticipantId
-					var highestTermSeen = myStateInfo.currentTerm
+			override def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+				Trace.step(() => s"${this.toString}.decideMyVote") {
+					var oldParticipantsCount = 0
+					var newParticipantsCount = 0
 
-					var oldParticipantsThatAreReachable = 0
-					var newParticipantsThatAreReachable = 0
-					var isInOldConfig = oldParticipants.contains(participantId)
-					var candidateStateInfo = myStateInfo
-					var chosenCandidate = new CandidateInfo(participantId, isInOldConfig, myStateInfo)
-					var borrame = List(chosenCandidate) //TODO delete line
-
-					var participantIndex = peers.length
-					while participantIndex >= 0 do {
-						if isInOldConfig && candidateStateInfo.rank.in(ERS_COUNT_IN_OLD) then oldParticipantsThatAreReachable += 1
-						if candidateStateInfo.rank.in(ERS_COUNT_IN_NEW) && newParticipants.contains(participantId) then newParticipantsThatAreReachable += 1
+					var contender_id = boundParticipantId
+					var contender_stateInfo = myStateInfo
+					var contender_isInOldSet = oldParticipants.contains(boundParticipantId)
+					val decider = new CandidateDecider(contender_id, contender_stateInfo, contender_isInOldSet)
+					var contender_index = peers.length
+					while contender_index >= 0 do {
+						if contender_isInOldSet && contender_stateInfo.rank != ER_NONE then oldParticipantsCount += 1
+						if contender_stateInfo.rank != ER_NONE && newParticipants.contains(contender_id) then newParticipantsCount += 1
 
 						var goNext = true
-						participantIndex -= 1
-						// navigate to the next successfully replied StateInfo and get it
-						while participantIndex >= 0 && goNext do {
-							participantId = peers(participantIndex)
-							howAreYouAnswers(participantIndex) match {
+						contender_index -= 1
+						// navigate to the next successfully replied StateInfo and contend it.
+						while contender_index >= 0 && goNext do {
+							peersStateInfos(contender_index) match {
 								case null =>
-									Trace.debug(s"$boundParticipantId: `$participantId.howAreYou` failed while deciding vote")
-									participantIndex -= 1
+									contender_index -= 1
 
-								case stateInfo: StateInfo =>
-									if stateInfo.currentTerm > highestTermSeen then highestTermSeen = stateInfo.currentTerm
-									isInOldConfig = oldParticipants.contains(participantId)
-									val candidateInfo = new CandidateInfo(participantId, isInOldConfig, stateInfo)
-									candidateStateInfo = stateInfo
-									chosenCandidate = chosenCandidate.getWinnerAgainst(candidateInfo)
-									borrame = candidateInfo :: borrame //TODO delete line
+								case peerStateInfo: StateInfo =>
+									contender_id = peers(contender_index)
+									contender_stateInfo = peerStateInfo
+									contender_isInOldSet = oldParticipants.contains(contender_id)
+									decider.contend(contender_id, contender_stateInfo, contender_isInOldSet)
 									goNext = false
 							}
 						}
 					}
-					val result = Vote(highestTermSeen, chosenCandidate.id, oldParticipantsThatAreReachable, newParticipantsThatAreReachable, chosenCandidate.info.rank, myStateInfo.ballot)
-					Trace.debug(s"Decision: result=$result, myStateInfo=$myStateInfo, answers=${howAreYouAnswers.mkString("[", ", ", "]")}, among=$borrame, config=$backingConfigChange") //TODO the "borrame" part
-					result
+					decider.castVote(oldParticipantsCount, newParticipantsCount, myStateInfo.ballot)
 				}
 			}
 		}
@@ -4081,6 +4468,53 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		//// UTILITIES USED BY MANY BEHAVIORS
+
+		private class CandidateDecider(voterId: ParticipantId, voterStateInfo: StateInfo, voterIsInCommonSet: Boolean) {
+			private var chosenId = voterId
+			private var chosenInfo = voterStateInfo
+			private var chosenIsInCommonSet = voterIsInCommonSet
+			private var mostCompleteInfo = voterStateInfo
+			private val borrame: ArrayBuffer[(ParticipantId, StateInfo, Boolean)] = ArrayBuffer((voterId, voterStateInfo, voterIsInCommonSet)) //TODO delete line
+
+			def contend(otherId: ParticipantId, otherInfo: StateInfo, otherIsInCommonConfig: Boolean): Unit = {
+				val incumbentId = chosenId
+				val incumbentInfo = chosenInfo
+				val incumbentIsInCommonConfig = chosenIsInCommonSet
+				borrame.addOne((otherId, otherInfo, otherIsInCommonConfig)) //TODO delete line
+
+				val theOtherWins =
+					if incumbentInfo.currentTerm > otherInfo.currentTerm then false
+					else if incumbentInfo.currentTerm < otherInfo.currentTerm then true
+					else if incumbentInfo.rank == ER_LEADING && otherInfo.rank != ER_LEADING then false
+					else if incumbentInfo.rank != ER_LEADING && otherInfo.rank == ER_LEADING then true
+					else {
+						val completenessComparison = incumbentInfo.compareCompleteness(otherInfo)
+						if completenessComparison > 0 then false
+						else if completenessComparison < 0 then true
+						else if incumbentInfo.rank == ER_CANDIDATE && otherInfo.rank != ER_CANDIDATE then false
+						else if incumbentInfo.rank != ER_CANDIDATE && otherInfo.rank == ER_CANDIDATE then true
+						else if incumbentIsInCommonConfig && !otherIsInCommonConfig then false
+						else if !incumbentIsInCommonConfig && otherIsInCommonConfig then true
+						else if incumbentId < otherId then false
+						else true
+					}
+				if theOtherWins then {
+					chosenId = otherId
+					chosenInfo = otherInfo
+					chosenIsInCommonSet = otherIsInCommonConfig
+				}
+				if otherInfo.compareCompleteness(mostCompleteInfo) > 0 then mostCompleteInfo = otherInfo
+			}
+
+			def castVote(reachableCommonParticipants: Int, reachableTargetParticipants: Int, ballot: Ballot)(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+				val ci = chosenInfo
+				val castedVote =
+					if ci.compareCompleteness(mostCompleteInfo) >= 0 then Maybe(Vote(voterStateInfo.currentTerm, chosenId, reachableCommonParticipants, reachableTargetParticipants, ci.rank, ballot))
+					else Maybe.empty
+				Trace.debug(s"castedVote=$castedVote, contendants=$borrame") //TODO delete line
+				castedVote
+			}
+		}
 
 		/**
 		 * Asks the [[Configuration.peers]] how they are ([[ClusterParticipant.howAreYou]]) in a coalesced manner: If an equivalent question is in flight, reuses the same pending [[sequencer.LatchingDuty]] of the in-flight question; otherwise, a new request is done.
@@ -4100,40 +4534,12 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def illegalStateQuiesce()(using Trace.Context): Role = {
+		private final def illegalStateQuiesce(detail: String = "")(using Trace.Context): Role = {
 			Trace.step("illegalStateQuiesce") {
-				val failure = new IllegalStateException("Should never happen")
+				val failure = new IllegalStateException("Should never happen. $detail")
 				Trace.error(s"Should never happen", failure)
 				become(Quiesced(Failure(failure)))
 			}
-		}
-
-		/**
-		 * The information about a participant that counts for leader elections.
-		 */
-		private final class CandidateInfo(val id: ParticipantId, val isInOldConfig: Boolean, val info: StateInfo) {
-			/** @return the winner of the competition between this candidate and the other candidate when competing for leadership. The winner is the more up-to-date one.
-			 * The more up-to-date criteria are: greater current term, is leading over not, is eligible over not, greater commit-index  term, greater commit-index, and lesser [[ParticipantId]], with the left to right precedence.
-			 */
-			def getWinnerAgainst(other: CandidateInfo): CandidateInfo = {
-				if this.info.currentTerm > other.info.currentTerm then this
-				else if this.info.currentTerm < other.info.currentTerm then other
-				else if this.info.rank == ER_LEADING && other.info.rank != ER_LEADING then this
-				else if this.info.rank != ER_LEADING && other.info.rank == ER_LEADING then other
-				else if this.info.termAtCommitIndex > other.info.termAtCommitIndex then this
-				else if this.info.termAtCommitIndex < other.info.termAtCommitIndex then other
-				else if this.info.commitIndex > other.info.commitIndex then this
-				else if this.info.commitIndex < other.info.commitIndex then other
-				else if this.info.rank == ER_CANDIDATE && other.info.rank != ER_CANDIDATE then this
-				else if this.info.rank != ER_CANDIDATE && other.info.rank == ER_CANDIDATE then other
-				else if this.isInOldConfig && !other.isInOldConfig then this
-				else if !this.isInOldConfig && other.isInOldConfig then other
-				else if this.id < other.id then this
-				else other
-			}
-
-			override def toString: String =
-				s"CandidateInfo(participant=$id, currentTerm:${info.currentTerm}, rank=${ElectionRank_nameOf(info.rank)}, termAtCommitIndex=${info.termAtCommitIndex}, commitIndex=${info.commitIndex}, ballot=${info.ballot}, isInOldConfig=$isInOldConfig)"
 		}
 
 		//// NOTIFICATIONS
@@ -4149,12 +4555,12 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/** @param notificator a function that receives a [[NotificationListener]] and calls one of its methods. */
-		private inline def notifyListeners(inline notificator: NotificationListener => Unit)(using Trace.Context): Unit = {
+		private def notifyListeners(notificator: NotificationListener => Unit)(using Trace.Context): Unit = {
 			checkWithin()
 			notificationListeners.forEach { (listener, _) =>
 				try notificator(listener)
 				catch {
-					case NonFatal(e) => Trace.error(s"$boundParticipantId: the listener $listener threw an exception while handling $notificator", e)
+					case NonFatal(e) => Trace.error(s"$boundParticipantId: A notification listener threw:", e)
 				}
 			}
 		}
@@ -4164,7 +4570,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		@threadUnsafe private lazy val _emptyLatchingDuty: sequencer.LatchingDuty[Maybe[AnyRef]] = sequencer.LatchingDuty_ready(Maybe.empty)
 
 		/** An already completed [[sequencer.LatchingDuty]] that yields [[Maybe.empty]].
-		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+		 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity. */
 		private inline final def emptyLatchedDuty[A]: sequencer.LatchingDuty[Maybe[A]] = _emptyLatchingDuty.asInstanceOf[sequencer.LatchingDuty[Maybe[A]]]
 
 		/** $suppressSyntheticCompanionObject */

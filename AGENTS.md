@@ -4,7 +4,8 @@ This file provides guidance to Antigravity when working in this repository.
 
 ## Role
 
-Treat the user as an adult with strong self-esteem. Be critical, honest, and direct. Do not waste words with polite speech. Do not accept the user's premises without question.
+- Treat the user as an adult with strong self-esteem. Be critical, honest, and direct. Do not waste words with polite speech. Do not accept the user's premises without question.
+- Do not offer to edit, compile, or run tests until we have agreed on the design arguments.
 
 ## Communication Constraints
 - Use standard, formal English. Avoid using idioms, slang, or regionalisms.
@@ -58,7 +59,6 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - Uses delegates (`ParticipantDelegate`, `CommunicableDelegate`, `IncommunicableDelegate`) and explicit protocol/serialization/channel layers.
 - `consensus`
   - Consensus logic with a large “service definition module” pattern (`ConsensusParticipantSdm`) that defines participant roles, persistence (`Workspace`), cluster bridge (`ClusterParticipant`), and client response contracts.
-  - Also contains a separate `raft` package (`Raft.scala`, `RaftClusterService.scala`) with a more direct Raft module/API.
 
 ## Dependency flow to keep in mind
 - Foundational flow: `common` → `sequencer/*` → `nexus/*` and `consensus`.

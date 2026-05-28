@@ -10,8 +10,7 @@ final class Maybe[+A](val value: AnyRef | Null) extends AnyVal {
 	inline def isDefined: Boolean = value ne null
 
 	inline def get: A =
-		if isEmpty then throw new NoSuchElementException("Maybe.get on empty Maybe")
-		else value.asInstanceOf[A]
+		value.asInstanceOf[A]
 
 	inline def foreach(inline f: A => Unit): Unit =
 		if isDefined then f(value.asInstanceOf[A])

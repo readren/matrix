@@ -242,11 +242,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
-					latestState <- {
-						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
-						fence.causalChainTail()
-					}
 					recursiveState <- {
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial < topSerial then path(pathId)
 						else fence.committed
 					}
@@ -315,11 +312,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
-					latestState <- {
-						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
-						fence.causalChainTail()
-					}
 					followingState <- {
+						if anchoredState.serial != fence.committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingDuty` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial <= topSerial then path(pathId)
 						else fence.committed
 					}

@@ -113,7 +113,7 @@ object QuorumProbability {
 	 *
 	 * @note Very accurate for small-to-moderate n (especially n ≤ 20)
 	 */
-	def findPExito(n: Int, pQuorum: Double, tolerance: Double = 1e-7, maxIter: Int = 80): Double = {
+	def findSuccessProbability(n: Int, pQuorum: Double, tolerance: Double = 1e-7, maxIter: Int = 80): Double = {
 		require(n >= 1, "n must be positive")
 		require(pQuorum >= 0.0 && pQuorum <= 1.0, "pQuorum must be in [0,1]")
 
@@ -151,7 +151,7 @@ object QuorumProbability {
 		)
 
 		for ((n, q), expected) <- cases do {
-			val p = findPExito(n, q)
+			val p = findSuccessProbability(n, q)
 			println(f"N=$n, quorum=$q%.2f → p ≈ $p%.4f    (expected $expected)")
 		}
 	}
