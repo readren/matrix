@@ -35,7 +35,7 @@ package object sequencer {
 	class NanoTimeBasedMilliClock extends MonotonicClock {
 		override val InitialValue: MilliTime = currentTimeRoundedDown
 
-		// TODO either change this value to Long.MaxValue or make MilliTime opaque and define the comparision methdos using substraction.
+		// TODO either change this value to Long.MaxValue or make MilliTime opaque and define the comparison methods using substraction.
 		override val MaxValue: MilliTime = InitialValue + Long.MaxValue // Note that setting the max value this way forces MilliTime comparisons to be implemented with substracton `(a - b) > 0` instead of `a > b`.
 
 		override def currentTimeRoundedDown: MilliTime = nanosToMillisRoundedDown(System.nanoTime)

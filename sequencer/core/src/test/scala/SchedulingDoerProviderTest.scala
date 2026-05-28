@@ -7,7 +7,7 @@ import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
-import readren.sequencer
+import readren.sequencer.{CausalFence, CausalStuckableFence}
 
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
@@ -212,7 +212,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = doer.CausalFence(initialState)
+			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 			var advanceCallSerial = 0
 
@@ -287,7 +287,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = doer.CausalFence(initialState)
+			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 
 			def path(pathId: Int): LatchingDuty[PrimaryState] = {
@@ -1288,7 +1288,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalFence(initial)
+				val fence = CausalFence[Int, doer.type](doer)(initial)
 
 				for {
 					expectedUpdate <- Covenant_triggerAndWire(updater(initial), false)
@@ -1321,7 +1321,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalFence(initial)
+				val fence = CausalFence[Int, doer.type](doer)(initial)
 				for {
 					anchor <- fence.causalAnchor()
 					committedBefore <- fence.committed
@@ -1357,7 +1357,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalFence[String](initial)
+				val fence = CausalFence[String, doer.type](doer)(initial)
 				for {
 					state <- fence.advanceSpeculatively { (a, rba) =>
 						Covenant_triggerAndWire(
@@ -1389,7 +1389,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[Unit] = promise
 
-			val fence = doer.CausalFence[Int](initial)
+			val fence = CausalFence[Int, doer.type](doer)(initial)
 
 			def loop(expectedState: Int, repetition: Int): Unit = {
 				if repetition == 9 then promise.trySuccess(())
@@ -1415,7 +1415,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalFence(initial)
+				val fence = CausalFence[Int, doer.type](doer)(initial)
 
 				val actualSteps = for i <- 0 to 9 yield fence.advanceSpeculatively { (previousState, rba) => Covenant_triggerAndWire(updater(previousState)) }
 
@@ -1454,7 +1454,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalStuckableFence(initial)
+				val fence = CausalStuckableFence[Int, doer.type](doer)(initial)
 
 				fence.causalAnchor().trigger(false) { anchorBefore =>
 					if !(anchorBefore ==== initial) then break("Anchor before transition and previous state mismatch")
@@ -1500,7 +1500,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalStuckableFence(Success(initial))
+				val fence = CausalStuckableFence[Int, doer.type](doer)(Success(initial))
 				for {
 					anchor <- fence.causalAnchor().asHardyDuty
 					committedBefore <- fence.committed.asHardyDuty
@@ -1540,7 +1540,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			run {
-				val fence = doer.CausalStuckableFence(Success(initial))
+				val fence = CausalStuckableFence[String, doer.type](doer)(Success(initial))
 				for {
 					actualResult <- fence.advanceSpeculativelyIf { (a: String, rba) =>
 						println(s"updater called")

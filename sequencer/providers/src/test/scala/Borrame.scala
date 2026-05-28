@@ -49,7 +49,7 @@ object Borrame {
 					Maybe(doer.LatchingDuty_ready(Cat(maullido ++ maullido)))
 			}
 
-		val fence = doer.CausalFence[Animal](dog)
+		val fence = CausalFence[Animal, doer.type](doer)(dog)
 		val steps =
 			for {
 				i <- fence.causalAnchor()

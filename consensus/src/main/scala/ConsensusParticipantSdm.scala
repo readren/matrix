@@ -2,7 +2,7 @@ package readren.consensus
 
 import readren.common.*
 import readren.common.Trace.Context
-import readren.sequencer.{CoalescedQuery, Doer, ResultIncrementalCoalescing}
+import readren.sequencer.{CausalFence, CoalescedQuery, Doer, ResultIncrementalCoalescing}
 
 import java.util
 import java.util.Comparator
@@ -1069,7 +1069,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private var myStateInfoAtLastUpdateRoleStart: StateInfo = stateInfoExposedInLastInteraction
 		private val updateRoleCoalescing = new ResultIncrementalCoalescing[Unit, sequencer.type](sequencer)
 
-		private val coalescedHowAreYou = CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo, sequencer.type](sequencer, params =>
+		private val coalescedHowAreYou = CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo, sequencer.type](sequencer)(params =>
 			sequencer.Commitment_triggerAndWire(params.otherParticipantId.howAreYou(params.stateInfo))
 		)
 
@@ -1217,8 +1217,8 @@ trait ConsensusParticipantSdm { thisModule =>
 		}
 
 		/** Partial implementation of the [[Role]]s that accesses the [[PrimaryState]] of the bound participant.
-		 * @param primaryStateFence the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances. */
-		private abstract class StatefulRole(val primaryStateFence: sequencer.CausalFence[PrimaryState]) extends Role {
+		 * @param primaryStateFence the [[CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances. */
+		private abstract class StatefulRole(val primaryStateFence: CausalFence[PrimaryState, sequencer.type]) extends Role {
 
 			private type TermRef = IntRef
 			/** The default argument for the [[updateTermIfLessThan]] method's second parameter.\
@@ -2386,7 +2386,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							}
 							else {
 								latestDerivedConfig = Maybe(config)
-								val primaryStateFence = sequencer.CausalFence[PrimaryState](primaryState)
+								val primaryStateFence = CausalFence[PrimaryState, sequencer.type](sequencer)(primaryState)
 								notifyListeners(_.onStarted(previous.ordinal, primaryState.currentTerm, rulingConfigChange, isSeed))
 								if isSeed then become(Isolated(primaryStateFence))
 								else become(Joining(primaryStateFence, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange))
@@ -2473,7 +2473,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final class Joining(psf: sequencer.CausalFence[PrimaryState], val indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]) extends StatefulRole(psf) {
+		private final class Joining(psf: CausalFence[PrimaryState, sequencer.type], val indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]) extends StatefulRole(psf) {
 			/** The ordinal corresponding to this [[Role]] */
 			override val ordinal: RoleOrdinal = JOINING
 			override val rank: ElectionRank = ElectionRank_from(JOINING)
@@ -2510,7 +2510,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def Joining(psf: sequencer.CausalFence[PrimaryState], indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): Maybe[Joining] = {
+		private final def Joining(psf: CausalFence[PrimaryState, sequencer.type], indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): Maybe[Joining] = {
 			currentRole match {
 				case joining: Joining if joining.indexOfTheIncludingConfigChange == indexOfTheIncludingConfigChange && (joining.primaryStateFence eq psf) => Maybe.empty
 				case _ => Maybe(new Joining(psf, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange))
@@ -2523,7 +2523,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * This state is abandoned when a majority of the participants are reachable.
 		 * [[Vote]]s cast by participants in this state are ignored.
 		 */
-		private class Isolated(psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
+		private class Isolated(psf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(psf) {
 			override val ordinal: RoleOrdinal = ISOLATED
 			override val rank: ElectionRank = ElectionRank_from(ISOLATED)
 
@@ -2562,7 +2562,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def Isolated(psf: sequencer.CausalFence[PrimaryState]): Maybe[Isolated] = {
+		private final def Isolated(psf: CausalFence[PrimaryState, sequencer.type]): Maybe[Isolated] = {
 			currentRole match {
 				case isolated: Isolated if isolated.primaryStateFence eq psf => Maybe.empty
 				case _ => Maybe(new Isolated(psf))
@@ -2579,7 +2579,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param endedTerm the [[Term]] that concluded, during which this participant acted as [[Leader]].
 		 * TODO Replace this class with a method that transitions to [[Isolated]] or [[Retiring]] in a synchronous manner, and then enqueues a term update. The problem with the current class approach is the incorrect isolated-like behavior during the transition to retiring.
 		 */
-		private final class HandingOff(endedTerm: Term, latestTermSeen: Term, psf: sequencer.CausalFence[PrimaryState]) extends Isolated(psf) {
+		private final class HandingOff(endedTerm: Term, latestTermSeen: Term, psf: CausalFence[PrimaryState, sequencer.type]) extends Isolated(psf) {
 			override val ordinal: RoleOrdinal = HANDING_OFF
 
 			override val rank: ElectionRank = ElectionRank_from(HANDING_OFF)
@@ -2610,7 +2610,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def HandingOff(endedTerm: Term, latestTermSeen: Term, psf: sequencer.CausalFence[PrimaryState]): Maybe[HandingOff] = {
+		private final def HandingOff(endedTerm: Term, latestTermSeen: Term, psf: CausalFence[PrimaryState, sequencer.type]): Maybe[HandingOff] = {
 			Maybe(new HandingOff(endedTerm, latestTermSeen, psf))
 		}
 
@@ -2621,7 +2621,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param term the [[Term]] during which the followed participant is the leader. This field exists to differentiate [[Follower]] instances. // TODO explain why is necessary to differentiate them.
 		 * @param followeeId The ID of the participant this follower is following.
 		 */
-		private final class Follower(val term: Term, val followeeId: ParticipantId, psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
+		private final class Follower(val term: Term, val followeeId: ParticipantId, psf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(psf) {
 			override val ordinal: RoleOrdinal = FOLLOWER
 			override val rank: ElectionRank = ElectionRank_from(FOLLOWER)
 
@@ -2661,7 +2661,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def Follower(term: Term, leaderId: ParticipantId, psf: sequencer.CausalFence[PrimaryState]): Maybe[Follower] = {
+		private final def Follower(term: Term, leaderId: ParticipantId, psf: CausalFence[PrimaryState, sequencer.type]): Maybe[Follower] = {
 			currentRole match {
 				case follower: Follower if follower.term == term && follower.followeeId == leaderId && (follower.primaryStateFence eq psf) => Maybe.empty
 				case _ => Maybe(new Follower(term, leaderId, psf))
@@ -2671,7 +2671,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** A hidden (not seen by other participants) and transitional substate of a leading participant that last until the term bump is stored.
 		 * During this interval, all the RPC calls this [[ConsensusParticipant]] receives are put in standby until the bumped term is stored and the role transitioned. This means that responses to queries form the outside never complete in this role and, therefore, the role ordinal in responses is never [[PROMOTING]].
 		 * Also, given the [[currentRole]] is changed to [[Leader]] synchronously in a consumer synchronously subscribed to the [[LatchingDuty]] returned by [[primaryStateFence.advanceIf]], sections of code guarded by the same fence will never see [[currentRole]] referencing a [[Promoting]] instance. See the [[CausalFence]]'s game changing invariant. */
-		private final class Promoting(fromTerm: Term, psf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(psf) {
+		private final class Promoting(fromTerm: Term, psf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(psf) {
 			/** The ordinal corresponding to this [[Role]] */
 			override val ordinal: RoleOrdinal = PROMOTING
 			override val rank: ElectionRank = ElectionRank_from(PROMOTING)
@@ -2759,7 +2759,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 		}
 
-		private final def Promoting(fromTerm: Term, psf: sequencer.CausalFence[PrimaryState]): Maybe[Promoting] = {
+		private final def Promoting(fromTerm: Term, psf: CausalFence[PrimaryState, sequencer.type]): Maybe[Promoting] = {
 			currentRole match {
 				case leader: Leader if leader.leadedTerm == fromTerm && (leader.primaryStateFence eq psf) => Maybe.empty
 				case _ => Maybe(new Promoting(fromTerm, psf))
@@ -2773,10 +2773,10 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param leadedTerm the [[Term]] owned by this [[Leader]] instance.
 		 * @param initialPrimaryState the current [[PrimaryState]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
 		 * @param initialConfig the active [[Configuration]] when this [[Leader]] instance was created. Intended to be used in the [[handleEnter]] method only. Do not use elsewhere.
-		 * @param wsf the [[sequencer.CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances.
+		 * @param wsf the [[CausalFence]] that must be used to ensure causal ordering of the state updates. It must be propagated to subsequent [[StatefulRole]] instances.
 		 * TODO replace the `initialPrimaryState` parameter with what is obtained from it. Storing an instance of [[Accessible]] is error prone.
 		 */
-		private final class Leader(val leadedTerm: Term, initialPrimaryState: Accessible, initialConfig: Configuration, wsf: sequencer.CausalFence[PrimaryState]) extends StatefulRole(wsf) { thisLeader =>
+		private final class Leader(val leadedTerm: Term, initialPrimaryState: Accessible, initialConfig: Configuration, wsf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(wsf) { thisLeader =>
 			/** The outcome of the [[sequencer.Task]] returned by a call to [[ClusterParticipant.appendRecords]]. */
 			private type AppendResponse = Try[AppendResult]
 
@@ -4173,7 +4173,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			def achievesQuorumWhen(appendOutcomes: IArray[AppendOutcome]): Boolean
 
 			/** Determines the [[Role]] to become based on the votes of all the participants. */
-			def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role]
+			def determineRole(primaryState: Accessible, primaryStateFence: CausalFence[PrimaryState, sequencer.type], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role]
 
 			/**
 			 * Determines the best leader candidate based on the [[StateInfo]]s of all the participants, including itself.
@@ -4240,7 +4240,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				if isBoundIncluded then othersAttendance >= halfTheNumberOfParticipants else othersAttendance > halfTheNumberOfParticipants
 			}
 
-			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
+			override def determineRole(primaryState: Accessible, primaryStateFence: CausalFence[PrimaryState, sequencer.type], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
 				var votesMatchingMyVoteCount = 1 // includes my vote
 				var newParticipantsJoining = 0
 				for case Success(replierVote) <- peerVotes do {
@@ -4384,7 +4384,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					&& (newParticipantsWithSuccessfulAppendResult > halfOfNewParticipants || newParticipants.isEmpty)
 			}
 
-			override def determineRole(primaryState: Accessible, primaryStateFence: sequencer.CausalFence[PrimaryState], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
+			override def determineRole(primaryState: Accessible, primaryStateFence: CausalFence[PrimaryState, sequencer.type], myVote: Vote[ParticipantId], peerVotes: Array[Try[Vote[ParticipantId]]])(using Trace.Context): Maybe[Role] = {
 				var oldParticipantsVotesMatchingMyVote = 0
 				var newParticipantsVotesMatchingMyVote = 0
 				var oldParticipantsRetiring = 0
