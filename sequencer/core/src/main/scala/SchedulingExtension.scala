@@ -28,7 +28,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** Represents an execution schedule.
 	 * It is tied to the routine passed along it to the [[schedule]] method. This means that it is mutable and, therefore, non referentially transparent and illegal to use the same instance in more than one call to [[schedule]].
-	 * Given all the operations added to [[Duty]] and [[Task]] by this extension ([[SchedulingExtension]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
+	 * Given all the operations added to [[Duty]] and [[Venture]] by this extension ([[SchedulingExtension]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
 	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the routines that accompanied it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
 	type Schedule <: AnyRef
 
@@ -169,7 +169,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		 * The up-chain [[Duty]] is not cancelled when it times out; it continues executing in the background even as retries begin.
 		 * The time limit is best-effort: it does not forcibly interrupt the up-chain [[Duty]], but determines whether a retry should be initiated.
 		 * If the up-chain [[Duty]] has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
-		 * Equivalent to the [[Task]]'s [[reattemptedOnTimeout]] method but for [[Duty]].
+		 * Equivalent to the [[Venture]]'s [[reattemptedOnTimeout]] method but for [[Duty]].
 		 *
 		 * @param limit      the maximum duration allowed for each execution of the up-chain [[Duty]] before triggering a retry.
 		 * @param maxRetries the maximum number of retries permitted after the initial attempt.
@@ -365,170 +365,170 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		}
 	}
 
-	//// TASK ////
+	//// VENTURE ////
 
 	//// Task instance operations ////
 
-	extension [A](thisTask: Task[A]) {
+	extension [A](thisVenture: Venture[A]) {
 
-		/** Like [[Duty.scheduled]] but for [[Task]]s.
+		/** Like [[Duty.scheduled]] but for [[Venture]]s.
 		 * $notReusableTask */
-		@targetName("scheduledTask")
-		def scheduled(schedule: Schedule): Task[A] =
-			new ScheduledTask(thisTask, schedule)
+		@targetName("scheduledVenture")
+		def scheduled(schedule: Schedule): Venture[A] =
+			new ScheduledVenture(thisVenture, schedule)
 
-		/** Like [[Duty.delayed]] but for [[Task]]s.
+		/** Like [[Duty.delayed]] but for [[Venture]]s.
 		 * $notReusableTask */
-		@targetName("delayedTask")
-		inline def delayed(delay: MilliDuration): Task[A] =
+		@targetName("delayedVenture")
+		inline def delayed(delay: MilliDuration): Venture[A] =
 			scheduled(newDelaySchedule(delay))
 
-		/** Like [[Task.transform]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedules(schedule)(_ => f(tryA)) }}} but more efficient.
+		/** Like [[Venture.transform]] but the function application is scheduled.
+		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Venture]]. The provided [[Schedule]] is activated only after the up-chain [[Venture]] has completed.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Venture]] is executed repeatedly, yielding each result, until the schedule is canceled.
+		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_schedules(schedule)(_ => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
-		def scheduledTransform[B](schedule: Schedule)(f: Try[A] => Try[B]): Task[B] =
-			new ScheduledTransform[A, B](thisTask, schedule, f)
+		def scheduledTransform[B](schedule: Schedule)(f: Try[A] => Try[B]): Venture[B] =
+			new ScheduledTransform[A, B](thisVenture, schedule, f)
 
-		/** Like [[Task.transform]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_delays(delay)(_ => f(tryA)) }}} but more efficient.
+		/** Like [[Venture.transform]] but the function application is delayed.
+		 * Note that what is delayed is the function application, not the execution of the up-chain [[Venture]]. The delay occurs only after the up-chain [[Venture]] is completed.
+		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_delays(delay)(_ => f(tryA)) }}} but more efficient.
 		 * */
-		inline def delayedTransform[B](delay: MilliDuration)(f: Try[A] => Try[B]): Task[B] =
-			new DelayedTransform(thisTask, delay, f)
+		inline def delayedTransform[B](delay: MilliDuration)(f: Try[A] => Try[B]): Venture[B] =
+			new DelayedTransform(thisVenture, delay, f)
 
-		/** Like [[Task.transformWith]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain [[Task]] has completed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_schedulesFlat(schedule)(_ => f(tryA)) }}} but more efficient.
+		/** Like [[Venture.transformWith]] but the function application is scheduled.
+		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Venture]]. The provided [[Schedule]] is activated only after the up-chain [[Venture]] has completed.
+		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Venture]] is executed repeatedly, yielding each result, until the schedule is canceled.
+		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_schedulesFlat(schedule)(_ => f(tryA)) }}} but more efficient.
 		 * $notReusableDuty */
-		inline def scheduledTransformWith[B](schedule: Schedule)(f: Try[A] => Task[B]): Task[B] =
-			new ScheduledTransformWith(thisTask, schedule, f)
+		inline def scheduledTransformWith[B](schedule: Schedule)(f: Try[A] => Venture[B]): Venture[B] =
+			new ScheduledTransformWith(thisVenture, schedule, f)
 
-		/** Like [[Task.transformWith]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.transformWith(tryA => Task_delaysFlat(delay)(_ => f(tryA)) }}} but more efficient.
+		/** Like [[Venture.transformWith]] but the function application is delayed.
+		 * Note that what is delayed is the function application, not the execution of the up-chain [[Venture]]. The delay occurs only after the up-chain [[Venture]] is completed.
+		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_delaysFlat(delay)(_ => f(tryA)) }}} but more efficient.
 		 * */
-		inline def delayedTransformWith[B](delay: MilliDuration, f: Try[A] => Task[B]): Task[B] =
-			new DelayedTransformWith(thisTask, delay, f)
+		inline def delayedTransformWith[B](delay: MilliDuration, f: Try[A] => Venture[B]): Venture[B] =
+			new DelayedTransformWith(thisVenture, delay, f)
 
 		/**
-		 * Returns a [[Task]] that waits for the up-chain [[Task]] to yield a result, but only for a limited time.
+		 * Returns a [[Venture]] that waits for the up-chain [[Venture]] to yield a result, but only for a limited time.
 		 * The time limit is determined by the initial delay of the provided [[Schedule]].
-		 * If the up-chain [[Task]] yields a result within the time limit, the returned [[Task]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Task]] yields [[Maybe.empty]] immediately and does not wait for the up-chain result.
-		 * The up-chain [[Task]] is executed regardless and may complete in the background after the timeout.
-		 * The [[Schedule]] is activated when the returned [[Task]] is executed and canceled when it completes. Therefore, fixed-rate and fixed-delay kind schedules are worthless.
-		 * If the [[Schedule]] is cancelled before the time limit, then the returned [[Task]] waits the up-chain [[Task]] completion forever, ensuring a non-empty result (provided there is one).
+		 * If the up-chain [[Venture]] yields a result within the time limit, the returned [[Venture]] yields that result wrapped in [[Maybe.some]].
+		 * If the time limit is exceeded, the returned [[Venture]] yields [[Maybe.empty]] immediately and does not wait for the up-chain result.
+		 * The up-chain [[Venture]] is executed regardless and may complete in the background after the timeout.
+		 * The [[Schedule]] is activated when the returned [[Venture]] is executed and canceled when it completes. Therefore, fixed-rate and fixed-delay kind schedules are worthless.
+		 * If the [[Schedule]] is cancelled before the time limit, then the returned [[Venture]] waits the up-chain [[Venture]] completion forever, ensuring a non-empty result (provided there is one).
 		 *
 		 * @param schedule a [[Schedule]] whose initial delay is the maximum time to wait for a result, measured from the start of the returned [[Duty]]'s execution.
 		 *                 If the up-chain [[Duty]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Duty]] yields [[Maybe.empty]] immediately without waiting any more.
 		 * @return a [[Duty]] that will complete with [[Maybe.some]] wrapping the result if it is available within the time limit, or with [[Maybe.empty]] otherwise.
 		 */
-		inline def timeBounded(schedule: Schedule): Task[Maybe[A]] =
-			new TimeLimitedTask[A](thisTask.engage, 0, schedule)
+		inline def timeBounded(schedule: Schedule): Venture[Maybe[A]] =
+			new TimeLimitedVenture[A](thisVenture.engage, 0, schedule)
 
 		/**
-		 * Returns a [[Task]] that waits for the up-chain [[Task]] to yield a result, but only for a limited time.
-		 * If the up-chain [[Task]] yields a result within the time limit, the returned [[Task]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Task]] yields [[Maybe.empty]] immediately, ignoring the future up-chain result.
-		 * The up-chain [[Task]] is executed regardless and may complete in the background after the timeout.
+		 * Returns a [[Venture]] that waits for the up-chain [[Venture]] to yield a result, but only for a limited time.
+		 * If the up-chain [[Venture]] yields a result within the time limit, the returned [[Venture]] yields that result wrapped in [[Maybe.some]].
+		 * If the time limit is exceeded, the returned [[Venture]] yields [[Maybe.empty]] immediately, ignoring the future up-chain result.
+		 * The up-chain [[Venture]] is executed regardless and may complete in the background after the timeout.
 		 * $notReusableTask
 		 *
 		 * @param limit the maximum time to wait for a result, measured from the start of the returned [[Duty]]'s execution. If the up-chain [[Duty]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Duty]] yields [[Maybe.empty]] immediately without waiting any more.
 		 * @return a [[Duty]] that will complete with [[Maybe.some]] wrapping the result if it is available within the timeout, or with [[Maybe.empty]] if the timeout elapses first.
 		 */
-		inline def timeBounded(limit: MilliDuration): Task[Maybe[A]] =
-			new TimeLimitedTask[A](thisTask.engage, limit, null)
+		inline def timeBounded(limit: MilliDuration): Venture[Maybe[A]] =
+			new TimeLimitedVenture[A](thisVenture.engage, limit, null)
 
 
 		/**
-		 * Repeats the up-chain [[Task]] whenever its execution duration exceeds a specified limit, up to a maximum number of retries. 
+		 * Repeats the up-chain [[Venture]] whenever its execution duration exceeds a specified limit, up to a maximum number of retries. 
 		 * Each retry is triggered immediately after the previous attempt times out, with no delay between retries.
-		 * The up-chain [[Task]] is not cancelled when it times out; it continues executing in the background even as retries begin.
-		 * The time limit is best-effort: it does not forcibly interrupt the up-chain [[Task]], but determines whether a retry should be initiated.
-		 * If the up-chain [[Task]] has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
-		 * Equivalent to the [[Duty]]'s [[retriedOnTimeout]] method but for [[Task]].
+		 * The up-chain [[Venture]] is not cancelled when it times out; it continues executing in the background even as retries begin.
+		 * The time limit is best-effort: it does not forcibly interrupt the up-chain [[Venture]], but determines whether a retry should be initiated.
+		 * If the up-chain [[Venture]] has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
+		 * Equivalent to the [[Duty]]'s [[retriedOnTimeout]] method but for [[Venture]].
 		 *
-		 * @param limit      the maximum duration allowed for each execution of the up-chain [[Task]] before triggering a retry.
+		 * @param limit      the maximum duration allowed for each execution of the up-chain [[Venture]] before triggering a retry.
 		 * @param maxRetries the maximum number of retries permitted after the initial attempt.
-		 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the up-chain [[Task]] if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
+		 * @return a [[Venture]] that yields [[Maybe.some]] containing the result of the up-chain [[Venture]] if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
 		 */
-		def reattemptedOnTimeout(limit: MilliDuration, maxRetries: Int): Task[Maybe[A]] = {
-			thisTask.timeBounded(limit).flatMap(_.fold {
+		def reattemptedOnTimeout(limit: MilliDuration, maxRetries: Int): Venture[Maybe[A]] = {
+			thisVenture.timeBounded(limit).flatMap(_.fold {
 				if maxRetries > 0 then reattemptedOnTimeout(limit, maxRetries - 1)
-				else Task_successful(Maybe.empty)
+				else Venture_successful(Maybe.empty)
 			} { r =>
-				Task_successful(Maybe(r))
+				Venture_successful(Maybe(r))
 			})
 		}
 	}
 
 	//// Task factory methods ////
 
-	/** Builds a [[Task]] that, once executed, does nothing but yields a value of `()` after the specified duration.
-	 * The delay period begins when the returned [[Task]] is started, not when it is built.
+	/** Builds a [[Venture]] that, once executed, does nothing but yields a value of `()` after the specified duration.
+	 * The delay period begins when the returned [[Venture]] is started, not when it is built.
 	 * This is equivalent to both `Duty_unit.delayed(duration)` and `Duty_delay(duration)(() => ())`.
 	 *
-	 * @param duration the time to wait before the [[Task]] yields its result.
-	 * @return a new [[Task]] that will yield a value of `()` after the specified delay.
+	 * @param duration the time to wait before the [[Venture]] yields its result.
+	 * @return a new [[Venture]] that will yield a value of `()` after the specified delay.
 	 */
-	inline def Task_sleeps(duration: MilliDuration): Task[Unit] =
-		Task_unit.delayed(duration)
+	inline def Venture_sleeps(duration: MilliDuration): Venture[Unit] =
+		Venture_unit.delayed(duration)
 
 	/**
-	 * Builds a [[Task]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.
-	 * The schedule is activated only when the returned [[Task]] is started, not when it is constructed.
+	 * Builds a [[Venture]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.
+	 * The schedule is activated only when the returned [[Venture]] is started, not when it is constructed.
 	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the supplier is executed repeatedly, yielding each result, until the schedule is canceled.
 	 *
 	 * $notReusableDuty
 	 * @param schedule the [[Schedule]] controlling when the supplier function is executed.
 	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
-	 * @return a [[Task]] that yields the supplier’s result(s) according to the specified [[Schedule]].
+	 * @return a [[Venture]] that yields the supplier’s result(s) according to the specified [[Schedule]].
 	 */
-	inline def Task_schedules[A](schedule: Schedule)(supplier: Schedule => Try[A]): Task[A] =
-		new DelayedSupplierTask(0, schedule, supplier)
+	inline def Venture_schedules[A](schedule: Schedule)(supplier: Schedule => Try[A]): Venture[A] =
+		new DelayedSupplierVenture(0, schedule, supplier)
 
 	/**
-	 * Builds a [[Task]] that schedules the execution of a [[Task]] builder according to a specified [[Schedule]] and yields the results of the [[Task]] produced by the builder for each scheduled execution.
-	 * The schedule is activated only when the returned [[Task]] is started, not when it is constructed.
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Task]] for each execution, and the results of each produced [[Task]] are yielded until the schedule is canceled.
-	 * This [[Task]] is not reusable and can only be executed once.
+	 * Builds a [[Venture]] that schedules the execution of a [[Venture]] builder according to a specified [[Schedule]] and yields the results of the [[Venture]] produced by the builder for each scheduled execution.
+	 * The schedule is activated only when the returned [[Venture]] is started, not when it is constructed.
+	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Venture]] for each execution, and the results of each produced [[Venture]] are yielded until the schedule is canceled.
+	 * This [[Venture]] is not reusable and can only be executed once.
 	 *
-	 * @param schedule the [[Schedule]] controlling when the [[Task]] builder is executed.
-	 * @param builder  the function that produces a new [[Task[A]]] for each scheduled execution.
-	 * @return a [[Task]] that yields the results of the [[Task]] produced by the builder according to the specified [[Schedule]].
+	 * @param schedule the [[Schedule]] controlling when the [[Venture]] builder is executed.
+	 * @param builder  the function that produces a new [[Venture[A]]] for each scheduled execution.
+	 * @return a [[Venture]] that yields the results of the [[Venture]] produced by the builder according to the specified [[Schedule]].
 	 */
-	inline def Task_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Task[A]): Task[A] =
-		new DelayedSupplierFlatTask(0, schedule, builder)
+	inline def Venture_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Venture[A]): Venture[A] =
+		new DelayedSupplierFlatVenture(0, schedule, builder)
 
 	/**
-	 * Builds a [[Task]] that waits for a specified duration before executing a supplier function and yielding its result.
-	 * The delay begins only when the returned [[Task]] is started, not when it is constructed.
-	 * The supplier is executed once after the delay, and its result is what the returned [[Task]] yields.
+	 * Builds a [[Venture]] that waits for a specified duration before executing a supplier function and yielding its result.
+	 * The delay begins only when the returned [[Venture]] is started, not when it is constructed.
+	 * The supplier is executed once after the delay, and its result is what the returned [[Venture]] yields.
 	 *
 	 * @param duration the duration to wait before executing the supplier function.
 	 * @param supplier the function that produces a result after the delay.
-	 * @return a [[Task]] that yields the supplier’s result after the specified duration.
+	 * @return a [[Venture]] that yields the supplier’s result after the specified duration.
 	 */
-	inline def Task_delays[A](duration: MilliDuration)(supplier: Schedule => Try[A]): Task[A] =
-		new DelayedSupplierTask(duration, null, supplier)
+	inline def Venture_delays[A](duration: MilliDuration)(supplier: Schedule => Try[A]): Venture[A] =
+		new DelayedSupplierVenture(duration, null, supplier)
 
 	/**
-	 * Builds a [[Task]] that waits for a specified duration before executing a [[Task]] builder and yielding the result of the produced [[Task]].
-	 * The delay begins only when the returned [[Task]] is started, not when it is constructed.
-	 * The builder is executed once after the delay, producing a [[Task]] whose result is yielded by the returned [[Task]].
+	 * Builds a [[Venture]] that waits for a specified duration before executing a [[Venture]] builder and yielding the result of the produced [[Venture]].
+	 * The delay begins only when the returned [[Venture]] is started, not when it is constructed.
+	 * The builder is executed once after the delay, producing a [[Venture]] whose result is yielded by the returned [[Venture]].
 	 *
-	 * @param duration the duration to wait before executing the [[Task]] builder.
-	 * @param builder  the function that produces a new [[Task]] after the delay.
-	 * @return a [[Task]] that yields the result of the [[Task]] produced by the builder after the specified duration.
+	 * @param duration the duration to wait before executing the [[Venture]] builder.
+	 * @param builder  the function that produces a new [[Venture]] after the delay.
+	 * @return a [[Venture]] that yields the result of the [[Venture]] produced by the builder after the specified duration.
 	 */
-	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Task[A]): Task[A] =
-		new DelayedSupplierFlatTask(duration, null, builder)
+	inline def Venture_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Venture[A]): Venture[A] =
+		new DelayedSupplierFlatVenture(duration, null, builder)
 
 	/**
-	 * Builds a [[Task]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
+	 * Builds a [[Venture]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
 	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.
 	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.
 	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.
@@ -538,16 +538,16 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param limit         the maximum duration allowed for each execution of the supplier function before triggering a retry.
 	 * @param maxRetries    the maximum number of retries permitted after the initial attempt.
 	 * @param supplier          the supplier function that produces a value of type [[A]], taking the number of failed attempts as an input.
-	 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the supplier function if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
+	 * @return a [[Venture]] that yields [[Maybe.some]] containing the result of the supplier function if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
 	 */
-	def Task_retryOnTimeout[A](limit: MilliDuration, maxRetries: Int, supplier: Int => Try[A]): Task[Maybe[A]] = {
-		def loop(failedAttempts: Int): Task[Maybe[A]] = {
-			TimeLimitedTask[A](_(supplier(failedAttempts)), limit, null)
+	def Venture_retryOnTimeout[A](limit: MilliDuration, maxRetries: Int, supplier: Int => Try[A]): Venture[Maybe[A]] = {
+		def loop(failedAttempts: Int): Venture[Maybe[A]] = {
+			TimeLimitedVenture[A](_(supplier(failedAttempts)), limit, null)
 				.flatMap(_.fold {
-					if failedAttempts >= maxRetries then Task_successful(Maybe.empty)
+					if failedAttempts >= maxRetries then Venture_successful(Maybe.empty)
 					else loop(failedAttempts + 1)
 				} { a =>
-					Task_successful(Maybe(a))
+					Venture_successful(Maybe(a))
 				})
 		}
 
@@ -557,16 +557,16 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	//// Task implementation classes ////
 
 	/** $notReusableDuty */
-	final class ScheduledTask[A](task: Task[A], aSchedule: Schedule) extends AbstractTask[A] {
+	final class ScheduledVenture[A](venture: Venture[A], aSchedule: Schedule) extends AbstractVenture[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(aSchedule)(_ => task.engage(onComplete))
+			schedule(aSchedule)(_ => venture.engage(onComplete))
 		}
 	}
 
 	/** $notReusableDuty */
-	final class ScheduledTransform[A, B](task: Task[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractTask[B] {
+	final class ScheduledTransform[A, B](venture: Venture[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractVenture[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			task.engage { tryA =>
+			venture.engage { tryA =>
 				schedule(aSchedule) { _ =>
 					val tryB =
 						try f(tryA)
@@ -580,30 +580,30 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	/** $notReusableDuty */
-	final class ScheduledTransformWith[A, B](taskA: Task[A], aSchedule: Schedule, f: Try[A] => Task[B]) extends AbstractTask[B] {
+	final class ScheduledTransformWith[A, B](ventureA: Venture[A], aSchedule: Schedule, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit = {
-			taskA.engage { tryA =>
+			ventureA.engage { tryA =>
 				schedule(aSchedule) { _ =>
-					val taskB =
+					val ventureB =
 						try f(tryA)
 						catch {
-							case NonFatal(e) => Task_failed(e)
+							case NonFatal(e) => Venture_failed(e)
 						}
-					taskB.engage(onComplete)
+					ventureB.engage(onComplete)
 				}
 			}
 		}
 	}
 
-	final class DelayedTask[A](task: Task[A], delay: MilliDuration) extends AbstractTask[A] {
+	final class DelayedVenture[A](venture: Venture[A], delay: MilliDuration) extends AbstractVenture[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
-			schedule(newDelaySchedule(delay)) { _ => task.engage(onComplete) }
+			schedule(newDelaySchedule(delay)) { _ => venture.engage(onComplete) }
 		}
 	}
 
-	final class DelayedTransform[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractTask[B] {
+	final class DelayedTransform[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractVenture[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit =
-			task.engage { tryA =>
+			venture.engage { tryA =>
 				schedule(newDelaySchedule(delay)) { _ =>
 					val tryB =
 						try f(tryA)
@@ -615,24 +615,24 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 			}
 	}
 
-	final class DelayedTransformWith[A, B](task: Task[A], delay: MilliDuration, f: Try[A] => Task[B]) extends AbstractTask[B] {
+	final class DelayedTransformWith[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
 		override def engage(onComplete: Try[B] => Unit): Unit =
-			task.engage { tryA =>
+			venture.engage { tryA =>
 				schedule(newDelaySchedule(delay)) { _ =>
-					val taskB =
+					val ventureB =
 						try f(tryA)
 						catch {
-							case NonFatal(e) => Task_failed(e)
+							case NonFatal(e) => Venture_failed(e)
 						}
-					taskB.engage(onComplete)
+					ventureB.engage(onComplete)
 				}
 			}
 	}
 
 	/**
-	 * This [[Task]] is reusable only when limit2 is null.
+	 * This [[Venture]] is reusable only when limit2 is null.
 	 */
-	final class TimeLimitedTask[A](upChain: (Try[A] => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractTask[Maybe[A]] {
+	final class TimeLimitedVenture[A](upChain: (Try[A] => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractVenture[Maybe[A]] {
 		override def engage(onComplete: Try[Maybe[A]] => Unit): Unit = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			var hasElapsed = false
@@ -658,9 +658,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	/**
-	 * Caution: This [[Task]] is reusable only when limit2 is null.
+	 * Caution: This [[Venture]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractTask[A] {
+	final class DelayedSupplierVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractVenture[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => onComplete(supplier(timer)))
@@ -668,9 +668,9 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	/**
-	 * Caution: This [[Task]] is reusable only when limit2 is null.
+	 * Caution: This [[Venture]] is reusable only when limit2 is null.
 	 */
-	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
+	final class DelayedSupplierFlatVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Venture[A]) extends AbstractVenture[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			schedule(timer)(_ => supplier(timer).engage(onComplete))

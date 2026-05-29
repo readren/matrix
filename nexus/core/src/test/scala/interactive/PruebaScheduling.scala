@@ -6,6 +6,7 @@ import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultPollingSchedulingDpd}
+import readren.sequencer.providers.CooperativeWorkersDp
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -20,7 +21,7 @@ object PruebaScheduling {
 
 		val uri = new URI(null, "localhost", null, null)
 		val manager = new ShutdownAbleDpm
-		val rootDoer = manager.provideDoer(DefaultCooperativeWorkersDpd, "root")
+		val rootDoer: CooperativeWorkersDp.DoerFacade = manager.provideDoer(DefaultCooperativeWorkersDpd, "root")
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 		println(s"Nexus created")
 
@@ -35,7 +36,7 @@ object PruebaScheduling {
 				assert(!inside)
 				inside = true
 				counter += 1
-				println(f"counter=$counter%4d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d")
+				println(f"counter=$counter%4d, thread=${Thread.currentThread().threadId}%3d, numOfPendingRunnables=${schedulingDoer.numOfPendingRunnables}%3d")
 				inside = false
 			}
 
@@ -58,7 +59,7 @@ object PruebaScheduling {
 							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule(counter % 10, 10)
 							var repetitions = 0
 							schedulingDoer.schedule(schedule) { _ =>
-								println(f"counter=$counter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().getId}%3d, numOfPendingTasks=${schedulingDoer.numOfPendingTasks}%3d, incitingId=$incitingId")
+								println(f"counter=$counter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().getId}%3d, numOfPendingRunnables=${schedulingDoer.numOfPendingRunnables}%3d, incitingId=$incitingId")
 								tickSelfReceptor.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}

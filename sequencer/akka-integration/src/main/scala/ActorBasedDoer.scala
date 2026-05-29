@@ -32,7 +32,7 @@ object ActorBasedDoer {
 
 		override def currentlyRunningDoer: Maybe[ActorBasedDoer] = Maybe.apply(currentDoerThreadLocal.get)
 
-		override def reportFailure(cause: Throwable): Unit = ctx.log.error("""Error occurred while the actor "{}" was executing a Runnable within a Task.""", ctx.self, cause)
+		override def reportFailure(cause: Throwable): Unit = ctx.log.error("""Error occurred while the actor "{}" was executing a Doer operation.""", ctx.self, cause)
 
 		override def akkaScheduler: Scheduler = ctx.system.scheduler
 	}

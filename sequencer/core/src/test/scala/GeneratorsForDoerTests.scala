@@ -136,7 +136,7 @@ object GeneratorsForDoerTests {
 	}
 }
 
-/** Offers generators of [[doer.Duty]] and [[doer.Task]] instances.
+/** Offers generators of [[doer.Duty]] and [[doer.Venture]] instances.
  * Useful for suites that test their behavior. */
 class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[Doer], synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
 
@@ -147,7 +147,7 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
 	val foreignDoer: Doer = doerProvider.provide(doerProvider.tagFromText(s"foreign-doer-$recursionLevel"))
 
-	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Task]] instances. */
+	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Venture]] instances. */
 	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests[foreignDoer.type](foreignDoer, doerProvider, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
 
 	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
@@ -170,40 +170,40 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	}
 
 
-	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
-	def genTaskFromTry[A](tryA: Try[A], failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
+	/** @return a generator of [[doer.Venture]] instances that yield the provided value. */
+	def genVentureFromTry[A](tryA: Try[A], failureLabel: String, failureProbability: Int = 20): Gen[Venture[A]] = {
 
-		val immediateGen: Gen[Task[A]] = Task_ready(tryA)
+		val immediateGen: Gen[Venture[A]] = Venture_ready(tryA)
 
-		val ownGen: Gen[Task[A]] = Task_own(() => tryA)
+		val ownGen: Gen[Venture[A]] = Venture_own(() => tryA)
 
-		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task_ownFlat(() => taskA) }
+		val ownFlatGen: Gen[Venture[A]] = Gen.oneOf(immediateGen, ownGen).map { ventureA => Venture_ownFlat(() => ventureA) }
 
-		val waitGen: Gen[Task[A]] = genFutureFromTry(tryA, s"$failureLabel / Task.wait").map(Task_wait)
+		val waitGen: Gen[Venture[A]] = genFutureFromTry(tryA, s"$failureLabel / Venture.wait").map(Venture_wait)
 
-		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTaskFromTry(tryA, s"failureLabel / Task.foreign").map(Task_foreign(foreignDoer)(_))
+		def foreignGen: Gen[Venture[A]] = foreignDoerGenerators().genVentureFromTry(tryA, s"failureLabel / Venture.foreign").map(Venture_foreign(foreignDoer)(_))
 
-		val alienGen: Gen[Task[A]] = genFutureBuilderFromTry(tryA, s"$failureLabel / Task.alien").map(Task_alien)
+		val alienGen: Gen[Venture[A]] = genFutureBuilderFromTry(tryA, s"$failureLabel / Venture.alien").map(Venture_alien)
 
 		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
 		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
 		else Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen)
 	}
 
-	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
-	def genTask[A](a: A, failureLabel: String, failureProbability: Int = 20): Gen[Task[A]] = {
+	/** @return a generator of [[doer.Venture]] instances that yield the provided value. */
+	def genVenture[A](a: A, failureLabel: String, failureProbability: Int = 20): Gen[Venture[A]] = {
 
-		val immediateGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.immediate", failureProbability).map(Task_ready)
+		val immediateGen: Gen[Venture[A]] = genTry(a, s"$failureLabel / Venture.immediate", failureProbability).map(Venture_ready)
 
-		val ownGen: Gen[Task[A]] = genTry(a, s"$failureLabel / Task.own", failureProbability).map { tryA => Task_own(() => tryA) }
+		val ownGen: Gen[Venture[A]] = genTry(a, s"$failureLabel / Venture.own", failureProbability).map { tryA => Venture_own(() => tryA) }
 
-		val ownFlatGen: Gen[Task[A]] = Gen.oneOf(immediateGen, ownGen).map { taskA => Task_ownFlat(() => taskA) }
+		val ownFlatGen: Gen[Venture[A]] = Gen.oneOf(immediateGen, ownGen).map { ventureA => Venture_ownFlat(() => ventureA) }
 
-		val waitGen: Gen[Task[A]] = genFuture(a, s"$failureLabel / Task.wait").map(Task_wait)
+		val waitGen: Gen[Venture[A]] = genFuture(a, s"$failureLabel / Venture.wait").map(Venture_wait)
 
-		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTask(a, s"failureLabel / Task.foreign").map(Task_foreign(foreignDoer)(_))
+		def foreignGen: Gen[Venture[A]] = foreignDoerGenerators().genVenture(a, s"failureLabel / Venture.foreign").map(Venture_foreign(foreignDoer)(_))
 
-		val alienGen: Gen[Task[A]] = genFutureBuilder(a, s"$failureLabel / Task.alien").map(Task_alien)
+		val alienGen: Gen[Venture[A]] = genFutureBuilder(a, s"$failureLabel / Venture.alien").map(Venture_alien)
 
 		if synchronousOnly then Gen.oneOf(immediateGen, ownGen, ownFlatGen)
 		else if includeForeign then Gen.oneOf(immediateGen, ownGen, ownFlatGen, waitGen, alienGen, foreignGen)
@@ -212,7 +212,7 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 
 
 	/** Implicitly provide an Arbitrary instance for `doer.Task` */
-	given taskArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Task[A]] = Arbitrary {
-		arbA.arbitrary.flatMap(a => genTask(a, "taskArbitrary"))
+	given ventureArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Venture[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genVenture(a, "ventureArbitrary"))
 	}
 }

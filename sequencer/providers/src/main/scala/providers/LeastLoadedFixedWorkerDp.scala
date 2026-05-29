@@ -118,7 +118,7 @@ abstract class LeastLoadedFixedWorkerDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		var totalCompletedTaskCount: Long = 0
+		var totalCompletedRunnablesCount: Long = 0
 		sb.append(this.getClass.getSimpleName)
 		sb.append('\n')
 		for doer <- doers do {
@@ -126,17 +126,17 @@ abstract class LeastLoadedFixedWorkerDp(
 			sb.append('\t').append(doer.tag).append(") ")
 			sb.append(" queue.size=").append(executor.getQueue.size)
 			sb.append(", activeCount=").append(executor.getActiveCount)
-			sb.append(", taskCount=").append(executor.getTaskCount)
-			sb.append(", completedTaskCount=").append(executor.getCompletedTaskCount)
+			sb.append(", runnablesCount=").append(executor.getTaskCount)
+			sb.append(", completedRunnablesCount=").append(executor.getCompletedTaskCount)
 			// sb.append(", largestPoolSize=").append(executor.getLargestPoolSize)
 			sb.append(", isTerminating=").append(executor.isTerminating)
 			sb.append(", isTerminated=").append(executor.isTerminated)
 			sb.append(", isShutdown=").append(executor.isShutdown)
 			sb.append('\n')
 			// info.lastRunnable.foreach(r => sb.append("Last runnable:\n").append(r.toString).append('\n'))
-			totalCompletedTaskCount += executor.getCompletedTaskCount
+			totalCompletedRunnablesCount += executor.getCompletedTaskCount
 		}
-		sb.append("\ttotalCompletedTasks=").append(totalCompletedTaskCount)
+		sb.append("\ttotalCompletedRunnables=").append(totalCompletedRunnablesCount)
 		sb
 	}
 }

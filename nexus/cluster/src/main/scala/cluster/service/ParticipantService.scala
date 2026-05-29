@@ -24,8 +24,8 @@ import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object ParticipantService {
-	
-	type TaskSequencer = AbstractDoer & SchedulingExtension 
+
+	type SchedulingDoer = AbstractDoer & SchedulingExtension
 
 	trait Clock {
 		def getTime: Instant
@@ -92,7 +92,7 @@ object ParticipantService {
 		val heartbeatMargin: MilliDuration = 12_000,
 	)
 
-	def start(sequencer: TaskSequencer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ParticipantService = {
+	def start(sequencer: SchedulingDoer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ParticipantService = {
 
 		val serverChannel = AsynchronousServerSocketChannel.open()
 		for option <- serviceConfig.socketOptions do {
@@ -125,7 +125,7 @@ object ParticipantService {
  *
  * The [[ParticipantService]] class delegates the knowledge about, and communication with, other participants, to implementations of the [[ParticipantDelegate]] trait: it creates one delegate per participant it is aware of (excluding itself).
  */
-class ParticipantService private(val sequencer: TaskSequencer, val clock: Clock, val config: ParticipantService.Config, serverChannel: AsynchronousServerSocketChannel, eventListeners: java.util.WeakHashMap[EventListener, None.type]) { thisParticipantService =>
+class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock, val config: ParticipantService.Config, serverChannel: AsynchronousServerSocketChannel, eventListeners: java.util.WeakHashMap[EventListener, None.type]) { thisParticipantService =>
 
 	export config.myAddress
 

@@ -16,7 +16,7 @@ import scala.concurrent.{ExecutionContext, Promise}
 /** Test suite for [[CooperativeWorkersDp]] trait using fixed samples instead of property-based testing.
  *
  * This suite tests the core functionality of the [[CooperativeWorkersDp]] including:
- * - Basic doer provision and task execution
+ * - Basic doer provision and runnable execution
  * - Concurrency and thread safety
  * - Shutdown and termination behavior
  * - Exception handling and failure reporting
@@ -60,15 +60,15 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		assert(doer2.tag == "test-doer-2")
 	}
 
-	test("Doer should track pending tasks correctly") {
+	test("Doer should track pending runnables correctly") {
 		val doer = sharedDoer
 		val latch = new CountDownLatch(1)
 		val slowLatch = new CountDownLatch(1)
 
 		// Initially no pending tasks
-		assert(doer.numOfPendingTasks == 0, "Initially should have no pending tasks")
+		assert(doer.numOfPendingRunnables == 0, "Initially should have no pending runnables")
 
-		// Submit a slow task
+		// Submit a slow runnable
 		doer.executeSequentially { () =>
 			slowLatch.await(2, TimeUnit.SECONDS)
 			latch.countDown()
@@ -77,16 +77,16 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		// Give it a moment to be queued
 		Thread.sleep(10)
 
-		// Should have at least one pending task
-		assert(doer.numOfPendingTasks >= 1, "Should have at least one pending task")
+		// Should have at least one pending runnable
+		assert(doer.numOfPendingRunnables >= 1, "Should have at least one pending runnable")
 
-		// Release the slow task
+		// Release the slow runnable
 		slowLatch.countDown()
-		assert(latch.await(5, TimeUnit.SECONDS), "Task should complete")
+		assert(latch.await(5, TimeUnit.SECONDS), "Runnable should complete")
 
 		// Should have no pending tasks after completion
 		Thread.sleep(10)
-		assert(doer.numOfPendingTasks == 0, "Should have no pending tasks after completion")
+		assert(doer.numOfPendingRunnables == 0, "Should have no pending runnable after completion")
 	}
 
 	test("`Doer.execute` executes in a decoupled manner.") {
@@ -141,7 +141,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		promise.future.map(identity)(using scala.concurrent.ExecutionContext.global)
 	}
 
-	test("Doer should execute tasks sequentially") {
+	test("Doer should execute runnables sequentially") {
 		val doer = sharedDoer
 		val results = new AtomicInteger(0)
 		val executionOrder = new AtomicInteger(0)
@@ -167,12 +167,12 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		}
 
 		// Wait for all tasks to complete
-		assert(latch.await(50, TimeUnit.MILLISECONDS), s"All tasks should complete within timeout. ${sharedDoerProvider.asInstanceOf[ShutdownAble].diagnose(new StringBuilder)}")
-		assert(results.get == 3, "Last task should set result to 3")
-		assert(executionOrder.get == 3, "Last task should set execution order to 3")
+		assert(latch.await(50, TimeUnit.MILLISECONDS), s"All runnables should complete within timeout. ${sharedDoerProvider.asInstanceOf[ShutdownAble].diagnose(new StringBuilder)}")
+		assert(results.get == 3, "Last runnable should set result to 3")
+		assert(executionOrder.get == 3, "Last runnable should set execution order to 3")
 	}
 
-	test("Tasks should see memory updates from previous tasks in the same doer") {
+	test("Runnables should see memory updates from previous runnables in the same doer") {
 		val doer = sharedDoer
 		var sharedCounter = 0
 		val latch = new CountDownLatch(5)
@@ -186,19 +186,19 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(5, TimeUnit.SECONDS), "All runnables should complete")
 		assert(sharedCounter == 5, "Counter should be incremented 5 times")
 	}
 
 	test("Worker threads should be reused efficiently") {
-		val numberOfTasksPerDoer = 999
+		val numberOfRunnablesPerDoer = 999
 		val numberOfDoers = 9
-		val latch = new CountDownLatch(numberOfTasksPerDoer * numberOfDoers)
+		val latch = new CountDownLatch(numberOfRunnablesPerDoer * numberOfDoers)
 		val threadIds = new java.util.concurrent.ConcurrentHashMap[Long, Int]()
 
 		// Submit multiple tasks in different doers and collect thread IDs
 		val doers = Array.tabulate[Doer](numberOfDoers)(i => sharedDoerProvider.provide(s"$i"))
-		for taskNumber <- 0 until numberOfTasksPerDoer do {
+		for runnableNumber <- 0 until numberOfRunnablesPerDoer do {
 			for doer <- doers do {
 				doer.executeSequentially { () =>
 					threadIds.compute(Thread.currentThread().threadId, (threadId, rep) => if rep eq null then 1 else rep + 1)
@@ -207,7 +207,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		assert(latch.await(1, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(1, TimeUnit.SECONDS), "All runnables should complete")
 
 		// Should have used multiple threads (concurrent execution)
 		val uniqueThreads = threadIds.size
@@ -217,19 +217,19 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 
 	//// EDGE CASE TESTS ////
 
-	test("Provider should handle empty task submission") {
+	test("Provider should handle empty runnable submission") {
 		val doer = sharedDoer
 
-		// Submit an empty task (no-op)
+		// Submit an empty runnable (no-op)
 		doer.executeSequentially { () =>
-			// Empty task
+			// Empty runnable
 		}
 
 		// Give it a moment to process
 		Thread.sleep(50)
 
 		// Should have no pending tasks
-		assert(doer.numOfPendingTasks == 0, "Should have no pending tasks after empty task")
+		assert(doer.numOfPendingRunnables == 0, "Should have no pending runnables after empty runnable")
 	}
 
 	//// SHUTDOWN TESTS ////
@@ -237,29 +237,30 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 	test("Provider should shutdown gracefully") {
 		given ExecutionContext = ExecutionContext.global
 
-		PropF.forAllNoShrinkF (Gen.choose(1, 9), Gen.choose(1, 20), Gen.choose(1, 40)) { (poolSize: Int, numberOfDoers: Int, numberOfTasks: Int) =>
+		PropF.forAllNoShrinkF(Gen.choose(1, 9), Gen.choose(1, 20), Gen.choose(1, 40)) { (poolSize: Int, numberOfDoers: Int, numberOfRunnables: Int) =>
 			// println(s"Begin: poolSize=$poolSize, numberOfDoers=$numberOfDoers, numberOfTasks=$numberOfTasks")
 			val promise = Promise[Unit]()
 			val provider = new CooperativeWorkersDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize)
 
 			val doers = IArray.tabulate(numberOfDoers)(i => provider.provide(s"shutdown-test-$i"))
-			val numberOfCompletedTask = AtomicInteger(0)
+			val numberOfCompletedRunnables = AtomicInteger(0)
 
 			// Submit a tasks
-			for i <- 0 until numberOfTasks do {
+			for i <- 0 until numberOfRunnables do {
 				val doer = doers(i % numberOfDoers)
 				doer.executeSequentially { () =>
 					Thread.sleep(1)
-					numberOfCompletedTask.getAndIncrement()
+					numberOfCompletedRunnables.getAndIncrement()
 				}
 			}
 
 			// Shutdown the provider
 			provider.shutdown()
 			val termination = provider.awaitTermination(2, TimeUnit.SECONDS)
-			def diagnostic: String = s"\nDiagnostic:\nTest sample: poolSize=$poolSize, numberOfDoers=$numberOfDoers, numberOfTasks=$numberOfTasks\nProvider state:\n${provider.diagnose(new StringBuilder)}"
+
+			def diagnostic: String = s"\nDiagnostic:\nTest sample: poolSize=$poolSize, numberOfDoers=$numberOfDoers, numberOfRunnables=$numberOfRunnables\nProvider state:\n${provider.diagnose(new StringBuilder)}"
 			if termination then {
-				if numberOfCompletedTask.get < numberOfTasks then promise.tryFailure(new AssertionError(s"All tasks should be completed and only $numberOfCompletedTask/$numberOfTasks are.$diagnostic"))
+				if numberOfCompletedRunnables.get < numberOfRunnables then promise.tryFailure(new AssertionError(s"All runnables should be completed and only $numberOfCompletedRunnables/$numberOfRunnables are.$diagnostic"))
 			} else promise.tryFailure(new AssertionError(s"Provider should shutdown within timeout.$diagnostic"))
 
 			promise.trySuccess(())
@@ -267,7 +268,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		}
 	}
 
-	test("Provider should handle shutdown while tasks are running") {
+	test("Provider should handle shutdown while runnables are running") {
 		val testProvider = new CooperativeWorkersDp.Impl(
 			applyMemoryFence = false,
 			threadPoolSize = 2
@@ -275,28 +276,28 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 
 		val doer = testProvider.provide("shutdown-running-test")
 		val latch = new CountDownLatch(1)
-		val taskStarted = new AtomicBoolean(false)
+		val runnablesStarted = new AtomicBoolean(false)
 
-		// Submit a long-running task
+		// Submit a long-running runnable
 		doer.executeSequentially { () =>
-			taskStarted.set(true)
+			runnablesStarted.set(true)
 			Thread.sleep(200)
 			latch.countDown()
 		}
 
-		// Wait for task to start
+		// Wait for runnable to start
 		Thread.sleep(50)
-		assert(taskStarted.get, "Task should have started")
+		assert(runnablesStarted.get, "Runnable should have started")
 
-		// Shutdown while task is running
+		// Shutdown while a runnable is running
 		testProvider.shutdown()
 		val terminated = testProvider.awaitTermination(3, TimeUnit.SECONDS)
 
-		assert(terminated, s"Provider should terminate even with running tasks: ${testProvider.diagnose(new StringBuilder)}")
-		assert(latch.await(1, TimeUnit.SECONDS), "Running task should complete")
+		assert(terminated, s"Provider should terminate even with running runnables: ${testProvider.diagnose(new StringBuilder)}")
+		assert(latch.await(1, TimeUnit.SECONDS), "Running runnables should complete")
 	}
 
-	test("No pending tasks when workers go to sleep (race condition test)") {
+	test("No pending runnables when workers go to sleep (race condition test)") {
 		for threadPoolSize <- 1 to 4 do {
 			val testProvider = new CooperativeWorkersDp.Impl(
 				applyMemoryFence = false,
@@ -308,7 +309,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			for i <- 1 to iterations do {
 				val latch = new CountDownLatch(threadPoolSize)
 
-				// Enqueue one task per doer to occupy all workers.
+				// Enqueue one runnable per doer to occupy all workers.
 				for j <- 0 until threadPoolSize do {
 					doers(j).executeSequentially { () =>
 						latch.countDown()
@@ -320,7 +321,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				val success = latch.await(1, TimeUnit.SECONDS)
 				if !success then {
 					val diagnostic = testProvider.diagnose(new StringBuilder)
-					assert(false, s"Tasks at iteration $i where not executed. Thread pool size: $threadPoolSize. Provider state:\n$diagnostic")
+					assert(false, s"Runnable at iteration $i where not executed. Thread pool size: $threadPoolSize. Provider state:\n$diagnostic")
 				}
 			}
 

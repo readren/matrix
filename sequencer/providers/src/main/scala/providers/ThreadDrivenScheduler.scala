@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.ThreadDrivenScheduler.{INITIAL_DELAYED_TASK_QUEUE_CAPACITY, Plan}
+import providers.ThreadDrivenScheduler.{INITIAL_HEAP_QUEUE_CAPACITY, Plan}
 
 import readren.common.deriveToString
 
@@ -13,7 +13,7 @@ import scala.reflect.ClassTag
 object ThreadDrivenScheduler {
 
 
-	inline val INITIAL_DELAYED_TASK_QUEUE_CAPACITY = 16
+	inline val INITIAL_HEAP_QUEUE_CAPACITY = 16
 
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
@@ -67,7 +67,7 @@ object ThreadDrivenScheduler {
 class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactory)(using ctP: ClassTag[P | Null]) extends Runnable {
 	private val commandsQueue = new util.ArrayDeque[Runnable]()
 
-	private val priorityQueue: MinHeapPriorityQueue[Plan[D]] = new MinHeapPriorityQueue[Plan[D]](INITIAL_DELAYED_TASK_QUEUE_CAPACITY)
+	private val priorityQueue: MinHeapPriorityQueue[Plan[D]] = new MinHeapPriorityQueue[Plan[D]](INITIAL_HEAP_QUEUE_CAPACITY)
 	/** A register that knows the instances of [[Plan]] that are not in the [[heap]] because they were triggered and still not rescheduled (still not added to the [[heap]] again after the routine completes and [[schedule]] or [[scheduleRelativeToPrevious]] is called again).
 	 * We say that a schedule is triggered when its [[Plan.runnable]] is passed to [[Doer.executeSequentially]].
 	 * A schedule is triggered only after its [[Plan.scheduledTime]] is reached.

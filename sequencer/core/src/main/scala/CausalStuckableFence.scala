@@ -52,7 +52,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 		 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor.
 		 * @param onCompleted a callback invoked with the resulting state and a flag indicating whether rollback was too late.
 		 * @return the [[LatchingTask]] originally returned by the [[advanceSpeculatively]]-like method that created this [[RollbackAccessor]], now fulfilled with either the committed or rolled-back state. */
-		def rollback(isWithinDoSerEx: Boolean = doer.isInSequence, onCompleted: (Try[A | B], RollbackApplication) => Unit = (_, _) => ()): doer.LatchingTask[A | B]
+		def rollback(isWithinDoSerEx: Boolean = doer.isInSequence, onCompleted: (Try[A | B], RollbackApplication) => Unit = (_, _) => ()): doer.LatchingVenture[A | B]
 	}
 
 	/** The state to which the most recent step transitioned into, or a [[Failure]] if the transition failed.\
@@ -70,7 +70,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * The returned [[LatchingTask]] is always already completed.\
 	 * Must be called within this [[Doer]].\
 	 * @return a [[LatchingTask]] yielding the currently visible state or failure. */
-	def committed: doer.LatchingTask[A] = {
+	def committed: doer.LatchingVenture[A] = {
 		doer.checkWithin()
 		lastCommittedCommitment
 	}
@@ -86,7 +86,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * Independent subscriptions to [[causalAnchor]] are appropriate only for derived updates that are order‑independent.\
 	 * @param stateConsumer optional callback invoked when the anchored link is reached. Executed within this [[Doer]]’s sequential executor before any consumer subscribed to the returned [[LatchingDuty]]. The first parameter is the primary state; the second indicates whether the link was already reached when this method was invoked: [[ARRIVED_BEFORE]] if so, or [[ARRIVED_AFTER]] if not.
 	 * @return a [[LatchingTask]] yielding the state that the next update will be causally anchored to — i.e. the same state an updater would see if [[advanceIf]] were called at this moment. */
-	def causalAnchor(stateConsumer: (Try[A], CausalAnchorArrival) => Unit = (_, _) => ()): doer.LatchingTask[A] = {
+	def causalAnchor(stateConsumer: (Try[A], CausalAnchorArrival) => Unit = (_, _) => ()): doer.LatchingVenture[A] = {
 		doer.checkWithin()
 		val lec = lastEnqueuedCommitment
 		val lcc = lastCommittedCommitment
@@ -112,7 +112,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[LatchingDuty]] is not causally ordered.\
 	 * So, avoid memorizing [[LatchingDuty]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
 	 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
-	inline def advance[B <: A](inline primaryStateUpdater: A => doer.Task[A | B]): doer.LatchingTask[A | B] =
+	inline def advance[B <: A](inline primaryStateUpdater: A => doer.Venture[A | B]): doer.LatchingVenture[A | B] =
 		step((a, _) => Maybe(primaryStateUpdater(a)), false)
 
 	/** Like [[advance]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]].\
@@ -120,7 +120,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * If it returns [[Maybe.empty]], the update is canceled and the previous state is retained.\
 	 * @param primaryStateUpdater a partial function that computes the next state from the current one; the second argument is always `null`
 	 * @return a [[LatchingTask]] that yields the updated state */
-	inline def advanceIf[B <: A](inline primaryStateUpdater: A => Maybe[doer.Task[A | B]]): doer.LatchingTask[A | B] = {
+	inline def advanceIf[B <: A](inline primaryStateUpdater: A => Maybe[doer.Venture[A | B]]): doer.LatchingVenture[A | B] = {
 		step((a, _) => primaryStateUpdater(a), false)
 	}
 
@@ -133,7 +133,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * The causal guarantee holds from the moment the `primaryStateUpdater` function is invoked until the [[LatchingDuty]] returned by this method and all the consumers synchronously subscribed to it have returned.\
 	 * @param primaryStateUpdater a function that computes the next state from the current one, with rollback control
 	 * @return a [[LatchingTask]] that yields the updated or rolled-back state */
-	inline def advanceSpeculatively[B <: A](inline primaryStateUpdater: (A, RollbackAccessor[B]) => doer.Task[A | B]): doer.LatchingTask[A | B] =
+	inline def advanceSpeculatively[B <: A](inline primaryStateUpdater: (A, RollbackAccessor[B]) => doer.Venture[A | B]): doer.LatchingVenture[A | B] =
 		advanceSpeculativelyIf[B]((a, rba) => Maybe(primaryStateUpdater(a, rba)))
 
 	/** Attempts a speculative state transition anchored to the previous one.\
@@ -143,7 +143,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * @param primaryStateUpdater a function that computes the next state from the current one, with rollback capability
 	 * @param isWithinDoSerEx whether the caller is executing within the Doer's sequential executor
 	 * @return a [[LatchingTask]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped. */
-	def advanceSpeculativelyIf[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Task[A | B]], isWithinDoSerEx: Boolean = doer.isInSequence): doer.LatchingTask[A | B] = {
+	def advanceSpeculativelyIf[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Venture[A | B]], isWithinDoSerEx: Boolean = doer.isInSequence): doer.LatchingVenture[A | B] = {
 		if isWithinDoSerEx then step(primaryStateUpdater, true)
 		else {
 			val commitment = doer.Commitment[A]()
@@ -159,7 +159,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	 * @param primaryStateUpdater the transition function, optionally accepting a [[RollbackAccessor]]
 	 * @param isSpeculative whether the update is speculative and may be rolled back
 	 * @return a [[LatchingTask]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped. */
-	private def step[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Task[A | B]], isSpeculative: Boolean): doer.LatchingTask[A | B] = {
+	private def step[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Venture[A | B]], isSpeculative: Boolean): doer.LatchingVenture[A | B] = {
 		val previousStepCommitment = lastEnqueuedCommitment
 		val thisStepCommitment = doer.Commitment[A]()
 		lastEnqueuedCommitment = thisStepCommitment

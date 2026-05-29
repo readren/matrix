@@ -385,7 +385,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		gate
 	}
 
-	test("Doer should execute tasks sequentially") {
+	test("Doer should execute ventures sequentially") {
 		val doer = getSharedDoer
 		val results = new AtomicInteger(0)
 		val executionOrder = new AtomicInteger(0)
@@ -411,14 +411,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 
 		// Wait for all tasks to complete
-		assert(latch.await(50, TimeUnit.MILLISECONDS), "All tasks should complete within timeout")
-		assert(results.get == 3, "Last task should set result to 3")
-		assert(executionOrder.get == 3, "Last task should set execution order to 3")
+		assert(latch.await(50, TimeUnit.MILLISECONDS), "All runnables should complete within timeout")
+		assert(results.get == 3, "Last venture should set result to 3")
+		assert(executionOrder.get == 3, "Last venture should set execution order to 3")
 	}
 
 	//// CONCURRENCY TESTS ////
 
-	test("Multiple doers should execute tasks concurrently") {
+	test("Multiple doers should execute runnables concurrently") {
 		val doer1 = buildDoer("doer-1")
 		val doer2 = buildDoer("doer-2")
 		val doer3 = buildDoer("doer-3")
@@ -446,16 +446,16 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			latch.countDown()
 		}
 
-		assert(latch.await(400, TimeUnit.MILLISECONDS), "All tasks should complete")
+		assert(latch.await(400, TimeUnit.MILLISECONDS), "All runnables should complete")
 		val endTime = System.currentTimeMillis()
 		val totalTime = endTime - startTime
 
 		// If tasks were truly concurrent, total time should be close to 100ms, not 300ms
-		assert(totalTime < 250, s"Tasks should execute concurrently, total time: ${totalTime}ms")
-		assert(executionTimes.get == 3, "All tasks should have executed")
+		assert(totalTime < 250, s"Ventures should execute concurrently, total time: ${totalTime}ms")
+		assert(executionTimes.get == 3, "All runnables should have executed")
 	}
 
-	test("Tasks should see memory updates from previous tasks in the same doer") {
+	test("Ventures should see memory updates from previous runnable in the same doer") {
 		val doer = getSharedDoer
 		var sharedCounter = 0
 		val latch = new CountDownLatch(5)
@@ -469,19 +469,19 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(5, TimeUnit.SECONDS), "All runnables should complete")
 		assert(sharedCounter == 5, "Counter should be incremented 5 times")
 	}
 
 	test("Worker threads should be reused efficiently") {
-		val numberOfTasksPerDoer = 999
+		val numberOfVenturesPerDoer = 999
 		val numberOfDoers = 9
-		val latch = new CountDownLatch(numberOfTasksPerDoer * numberOfDoers)
+		val latch = new CountDownLatch(numberOfVenturesPerDoer * numberOfDoers)
 		val threadIds = new java.util.concurrent.ConcurrentLinkedQueue[Long]()
 
 		// Submit multiple tasks in different doers and collect thread IDs
 		val doers = Array.tabulate[Doer](numberOfDoers)(i => buildDoer(s"$i"))
-		for taskNumber <- 0 until numberOfTasksPerDoer do {
+		for ventureNumber <- 0 until numberOfVenturesPerDoer do {
 			for doer <- doers do {
 				doer.executeSequentially { () =>
 					threadIds.add(Thread.currentThread().threadId)
@@ -490,7 +490,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 		}
 
-		assert(latch.await(1, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(1, TimeUnit.SECONDS), "All runnables should complete")
 
 		// Should have used multiple threads (concurrent execution)
 		val uniqueThreads = threadIds.toArray.toSet.size
@@ -499,32 +499,32 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// EXCEPTION HANDLING TESTS ////
 
-	test("Doer should handle exceptions in tasks gracefully") {
+	test("Doer should handle exceptions in runnables gracefully") {
 		val doer = getSharedDoer
 		val latch = new CountDownLatch(2)
 		val exceptionCaught = new AtomicBoolean(false)
 
-		// Submit a task that throws an exception
+		// Submit a venture that throws an exception
 		doer.executeSequentially { () =>
 			throw new RuntimeException("Test exception")
 		}
 
-		// Submit a task that should still execute after the exception
+		// Submit a venture that should still execute after the exception
 		doer.executeSequentially { () =>
 			exceptionCaught.set(true)
 			latch.countDown()
 		}
 
-		// Submit another normal task
+		// Submit another normal venture
 		doer.executeSequentially { () =>
 			latch.countDown()
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "Tasks after exception should still execute")
-		assert(exceptionCaught.get, "Task after exception should have executed")
+		assert(latch.await(5, TimeUnit.SECONDS), "Venture after exception should still execute")
+		assert(exceptionCaught.get, "Venture after exception should have executed")
 	}
 
-	test("Doer should call onFailureReported when the operand passed to `Task.andThen` fails") {
+	test("Doer should call onFailureReported when the operand passed to `Venture.andThen` fails") {
 		val mainDoer = getSharedDoer
 
 		PropF.forAllF { (throwable: Throwable) =>
@@ -533,10 +533,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			observingUnhandledAndReportedExceptionsDo { () =>
-				// Submit a task that uses Task.andThen which will cause a failure report
-				val task = mainDoer.Task_successful(0).andThen(_ => throw throwable)
-				task.trigger() { _ =>
-					if NonFatal(throwable) then break(s"The failure report should be done before the task that produced it completes.")
+				// Submit a venture that uses Venture.andThen which will cause a failure report
+				val venture = mainDoer.Venture_successful(0).andThen(_ => throw throwable)
+				venture.trigger() { _ =>
+					if NonFatal(throwable) then break(s"The failure report should be done before the venture that produced it completes.")
 					else break("The operation completed despite the operand thew a fatal exception")
 				}
 
@@ -552,7 +552,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Doer should call onUnhandledException when task throws uncaught exception") {
+	test("Doer should call onUnhandledException when venture throws uncaught exception") {
 		val mainDoer = getSharedDoer
 
 		PropF.forAllF { (exception: Throwable) =>
@@ -561,7 +561,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			observingUnhandledAndReportedExceptionsDo { () =>
-				// Submit a task that throws an uncaught exception
+				// Submit a venture that throws an uncaught exception
 				mainDoer.executeSequentially { () =>
 					throw exception
 				}
@@ -606,34 +606,34 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// STRESS TESTS ////
 
-	test("Provider should handle high task load") {
+	test("Provider should handle high load") {
 		val doer = getSharedDoer
-		val taskCount = 100
-		val latch = new CountDownLatch(taskCount)
+		val runnablesCount = 100
+		val latch = new CountDownLatch(runnablesCount)
 		val results = new AtomicInteger(0)
 
 		// Submit many tasks
-		for _ <- 1 to taskCount do {
+		for _ <- 1 to runnablesCount do {
 			doer.executeSequentially { () =>
 				results.incrementAndGet()
 				latch.countDown()
 			}
 		}
 
-		assert(latch.await(10, TimeUnit.SECONDS), "All tasks should complete")
-		assert(results.get == taskCount, s"All $taskCount tasks should have executed")
+		assert(latch.await(10, TimeUnit.SECONDS), "All runnables should complete")
+		assert(results.get == runnablesCount, s"All $runnablesCount runnables should have executed")
 	}
 
 	test("Provider should handle multiple doers with high load") {
 		val doerCount = 10
-		val tasksPerDoer = 20
-		val latch = new CountDownLatch(doerCount * tasksPerDoer)
+		val runnablesPerDoer = 20
+		val latch = new CountDownLatch(doerCount * runnablesPerDoer)
 		val results = new AtomicInteger(0)
 
 		// Create multiple doers and submit tasks to each
 		for doerIndex <- 1 to doerCount do {
 			val doer = buildDoer(s"stress-doer-$doerIndex")
-			for _ <- 1 to tasksPerDoer do {
+			for _ <- 1 to runnablesPerDoer do {
 				doer.executeSequentially { () =>
 					results.incrementAndGet()
 					latch.countDown()
@@ -641,13 +641,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 		}
 
-		assert(latch.await(15, TimeUnit.SECONDS), "All tasks should complete")
-		assert(results.get == doerCount * tasksPerDoer, s"All ${doerCount * tasksPerDoer} tasks should have executed")
+		assert(latch.await(15, TimeUnit.SECONDS), "All runnables should complete")
+		assert(results.get == doerCount * runnablesPerDoer, s"All ${doerCount * runnablesPerDoer} runnables should have executed")
 	}
 
 	//// EDGE CASE TESTS ////
 
-	test("Provider should handle rapid task submission") {
+	test("Provider should handle rapid venture submission") {
 		val doer = getSharedDoer
 		val latch = new CountDownLatch(50)
 		val results = new AtomicInteger(0)
@@ -660,18 +660,18 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "All rapid tasks should complete")
-		assert(results.get == 50, "All 50 rapid tasks should have executed")
+		assert(latch.await(5, TimeUnit.SECONDS), "All rapid runnables should complete")
+		assert(results.get == 50, "All 50 rapid runnables should have executed")
 	}
 
-	test("Provider should maintain task ordering under concurrent submission") {
+	test("Provider should maintain venture ordering under concurrent submission") {
 		val doer = getSharedDoer
-		val taskCount = 20
-		val latch = new CountDownLatch(taskCount)
+		val runnablesCount = 20
+		val latch = new CountDownLatch(runnablesCount)
 		val executionOrder = new java.util.concurrent.ConcurrentLinkedQueue[Int]()
 
 		// Submit tasks from multiple threads
-		val futures = for i <- 1 to taskCount yield {
+		val futures = for i <- 1 to runnablesCount yield {
 			Future {
 				doer.executeSequentially { () =>
 					executionOrder.add(i)
@@ -682,12 +682,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		// Wait for all tasks to complete
 		Future.sequence(futures)
-		assert(latch.await(5, TimeUnit.SECONDS), "All tasks should complete")
+		assert(latch.await(5, TimeUnit.SECONDS), "All runnables should complete")
 
 		// Verify that tasks were executed in some order (not necessarily submission order due to concurrency)
 		val orderList = executionOrder.toArray.toList
-		assert(orderList.size == taskCount, s"All $taskCount tasks should have been executed")
-		assert(orderList.toSet.size == taskCount, "All task IDs should be unique")
+		assert(orderList.size == runnablesCount, s"All $runnablesCount runnables should have been executed")
+		assert(orderList.toSet.size == runnablesCount, "All venture IDs should be unique")
 	}
 
 
@@ -825,7 +825,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- check("map", duty.map(identity))
 				_ <- check("flatMap", duty.flatMap(_ => duty))
 				_ <- check("andThen", duty.andThen(_ => ()))
-				_ <- check("toTask", duty.succeed)
+				_ <- check("toVenture", duty.succeed)
 				_ <- check("repeatedUntilSome", duty.repeatedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty })
 				_ <- check("repeatedUntilDefined", duty.repeatedUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
 				_ <- check("repeatedWhileNone", duty.repeatedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomInt) else Maybe.empty))
@@ -834,13 +834,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	////////// TASK /////////////
+	////////// Venture /////////////
 
-	// Custom equality for Task based on the result of attempt
-	private def checkEquality[A](doer: Doer)(task1: doer.Task[A], task2: doer.Task[A]): Future[Unit] = {
+	// Custom equality for Venture based on the result of attempt
+	private def checkEquality[A](doer: Doer)(venture1: doer.Venture[A], venture2: doer.Venture[A]): Future[Unit] = {
 		val futureEquality = for {
-			try1 <- task1.toFutureHardy()
-			try2 <- task2.toFutureHardy()
+			try1 <- venture1.toFutureHardy()
+			try2 <- venture2.toFutureHardy()
 		} yield {
 			// println(s"$try1 ==== $try2")
 			try1 ==== try2
@@ -848,42 +848,37 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		futureEquality.map(assert(_))
 	}
 
-	//	private def evalNow[A](task: Task[A]): Try[A] = {
-	//		Await.result(task.toFutureHardy(), new FiniteDuration(1, TimeUnit.MINUTES))
-	//	}
-
-
-	// Monadic left identity law: Task.successful(x).flatMap(f) == f(x)
-	test("Task: left identity") {
+	// Monadic left identity law: Venture.successful(x).flatMap(f) == f(x)
+	test("Venture: left identity") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (x: Int, f: Int => Task[Int]) =>
-			val sx = Task_successful(x)
-			val left = Task_successful(x).flatMap(f)
+		PropF.forAllF { (x: Int, f: Int => Venture[Int]) =>
+			val sx = Venture_successful(x)
+			val left = Venture_successful(x).flatMap(f)
 			val right = f(x)
 			checkEquality(doer)(left, right)
 		}
 	}
 
-	// Monadic right identity law: m.flatMap(Task.successful) == m
-	test("Task: right identity") {
+	// Monadic right identity law: m.flatMap(Venture.successful) == m
+	test("Venture: right identity") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (m: Task[Int]) =>
-			val left = m.flatMap(Task_successful)
+		PropF.forAllF { (m: Venture[Int]) =>
+			val left = m.flatMap(Venture_successful)
 			val right = m
 			checkEquality(doer)(left, right)
 		}
 	}
 
 	// Monadic associativity law: m.flatMap(f).flatMap(g) == m.flatMap(x => f(x).flatMap(g))
-	test("Task: associativity") {
+	test("Venture: associativity") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (m: Task[Int], f: Int => Task[Int], g: Int => Task[Int]) =>
+		PropF.forAllF { (m: Venture[Int], f: Int => Venture[Int], g: Int => Venture[Int]) =>
 			val leftAssoc = m.flatMap(f).flatMap(g)
 			val rightAssoc = m.flatMap(x => f(x).flatMap(g))
 			checkEquality(doer)(leftAssoc, rightAssoc)
@@ -891,62 +886,62 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	}
 
 	// Functor: `m.map(f) == m.flatMap(a => unit(f(a)))`
-	test("Task: can be transformed with map") {
+	test("Venture: can be transformed with map") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (m: Task[Int], f: Int => String) =>
+		PropF.forAllF { (m: Venture[Int], f: Int => String) =>
 			val left = m.map(f)
-			val right = m.flatMap(a => Task_successful(f(a)))
+			val right = m.flatMap(a => Venture_successful(f(a)))
 			checkEquality(doer)(left, right)
 		}
 	}
 
-	// Recovery: `failedTask.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedTask
-	test("Task: can be recovered from failure") {
+	// Recovery: `failedVenture.recover(f) == if f.isDefinedAt(e) then successful(f(e)) else failed(e)` where e is the exception thrown by failedVenture
+	test("Venture: can be recovered from failure") {
 		val generators = getGenerators
 		import generators.*
 
 		PropF.forAllF { (e: Throwable, f: PartialFunction[Throwable, Int]) =>
 			if NonFatal(e) then {
-				val leftTask = Task_failed[Int](e).recover(f)
-				val rightTask = if f.isDefinedAt(e) then Task_successful(f(e)) else Task_failed(e)
-				checkEquality(doer)(leftTask, rightTask)
+				val leftVenture = Venture_failed[Int](e).recover(f)
+				val rightVenture = if f.isDefinedAt(e) then Venture_successful(f(e)) else Venture_failed(e)
+				checkEquality(doer)(leftVenture, rightVenture)
 			} else Future.successful(())
 		}
 	}
 
-	test("Task: any can be combined") {
+	test("Venture: any can be combined") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (taskA: Task[Int], taskB: Task[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
-			val combinedTask = Task_combine(taskA, taskB)(f)
+		PropF.forAllF { (ventureA: Venture[Int], ventureB: Venture[Int], f: (Try[Int], Try[Int]) => Try[Int]) =>
+			val combinedVenture = Venture_combine(ventureA, ventureB)(f)
 
 			for {
-				combinedResult <- combinedTask.toFutureHardy()
-				taskAResult <- taskA.toFutureHardy()
-				taskBResult <- taskB.toFutureHardy()
+				combinedResult <- combinedVenture.toFutureHardy()
+				ventureAResult <- ventureA.toFutureHardy()
+				ventureBResult <- ventureB.toFutureHardy()
 			} yield {
-				assert(combinedResult ==== f(taskAResult, taskBResult))
+				assert(combinedResult ==== f(ventureAResult, ventureBResult))
 			}
 		}
 	}
 
-	test("Task: `doer.Task.foreign(foreignDoer)(foreignTask)` should complete in the `doer`'s thread") {
+	test("Venture: `doer.Venture_foreign(foreignDoer)(foreignVenture)` should complete in the `doer`'s thread") {
 		val generators = getGenerators
 		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
-				taskResult <- intGen
-				foreignTask <- foreignDoerGenerators(true).genTask(taskResult, s"foreignTask.arbitrary")
-			} yield (taskResult, foreignTask)
-		} { case (taskResult, foreignTask) =>
-			// println(s"Begin: taskResult: $taskResult, foreignTask: $foreignTask")
+				expectedVentureResult <- intGen
+				foreignVenture <- foreignDoerGenerators(true).genVenture(expectedVentureResult, s"foreignVenture.arbitrary")
+			} yield (expectedVentureResult, foreignVenture)
+		} { case (ventureResult, foreignVenture) =>
+			// println(s"Begin: taskResult: $taskResult, foreignVenture: $foreignVenture")
 
-			doer.Task_foreign(foreignDoer)(foreignTask)
+			doer.Venture_foreign(foreignDoer)(foreignVenture)
 				.transform { tryInt =>
-					assert(tryInt.fold[Boolean](_.getMessage.contains(taskResult.toString), _ == taskResult))
+					assert(tryInt.fold[Boolean](_.getMessage.contains(ventureResult.toString), _ == ventureResult))
 					assert(doer.isInSequence)
 					assert(!foreignDoer.isInSequence)
 					Success(())
@@ -954,27 +949,27 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Task: if a function operand passed to a Task's operation throws an exception then, if the exception isn't fatal, the task should complete with a [[Failure]] containing that exception; and if it is fatal, the task should not complete and instead the `DoerProvider.onUnhandledException` method should be called passing the exception.") {
+	test("Venture: if a function operand passed to a Venture's operation throws an exception then, if the exception isn't fatal, the venture should complete with a [[Failure]] containing that exception; and if it is fatal, the venture should not complete and instead the `DoerProvider.onUnhandledException` method should be called passing the exception.") {
 		val generators = getGenerators
 		import generators.*
 
 		PropF.forAllNoShrinkF(
-			for {i <- intGen; task <- genTask(i, "")} yield task,
+			for {i <- intGen; venture <- genVenture(i, "")} yield venture,
 			throwableArbitrary.arbitrary
-		) { case (anyTask: Task[Int], exception: Throwable) =>
-			// println(s"Begin: anyTask: $anyTask, exception: $exception")
+		) { case (anyVenture: Venture[Int], exception: Throwable) =>
+			// println(s"Begin: anyVenture: $anyVenture, exception: $exception")
 
 			/** Do the test for a single operation */
-			def check[R](opName: String, operatedTask: Task[R], shouldCatchAndReportNonFatalExceptions: Boolean = false): Future[Unit] = {
+			def check[R](opName: String, operatedVenture: Venture[R], shouldCatchAndReportNonFatalExceptions: Boolean = false): Future[Unit] = {
 				// Apply the operation to the random duty and trigger the execution passing a faulty on-complete callback.
 				val promise = Promise[Unit]()
 
 				given Promise[Unit] = promise
 
 				observingUnhandledAndReportedExceptionsDo { () =>
-					// Apply the operation to the random task.
-					operatedTask.trigger() { operationResult =>
-						// If the task completed then the result should be a Failure containing the exception, and the exception should be non-fatal.
+					// Apply the operation to the random venture.
+					operatedVenture.trigger() { operationResult =>
+						// If the venture completed then the result should be a Failure containing the exception, and the exception should be non-fatal.
 						if !NonFatal(exception) then break(s"$opName: Completed despite a fatal exception was thrown")
 						else if operationResult.fold(e => (e ne exception) && (e.getCause ne exception), _ => true) then break(s"$opName: Completed with an unexpected result: $operationResult")
 						else promise.trySuccess(())
@@ -998,8 +993,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 
 
-			val successfulTask = anyTask.recover { case cause => exception.getMessage.hashCode }
-			val failingTask = anyTask.map { x => throw new FaultyValue(x, "for recover") }
+			val successfulVenture = anyVenture.recover { case cause => exception.getMessage.hashCode }
+			val failingVenture = anyVenture.map { x => throw new FaultyValue(x, "for recover") }
 
 			def f0[A](): A = throw exception
 
@@ -1008,43 +1003,43 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			def f2[A, B, C](a: A, b: B): C = throw exception
 
 			for {
-				_ <- check("own", Task_own(f0))
-				_ <- check("ownFlat", Task_ownFlat(f0))
-				_ <- check("foreign", Task_foreign(foreignDoer)(foreignDoer.Task_own(f0)))
-				_ <- check("alien", Task_alien(f0))
-				_ <- check("combine", Task_combine(anyTask, anyTask)(f2))
-				_ <- check("map", successfulTask.map(f1))
-				_ <- check("andThen", anyTask.andThen(f1), true)
-				_ <- check("flatMap", successfulTask.flatMap(f1))
-				_ <- check("withFilter", successfulTask.withFilter(f1))
-				_ <- check("transform", anyTask.transform(f1))
-				_ <- check("transformWith", anyTask.transformWith(f1))
-				_ <- check("recover", failingTask.recover { case x => f1(x) }) // the `map` is to ensure that the upstream task completes abruptly to avoid the tested operation be skipped.
-				_ <- check("recoverWith", failingTask.recoverWith { case x => f1(x) })
-				_ <- check("reiteratedHardyUntilSome", anyTask.reiteratedHardyUntilSome(f2))
-				_ <- check("reiteratedUntilSome", successfulTask.reiteratedUntilSome(f2))
-				_ <- check("reiteratedUntilDefined", anyTask.reiteratedHardyUntilDefined { case (a, b) => f2(a, b) })
-				_ <- check("reiteratedWhileNone", anyTask.reiteratedWhileEmpty(Success(0), f2))
-				_ <- check("reiteratedWhileUndefined", anyTask.reiteratedWhileUndefined(Success(0), { case (a, b) => f2(a, b) }))
+				_ <- check("own", Venture_own(f0))
+				_ <- check("ownFlat", Venture_ownFlat(f0))
+				_ <- check("foreign", Venture_foreign(foreignDoer)(foreignDoer.Venture_own(f0)))
+				_ <- check("alien", Venture_alien(f0))
+				_ <- check("combine", Venture_combine(anyVenture, anyVenture)(f2))
+				_ <- check("map", successfulVenture.map(f1))
+				_ <- check("andThen", anyVenture.andThen(f1), true)
+				_ <- check("flatMap", successfulVenture.flatMap(f1))
+				_ <- check("withFilter", successfulVenture.withFilter(f1))
+				_ <- check("transform", anyVenture.transform(f1))
+				_ <- check("transformWith", anyVenture.transformWith(f1))
+				_ <- check("recover", failingVenture.recover { case x => f1(x) }) // the `map` is to ensure that the upstream venture completes abruptly to avoid the tested operation be skipped.
+				_ <- check("recoverWith", failingVenture.recoverWith { case x => f1(x) })
+				_ <- check("reiteratedHardyUntilSome", anyVenture.reiteratedHardyUntilSome(f2))
+				_ <- check("reiteratedUntilSome", successfulVenture.reiteratedUntilSome(f2))
+				_ <- check("reiteratedUntilDefined", anyVenture.reiteratedHardyUntilDefined { case (a, b) => f2(a, b) })
+				_ <- check("reiteratedWhileNone", anyVenture.reiteratedWhileEmpty(Success(0), f2))
+				_ <- check("reiteratedWhileUndefined", anyVenture.reiteratedWhileUndefined(Success(0), { case (a, b) => f2(a, b) }))
 			} yield ()
 		}
 	}
 
-	test("`Task.engage` should not catch exceptions thrown by the `onComplete` operand") {
+	test("`Venture.engage` should not catch exceptions thrown by the `onComplete` operand") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllF { (task1: Task[Int], task2: Task[Int], exception: Throwable, future: Future[Int]) =>
+		PropF.forAllF { (venture1: Venture[Int], venture2: Venture[Int], exception: Throwable, future: Future[Int]) =>
 
 
-			def check[R](opName: String, operatedTask: Task[R]): Future[Unit] = {
+			def check[R](opName: String, operatedVenture: Venture[R]): Future[Unit] = {
 				val promise = Promise[Unit]()
 
 				given Promise[Unit] = promise
 
 				observingUnhandledAndReportedExceptionsDo { () =>
 					// Trigger the execution passing a faulty on-complete callback.
-					operatedTask.trigger()(tryR => throw exception)
+					operatedVenture.trigger()(tryR => throw exception)
 
 					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
 
@@ -1062,26 +1057,26 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val smallNonNegativeInt = randomInt % 9
 			val randomBool = (randomInt % 2) == 0
 			val randomTryInt = if randomBool then Success(randomInt) else Failure(exception)
-			// println(s"Begin: task=$task, exception=$exception, randomInt=$randomInt, randomBool=$randomBool")
+			// println(s"Begin: venture=$task, exception=$exception, randomInt=$randomInt, randomBool=$randomBool")
 
 			for {
-				_ <- check("factory", task1)
-				_ <- check("ownFlat", Task_ownFlat(() => task1))
-				_ <- check("foreign", Task_foreign(foreignDoer)(foreignDoer.Task_mine(() => randomInt)))
-				_ <- check("alien", Task_alien(() => future))
-				_ <- check("map", task1.map(identity))
-				_ <- check("flatMap", task1.flatMap(_ => task2))
-				_ <- check("withFilter", task1.withFilter(_ => randomBool))
-				_ <- check("andThen", task1.andThen(_ => ()))
-				_ <- check("transform", task1.transform(identity))
-				_ <- check("transformWith", task1.transformWith(_ => task2))
-				_ <- check("recover", task1.recover { case x if randomBool => randomInt })
-				_ <- check("recoverWith", task1.recoverWith { case x if randomBool => task2 })
-				_ <- check("reiteratedHardyUntilSome", task1.reiteratedHardyUntilSome { (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedUntilSome", task1.reiteratedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
-				_ <- check("reiteratedHardyUntilDefined", task1.reiteratedHardyUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
-				_ <- check("reiteratedWhileEmpty", task1.reiteratedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty))
-				_ <- check("reiteratedWhileUndefined", task1.reiteratedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
+				_ <- check("factory", venture1)
+				_ <- check("ownFlat", Venture_ownFlat(() => venture1))
+				_ <- check("foreign", Venture_foreign(foreignDoer)(foreignDoer.Venture_mine(() => randomInt)))
+				_ <- check("alien", Venture_alien(() => future))
+				_ <- check("map", venture1.map(identity))
+				_ <- check("flatMap", venture1.flatMap(_ => venture2))
+				_ <- check("withFilter", venture1.withFilter(_ => randomBool))
+				_ <- check("andThen", venture1.andThen(_ => ()))
+				_ <- check("transform", venture1.transform(identity))
+				_ <- check("transformWith", venture1.transformWith(_ => venture2))
+				_ <- check("recover", venture1.recover { case x if randomBool => randomInt })
+				_ <- check("recoverWith", venture1.recoverWith { case x if randomBool => venture2 })
+				_ <- check("reiteratedHardyUntilSome", venture1.reiteratedHardyUntilSome { (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedUntilSome", venture1.reiteratedUntilSome { (n, i) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty })
+				_ <- check("reiteratedHardyUntilDefined", venture1.reiteratedHardyUntilDefined { case (n, tryInt) if n > smallNonNegativeInt => tryInt })
+				_ <- check("reiteratedWhileEmpty", venture1.reiteratedWhileEmpty(Success(0), (n, tryInt) => if n > smallNonNegativeInt then Maybe(randomTryInt) else Maybe.empty))
+				_ <- check("reiteratedWhileUndefined", venture1.reiteratedWhileUndefined(Success(0), { case (n, tryInt) if n > smallNonNegativeInt => randomInt }))
 			} yield ()
 		}
 	}
@@ -1167,7 +1162,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				tryNat <- genTry(nat, s"sampleNat / sampleTryNat")
 			} yield (nat, tryNat),
 			Gen.function1[Int, Int](intGen).faulted(),
-			Gen.function1[Int, Task[Int]](intGen.flatMap(i => genTask(i, s"sampleInt / f2Result"))).faulted()
+			Gen.function1[Int, Venture[Int]](intGen.flatMap(i => genVenture(i, s"sampleInt / f2Result"))).faulted()
 		) { case ((nat, tryNat), f1, f2) =>
 
 			/** The promise that this test will succeed. */
@@ -1178,24 +1173,24 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		} // .check(Parameters.default.withMinSuccessfulTests(500))
 	}
 
-	test("Commitment: `commitment.completeWith(task)` should trigger the execution of all the down-chains and subscriptions it has, passing what `task` yields") {
+	test("Commitment: `commitment.completeWith(venture)` should trigger the execution of all the down-chains and subscriptions it has, passing what `venture` yields") {
 		val generators = getGenerators
 		import generators.*
 		PropF.forAllNoShrinkF(
 			for {
 				nat <- Gen.choose(1, 9)
 				tryNat <- genTry(nat, s"sampleNat / sampleTryNat")
-				task <- genTaskFromTry(tryNat, "sampleNat / sampleTask")
-			} yield (nat, tryNat, task),
+				venture <- genVentureFromTry(tryNat, "sampleNat / sampleVenture")
+			} yield (nat, tryNat, venture),
 			Gen.function1[Int, Int](intGen).faulted(),
-			Gen.function1[Int, Task[Int]](intGen.flatMap(i => genTask(i, s"sampleInt / f2Result"))).faulted()
-		) { case ((nat, tryNat, task), f1, f2) =>
+			Gen.function1[Int, Venture[Int]](intGen.flatMap(i => genVenture(i, s"sampleInt / f2Result"))).faulted()
+		) { case ((nat, tryNat, venture), f1, f2) =>
 
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]()
 			val testedCommitment = doer.Commitment[Int]()
-			val subscriptableTask = Commitment_triggerAndWire(doer.Task_delays(1)(_ => tryNat))
-			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableTask))
+			val subscriptableVenture = Commitment_triggerAndWire(doer.Venture_delays(1)(_ => tryNat))
+			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableVenture))
 			gate(using promise)
 		} // .check(Parameters.default.withMinSuccessfulTests(500))
 	}
@@ -1207,7 +1202,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		nat: Int,
 		expectedOutcome: Try[Int],
 		f1: Int => Int,
-		f2: Int => doer.Task[Int]
+		f2: Int => doer.Venture[Int]
 	)(
 		completer: () => Unit
 	): Unit = {
@@ -1215,10 +1210,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		given Promise[Unit] = promise
 
-		extension (task: Task[Int]) {
-			/** @return a [[Task]] like this one but mapping failures containing a [[FaultyValue]] exception to the value contained in that exception.
+		extension (venture: Venture[Int]) {
+			/** @return a [[Venture]] like this one but mapping failures containing a [[FaultyValue]] exception to the value contained in that exception.
 			 * This tool helps to check that failures ar also correctly propagated. */
-			def regenerated: Task[Int] = task.recover { case fv: FaultyValue[Int] @unchecked => -fv.value }
+			def regenerated: Venture[Int] = venture.recover { case fv: FaultyValue[Int] @unchecked => -fv.value }
 		}
 
 		val tryF1AtNat = Try(f1(nat))
@@ -1232,10 +1227,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val completionObserver: Try[Int] => Unit =
 			x => completionSeenCommitment.complete(x, true, (y, b) => if b == Doer.ANOTHER_BEFORE then break(s"`subscriptionAwareCommitment` was already completed with $y"))
 
-		// The task that checks what this test verifies.
-		val checks: doer.Task[Unit] = {
-			Task_ownFlat(() => f2(nat)).transformWith { f2AtNatResult =>
-				Task_ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
+		// The venture that checks what this test verifies.
+		val checks: doer.Venture[Unit] = {
+			Venture_ownFlat(() => f2(nat)).transformWith { f2AtNatResult =>
+				Venture_ownFlat(() => f2(-nat)).transformWith { f2AtNegNatResult =>
 					if testedCommitment.isSubscribed(completionObserver) then break("`isAlreadySubscribed` returned true despite no subscription was done")
 					testedCommitment.subscribe(completionObserver)
 					if !testedCommitment.isSubscribed(completionObserver) && testedCommitment.isPending then break("`isAlreadySubscribed` returned false despite the subscription was done and the commitment is still pending.")
@@ -1448,7 +1443,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (initial: Try[Int], updater: Int => Task[Int]) =>
+		PropF.forAllNoShrinkF { (initial: Try[Int], updater: Int => Venture[Int]) =>
 			// println(s"initial: $initial")
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
@@ -1495,7 +1490,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Task[Int]) =>
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Venture[Int]) =>
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
@@ -1534,7 +1529,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (initial: String, updater: String => Task[String]) =>
+		PropF.forAllNoShrinkF { (initial: String, updater: String => Venture[String]) =>
 			println(s"Begin: initial=$initial")
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
@@ -1546,10 +1541,10 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						println(s"updater called")
 						Maybe(Commitment_triggerAndWire(
 							updater(a)
-								.map(new String(_)) // this line is needed because the random updater function may return a task that yields the argument.
+								.map(new String(_)) // this line is needed because the random updater function may return a venture that yields the argument.
 								.andThen { x =>
 									println(s"updater about to complete")
-									// ensure `rollback` is called after the task returned by primaryStateUpdater is fulfilled.
+									// ensure `rollback` is called after the venture returned by primaryStateUpdater is fulfilled.
 									doer.run {
 										println(s"about to rollback")
 										rba.rollback(true, (actualResult, wasTooLate) =>
@@ -1732,14 +1727,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				// println(s"-----> wasCanceled: $wasCanceled, schedule: $schedule")
 			}
 			val cancelsAndWaits = for {
-				_ <- Task_mine[Unit] { () =>
+				_ <- Venture_mine[Unit] { () =>
 					if doer.isCanceled(schedule) && !hasCompleted then break("The schedule got canceled before canceling it")
 					//					if !doer.isActive(schedule) && !hasCompleted then commitment.break(new AssertionError("The schedule got canceled before canceling it"))()
 					doer.cancel(schedule)
 					wasCanceled = true
 					if !doer.isCanceled(schedule) then break("The schedule remains not canceled after being canceled.")
 				}
-				_ <- doer.Task_sleeps(delay)
+				_ <- doer.Venture_sleeps(delay)
 
 			} yield () // println("cancelsAndWaits completed successfully")
 			cancelsAndWaits.trigger()(promise.tryComplete(_))

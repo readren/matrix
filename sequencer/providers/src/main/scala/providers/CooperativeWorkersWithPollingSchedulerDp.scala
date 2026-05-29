@@ -197,8 +197,8 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		val currentMilliTime = clock.currentTimeRoundedDown
 		if earliestScheduledTime - currentMilliTime > 0 then queuedDoers.poll()
 		else {
-			val scheduledTaskDoer = pollDoerWithEarliestExpiredTimer(currentMilliTime)
-			if scheduledTaskDoer ne null then scheduledTaskDoer
+			val urgedDoer = pollDoerWithEarliestExpiredTimer(currentMilliTime)
+			if urgedDoer ne null then urgedDoer
 			else queuedDoers.poll()
 		}
 	}
@@ -214,7 +214,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 				return null
 			} else {
 				priorityQueue.finishPoll(earliestToExpire)
-				if earliestToExpire.owner.enqueueTask(earliestToExpire.runnable) then {
+				if earliestToExpire.owner.enqueueRunnable(earliestToExpire.runnable) then {
 					val next = priorityQueue.peek
 					earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
 					return earliestToExpire.owner

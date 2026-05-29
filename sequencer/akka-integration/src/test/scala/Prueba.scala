@@ -115,11 +115,11 @@ object Prueba {
 
 				Behaviors.receiveMessage {
 					case Pregunta(replyTo1, "Hola") =>
-						val task = for {
+						val venture = for {
 							case Pregunta(replyTo2, "¿Qué tal?") <- replyTo1.queries[Pregunta](ref => Respuesta(ref, "Hola también"))
 							_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
 						} yield ()
-						task.trigger(true) { x => ctx.log.info(s"resultado final: $x") }
+						venture.trigger(true) { x => ctx.log.info(s"resultado final: $x") }
 						Behaviors.same
 					case _ => assert(false)
 				}
@@ -155,11 +155,11 @@ object Prueba {
 
 				val paso2 = Behaviors.receiveMessage[Pregunta] {
 					case Pregunta(replyTo2, "¿Qué tal?") =>
-						val task = for {
-							_ <- Task_mine(() => ctx.log.info("sigue funcionando"))
+						val venture = for {
+							_ <- Venture_mine(() => ctx.log.info("sigue funcionando"))
 							_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
 						} yield ()
-						task.trigger(true)(rf => ctx.log.info(s"resultado final: $rf"))
+						venture.trigger(true)(rf => ctx.log.info(s"resultado final: $rf"))
 						Behaviors.same
 						
 					case x => println(s"unhandled message: $x")

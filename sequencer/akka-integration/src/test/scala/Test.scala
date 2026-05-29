@@ -21,9 +21,9 @@ object Test {
 
 			def apply: Behavior[Pregunta] = {
 				Behaviors.setup { actorContext =>
-					ActorBasedDoer.setup(actorContext) { taskContext =>
+					ActorBasedDoer.setup(actorContext) { doer =>
 						Behaviors.receiveMessage { pregunta =>
-							taskContext.Task_successful(Respuesta(actorContext.self, "Hola")).triggerAndSend(pregunta.replyTo, true)
+							doer.Venture_successful(Respuesta(actorContext.self, "Hola")).triggerAndSend(pregunta.replyTo, true)
 
 							Behaviors.same
 						}

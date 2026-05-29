@@ -62,16 +62,16 @@ trait Doer2 {
 		wirableDuty.wire(supplier)
 	}
 
-	trait Task[+A] extends Duty[Try[A]]
+	trait Venture[+A] extends Duty[Try[A]]
 
-	private final class Task_Own[A](supplier: () => Try[A]) extends Task[A] {
+	private final class Venture_Own[A](supplier: () => Try[A]) extends Venture[A] {
 		override def engage(onComplete: Try[A] => Unit): Unit =
 			run(onComplete(supplier()))
 	}
 
-	inline given [A] =>WirableHardy[A, Task] {
-		override inline def wire(inline supplier: () => Try[A]): Task[A] =
-			new Task_Own(supplier)
+	inline given [A] =>WirableHardy[A, Venture] {
+		override inline def wire(inline supplier: () => Try[A]): Venture[A] =
+			new Venture_Own(supplier)
 	}
 
 	trait LatchingDuty[+A] extends Duty[A] {
@@ -99,11 +99,11 @@ trait Doer2 {
 		}
 	}
 
-	trait LatchingTask[+A] extends Task[A] {
+	trait LatchingVenture[+A] extends Venture[A] {
 		def maybeValue: Maybe[Try[A]]
 	}
 
-	final class Commitment[A] extends LatchingTask[A] {
+	final class Commitment[A] extends LatchingVenture[A] {
 		private var oValue: Maybe[Try[A]] = Maybe.empty
 		private val consumers: mutable.Buffer[Try[A] => Unit] = mutable.Buffer.empty
 
@@ -116,8 +116,8 @@ trait Doer2 {
 			if oValue.isEmpty then oValue = Maybe(value)
 	}
 
-	inline given [A] =>WirableHardy[A, LatchingTask] {
-		override inline def wire(inline supplier: () => Try[A]): LatchingTask[A] = {
+	inline given [A] =>WirableHardy[A, LatchingVenture] {
+		override inline def wire(inline supplier: () => Try[A]): LatchingVenture[A] = {
 			val commitment = new Commitment[A]
 			run(commitment.fulfill(supplier()))
 			commitment

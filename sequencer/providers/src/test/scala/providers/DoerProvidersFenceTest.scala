@@ -15,7 +15,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 /** Checks memory visibility (happens-before) is accomplished between the function operands passed to [[Doer]] instances provided by several [[DoerProviders]] */
 class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 
-	private val NUMBER_OF_TASK_ENQUEUED_PER_DOER = 10
+	private val NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER = 10
 	private val NUMBER_OF_DOERS = 10000
 
 	private def testVisibility(provider: DoerProvider[Doer] & ShutdownAble, minimumThreadSwaps: Int): Future[Any] = {
@@ -30,23 +30,23 @@ class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 			var failed: Boolean = false
 			val promise: Promise[Int] = Promise()
 			var counter: Counter | Null = null
-			var previousTaskWorker: Long = 0
+			var previousWorker: Long = 0
 			var workerChangesCounter: Int = 0
 		}
 
 		val doersData = ArraySeq.tabulate(NUMBER_OF_DOERS)(DoerData(_))
 
-		for expected <- 0 until NUMBER_OF_TASK_ENQUEUED_PER_DOER do {
+		for expected <- 0 until NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER do {
 
 			for doerDataIndex <- doersData.indices yield {
 				val doerData = doersData(doerDataIndex)
 				doerData.doer.executeSequentially { () =>
 					// Track the number of times this code is executed by a different worker thread than the previous time.
-					val currentWorker: Long = Thread.currentThread().getId
-					if doerData.previousTaskWorker == 0 then doerData.previousTaskWorker = currentWorker
-					else if currentWorker != doerData.previousTaskWorker then {
+					val currentWorker: Long = Thread.currentThread().threadId
+					if doerData.previousWorker == 0 then doerData.previousWorker = currentWorker
+					else if currentWorker != doerData.previousWorker then {
 						doerData.workerChangesCounter += 1
-						doerData.previousTaskWorker = currentWorker
+						doerData.previousWorker = currentWorker
 					}
 					// allocate the counters on different threads to encourage allocation on memory regions separated from the one where the doerData object is stored.
 					if doerData.counter eq null then {
@@ -74,27 +74,27 @@ class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 				provider.shutdown()
 				provider.awaitTermination(1, TimeUnit.SECONDS)
 			}
-			.andThen { _ => for index <- doersData.indices do println(s"$index: workerIndexChangesCounter = ${doersData(index).workerChangesCounter}/$NUMBER_OF_TASK_ENQUEUED_PER_DOER") }
-			.andThen { _ => println(s"total worker swaps: ${doersData.map(_.workerChangesCounter).sum}/${NUMBER_OF_DOERS * NUMBER_OF_TASK_ENQUEUED_PER_DOER}") }
+			.andThen { _ => for index <- doersData.indices do println(s"$index: workerIndexChangesCounter = ${doersData(index).workerChangesCounter}/$NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER") }
+			.andThen { _ => println(s"total worker swaps: ${doersData.map(_.workerChangesCounter).sum}/${NUMBER_OF_DOERS * NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER}") }
 
 	}
 
-	test("CooperativeWorkersDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
-		testVisibility(new CooperativeWorkersDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER/20)
+	test("CooperativeWorkersDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
+		testVisibility(new CooperativeWorkersDp.Impl(false), NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER / 20)
 	}
-	test("SchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("SchedulingDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 
-		testVisibility(new CooperativeWorkersWithThreadDrivenSchedulerDp.Impl(false), NUMBER_OF_TASK_ENQUEUED_PER_DOER / 20)
+		testVisibility(new CooperativeWorkersWithThreadDrivenSchedulerDp.Impl(false), NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER / 20)
 	}
-	test("LeastLoadedFixedWorkerDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("LeastLoadedFixedWorkerDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 
 		testVisibility(new LeastLoadedFixedWorkerDp.Impl, 0)
 	}
-	test("RoundRobinDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("RoundRobinDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 
 		testVisibility(new RoundRobinDp.Impl, 0)
 	}
-	test("StandardSchedulingDp: Tasks should see updates made by previous tasks enqueued into the same doer") {
+	test("StandardSchedulingDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 
 		testVisibility(new StandardSchedulingDp.Impl, 0)
 	}

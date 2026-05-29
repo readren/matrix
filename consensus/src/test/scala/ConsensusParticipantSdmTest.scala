@@ -144,9 +144,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val doerProvider = new CooperativeWorkersWithPollingSchedulerDp.Impl(
 			threadPoolSize = threadPoolSize,
 			failureReporter = (doer, e) =>
-				scribe.error(s"Failure reported by a task executed by the sequencer tagged with ${doer.tag}", e),
+				scribe.error(s"Failure reported by an operation executed by the sequencer tagged with ${doer.tag}", e),
 			unhandledExceptionReporter = (doer, e) =>
-				scribe.error(s"Unhandled exception in a task executed by the sequencer tagged with ${doer.tag}", e),
+				scribe.error(s"Unhandled exception an operation executed by the sequencer tagged with ${doer.tag}", e),
 			clock = clock
 		)
 
@@ -312,10 +312,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			 * The randomness is deterministic to allow reproducing a scenario.
 			 * The fate of all the stages of an RPC are determined in advance in the first stage.
 			 * @param replierId the identifier of the targeted [[Node]], the one on whose [[Node.sequencer]] is the `call` function is executed.
-			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Task]]. The function is called within the replier's [[Node.sequencer]].
-			 * @return a [[netSequencer.Task]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
+			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Venture]]. The function is called within the replier's [[Node.sequencer]].
+			 * @return a [[netSequencer.Venture]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
 			 * @throws RuntimeException if this [[Net]] does not contain the [[Node]]s identified with `inquirerId` and `replierId`. */
-			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Duty[R]): netSequencer.Task[R] = {
+			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Duty[R]): netSequencer.Venture[R] = {
 
 				if true then {
 					val inquirerIndex = indexOf(inquirerId)
@@ -396,7 +396,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						while numberOfTravelingMessages > enqueueThresholdForEarlyDelivery do chooseAChannel().dispatchNext()
 					}
 
-					netSequencer.Task_fromDuty(
+					netSequencer.Venture_fromDuty(
 						netSequencer.Duty_mineFlat { () =>
 							covenant.map {
 								case (response, requestId) =>
@@ -804,12 +804,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				sequencer.LatchingDuty_ready(IArray.unsafeFromArray(bytes.toByteArray))
 			}
 
-			override def installSnapshot(data: IArray[Byte]): sequencer.LatchingTask[Unit] = {
+			override def installSnapshot(data: IArray[Byte]): sequencer.LatchingVenture[Unit] = {
 				sequencer.checkWithin()
 				val in = java.io.ObjectInputStream(java.io.ByteArrayInputStream(data.unsafeArray))
 				highestAppliedCommandSerial = in.readInt()
 				highestAppliedCommandIndex = in.readLong()
-				sequencer.LatchingTask_ready(Doer.successUnit)
+				sequencer.LatchingVenture_ready(Doer.successUnit)
 			}
 		}
 
@@ -851,7 +851,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			extension (replierId: ParticipantId) {
 
 
-				override def howAreYou(inquirerInfo: StateInfo): sequencer.Task[StateInfo] = {
+				override def howAreYou(inquirerInfo: StateInfo): sequencer.Venture[StateInfo] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[StateInfo](
 						replierId,
@@ -861,7 +861,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Task[Vote[ParticipantId]] = {
+				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Venture[Vote[ParticipantId]] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[Vote[ParticipantId]](
 						replierId,
@@ -871,7 +871,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
+				override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Venture[AppendResult] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[AppendResult](
 						replierId,
@@ -881,7 +881,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Task[Unit] = {
+				override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Venture[Unit] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[Unit](
 						replierId,
@@ -891,7 +891,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Task[AppendResult] = {
+				override def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Venture[AppendResult] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[AppendResult](
 						replierId,

@@ -13,7 +13,7 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 
 object CooperativeWorkersDp {
-	type TaskQueue = ConcurrentLinkedQueue[Runnable]
+	type RunnableQueue = ConcurrentLinkedQueue[Runnable]
 
 	enum State {
 		case notStarted, keepRunning, shutdownWhenAllWorkersSleep, terminated
@@ -26,7 +26,7 @@ object CooperativeWorkersDp {
 	 * */
 	abstract class DoerFacade extends AbstractDoer {
 		/** Exposes the number of routines that are waiting to be executed sequentially. */
-		def numOfPendingTasks: Int
+		def numOfPendingRunnables: Int
 	}
 
 
@@ -101,17 +101,17 @@ abstract class CooperativeWorkersDp(
 
 		override type Tag = thisProvider.Tag
 
-		private val taskQueue: TaskQueue = new ConcurrentLinkedQueue[Runnable]
-		private val taskQueueSize: AtomicInteger = new AtomicInteger(0)
-		@volatile protected var firstTaskInQueue: Runnable = null
+		private val runnablesQueue: RunnableQueue = new ConcurrentLinkedQueue[Runnable]
+		private val runnablesQueueSize: AtomicInteger = new AtomicInteger(0)
+		@volatile protected var firstRunnableInQueue: Runnable = null
 		/** Remembers the index of the worker that executed this doer's tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
 		private[CooperativeWorkersDp] var lastTimeWorkerIndex = 0
-		private var executionSequencer: Int = 0 
+		private var executionSequencer: Int = 0
 
-		override def numOfPendingTasks: Int = taskQueueSize.get
+		override def numOfPendingRunnables: Int = runnablesQueueSize.get
 
-		override def executeSequentially(task: Runnable): Unit = {
-			if enqueueTask(task) then {
+		override def executeSequentially(runnable: Runnable): Unit = {
+			if enqueueRunnable(runnable) then {
 				// assert(!queuedDoers.contains(thisDoer))
 				enqueueMyself()
 				wakeUpASleepingWorkerIfAny(lastTimeWorkerIndex)
@@ -120,12 +120,12 @@ abstract class CooperativeWorkersDp(
 
 		/** Enqueues a [[Runnable]] to this [[DoerImpl]] queue.
 		 * @return true if the queue transitioned from empty to non-empty thanx to this call. */
-		inline def enqueueTask(task: Runnable): Boolean = {
-			if taskQueueSize.getAndIncrement() > 0 then {
-				taskQueue.offer(task)
+		inline def enqueueRunnable(runnable: Runnable): Boolean = {
+			if runnablesQueueSize.getAndIncrement() > 0 then {
+				runnablesQueue.offer(runnable)
 				false
 			} else {
-				firstTaskInQueue = task
+				firstRunnableInQueue = runnable
 				true
 			}
 		}
@@ -142,34 +142,34 @@ abstract class CooperativeWorkersDp(
 		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
 
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
-		 * Assumes that [[taskQueueSize]] is greater than zero because, for this method to be called, this [[DoerImpl]] should have been added to the [[queuedDoers]], which happens when the [[taskQueueSize]] transitions from zero to one.
+		 * Assumes that [[runnablesQueueSize]] is greater than zero because, for this method to be called, this [[DoerImpl]] should have been added to the [[queuedDoers]], which happens when the [[runnablesQueueSize]] transitions from zero to one.
 		 *
-		 * Note: The [[taskQueueSize]] is decremented not immediately after polling a task from the [[taskQueue]] but only after the task is executed.
-		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[taskQueueSize]] greater than zero and, therefore, impeding two tasks of the same doer being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerImpl]] instance simultaneously.
+		 * Note: The [[runnablesQueueSize]] is decremented not immediately after polling a task from the [[runnablesQueue]] but only after the task is executed.
+		 * This ensures that calls to [[executeSequentially]] by other threads while the worker is executing the task see a [[runnablesQueueSize]] greater than zero and, therefore, impeding two tasks of the same doer being executed simultaneously. In other words: avoiding the violation of the constraint that prevents two workers from being assigned to the same [[DoerImpl]] instance simultaneously.
 		 *
 		 * If at least one pending task remains unconsumed — typically because it is not yet visible from the [[Worker.thread]] — this [[DoerImpl]] is enqueued into the [[queuedDoers]] queue to be assigned to a worker at a later time.
 		 * @param worker the [[Worker]] that called this method and owns the current [[Thread]].
 		 */
-		private[CooperativeWorkersDp] final def executePendingTasks(worker: Worker): Unit = {
+		private[CooperativeWorkersDp] final def executePendingRunnables(worker: Worker): Unit = {
 			doerThreadLocal.set(thisDoer)
-			// assert(taskQueueSize.get > 0)
-			var taskQueueSizeIsPositive = true
+			// assert(runnablesQueueSize.get > 0)
+			var runnablesQueueSizeIsPositive = true
 			if applyMemoryFence then VarHandle.loadLoadFence()
 			try {
-				var task = firstTaskInQueue
-				firstTaskInQueue = null
-				if task == null then task = taskQueue.poll()
-				while task != null do {
+				var runnable = firstRunnableInQueue
+				firstRunnableInQueue = null
+				if runnable == null then runnable = runnablesQueue.poll()
+				while runnable != null do {
 					executionSequencer += 1
-					task.run()
-					// the `taskQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this doer into `queuedDoers` allowing the worst problem to occur: two workers assigned to the same [[DoerImpl]].
-					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
-					task = if taskQueueSizeIsPositive then taskQueue.poll() else null
+					runnable.run()
+					// the `runnablesQueueSize` must be decremented after (not before) running the task to avoid that other thread executing `executeSequentially` to enqueue this doer into `queuedDoers` allowing the worst problem to occur: two workers assigned to the same [[DoerImpl]].
+					runnablesQueueSizeIsPositive = runnablesQueueSize.decrementAndGet() > 0
+					runnable = if runnablesQueueSizeIsPositive then runnablesQueue.poll() else null
 				}
 			} catch {
 				case uncaught: Throwable =>
-					// Do the taskQueueSize update skipped in the while loop due to the exception.
-					taskQueueSizeIsPositive = taskQueueSize.decrementAndGet() > 0
+					// Do the runnablesQueueSize update skipped in the while loop due to the exception.
+					runnablesQueueSizeIsPositive = runnablesQueueSize.decrementAndGet() > 0
 					try {
 						// Notify the user about the uncaught exception, protected from exceptions.
 						onUnhandledException(thisDoer, uncaught)
@@ -183,7 +183,7 @@ abstract class CooperativeWorkersDp(
 			} finally {
 				if applyMemoryFence then VarHandle.storeStoreFence()
 				// if there are pending tasks, enqueue this doer back into the queue of doers with pending tasks.
-				if taskQueueSizeIsPositive then {
+				if runnablesQueueSizeIsPositive then {
 					// assert(!queuedDoers.contains(thisDoer))
 					enqueueMyself()
 				}
@@ -191,10 +191,10 @@ abstract class CooperativeWorkersDp(
 			}
 		}
 
-		def enqueuedTasksIterator: java.util.Iterator[Runnable] = taskQueue.iterator
+		def enqueuedRunnablesIterator: java.util.Iterator[Runnable] = runnablesQueue.iterator
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"(tag=$tag, taskQueueSize=${taskQueueSize.get}%3d)")
+			sb.append(f"(tag=$tag, runnablesQueueSize=${runnablesQueueSize.get}%3d)")
 		}
 
 		override def toString: String = s"${getTypeName[DoerImpl]}(tag=$tag)"
@@ -268,7 +268,7 @@ abstract class CooperativeWorkersDp(
 				if assignedDoer == null then assignedDoer = tryToSleep()
 				if assignedDoer != null then {
 					assignedDoer.lastTimeWorkerIndex = this.index
-					assignedDoer.executePendingTasks(thisWorker)
+					assignedDoer.executePendingRunnables(thisWorker)
 					completedMainLoopsCounter += 1
 				}
 			}
@@ -411,7 +411,7 @@ abstract class CooperativeWorkersDp(
 			val doerIterator = queuedDoers.iterator()
 			while doerIterator.hasNext do {
 				val doer = doerIterator.next()
-				builder.addOne(doer.tag, doer.enqueuedTasksIterator)
+				builder.addOne(doer.tag, doer.enqueuedRunnablesIterator)
 			}
 			(isCompleted, builder.result())
 		}
