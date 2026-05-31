@@ -46,7 +46,7 @@ object ExampleWithoutAskCapability {
 				}
 
 			}
-			.flatMap { user => user.stopDuty.onBehalfOf(nexus.doer) }
+			.flatMap { user => user.stopTask.onBehalfOf(nexus.doer) }
 			.trigger() { _ =>
 				manager.shutdown()
 			}

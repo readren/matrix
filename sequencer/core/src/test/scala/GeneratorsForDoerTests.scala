@@ -136,7 +136,7 @@ object GeneratorsForDoerTests {
 	}
 }
 
-/** Offers generators of [[doer.Duty]] and [[doer.Venture]] instances.
+/** Offers generators of [[doer.Task]] and [[doer.Venture]] instances.
  * Useful for suites that test their behavior. */
 class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[Doer], synchronousOnly: Boolean = false, includeForeign: Boolean = true, recursionLevel: Int = 0) {
 
@@ -147,26 +147,26 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
 	val foreignDoer: Doer = doerProvider.provide(doerProvider.tagFromText(s"foreign-doer-$recursionLevel"))
 
-	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Duty]] and [[foreignDoer.Venture]] instances. */
+	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Task]] and [[foreignDoer.Venture]] instances. */
 	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests[foreignDoer.type](foreignDoer, doerProvider, synchronousOnly, enableRecursiveForeign, recursionLevel + 1)
 
-	/** @return a generator of [[doer.Duty]] instances that yield the provided value. */
-	def genDuty[A](a: A): Gen[Duty[A]] = {
-		val readyGen: Gen[Duty[A]] = Duty_ready(a)
+	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
+	def genTask[A](a: A): Gen[Task[A]] = {
+		val readyGen: Gen[Task[A]] = Task_ready(a)
 
-		val mineGen: Gen[Duty[A]] = Duty_mine(() => a)
+		val mineGen: Gen[Task[A]] = Task_mine(() => a)
 
-		val mineFlatGen: Gen[Duty[A]] = Gen.oneOf(readyGen, mineGen).map(da => Duty_mineFlat(() => da))
+		val mineFlatGen: Gen[Task[A]] = Gen.oneOf(readyGen, mineGen).map(da => Task_mineFlat(() => da))
 
-		def foreignGen: Gen[Duty[A]] = foreignDoerGenerators().genDuty(a).map(Duty_foreign(foreignDoer)(_))
+		def foreignGen: Gen[Task[A]] = foreignDoerGenerators().genTask(a).map(Task_foreign(foreignDoer)(_))
 
 		if synchronousOnly || !includeForeign then Gen.oneOf(readyGen, mineGen, mineFlatGen)
 		else Gen.oneOf(readyGen, mineGen, mineFlatGen, foreignGen)
 	}
 
-	/** Implicitly provide an Arbitrary instance for `doer.Duty` */
-	given dutyArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Duty[A]] = Arbitrary {
-		arbA.arbitrary.flatMap(a => genDuty(a))
+	/** Implicitly provide an Arbitrary instance for `doer.Task` */
+	given taskArbitrary: [A] =>(arbA: Arbitrary[A]) => Arbitrary[Task[A]] = Arbitrary {
+		arbA.arbitrary.flatMap(a => genTask(a))
 	}
 
 

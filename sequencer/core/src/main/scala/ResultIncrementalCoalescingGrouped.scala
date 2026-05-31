@@ -28,11 +28,11 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 	 * Represents the internal state of an ongoing convergence process.
 	 *
 	 * @param finalResult The stable [[doer.Covenant]] returned by all the calls to [[contend]] that participate in this [[Competition]].
-	 * @param incumbent   The [[doer.LatchingDuty]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
+	 * @param incumbent   The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
 	 */
 	private final class Competition(
 		val finalResult: doer.Covenant[R],
-		var incumbent: doer.LatchingDuty[R] | Null
+		var incumbent: doer.LatchingTask[R] | Null
 	)
 
 	private val activeCompetitions: java.util.HashMap[P, Competition] = new java.util.HashMap()
@@ -47,17 +47,17 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 	 * This method is the entry point for a "contender." It uses the `arbitrator` function to determine if this new entry should displace the current [[incumbent]].
 	 *
 	 * @param parameter      The key used to group competing executions.
-	 * @param arbitrator        A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingDuty]] that yields the result of the execution that should hold the title.
+	 * @param arbitrator        A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingTask]] that yields the result of the execution that should hold the title.
 	 * If it returns the provided incumbent, the new contender "loses."
-	 * If it returns another [[doer.LatchingDuty]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Covenant]] of the competition result.
+	 * If it returns another [[doer.LatchingTask]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Covenant]] of the competition result.
 	 * @param isWithinDoSerEx   A flag indicating if the call is already executing within the [[doer]]'s sequential context.
-	 * @return A [[doer.LatchingDuty]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
+	 * @return A [[doer.LatchingTask]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
 	 */
 	def contend(
 		parameter: P,
-		arbitrator: (parameter: P, incumbent: Maybe[doer.LatchingDuty[R]]) => doer.LatchingDuty[R],
+		arbitrator: (parameter: P, incumbent: Maybe[doer.LatchingTask[R]]) => doer.LatchingTask[R],
 		isWithinDoSerEx: Boolean = doer.isInSequence
-	): doer.LatchingDuty[R] = {
+	): doer.LatchingTask[R] = {
 
 		if isWithinDoSerEx then {
 			// Access or create the state for this specific parameter

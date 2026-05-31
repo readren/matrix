@@ -11,10 +11,10 @@ import scala.collection.mutable
  *
  * This is intended for stateless or point-in-time inquiries where any result retrieved after the request is enqueued is considered sufficient for all concurrent callers in that coalesced group.
  */
-final class CoalescedInquire[P, R, D <: Doer](val doer: D)(inquirer: P => doer.LatchingDuty[R]) {
-	private val inFlight: mutable.Map[P, doer.LatchingDuty[R]] = mutable.Map.empty
+final class CoalescedInquire[P, R, D <: Doer](val doer: D)(inquirer: P => doer.LatchingTask[R]) {
+	private val inFlight: mutable.Map[P, doer.LatchingTask[R]] = mutable.Map.empty
 
-	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.LatchingDuty[R] = {
+	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.LatchingTask[R] = {
 		if isWithinDoer then inFlight.getOrElse(params, inquirer(params).andThen(_ => inFlight.remove(params)))
 		else {
 			val covenant = doer.Covenant[R]()

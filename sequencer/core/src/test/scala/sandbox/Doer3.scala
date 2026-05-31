@@ -18,77 +18,72 @@ trait Doer3 {
 
 	//// SOFT ////
 
-	trait Duty[+A] {
-		def engage(onComplete: A => Unit): Unit
+	trait Task[+A] {
+		def subscribe(onComplete: A => Unit): Unit
 
-		def map[B](f: A => B): Duty[B] = new Duty_Map[A, B](this, f)
+		def map[B](f: A => B): Task[B] = new Task_Map[A, B](this, f)
 	}
 
-	private final class Duty_Map[A, B](duty: Duty[A], f: A => B) extends Duty[B] {
-		override def engage(onComplete: B => Unit): Unit =
-			duty.engage(a => onComplete(f(a)))
+	private final class Task_Map[A, B](task: Task[A], f: A => B) extends Task[B] {
+		override def subscribe(onComplete: B => Unit): Unit =
+			task.subscribe(a => onComplete(f(a)))
 	}
 
-	abstract class AbstractDuty[+A] extends Duty[A]
+	abstract class AbstractTask[+A] extends Task[A]
 
-	private final class Duty_Mine[A](supplier: () => A) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit =
+	private final class Task_Mine[A](supplier: () => A) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit =
 			run(onComplete(supplier()))
 	}
 
-	trait LatchingOps[+A] { thisLatchingDuty: Duty[A] =>
+	trait LatchingOps[+A] { thisLatchingTask: Task[A] =>
 		def maybeValue: Maybe[A]
 
 		def subscribe(consumer: A => Unit): Unit
 
-		override def map[B](f: A => B): LatchingDuty[B] = {
+		override def map[B](f: A => B): LatchingTask[B] = {
 			this match {
-				case ready: ReadyDuty[A] => ready.map(f)
+				case ready: ReadyTask[A] => ready.map(f)
 				case covenant: Covenant[A] @unchecked => covenant.map(f)
 			}
 		}
 
-		def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B] = {
+		def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
 			this match {
-				case ready: ReadyDuty[A] => ready.flatMap(f)
+				case ready: ReadyTask[A] => ready.flatMap(f)
 				case covenant: Covenant[A] @unchecked => covenant.flatMap(f)
 			}
 		}
 	}
 
-	sealed trait LatchingDuty[+A] extends Duty[A], LatchingOps[A]
+	sealed trait LatchingTask[+A] extends Task[A], LatchingOps[A]
 
-	final class ReadyDuty[+A](a: A) extends LatchingDuty[A] {
+	final class ReadyTask[+A](a: A) extends LatchingTask[A] {
 		override val maybeValue: Maybe[A] = Maybe(a)
-
-		override def engage(onComplete: A => Unit): Unit = onComplete(a)
 
 		override def subscribe(consumer: A => Unit): Unit = consumer(a)
 
-		override def map[B](f: A => B): LatchingDuty[B] = new ReadyDuty[B](f(a))
+		override def map[B](f: A => B): LatchingTask[B] = new ReadyTask[B](f(a))
 
-		override def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B] = f(a)
+		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = f(a)
 	}
 
-	final class Covenant[A] extends LatchingDuty[A], SubscriptionHub[A] {
-
-		override def engage(onComplete: A => Unit): Unit =
-			attach(onComplete)
+	final class Covenant[A] extends LatchingTask[A], SubscriptionHub[A] {
 
 		override def maybeValue: Maybe[A] = oValue
 
 		override def subscribe(consumer: A => Unit): Unit =
 			attach(consumer)
 
-		override def map[B](f: A => B): LatchingDuty[B] = {
+		override def map[B](f: A => B): LatchingTask[B] = {
 			oValue.fold {
 				val covenantB = new Covenant[B]
 				this.subscribe(a => covenantB.fulfill(f(a)))
 				covenantB
-			}(a => new ReadyDuty(f(a)))
+			}(a => new ReadyTask(f(a)))
 		}
 
-		override def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B] = ???
+		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = ???
 	}
 
 	trait SubscriptionHub[A] {
@@ -112,38 +107,38 @@ trait Doer3 {
 		def build[A](engager: (onCompleted: Try[A] => Unit) => Unit)(stringifier: => String): H[A]
 	}
 
-	// TODO try replacing Duty[Try[A]] with Venture[A] in the trait definition
-	trait HardyOps[+A, Self[x] <: Duty[Try[x]]](using selfFactory: HardyFactory[Self]) { thisVenture: Duty[Try[A]] =>
+	// TODO try replacing Task[Try[A]] with Venture[A] in the trait definition
+	trait HardyOps[+A, Self[x] <: Task[Try[x]]](using selfFactory: HardyFactory[Self]) { thisVenture: Task[Try[A]] =>
 
 		def transform[B](f: Try[A] => Try[B]): Self[B] =
 			selfFactory.build[B] { onCompleted =>
-				thisVenture.engage(tryA => onCompleted(tryA.reifyBack(f)))
+				thisVenture.subscribe(tryA => onCompleted(tryA.reifyBack(f)))
 			}(s"$thisVenture.transform(?)")
 
 		@targetName("map_hardyOps")
 		def map[B](f: A => B): Self[B] =
 			selfFactory.build[B] { onComplete =>
-				thisVenture.engage { tryA =>
+				thisVenture.subscribe { tryA =>
 					onComplete(tryA.mapFast(f))
 				}
 			}(s"$thisVenture.map(?)")
 
 		def transformWith[B](f: Try[A] => Self[B]): Self[B] = {
 			selfFactory.build[B] { onComplete =>
-				thisVenture.engage(_.reify[Unit](e => onComplete(Failure(e)))(f(_).engage(onComplete)))
+				thisVenture.subscribe(_.reify[Unit](e => onComplete(Failure(e)))(f(_).subscribe(onComplete)))
 			}(s"$thisVenture.transformWith(?)")
 		}
 
 		def flatMap[B](f: A => Self[B]): Self[B] = {
 			selfFactory.build[B] { onComplete =>
-				thisVenture.engage {
+				thisVenture.subscribe {
 					case Success(a) =>
 						val maybeSelfB = try Maybe(f(a)) catch {
 							case NonFatal(e) =>
 								onComplete(Failure(e))
 								Maybe.empty
 						}
-						maybeSelfB.foreach(_.engage(onComplete))
+						maybeSelfB.foreach(_.subscribe(onComplete))
 					case failure: Failure[A] =>
 						onComplete(failure.castTo[B])
 				}
@@ -151,14 +146,14 @@ trait Doer3 {
 		}
 	}
 
-	trait Venture[+A] extends Duty[Try[A]], HardyOps[A, Venture]
+	trait Venture[+A] extends Task[Try[A]], HardyOps[A, Venture]
 
 	abstract class AbstractVenture[+A] extends Venture[A]
 
 	inline given HardyFactory[Venture] {
 		override def build[A](engager: (onCompleted: Try[A] => Unit) => Unit)(stringifier: => String): Venture[A] = {
 			new AbstractVenture[A] {
-				override def engage(onComplete: Try[A] => Unit): Unit = engager(onComplete)
+				override def subscribe(onComplete: Try[A] => Unit): Unit = engager(onComplete)
 
 				override def toString: String = stringifier
 			}
@@ -192,7 +187,6 @@ trait Doer3 {
 	}
 
 	final class ReadyVenture[+A](value: Try[A]) extends LatchingVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = onComplete(value)
 
 		override val maybeValue: Maybe[Try[A]] = Maybe(value)
 
@@ -211,9 +205,6 @@ trait Doer3 {
 	}
 
 	final class Commitment[A] extends LatchingVenture[A], SubscriptionHub[Try[A]] {
-
-		override def engage(onComplete: Try[A] => Unit): Unit =
-			attach(onComplete)
 
 		override def subscribe(consumer: Try[A] => Unit): Unit =
 			attach(consumer)

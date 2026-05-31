@@ -32,8 +32,8 @@ abstract class Nexus(val name: String) extends Procreative { thisNexus =>
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[Actant[U, CD]] = {
-		doer.Duty_mineFlat { () =>
+	): doer.Task[Actant[U, CD]] = {
+		doer.Task_mineFlat { () =>
 			spawner.createsActant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}

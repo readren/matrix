@@ -5,18 +5,18 @@ import scala.quoted.{Expr, Quotes, Type}
 object DoerMacros {
 
 
-	def triggerImpl[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], dutyExpr: Expr[Doer#Duty[A]], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
+	def triggerImpl[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], taskExpr: Expr[Doer#Task[A]], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
 		def runnable: Expr[Runnable] = {
 			val pos: Position = onCompleteExpr.asTerm.pos
-			val sourceInfo: Expr[String] = Expr(s".engage(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
+			val sourceInfo: Expr[String] = Expr(s".subscribe(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
 
 			'{
 				new Runnable {
-					override def run(): Unit = $dutyExpr.engage($onCompleteExpr)
+					override def run(): Unit = $taskExpr.subscribe($onCompleteExpr)
 
-					override def toString: String = s"${$dutyExpr.toString}${$sourceInfo}"
+					override def toString: String = s"${$taskExpr.toString}${$sourceInfo}"
 				}
 			}
 		}
@@ -25,7 +25,7 @@ object DoerMacros {
 			case Some(isWithinDoSerEx) =>
 				if isWithinDoSerEx then '{
 					$doerExpr.checkWithin()
-					$dutyExpr.engage($onCompleteExpr)
+					$taskExpr.subscribe($onCompleteExpr)
 				}
 				else '{ $doerExpr.executeSequentially($runnable) }
 
@@ -33,7 +33,7 @@ object DoerMacros {
 				'{
 					if $isWithinDoSerExExpr then {
 						$doerExpr.checkWithin()
-						$dutyExpr.engage($onCompleteExpr)
+						$taskExpr.subscribe($onCompleteExpr)
 					}
 					else $doerExpr.executeSequentially($runnable)
 				}
@@ -45,32 +45,32 @@ object DoerMacros {
 	 * It is used by the [[Doer.trigger]] macro to avoid the path-dependent type checking.
 	 * @note Not currently in use, but retained to demonstrate how to bypass path-dependent type checking. This serves as a template to replace [[triggerImpl]] if the compiler eventually disallows type projections on abstract types.
 	 */
-	def triggerImpl_hacked[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], dutyExpr: Expr[Any], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
+	def triggerImpl_hacked[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], taskExpr: Expr[Any], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
-		/** Builds a `Term` corresponding to `dutyExpr.engage(onCompleteExpr)`. */
-		def engageCall: Term = {
-			val dutyTerm = dutyExpr.asTerm
-			val engageSymbol = dutyTerm.tpe.typeSymbol.methodMember("engage").head
-			Apply(Select(dutyTerm, engageSymbol), List(onCompleteExpr.asTerm))
+		/** Builds a `Term` corresponding to `taskExpr.subscribe(onCompleteExpr)`. */
+		def subscribeCall: Term = {
+			val taskTerm = taskExpr.asTerm
+			val subscribeSymbol = taskTerm.tpe.typeSymbol.methodMember("subscribe").head
+			Apply(Select(taskTerm, subscribeSymbol), List(onCompleteExpr.asTerm))
 		}
 
-		/** Builds an `Expr[String]` corresponding to `dutyExpr.toString`. */
-		def dutyToStringExpr: Expr[String] = {
-			val dutyTerm = dutyExpr.asTerm
-			val toStringSymbol = dutyTerm.tpe.typeSymbol.methodMember("toString").head
-			Apply(Select(dutyTerm, toStringSymbol), Nil).asExprOf[String]
+		/** Builds an `Expr[String]` corresponding to `taskExpr.toString`. */
+		def taskToStringExpr: Expr[String] = {
+			val taskTerm = taskExpr.asTerm
+			val toStringSymbol = taskTerm.tpe.typeSymbol.methodMember("toString").head
+			Apply(Select(taskTerm, toStringSymbol), Nil).asExprOf[String]
 		}
 
 		def runnable: Expr[Runnable] = {
 			val pos: Position = onCompleteExpr.asTerm.pos
-			val sourceInfo: Expr[String] = Expr(s".engage(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
-			val engage = engageCall.asExprOf[Unit]
-			val dts = dutyToStringExpr
+			val sourceInfo: Expr[String] = Expr(s".subscribe(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
+			val subscribe = subscribeCall.asExprOf[Unit]
+			val dts = taskToStringExpr
 
 			'{
 				new Runnable {
-					override def run(): Unit = $engage
+					override def run(): Unit = $subscribe
 
 					override def toString: String = s"${$dts}${$sourceInfo}"
 				}
@@ -80,20 +80,20 @@ object DoerMacros {
 		isWithinDoSerExExpr.value match {
 			case Some(isWithinDoSerEx) =>
 				if isWithinDoSerEx then {
-					val engage = engageCall.asExprOf[Unit]
+					val subscribe = subscribeCall.asExprOf[Unit]
 					'{
 						$doerExpr.checkWithin()
-						$engage
+						$subscribe
 					}
 				}
 				else '{ $doerExpr.executeSequentially($runnable) }
 
 			case None =>
-				val engage = engageCall.asExprOf[Unit]
+				val subscribe = subscribeCall.asExprOf[Unit]
 				'{
 					if $isWithinDoSerExExpr then {
 						$doerExpr.checkWithin()
-						$engage
+						$subscribe
 					}
 					else $doerExpr.executeSequentially($runnable)
 				}

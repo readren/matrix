@@ -6,14 +6,14 @@ import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 
 trait LoopingExtension { thisDoer: Doer =>
-	
-	//// DUTY INSTANCE OPERATIONS 
-	extension [A] (thisDuty: Duty[A]) {
+
+	//// TASK INSTANCE OPERATIONS
+	extension [A](thisTask: Task[A]) {
 		/**
-		 * Repeats this duty until applying the received function yields [[Maybe.some]].
+		 * Repeats this task until applying the received function yields [[Maybe.some]].
 		 * ===Detailed description===
-		 * Creates a [[Duty]] that, when executed, it will:
-		 * - execute this duty producing the result `a`
+		 * Creates a [[Task]] that, when executed, it will:
+		 * - execute this task producing the result `a`
 		 * - apply `condition` to `(completedCycles, a)`. If the evaluation finishes with:
 		 *      - `some(b)`, completes with `b`
 		 *      - `empty`, goes back to the first step.
@@ -22,28 +22,28 @@ trait LoopingExtension { thisDoer: Doer =>
 		 *
 		 * @param condition function that decides if the loop continues or not based on:
 		 *  - the number of already completed cycles,
-		 *  - and the result of the last execution of the `dutyA`.
+		 *  - and the result of the last execution of the `taskA`.
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result.
-		 * @return a new [[Duty]] that, when executed, repeatedly executes this duty and applies the `condition` to the duty's result until the function's result is [[Maybe.some]]. The result of this duty is the contents of said [[Maybe]].
+		 * @return a new [[Task]] that, when executed, repeatedly executes this task and applies the `condition` to the task's result until the function's result is [[Maybe.some]]. The result of this task is the contents of said [[Maybe]].
 		 */
-		inline def repeatedUntilSome[B](condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
-			new Duty_RepeatUntilSome(thisDuty, condition, maxRecursionDepthPerExecutor)
+		inline def repeatedUntilSome[B](condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
+			new Task_RepeatUntilSome(thisTask, condition, maxRecursionDepthPerExecutor)
 
 		/**
 		 * Like [[repeatedUntilSome]] but the condition is a [[PartialFunction]] instead of a function that returns [[Maybe]].
 		 */
-		inline def repeatedUntilDefined[B](pf: PartialFunction[(Int, A), B], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
+		inline def repeatedUntilDefined[B](pf: PartialFunction[(Int, A), B], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
 			repeatedUntilSome(Function.untupled(Maybe.liftPartialFunction(pf)), maxRecursionDepthPerExecutor)
 
 		/**
-		 * Repeats this [[Duty]] while the given function returns [[Maybe.empty]].
+		 * Repeats this [[Task]] while the given function returns [[Maybe.empty]].
 		 * ===Detailed behavior===
-		 * Returns a [[Duty]] that, when executed, it will:
+		 * Returns a [[Task]] that, when executed, it will:
 		 *  - Apply the `condition` function to `(n, s0)` where `n` is the number of already completed evaluations of it (starts with zero).
 		 *  - If the evaluation returns:
 		 *      - `some(b)`, completes with `b`.
-		 *      - `empty`, executes the `dutyA` and goes back to the first step replacing `s0` with the result.
+		 *      - `empty`, executes the `taskA` and goes back to the first step replacing `s0` with the result.
 		 *
 		 * $threadSafe
 		 *
@@ -51,17 +51,17 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * @param condition determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `da0` if no cycle has been done yet.
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * @tparam S a supertype of `A`
-		 * @tparam B the type of the result of this duty.
+		 * @tparam B the type of the result of this task.
 		 */
-		inline def repeatedWhileEmpty[S >: A, B](s0: S, condition: (Int, S) => Maybe[B], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
-			new Duty_RepeatWhileEmpty[S, B](thisDuty, s0, condition, maxRecursionDepthPerExecutor)
+		inline def repeatedWhileEmpty[S >: A, B](s0: S, condition: (Int, S) => Maybe[B], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
+			new Task_RepeatWhileEmpty[S, B](thisTask, s0, condition, maxRecursionDepthPerExecutor)
 
 		/**
-		 * Returns a duty that, when executed, repeatedly executes this [[Duty]] while a [[PartialFunction]] is undefined.
+		 * Returns a task that, when executed, repeatedly executes this [[Task]] while a [[PartialFunction]] is undefined.
 		 * ===Detailed behavior===
-		 * Returns a [[Duty]] that, when executed, it will:
+		 * Returns a [[Task]] that, when executed, it will:
 		 *  - Check if the partial function is defined in `(n, s0)` where `n` is the number of already completed evaluations of it (starts with zero).
-		 *  - If it is undefined, executes the `dutyA` and goes back to the first step replacing `s0` with the result.
+		 *  - If it is undefined, executes the `taskA` and goes back to the first step replacing `s0` with the result.
 		 *  - If it is defined, evaluates it and completes with the result.
 		 *
 		 * $threadSafe
@@ -70,18 +70,18 @@ trait LoopingExtension { thisDoer: Doer =>
 		 * @param pf determines whether a new cycle should be performed based on the number of times it has already been evaluated and either the result of the previous cycle or `da0` if no cycle has been done yet.
 		 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 		 * @tparam S a supertype of `A`
-		 * @tparam B the type of the result of this duty.
+		 * @tparam B the type of the result of this task.
 		 */
-		inline def repeatedWhileUndefined[S >: A, B](s0: S, pf: PartialFunction[(Int, S), B], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
+		inline def repeatedWhileUndefined[S >: A, B](s0: S, pf: PartialFunction[(Int, S), B], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
 			repeatedWhileEmpty(s0, Function.untupled(Maybe.liftPartialFunction(pf)), maxRecursionDepthPerExecutor)
 
 	}
-	
-	//// DUTY FACTORY METHODS 
 
-	/** Creates a new [[Duty]] that, when executed, repeatedly constructs a duty and executes it while a condition returns [[Right]].
+	//// TASK FACTORY METHODS
+
+	/** Creates a new [[Task]] that, when executed, repeatedly constructs a task and executes it while a condition returns [[Right]].
 	 * ==Detailed behavior:==
-	 * Gives a new [[Duty]] that, when executed, it will:
+	 * Gives a new [[Task]] that, when executed, it will:
 	 *  - Apply the function `condition` to `(completedCycles, a0)`, and if it returns:
 	 *		- a `Left(b)`, completes with `b`.
 	 *  	- a `Right(taskA)`, executes the `taskA` goes back to the first step, replacing `a0` with the result.
@@ -89,17 +89,17 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * $threadSafe
 	 *
 	 * @param a0 the initial iteration state.
-	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state `a`, determines if the loop should end or otherwise creates the [[Duty]] to execute in the next iteration.
+	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state `a`, determines if the loop should end or otherwise creates the [[Task]] to execute in the next iteration.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * @tparam A the type of the state passed from an iteration to the next.
-	 * @tparam B the type of the result of created [[Duty]]
+	 * @tparam B the type of the result of created [[Task]]
 	 */
-	def Duty_whileRightRepeat[A, B](a0: A, condition: (Int, A) => Either[B, Duty[A]], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
-		new Duty_WhileRightRepeat[A, B](a0, condition, maxRecursionDepthPerExecutor)
+	def Task_whileRightRepeat[A, B](a0: A, condition: (Int, A) => Either[B, Task[A]], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
+		new Task_WhileRightRepeat[A, B](a0, condition, maxRecursionDepthPerExecutor)
 
-	/** Creates a new [[Duty]] that, when executed, repeatedly constructs and executes tasks until the `condition` is met.
+	/** Creates a new [[Task]] that, when executed, repeatedly constructs and executes tasks until the `condition` is met.
 	 * ===Detailed behavior:===
-	 * Gives a new [[Duty]] that, when executed, it will:
+	 * Gives a new [[Task]] that, when executed, it will:
 	 * - Apply the function `condition` to `(n,a0)` where n is the number of cycles already done. Then executes the resulting `task` and if its result is:
 	 *			- `Left(tryB)`, completes with `tryB`.
 	 *			- `Right(a1)`, goes back to the first step replacing `a0` with `a1`.
@@ -107,15 +107,15 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * $threadSafe
 	 *
 	 * @param a0 the initial iteration state.
-	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state (which starts with `a0`), determines if the loop should end or otherwise creates the [[Duty]] to execute in the next iteration.
+	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state (which starts with `a0`), determines if the loop should end or otherwise creates the [[Task]] to execute in the next iteration.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * @tparam A the type of the state passed from an iteration to the next.
-	 * @tparam B the type of the result of created [[Duty]]
+	 * @tparam B the type of the result of created [[Task]]
 	 */
-	inline def Duty_repeatUntilLeft[A, B](a0: A, condition: (Int, A) => Duty[Either[B, A]], maxRecursionDepthPerExecutor: Int = 9): Duty[B] =
-		new Duty_RepeatUntilLeft(a0, condition, maxRecursionDepthPerExecutor)
+	inline def Task_repeatUntilLeft[A, B](a0: A, condition: (Int, A) => Task[Either[B, A]], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
+		new Task_RepeatUntilLeft(a0, condition, maxRecursionDepthPerExecutor)
 
-	/** Creates a new [[Duty]] that, when executed, repeatedly constructs and executes tasks until it succeeds or `maxRetries` is reached.
+	/** Creates a new [[Task]] that, when executed, repeatedly constructs and executes tasks until it succeeds or `maxRetries` is reached.
 	 * ===Detailed behavior:===
 	 * When the returned [[Venture]] is executed, it will:
 	 * 		- Apply the function `taskBuilder` to the number of tries that were already done.
@@ -128,70 +128,70 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * $threadSafe
 	 *
 	 * @param maxRetries the maximum number of retries. Note that N retries is equivalent to N+1 attempts. So, a value of zero retries is one attempt.
-	 * @param dutyBuilder function to construct tasks, taking the retry count as input.
+	 * @param taskBuilder function to construct tasks, taking the retry count as input.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
-	inline def Duty_retryUntilRight[A, B](maxRetries: Int, dutyBuilder: Int => Duty[Either[A, B]], maxRecursionDepthPerExecutor: Int = 9): Duty[Either[A, B]] =
-		new Duty_RetryUntilRight[A, B](maxRetries, dutyBuilder, maxRecursionDepthPerExecutor)
+	inline def Task_retryUntilRight[A, B](maxRetries: Int, taskBuilder: Int => Task[Either[A, B]], maxRecursionDepthPerExecutor: Int = 9): Task[Either[A, B]] =
+		new Task_RetryUntilRight[A, B](maxRetries, taskBuilder, maxRecursionDepthPerExecutor)
 
-	/** Returns a new [[Duty]] that, when executed:
+	/** Returns a new [[Task]] that, when executed:
 	 * 	- creates and executes a control task and, depending on its result, either:
 	 *		- completes.
 	 *		- or creates and executes an interleaved task and then goes back to the first step.
-	 * WARNING: the execution of the returned duty will never end if the control duty always returns [[Right]].
+	 * WARNING: the execution of the returned task will never end if the control task always returns [[Right]].
 	 *
 	 * $threadSafe
 	 *
 	 * @param a0 2nd argument passed to `controlTaskBuilder` in the first cycle.
 	 * @param b0 3rd argument passed to `controlTaskBuilder` in the first cycle.
-	 * @param controlDutyBuilder the function that builds the control duty. It takes three parameters:
+	 * @param controlTaskBuilder the function that builds the control task. It takes three parameters:
 	 * - the number of already executed interleaved duties.
-	 * - the result of the control duty in the previous cycle or `a0` in the first cycle.
-	 * - the result of the interleaved duty in the previous cycle or `b0` in the first cycle.
-	 * @param interleavedDutyBuilder the function that builds the interleaved duties. It takes two parameters:
+	 * - the result of the control task in the previous cycle or `a0` in the first cycle.
+	 * - the result of the interleaved task in the previous cycle or `b0` in the first cycle.
+	 * @param interleavedTaskBuilder the function that builds the interleaved duties. It takes two parameters:
 	 *		- the number of already executed interleaved duties.
-	 *		- the result of the control duty in the current cycle.
+	 *		- the result of the control task in the current cycle.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * */
 
-	def Duty_repeatInterleavedUntilLeftDuty[A, B, R](a0: A, b0: B, controlDutyBuilder: (Int, A, B) => Duty[Either[R, A]], interleavedDutyBuilder: (Int, A) => Duty[B], maxRecursionDepthPerExecutor: Int = 9): Duty[R] = {
+	def Task_repeatInterleavedUntilLeftTask[A, B, R](a0: A, b0: B, controlTaskBuilder: (Int, A, B) => Task[Either[R, A]], interleavedTaskBuilder: (Int, A) => Task[B], maxRecursionDepthPerExecutor: Int = 9): Task[R] = {
 
-		Duty_repeatUntilLeft[(A, B), R](
+		Task_repeatUntilLeft[(A, B), R](
 			(a0, b0),
 			(completedCycles, ab) =>
-				controlDutyBuilder(completedCycles, ab._1, ab._2).flatMap {
+				controlTaskBuilder(completedCycles, ab._1, ab._2).flatMap {
 					case Left(r) =>
-						Duty_ready(Left(r))
+						Task_ready(Left(r))
 
 					case Right(a) =>
-						interleavedDutyBuilder(completedCycles, a).map(b => Right((a, b)))
+						interleavedTaskBuilder(completedCycles, a).map(b => Right((a, b)))
 				},
 			maxRecursionDepthPerExecutor
 		)
 	}
 
-	//// DUTY IMPLEMENTATION CLASSES
+	//// TASK IMPLEMENTATION CLASSES
 
 	/**
-	 * A [[Duty]] that executes the received duty until applying the received function yields [[Maybe.some]].
+	 * A [[Task]] that executes the received task until applying the received function yields [[Maybe.some]].
 	 * ===Detailed description===
-	 * A [[Duty]] that, when executed, it will:
-	 *		- execute the `dutyA` producing the result `a`
+	 * A [[Task]] that, when executed, it will:
+	 *		- execute the `taskA` producing the result `a`
 	 *		- apply `condition` to `(completedCycles, a)`. If the evaluation finishes with:
 	 *			- `some(b)`, completes with `b`
 	 *			- `empty`, goes back to the first step.
 	 *
-	 * @param dutyA the duty to be repeated.
+	 * @param taskA the task to be repeated.
 	 * @param condition function that decides if the loop continues or not based on:
 	 *		- the number of already completed cycles,
-	 *		- and the result of the last execution of the `dutyA`.
+	 *		- and the result of the last execution of the `taskA`.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
 	 */
-	final class Duty_RepeatUntilSome[+A, +B](dutyA: Duty[A], condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
+	final class Task_RepeatUntilSome[+A, +B](taskA: Task[A], condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = {
 			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
-				dutyA.engage { a =>
+				taskA.subscribe { a =>
 					condition(completedCycles, a).fold {
 						if recursionDepth < maxRecursionDepthPerExecutor then {
 							loop(completedCycles + 1, recursionDepth + 1)
@@ -205,28 +205,28 @@ trait LoopingExtension { thisDoer: Doer =>
 			loop(0, 0)
 		}
 
-		override def toString: String = deriveToString[Duty_RepeatUntilSome[A, B]](this)
+		override def toString: String = deriveToString[Task_RepeatUntilSome[A, B]](this)
 	}
 
 	/**
-	 * Duty that, when executed, repeatedly executes a duty while a condition returns [[Maybe.empty]].
+	 * Task that, when executed, repeatedly executes a task while a condition returns [[Maybe.empty]].
 	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
+	 * When this [[Task]] is executed, it will:
 	 *  - Apply the `condition` function to `(n, a0)` where `n` is the number of already completed evaluations.
 	 *  - If the evaluation returns:
 	 *  	- `some(b)`, completes with `b`.
-	 *  	- `empty`, executes the `dutyA` and repeats the condition.
+	 *  	- `empty`, executes the `taskA` and repeats the condition.
 	 *
-	 * @param dutyA the task to be repeated
+	 * @param taskA the task to be repeated
 	 * @param a0 the value passed as the second parameter to `condition` the first time it is evaluated.
-	 * @param condition determines if a new cycle should be performed based on the number of already completed cycles and the last result of `dutyA` or `a0` if no cycle has been completed.
+	 * @param condition determines if a new cycle should be performed based on the number of already completed cycles and the last result of `taskA` or `a0` if no cycle has been completed.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
-	final class Duty_RepeatWhileEmpty[+A, +B](dutyA: Duty[A], a0: A, condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				condition(completedCycles, lastDutyResult).fold {
-					dutyA.engage { newA =>
+	final class Task_RepeatWhileEmpty[+A, +B](taskA: Task[A], a0: A, condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = {
+			def loop(completedCycles: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
+				condition(completedCycles, lastTaskResult).fold {
+					taskA.subscribe { newA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
 						else run(loop(completedCycles + 1, newA, 0))
 					}
@@ -236,28 +236,28 @@ trait LoopingExtension { thisDoer: Doer =>
 			loop(0, a0, 0)
 		}
 
-		override def toString: String = deriveToString[Duty_RepeatWhileEmpty[A, B]](this)
+		override def toString: String = deriveToString[Task_RepeatWhileEmpty[A, B]](this)
 	}
 
 	/**
-	 * Duty that, when executed, repeatedly constructs and executes duties as long as the `condition` is met.
+	 * Task that, when executed, repeatedly constructs and executes duties as long as the `condition` is met.
 	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
+	 * When this [[Task]] is executed, it will:
 	 *  - Apply the function `checkAndBuild` to `(n, a0)` where `n` is the number of completed cycles.
 	 *  	- If it returns a `Left(b)`, completes with `b`.
-	 *  	- If it returns `Right(dutyA)`, executes `dutyA` and repeats the cycle replacing `a0` with the result.
+	 *  	- If it returns `Right(taskA)`, executes `taskA` and repeats the cycle replacing `a0` with the result.
 	 *
 	 * @param a0 the initial value used in the first call to `checkAndBuild`.
-	 * @param checkAndBuild function that takes completed cycles count and last duty result, returning an `Either[B, Duty[A]]`.
+	 * @param checkAndBuild function that takes completed cycles count and last task result, returning an `Either[B, Task[A]]`.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
-	final class Duty_WhileRightRepeat[+A, +B](a0: A, checkAndBuild: (Int, A) => Either[B, Duty[A]], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(completedCycles: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				checkAndBuild(completedCycles, lastDutyResult) match {
+	final class Task_WhileRightRepeat[+A, +B](a0: A, checkAndBuild: (Int, A) => Either[B, Task[A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = {
+			def loop(completedCycles: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
+				checkAndBuild(completedCycles, lastTaskResult) match {
 					case Left(b) => onComplete(b)
-					case Right(dutyA) =>
-						dutyA.engage { newA =>
+					case Right(taskA) =>
+						taskA.subscribe { newA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
 							else run(loop(completedCycles + 1, newA, 0))
 						}
@@ -267,26 +267,26 @@ trait LoopingExtension { thisDoer: Doer =>
 			loop(0, a0, 0)
 		}
 
-		override def toString: String = deriveToString[Duty_WhileRightRepeat[A, B]](this)
+		override def toString: String = deriveToString[Task_WhileRightRepeat[A, B]](this)
 	}
 
 	/**
-	 * Duty that, when executed, repeatedly constructs and executes duties until the result is [[Left]] or a failure occurs.
+	 * Task that, when executed, repeatedly constructs and executes duties until the result is [[Left]] or a failure occurs.
 	 * ===Detailed behavior:===
-	 * When this [[Duty]] is executed, it will:
-	 *  - Apply the function `buildAndCheck` to `(n, a0)` where `n` ìs the number of completed cycles. Then executes the built duty and, if the result is:
+	 * When this [[Task]] is executed, it will:
+	 *  - Apply the function `buildAndCheck` to `(n, a0)` where `n` ìs the number of completed cycles. Then executes the built task and, if the result is:
 	 *  	- `Left(b)`, completes with `b`.
 	 *  	- `Right(a1)`, repeats the cycle replacing `a0` with `a1`.
 	 *
 	 * @param a0 the initial value used in the first call to `buildAndCheck`.
-	 * @param buildAndCheck function that takes completed cycles count and last duty result, and returns a new duty that yields an `Either[B, A]`.
+	 * @param buildAndCheck function that takes completed cycles count and last task result, and returns a new task that yields an `Either[B, A]`.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
-	final class Duty_RepeatUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Duty[Either[B, A]], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			def loop(executionsCounter: Int, lastDutyResult: A, recursionDepth: Int): Unit = {
-				val duty = buildAndCheck(executionsCounter, lastDutyResult)
-				duty.engage {
+	final class Task_RepeatUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Task[Either[B, A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = {
+			def loop(executionsCounter: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
+				val task = buildAndCheck(executionsCounter, lastTaskResult)
+				task.subscribe {
 					case Left(b) => onComplete(b)
 					case Right(a) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
@@ -297,7 +297,7 @@ trait LoopingExtension { thisDoer: Doer =>
 			loop(0, a0, 0)
 		}
 
-		override def toString: String = deriveToString[Duty_RepeatUntilLeft[A, B]](this)
+		override def toString: String = deriveToString[Task_RepeatUntilLeft[A, B]](this)
 	}
 
 	/** Task that, when executed, repeatedly constructs and executes tasks until the result is [[Right]] or the `maxRetries` is reached.
@@ -312,15 +312,15 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  				- `retriesCounter >= maxRetries`, completes with `Left(a)`
 	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
 	 */
-	final class Duty_RetryUntilRight[+A, +B](maxRetries: Int, dutyBuilder: Int => Duty[Either[A, B]], maxRecursionDepthPerExecutor: Int) extends AbstractDuty[Either[A, B]] {
-		override def engage(onComplete: Either[A, B] => Unit): Unit = {
+	final class Task_RetryUntilRight[+A, +B](maxRetries: Int, taskBuilder: Int => Task[Either[A, B]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[Either[A, B]] {
+		override def subscribe(onComplete: Either[A, B] => Unit): Unit = {
 			/**
 			 * @param attemptsAlreadyMade the number attempts already made.
 			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
 			def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
-				val duty: Duty[Either[A, B]] = dutyBuilder(attemptsAlreadyMade)
+				val task: Task[Either[A, B]] = taskBuilder(attemptsAlreadyMade)
 
-				duty.engage {
+				task.subscribe {
 					case rb@(_: Right[A, B]) =>
 						onComplete(rb)
 					case la@Left(a) =>
@@ -337,7 +337,7 @@ trait LoopingExtension { thisDoer: Doer =>
 			loop(0, 0)
 		}
 
-		override def toString: String = deriveToString[Duty_RetryUntilRight[A, B]](this)
+		override def toString: String = deriveToString[Task_RetryUntilRight[A, B]](this)
 	}
 
 	//// TASK INSTANCE OPERATIONS ////
@@ -527,10 +527,10 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *
 	 * $threadSafe
 	 * @param a0 the initial iteration state.
-	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state (which starts with `a0`), determines if the loop should end or otherwise creates the [[Duty]] to execute in the next iteration.
+	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state (which starts with `a0`), determines if the loop should end or otherwise creates the [[Task]] to execute in the next iteration.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * @tparam A the type of the state passed from an iteration to the next.
-	 * @tparam B the type of the result of created [[Duty]]
+	 * @tparam B the type of the result of created [[Task]]
 	 * */
 	inline final def Venture_reiterateUntilLeft[A, B](a0: A, condition: (Int, A) => Venture[Either[Try[B], A]], maxRecursionDepthPerExecutor: Int = 9): Venture[B] =
 		new Venture_ReiterateUntilLeft(a0, condition, maxRecursionDepthPerExecutor)
@@ -628,12 +628,12 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * */
 	final class Venture_ReiterateHardyUntilSome[+A, +B](ventureA: Venture[A], condition: (Int, Try[A]) => Maybe[Try[B]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
 
-		override def engage(onComplete: Try[B] => Unit): Unit = {
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
 			/**
 			 * @param completedCycles number of already completed cycles.
 			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case more synchronous scenario. */
 			def loop(completedCycles: Int, recursionDepth: Int): Unit = {
-				ventureA.engage { tryA =>
+				ventureA.subscribe { tryA =>
 					val conditionResult: Maybe[Try[B]] =
 						try condition(completedCycles, tryA)
 						catch {
@@ -675,7 +675,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @tparam B the type of the result of this task.
 	 */
 	final class Venture_ReiterateHardyWhileEmpty[+A, +B](ventureA: Venture[A], ta0: Try[A], condition: (Int, Try[A]) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
 			/**
 			 * @param completedCycles number of already completed cycles.
 			 * @param lastVentureResult the result of the last [[Venture]] execution.
@@ -691,7 +691,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 
 				conditionResult.fold {
-					ventureA.engage { newTryA =>
+					ventureA.subscribe { newTryA =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
 						else run(loop(completedCycles + 1, newTryA, 0))
 					}
@@ -718,7 +718,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Venture_WhileRightReiterateHardy[+A, +B](tryA0: Try[A], checkAndBuild: (Int, Try[A]) => Either[Try[B], Venture[A]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
 			/**
 			 * @param completedCycles number of already completed cycles, which consist of a task creation and its execution.
 			 * @param lastVentureResult the result of the last [[Venture]] execution.
@@ -733,7 +733,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					case Left(tryB) =>
 						onComplete(tryB);
 					case Right(ventureA) =>
-						ventureA.engage { newTryA =>
+						ventureA.subscribe { newTryA =>
 							if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
 							else run(loop(completedCycles + 1, newTryA, 0));
 						}
@@ -763,7 +763,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Venture_ReiterateUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Venture[Either[Try[B], A]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
 			/**
 			 * @param executionsCounter number of already completed cycles, which consist of a task creation and its execution.
 			 * @param lastVentureResult the result of the last task execution.
@@ -774,7 +774,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					catch {
 						case NonFatal(e) => Venture_successful(Left(Failure(e)))
 					}
-				venture.engage {
+				venture.subscribe {
 					case Success(Right(a)) =>
 						if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
 						else run(loop(executionsCounter + 1, a, 0));
@@ -804,7 +804,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
 	 */
 	final class Venture_AttemptUntilRight[+A, +B](maxRetries: Int, ventureBuilder: Int => Venture[Either[A, B]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[Either[A, B]] {
-		override def engage(onComplete: Try[Either[A, B]] => Unit): Unit = {
+		override def subscribe(onComplete: Try[Either[A, B]] => Unit): Unit = {
 			/**
 			 * @param attemptsAlreadyMade the number attempts already made.
 			 * @param recursionDepth the number of recursions that may have been performed in the current executor in the worst case scenario where all calls are synchronous. */
@@ -814,7 +814,7 @@ trait LoopingExtension { thisDoer: Doer =>
 					catch {
 						case NonFatal(cause) => Venture_failed(cause)
 					}
-				venture.engage {
+				venture.subscribe {
 					case success@Success(aOrB) =>
 						aOrB match {
 							case _: Right[A, B] =>

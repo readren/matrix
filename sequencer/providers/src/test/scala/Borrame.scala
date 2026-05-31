@@ -27,26 +27,26 @@ object Borrame {
 		val dog = Dog("buaw")
 		val cat = Cat("miau")
 
-		val laDog: doer.LatchingDuty[Animal] = doer.Covenant[Dog]().fulfill(dog)
+		val laDog: doer.LatchingTask[Animal] = doer.Covenant[Dog]().fulfill(dog)
 
 		laDog.trigger()(a => println(a))
 
-		val laDogMutatedToCat: doer.LatchingDuty[Cat] = laDog.map(_ => cat)
+		val laDogMutatedToCat: doer.LatchingTask[Cat] = laDog.map(_ => cat)
 
 		laDogMutatedToCat.trigger()(b => println(b))
 
-		val dOne = doer.Duty_mine(() => 1)
+		val dOne = doer.Task_mine(() => 1)
 		val covenant = doer.Covenant[Int]()
 		covenant.trigger()(x => println(s"covenant completed with $x"))
 		covenant.fulfillWith(dOne)
 
-		val stateUpdater: Animal => Maybe[doer.LatchingDuty[Animal]] = {
+		val stateUpdater: Animal => Maybe[doer.LatchingTask[Animal]] = {
 				case Dog(ladrido) =>
-					//					Maybe.some(doer.LatchingDuty_ready(Dog(ladrido + " " + ladrido)))
-					if ladrido.length < 10 then Maybe(doer.LatchingDuty_ready(Dog(ladrido + " " + ladrido)))
+					//					Maybe.some(doer.LatchingTask_ready(Dog(ladrido + " " + ladrido)))
+					if ladrido.length < 10 then Maybe(doer.LatchingTask_ready(Dog(ladrido + " " + ladrido)))
 					else Maybe.empty
 				case Cat(maullido) =>
-					Maybe(doer.LatchingDuty_ready(Cat(maullido ++ maullido)))
+					Maybe(doer.LatchingTask_ready(Cat(maullido ++ maullido)))
 			}
 
 		val fence = CausalFence[Animal, doer.type](doer)(dog)

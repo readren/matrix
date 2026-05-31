@@ -5,7 +5,7 @@ import readren.sequencer.Doer
 
 trait ActantFactory {
 
-	/** Creates a [[Duty]] that yields a new [[ActantCore]].
+	/** Creates a [[Task]] that yields a new [[ActantCore]].
 	 * The implementation should be thread-safe, doing its job withing the received [[Doer]].
 	 * @param serial the identifier to be assigned to the created [[ActantCore]] to identify it among its siblings.
 	 * @param progenitor the [[Spawner]] that creates the [[ActantCore]]. The progenitor of a [[ActantCore]] knows the set of its children, and every [[ActantCore]] knows its progenitor.
@@ -20,7 +20,7 @@ trait ActantFactory {
 		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
-	): actantDoer.Duty[ActantCore[U, D]]
+	): actantDoer.Task[ActantCore[U, D]]
 
 
 }

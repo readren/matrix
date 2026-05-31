@@ -98,7 +98,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 
 		var mutable = 1
 
-		val duty = doer.Duty_mine { () =>
+		val task = doer.Task_mine { () =>
 			println("start")
 
 			def m12(): Unit = {
@@ -137,7 +137,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			println("completed")
 		}
 
-		duty.triggerAndForget(false)
+		task.triggerAndForget(false)
 		promise.future.map(identity)(using scala.concurrent.ExecutionContext.global)
 	}
 

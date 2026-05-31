@@ -21,8 +21,8 @@ import readren.common.Maybe
 final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 	/** The stable [[doer.Covenant]] returned by all the calls to [[contend]] that participate in the ongoing [[Competition]]. */
 	private var maybeFinalResult: Maybe[doer.Covenant[R]] = Maybe.empty
-	/** The [[doer.LatchingDuty]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of the ongoing [[Competition]]. */
-	private var incumbent: doer.LatchingDuty[R] | Null = null
+	/** The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of the ongoing [[Competition]]. */
+	private var incumbent: doer.LatchingTask[R] | Null = null
 
 	/**
 	 * Enters a new execution into the ongoing competition.
@@ -30,22 +30,22 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 	 *
 	 * This method is the entry point for a "contender" It uses the `arbitrator` function to determine if this contender should displace the current [[incumbent]].
 	 *
-	 * @param arbitrator A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingDuty]] that yields the result of the execution that should hold the title.
+	 * @param arbitrator A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingTask]] that yields the result of the execution that should hold the title.
 	 * If it returns the provided incumbent, the new contender "loses."
-	 * If it returns another [[doer.LatchingDuty]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Covenant]] of the competition result.
-	 * CAUTION: If the [[doer.LatchingDuty]] returned by this function depends on a recursive call to [[contend]], then the `arbitrator` function passed to it must not return the incumbent or a deadlock occurs.
+	 * If it returns another [[doer.LatchingTask]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Covenant]] of the competition result.
+	 * CAUTION: If the [[doer.LatchingTask]] returned by this function depends on a recursive call to [[contend]], then the `arbitrator` function passed to it must not return the incumbent or a deadlock occurs.
 	 * @param isWithinDoSerEx A flag indicating if the call is already executing within the [[doer]]'s sequential context.
-	 * @return A [[doer.LatchingDuty]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
+	 * @return A [[doer.LatchingTask]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
 	 * @note The `arbitrator` function is intentionally a parameter of this method rather than of the constructor.
 	 * Placing it in the constructor would make the competition's arbitration invariance structurally explicit — a single policy governing all contenders for the lifetime of the instance.
 	 * However, in practice, arbitration logic typically depends on both instance-level state and contextual parameters available at the call site, making a closure the most natural and readable expression of the policy.
 	 * Placing `arbitrator` in the constructor would require artificially packaging that context into a state type `S` and threading it through, adding indirection without semantic gain.
 	 * The per-call design also keeps the arbitration logic co-located with the contention site, where all relevant context is in scope and immediately visible to the reader.
 	 */
-	def contend(arbitrator: Maybe[doer.LatchingDuty[R]] => doer.LatchingDuty[R], isWithinDoSerEx: Boolean = doer.isInSequence): doer.LatchingDuty[R] = {
+	def contend(arbitrator: Maybe[doer.LatchingTask[R]] => doer.LatchingTask[R], isWithinDoSerEx: Boolean = doer.isInSequence): doer.LatchingTask[R] = {
 		if isWithinDoSerEx then {
 
-			def supersedeWith(chosenWinner: doer.LatchingDuty[R], finalResult: doer.Covenant[R]): Unit = {
+			def supersedeWith(chosenWinner: doer.LatchingTask[R], finalResult: doer.Covenant[R]): Unit = {
 				incumbent = chosenWinner
 				chosenWinner.subscribe { result =>
 					if chosenWinner eq incumbent then {
@@ -74,6 +74,6 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 	}
 
 	/** A curried version of [[contend]]. */
-	inline def contend(isWithinDoSerEx: Boolean)(arbitrator: Maybe[doer.LatchingDuty[R]] => doer.LatchingDuty[R]): doer.LatchingDuty[R] =
+	inline def contend(isWithinDoSerEx: Boolean)(arbitrator: Maybe[doer.LatchingTask[R]] => doer.LatchingTask[R]): doer.LatchingTask[R] =
 		contend(arbitrator, isWithinDoSerEx)
 }

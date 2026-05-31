@@ -67,7 +67,7 @@ object PruebaScheduling {
 						}
 				}
 			}.trigger() { parent =>
-				parent.stopDuty.trigger() { _ =>
+				parent.stopTask.trigger() { _ =>
 					println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")
 
 					manager.shutdown()

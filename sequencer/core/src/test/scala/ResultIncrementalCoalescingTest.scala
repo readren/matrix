@@ -74,8 +74,8 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 		PropF.forAllNoShrinkF {
 			for {
 				expectedResult <- intGen
-				contender <- genDuty(expectedResult)
-			} yield (expectedResult, doer.Covenant_triggerAndWire(contender): doer.LatchingDuty[Int])
+				contender <- genTask(expectedResult)
+			} yield (expectedResult, doer.Covenant_triggerAndWire(contender): doer.LatchingTask[Int])
 		} { case (expectedResult, contender) =>
 
 			val promise = Promise[Unit]()
@@ -84,7 +84,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 
 			doer.run {
 				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
-				val resultDuty = mc.contend { maybeIncumbent =>
+				val resultTask = mc.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						contender
 					} { _ =>
@@ -92,7 +92,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 						contender
 					}
 				}
-				resultDuty.subscribe { result =>
+				resultTask.subscribe { result =>
 					if result == expectedResult then promise.trySuccess(())
 					else promise.tryFailure(new AssertionError(s"Expected 42, got $result"))
 				}
@@ -108,12 +108,12 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			for {
 				expectedResult1 <- intGen
 				expectedResult2 <- intGen
-				firstContender0 <- genDuty(expectedResult1)
-				secondContender0 <- genDuty(expectedResult2)
+				firstContender0 <- genTask(expectedResult1)
+				secondContender0 <- genTask(expectedResult2)
 			} yield (
 				expectedResult2,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingDuty[Int],
-				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingDuty[Int]
+				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int],
+				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
 			)
 		} { case (expectedResult2, firstContender, secondContender) =>
 			val promise = Promise[Unit]()
@@ -123,9 +123,9 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			doer.run {
 				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val firstResultDuty = mc.contend { _ => firstContender }
+				val firstResultTask = mc.contend { _ => firstContender }
 
-				val secondResultDuty = mc.contend { maybeIncumbent =>
+				val secondResultTask = mc.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						secondContender
 					} { incumbent =>
@@ -134,7 +134,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 					}
 				}
 
-				secondResultDuty.subscribe { result =>
+				secondResultTask.subscribe { result =>
 					if result == expectedResult2 then promise.trySuccess(())
 					else break(s"Expected $expectedResult2, got $result")
 				}
@@ -150,10 +150,10 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 		PropF.forAllNoShrinkF {
 			for {
 				expectedResult1 <- intGen
-				firstContender0 <- genDuty(expectedResult1)
+				firstContender0 <- genTask(expectedResult1)
 			} yield (
 				expectedResult1,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingDuty[Int]
+				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int]
 			)
 		} { case (expectedResult1, firstContender) =>
 			val promise = Promise[Unit]()
@@ -169,9 +169,9 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				// But yielding returning the incumbent means returning the one passed in `maybeIncumbent`.
 				// To guarantee the competition doesn't close before `mc.contend` executes, we delay `mc.contend(2)`
 				// OR we make sure firstContender is delayed. Actually, we can just use `trySuccess` if the result matches!
-				val firstResultDuty = mc.contend { _ => firstContender }
+				val firstResultTask = mc.contend { _ => firstContender }
 
-				val secondResultDuty = mc.contend { maybeIncumbent =>
+				val secondResultTask = mc.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						firstContender
 					} { incumbent =>
@@ -179,7 +179,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 					}
 				}
 
-				secondResultDuty.subscribe { result =>
+				secondResultTask.subscribe { result =>
 					if result == expectedResult1 then promise.trySuccess(())
 					else break(s"Expected $expectedResult1, got $result")
 				}
@@ -196,13 +196,13 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			for {
 				expectedResult1 <- intGen
 				expectedResult2 <- intGen
-				firstContender0 <- genDuty(expectedResult1)
-				secondContender0 <- genDuty(expectedResult2)
+				firstContender0 <- genTask(expectedResult1)
+				secondContender0 <- genTask(expectedResult2)
 			} yield (
 				expectedResult1,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingDuty[Int],
+				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int],
 				expectedResult2,
-				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingDuty[Int]
+				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
 			)
 		} { case (expectedResult1, firstContender, expectedResult2, secondContender) =>
 			val promise = Promise[Unit]()
@@ -212,11 +212,11 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			doer.run {
 				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val firstResultDuty = mc.contend { _ => firstContender }
+				val firstResultTask = mc.contend { _ => firstContender }
 
-				firstResultDuty.subscribe { _ =>
+				firstResultTask.subscribe { _ =>
 					doer.run {
-						val newResultDuty = mc.contend { maybeIncumbent =>
+						val newResultTask = mc.contend { maybeIncumbent =>
 							maybeIncumbent.fold {
 								secondContender
 							} { _ =>
@@ -225,7 +225,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 							}
 						}
 
-						newResultDuty.subscribe { result =>
+						newResultTask.subscribe { result =>
 							if result == expectedResult2 then promise.trySuccess(())
 							else break(s"Expected $expectedResult2, got $result")
 						}

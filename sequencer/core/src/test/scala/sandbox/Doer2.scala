@@ -31,41 +31,41 @@ trait Doer2 {
 
 	/** Wires the given supplier into an effect `F[A]` using the [[WirableSoft]] instance corresponding to `F`. The [[WirableSoft]] instances for effect types defined in [[Doer]] are provided by [[Doer]] itself.
 	 * @param supplier the computation to submit
-	 * @param wirableDuty the type-class instance that determines how the supplier is wired
+	 * @param wirableTask the type-class instance that determines how the supplier is wired
 	 * @tparam A the type of value produced
 	 * @tparam F the effect type into which the supplier is wired
 	 * @return an `F[A]` wired according to the [[WirableSoft]] instance in scope
 	 */
-	inline def submit[A, F[_]](inline supplier: () => A)(using wirableDuty: WirableSoft[A, F]): F[A] = {
-		wirableDuty.wire(supplier)
+	inline def submit[A, F[_]](inline supplier: () => A)(using wirableTask: WirableSoft[A, F]): F[A] = {
+		wirableTask.wire(supplier)
 	}
 
-	trait Duty[+A] {
-		def engage(onComplete: A => Unit): Unit
+	trait Task[+A] {
+		def subscribe(onComplete: A => Unit): Unit
 	}
 
-	final class Duty_Mine[A](supplier: () => A) extends Duty[A] {
-		override def engage(onComplete: A => Unit): Unit =
+	final class Task_Mine[A](supplier: () => A) extends Task[A] {
+		override def subscribe(onComplete: A => Unit): Unit =
 			run(onComplete(supplier()))
 	}
 
-	inline given [A] =>WirableSoft[A, Duty] {
-		override inline def wire(inline supplier: () => A): Duty[A] =
-			new Duty_Mine(supplier)
+	inline given [A] =>WirableSoft[A, Task] {
+		override inline def wire(inline supplier: () => A): Task[A] =
+			new Task_Mine(supplier)
 	}
 
 	trait WirableHardy[A, +F[_]] {
 		inline def wire(inline supplier: () => Try[A]): F[A]
 	}
 
-	inline def submitHardy[A, F[_]](inline supplier: () => Try[A])(using wirableDuty: WirableHardy[A, F]): F[A] = {
-		wirableDuty.wire(supplier)
+	inline def submitHardy[A, F[_]](inline supplier: () => Try[A])(using wirableTask: WirableHardy[A, F]): F[A] = {
+		wirableTask.wire(supplier)
 	}
 
-	trait Venture[+A] extends Duty[Try[A]]
+	trait Venture[+A] extends Task[Try[A]]
 
 	private final class Venture_Own[A](supplier: () => Try[A]) extends Venture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Unit =
 			run(onComplete(supplier()))
 	}
 
@@ -74,15 +74,15 @@ trait Doer2 {
 			new Venture_Own(supplier)
 	}
 
-	trait LatchingDuty[+A] extends Duty[A] {
+	trait LatchingTask[+A] extends Task[A] {
 		def maybeValue: Maybe[A]
 	}
 
-	final class Covenant[A] extends LatchingDuty[A] {
+	final class Covenant[A] extends LatchingTask[A] {
 		private var oValue: Maybe[A] = Maybe.empty
 		private val consumers: mutable.Buffer[A => Unit] = mutable.Buffer.empty
 
-		override def engage(onComplete: A => Unit): Unit =
+		override def subscribe(onComplete: A => Unit): Unit =
 			maybeValue.fold(consumers.addOne(onComplete))(onComplete)
 
 		override def maybeValue: Maybe[A] = oValue
@@ -91,8 +91,8 @@ trait Doer2 {
 			if oValue.isEmpty then oValue = Maybe(value)
 	}
 
-	inline given [A] =>WirableSoft[A, LatchingDuty] {
-		override inline def wire(inline supplier: () => A): LatchingDuty[A] = {
+	inline given [A] =>WirableSoft[A, LatchingTask] {
+		override inline def wire(inline supplier: () => A): LatchingTask[A] = {
 			val covenant = new Covenant[A]
 			run(covenant.fulfill(supplier()))
 			covenant
@@ -107,7 +107,7 @@ trait Doer2 {
 		private var oValue: Maybe[Try[A]] = Maybe.empty
 		private val consumers: mutable.Buffer[Try[A] => Unit] = mutable.Buffer.empty
 
-		override def engage(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Unit =
 			maybeValue.fold(consumers.addOne(onComplete))(onComplete)
 
 		override def maybeValue: Maybe[Try[A]] = oValue
@@ -131,10 +131,10 @@ object Doer2 {
 			override def run(procedure: => Unit): Unit = procedure
 		}
 
-		val duty: doer.Duty[Int] = doer.submit(() => 3).shouldBe[doer.Duty[Int]]
-		println(duty.getClass.getName)
+		val task: doer.Task[Int] = doer.submit(() => 3).shouldBe[doer.Task[Int]]
+		println(task.getClass.getName)
 
-		val latchingDuty: doer.LatchingDuty[Int] = doer.submit(() => 3)
-		println(latchingDuty.getClass.getName)
+		val latchingTask: doer.LatchingTask[Int] = doer.submit(() => 3)
+		println(latchingTask.getClass.getName)
 	}
 }

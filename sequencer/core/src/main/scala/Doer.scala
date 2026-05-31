@@ -80,12 +80,12 @@ abstract class AbstractDoer extends Doer
  * See [[Doer.executeSequentially()]].
  *
  * @define DoSerEx DoSerEx (doer's serial executor)
- * @define onCompleteExecutedByDoSerEx The `onComplete` callback passed to `engage` is always, with no exception, executed by this $DoSerEx. This is part of the contract of the [[Venture]] trait.
+ * @define onCompleteExecutedByDoSerEx The `onComplete` callback passed to `subscribe` is always, with no exception, executed by this $DoSerEx. This is part of the contract of the [[Venture]] trait.
  * @define threadSafe This method is thread-safe.
  * @define isExecutedByDoSerEx This function is executed within the DoSerEx (doer's serial executor).
  * @define unhandledErrorsArePropagatedToVentureResult The call to this routine is guarded with try-catch. If it throws a non-fatal exception it will be caught and the [[Venture]] will complete with a [[Failure]] containing the error.
  * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
- * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the duty will never complete. The same occurs with all routines received by [[Duty]] operations. This is one of the main differences with [[Venture]] operation.
+ * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the task will never complete. The same occurs with all routines received by [[Task]] operations. This is one of the main differences with [[Venture]] operation.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
  * @define isWithinDoSerEx indicates whether the call to this method is within this [[Doer]]'s sequential executor. If there is no such certainty the call site should either, not specify a value in order to use the default (which is the result of [[Doer.isInSequence]]), or specify `false` to force deferred execution.
  * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
@@ -108,7 +108,7 @@ trait Doer { thisDoer =>
 	 * The implementation should not throw non-fatal exceptions.
 	 * The implementation should be thread-safe.
 	 *
-	 * All the deferred actions preformed by the [[Duty]] and [[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
+	 * All the deferred actions preformed by the [[Task]] and [[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
 	 * @note Implementations must set their associated provider's thread-local to `this` before invoking `body`, and clear it (restore to `null`) once `body` returns or throws. Failure to uphold this contract will cause [[DoerProvider.currentDoer]] to return a value of the wrong type at runtime, as the cast in that method relies on it. */
 	def executeSequentially(runnable: Runnable): Unit
 
@@ -150,12 +150,12 @@ trait Doer { thisDoer =>
 	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
 	 * If the call is executed by the $DoSerEx the [[Runnable]]'s execution will not start until the DoSerEx completes its current execution and gets free to start a new one.
 	 *
-	 * All the deferred actions preformed by the [[Duty]]/[[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
+	 * All the deferred actions preformed by the [[Task]]/[[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
 	 * This function only makes sense to call:
 	 *		- from an action that is not executed by this $DoSerEx (the callback of a [[Future]], for example);
 	 *		- or to avoid a stack overflow by continuing the recursion in a new execution.
 	 * @see [[submit]] and [[submitHardy]] if the result of the execution is relevant.
-	 * @note Is more efficient than the functionally equivalent: `Duty_mine(() => procedure).triggerAndForget()`.
+	 * @note Is more efficient than the functionally equivalent: `Task_mine(() => procedure).triggerAndForget()`.
 	 */
 	inline def run(inline procedure: => Unit): Unit = {
 		${ DoerMacros.executeSequentiallyImpl('thisDoer, 'procedure) }
@@ -192,20 +192,20 @@ trait Doer { thisDoer =>
 	inline def submitFlat[A, F[_]](supplier: () => F[A])(using wirable: WirableSoft[A, F]): F[A] =
 		wirable.wireFlat(supplier)
 
-	inline given [A] =>WirableSoft[A, Duty] {
-		override inline def wire(supplier: () => A): Duty[A] =
-			new Duty_Mine(supplier)
+	inline given [A] =>WirableSoft[A, Task] {
+		override inline def wire(supplier: () => A): Task[A] =
+			new Task_Mine(supplier)
 
-		override inline def wireFlat(supplier: () => Duty[A]): Duty[A] = {
-			new Duty_MineFlat(supplier)
+		override inline def wireFlat(supplier: () => Task[A]): Task[A] = {
+			new Task_MineFlat(supplier)
 		}
 	}
 
-	inline given [A] =>WirableSoft[A, LatchingDuty] {
-		override inline def wire(supplier: () => A): LatchingDuty[A] =
+	inline given [A] =>WirableSoft[A, LatchingTask] {
+		override inline def wire(supplier: () => A): LatchingTask[A] =
 			Covenant_mine(supplier)
 
-		override inline def wireFlat(supplier: () => LatchingDuty[A]): LatchingDuty[A] =
+		override inline def wireFlat(supplier: () => LatchingTask[A]): LatchingTask[A] =
 			Covenant_mineFlat(supplier)
 	}
 
@@ -246,7 +246,7 @@ trait Doer { thisDoer =>
 
 		override inline def wireFlat(inline supplier: () => LatchingVenture[A]): LatchingVenture[A] = {
 			val commitment = new Commitment[A]
-			run(supplier().engage(tryA => commitment.complete(tryA)))
+			run(supplier().subscribe(tryA => commitment.complete(tryA)))
 			commitment
 		}
 	}
@@ -267,52 +267,58 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/////////////// DUTY ///////////////
+	trait Observable[+A] {
+		def subscribe(consumer: A => Unit): Unit
+	}
 
-	abstract class AbstractDuty[+A] extends Duty[A]
+	/////////////// TASK ///////////////
 
-	/** A lazy computation owned by this [[Doer]]. Executions are serialized across all [[Duty]] instances of the same [[Doer]]. Each execution may produce a different result if the computation depends on mutable state.\
+	abstract class AbstractTask[+A] extends Task[A]
+
+	/** A lazy computation owned by this [[Doer]]. Executions are serialized across all [[Task]] instances of the same [[Doer]]. Each execution may produce a different result if the computation depends on mutable state.\
 	 * Executions are performed in the order they were triggered.\
-	 * A [[Duty]] can encapsulate one or more chained actions and provides operations to declaratively build complex duties from simpler ones.\
+	 * A [[Task]] can encapsulate one or more chained actions and provides operations to declaratively build complex duties from simpler ones.\
 	 * This tool simplifies the implementation of a handler that manages multiple simultaneous processes that interact with each other using a single sequential actor. How? By eliminating the need for state variables that determine the decision-making flow, as the code structure itself indicates the execution order.\
-	 * Instances of [[Duty]] whose result is always the same follow the monadic laws. However, if the result depends on the execution (because it depends on mutable variables or time), these laws may be broken.\
-	 * For example, if the [[Duty.engage]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{duty.flatMap(f).flatMap(g) == duty.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the duty's execution.\
-	 * This does not mean that [[Duty.engage]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Duty]] instances.\
+	 * Instances of [[Task]] whose result is always the same follow the monadic laws. However, if the result depends on the execution (because it depends on mutable variables or time), these laws may be broken.\
+	 * For example, if the [[Task.subscribe]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{task.flatMap(f).flatMap(g) == task.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the task's execution.\
+	 * This does not mean that [[Task.subscribe]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Task]] instances.\
 	 * If the goal is just deterministic behavior, it's sufficient that any closed-over mutable variable is only mutated and accessed by actions executed sequentially in a determined order. This is why the contract enforces serialized execution of actions in the order at which the actions were triggered: to maintain determinism, even when closing over mutable variables, provided they are mutated and accessed solely within the actions in said ordered sequence and those actions are deterministic.\
-	 * If you require to ensure monadic laws are followed, use [[LatchingDuty]]/[[LatchingVenture]] instead.\
-	 * Design note: [[Duty]] and [[Venture]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Duty]]/[[Venture]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
-	 * While path-dependent type checking is valuable for enforcing this contract, it has a drawback: the compiler's type-path checks are overly strict, requiring compatible singleton types for references, whereas we only need to verify that the [[Duty]] instances correspond to the same [[Doer]].\
+	 * If you require to ensure monadic laws are followed, use [[LatchingTask]]/[[LatchingVenture]] instead.\
+	 * Design note: [[Task]] and [[Venture]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Venture]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
+	 * While path-dependent type checking is valuable for enforcing this contract, it has a drawback: the compiler's type-path checks are overly strict, requiring compatible singleton types for references, whereas we only need to verify that the [[Task]] instances correspond to the same [[Doer]].\
 	 * As a result, the compiler may flag type errors in cases where the contract is not violated, which is undesirable.\
 	 * The [[castTypePath()]] method mitigates these false positives.\
-	 * CAUTION: Unlike [[Venture]], [[Duty]] is strict (non-short-circuiting) and does NOT support failures. And unlike [[Venture]], the invocation of function operands received by its operations is not guarded with a try-catch. Therefore, unlike [[Venture]], any unhandled exception thrown during an execution of a [[Duty]] will break the expected flow and the duty will never complete.\
-	 * It is recommended to use [[Venture]] instead of [[Duty]] unless efficiency is a concern.\
-	 * @tparam A the type of result obtained when executing this duty. */
-	trait Duty[+A] { thisDuty =>
-		/** This method performs the actions represented by the duty and calls `onComplete` within the $DoSerEx when the [[Duty]] finishes.\
-		 * CAUTION: This method is intended to be used by extensions of [[Duty]] only. Use [[trigger]] or [[foreach]] instead.
+	 * CAUTION: Unlike [[Venture]], [[Task]] is strict (non-short-circuiting) and does NOT support failures. And unlike [[Venture]], the invocation of function operands received by its operations is not guarded with a try-catch. Therefore, unlike [[Venture]], any unhandled exception thrown during an execution of a [[Task]] will break the expected flow and the task will never complete.\
+	 * It is recommended to use [[Venture]] instead of [[Task]] unless efficiency is a concern.\
+	 * @tparam A the type of result obtained when executing this task. */
+	trait Task[+A] extends Observable[A] { thisTask =>
+		/** This method performs the actions represented by the task and calls `onComplete` within the $DoSerEx when the [[Task]] finishes.\
+		 * CAUTION: This method is intended to be used by extensions of [[Task]] only. Use [[trigger]] or [[foreach]] instead.
 		 * The implementation may assume this method is invoked within the $DoSerEx.\
 		 * The implementation must respect the following exception-handling rules:
 		 * - no exception thrown by the provided callback must be caught.
 		 * - any non-fatal exception throw by this method must be either caught and propagated to the result or reported using [[Doer.reportFailure]] if propagation is not feasible.\
 		 * In the case of [[Venture]] this includes non-fatal exceptions originated in function operands passed to its factory, including those captured over a closure.
-		 * [[Duty]], on the other hand, assumes that function operands never throw exceptions. If an exception is thrown, the stack of the corresponding duty execution will be completely unwound.\
-		 * It is crucial to ensure that exceptions thrown by the onComplete callback are not caught, as this could suppress issues within the callback, preventing the execution of code expected to run and making it extremely difficult to diagnose the cause of a never-completing [[Duty]] or [[Venture]].\
+		 * [[Task]], on the other hand, assumes that function operands never throw exceptions. If an exception is thrown, the stack of the corresponding task execution will be completely unwound.\
+		 * It is crucial to ensure that exceptions thrown by the onComplete callback are not caught, as this could suppress issues within the callback, preventing the execution of code expected to run and making it extremely difficult to diagnose the cause of a never-completing [[Task]] or [[Venture]].\
 		 * This method is the sole primitive operation of this trait; all other methods are derived from it.\
-		 * @param onComplete The callback that must be invoked upon the completion of this [[Duty]]. The implementation should call this callback within the $DoSerEx.\
+		 * @param onComplete The callback that must be invoked upon the completion of this [[Task]]. The implementation should call this callback within the $DoSerEx.\
 		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def engage(onComplete: A => Unit): Unit
+		override def subscribe(onComplete: A => Unit): Unit
 
-		/** Initiates an execution of this [[Duty]] and subscribes the provided call-back as a consumer of the execution result.
+		// override def subscribe(consumer: A => Unit): Unit = subscribe(consumer)
+
+		/** Initiates an execution of this [[Task]] and subscribes the provided call-back as a consumer of the execution result.
 		 * Each invocation of this method triggers a new execution.
-		 * Note: Executions triggered on [[Duty]] instances whose completion depends on other executions (e.g., a pending [[Covenant]]) will not complete until those dependent executions have themselves been triggered and completed.
+		 * Note: Executions triggered on [[Task]] instances whose completion depends on other executions (e.g., a pending [[Covenant]]) will not complete until those dependent executions have themselves been triggered and completed.
 		 * @param isWithinDoSerEx $isWithinDoSerEx
 		 * @param onComplete Invoked when the triggered execution completes. The call-back must not throw non-fatal exceptions. It must either terminate normally or fail fatally, but never with a non-fatal exception.
 		 * $isExecutedByDoSerEx */
 		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(inline onComplete: A => Unit): Unit = {
-			${ DoerMacros.triggerImpl('isWithinDoSerEx, 'thisDoer, 'thisDuty, 'onComplete) }
+			${ DoerMacros.triggerImpl('isWithinDoSerEx, 'thisDoer, 'thisTask, 'onComplete) }
 		}
 
-		/** Triggers an execution of this [[Duty]] ignoring the result.
+		/** Triggers an execution of this [[Task]] ignoring the result.
 		 *
 		 * $threadSafe
 		 *
@@ -320,12 +326,12 @@ trait Doer { thisDoer =>
 		inline final def triggerAndForget(isWithinDoSerEx: Boolean = isInSequence): Unit =
 			trigger(isWithinDoSerEx)(_ => {})
 
-		/** Triggers an execution of this [[Duty]] and then invokes the provided consumer passing the result.
+		/** Triggers an execution of this [[Task]] and then invokes the provided consumer passing the result.
 		 *
 		 * Is equivalent to {{{trigger(isInSequence)(consumer)}}}
 		 *
 		 * $threadSafe
-		 * @param consumer called with this [[Duty]] result when it completes.
+		 * @param consumer called with this [[Task]] result when it completes.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
@@ -333,48 +339,48 @@ trait Doer { thisDoer =>
 		def foreach(consumer: A => Unit): Unit = trigger(isInSequence)(consumer)
 
 		/**
-		 * Creates a new [[Duty]] that yields the result of applying the provided function to the result of this [[Duty]].
+		 * Creates a new [[Task]] that yields the result of applying the provided function to the result of this [[Task]].
 		 *
 		 * $threadSafe
 		 *
-		 * @param f a function that is applied to the result of this [[Duty]] to produce the final result.
+		 * @param f a function that is applied to the result of this [[Task]] to produce the final result.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $notGuarded
 		 */
-		def map[B](f: A => B): Duty[B] = new Duty_Map(thisDuty, f)
+		def map[B](f: A => B): Task[B] = new Task_Map(thisTask, f)
 
 		/**
-		 * Creates a new [[Duty]] that yields the result of executing an intermediate [[Duty]] produced by applying the provided function to the final result.
+		 * Creates a new [[Task]] that yields the result of executing an intermediate [[Task]] produced by applying the provided function to the final result.
 		 *
 		 * $threadSafe
 		 *
-		 * @param f a function that is applied to the result of this [[Duty]] to produce an intermediate [[Duty]] that is then executed to produce the final result.
+		 * @param f a function that is applied to the result of this [[Task]] to produce an intermediate [[Task]] that is then executed to produce the final result.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $notGuarded
 		 */
-		inline def flatMap[B](f: A => Duty[B]): Duty[B] = new Duty_FlatMap(thisDuty, f)
+		inline def flatMap[B](f: A => Task[B]): Task[B] = new Task_FlatMap(thisTask, f)
 
-		/** Creates a new [[Duty]] that yields exactly the same result (same identity) as this [[Duty]] but executes the provided side-effecting function before yielding it.
+		/** Creates a new [[Task]] that yields exactly the same result (same identity) as this [[Task]] but executes the provided side-effecting function before yielding it.
 		 *
 		 * $threadSafe
 		 *
-		 * @param sideEffect a function that is applied to the result of this [[Duty]] for its side effects.
+		 * @param sideEffect a function that is applied to the result of this [[Task]] for its side effects.
 		 */
-		def andThen(sideEffect: A => Unit): Duty[A] = new Duty_AndThen[A](thisDuty, sideEffect)
+		def andThen(sideEffect: A => Unit): Task[A] = new Task_AndThen[A](thisTask, sideEffect)
 
-		/** Creates a new always successful [[Venture]] that shields the result of this [[Duty]].
+		/** Creates a new always successful [[Venture]] that shields the result of this [[Task]].
 		 *
-		 * This operation allows a [[Duty]] to participate in a [[Venture]]'s short-circuiting context without itself being a short-circuit trigger.
+		 * This operation allows a [[Task]] to participate in a [[Venture]]'s short-circuiting context without itself being a short-circuit trigger.
 		 *
-		 * Together with [[reconcile]] this method allow to mix [[Duty]] and [[Venture]] operations in the same chain.
-		 * @return a [[Venture]] whose result is the result of this [[Duty]] wrapped inside a [[Success]]. */
-		def succeed: Venture[A] = new Venture_fromDuty(thisDuty)
+		 * Together with [[reconcile]] this method allow to mix [[Task]] and [[Venture]] operations in the same chain.
+		 * @return a [[Venture]] whose result is the result of this [[Task]] wrapped inside a [[Success]]. */
+		def succeed: Venture[A] = new Venture_fromTask(thisTask)
 
-		/** Starts an execution of this [[Duty]] and returns a successful [[Future]] that yields the result. */
+		/** Starts an execution of this [[Task]] and returns a successful [[Future]] that yields the result. */
 		def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
 			trigger(isWithinDoSerEx)(a => promise.success(a))
@@ -382,168 +388,168 @@ trait Doer { thisDoer =>
 		}
 
 		/**
-		 * Wraps this [[Duty]] into another that belongs to another [[Doer]].
-		 * Useful to chain [[Duty]]'s operations that involve different [[Doer]] instances.
+		 * Wraps this [[Task]] into another that belongs to another [[Doer]].
+		 * Useful to chain [[Task]]'s operations that involve different [[Doer]] instances.
 		 * ===Detailed behavior===
-		 * Returns a [[Duty]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this duty within this [[Doer]] and, when completed, make the returned [[Duty]] to yield the result.
-		 * CAUTION: Avoid closing over the same mutable variable from two operand functions applied to [[Duty]] instances belonging to different [[Doer]]s.
+		 * Returns a [[Task]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this task within this [[Doer]] and, when completed, make the returned [[Task]] to yield the result.
+		 * CAUTION: Avoid closing over the same mutable variable from two operand functions applied to [[Task]] instances belonging to different [[Doer]]s.
 		 * Remember that all function operands provided to [[Venture]] methods are executed within the [[Doer]] that owns it.
-		 * Therefore, calling [[trigger]] on the returned [[Duty]] will execute the `onComplete` passed to it within the `otherDoer`.
+		 * Therefore, calling [[trigger]] on the returned [[Task]] will execute the `onComplete` passed to it within the `otherDoer`.
 		 *
 		 * $threadSafe
 		 *
-		 * @param otherDoer the [[Doer]] to which the returned [[Duty]] will belong.
+		 * @param otherDoer the [[Doer]] to which the returned [[Task]] will belong.
 		 */
-		def onBehalfOf(otherDoer: Doer): otherDoer.Duty[A] =
-			otherDoer.Duty_foreign(thisDoer)(this)
+		def onBehalfOf(otherDoer: Doer): otherDoer.Task[A] =
+			otherDoer.Task_foreign(thisDoer)(this)
 
-		/** Casts the singleton type of the [[Doer]] instance that owns this [[Duty]] to the singleton-type of the provided [[Doer]].
+		/** Casts the singleton type of the [[Doer]] instance that owns this [[Task]] to the singleton-type of the provided [[Doer]].
 		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with references to the same [[Doer]] instance but through different type-paths.
-		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Duty]].
+		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Task]].
 		 *
-		 * Design note: It was decided to make [[Duty]] (and [[Venture]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Duty]] (and [[Venture]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
-		 * Using type-path checking to detect contract violations is very valuable, but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Duty]] instances belong to the same [[Doer]] instance.
+		 * Design note: It was decided to make [[Task]] (and [[Venture]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Task]] (and [[Venture]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
+		 * Using type-path checking to detect contract violations is very valuable, but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Task]] instances belong to the same [[Doer]] instance.
 		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
 		 * This operation ([[castTypePath()]]) is intended to handle those cases.
 		 */
-		def castTypePath[E <: Doer](doer: E): doer.Duty[A] = {
+		def castTypePath[E <: Doer](doer: E): doer.Task[A] = {
 			assert(thisDoer eq doer)
-			this.asInstanceOf[doer.Duty[A]]
+			this.asInstanceOf[doer.Task[A]]
 		}
 	}
 
-	//// Duty's factory methods ////
+	//// Task's factory methods ////
 
-	/** A [[Duty]] that yields [[Unit]].
+	/** A [[Task]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Duty_unit: Duty[Unit] = Duty_ready(())
+	@threadUnsafe lazy val Task_unit: Task[Unit] = Task_ready(())
 
-	/** A [[Duty]] that yields `true`.
+	/** A [[Task]] that yields `true`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Duty_true: Duty[true] = Duty_ready(true)
+	@threadUnsafe lazy val Task_true: Task[true] = Task_ready(true)
 
-	/** A [[Duty]] that yields `false`.
+	/** A [[Task]] that yields `false`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Duty_false: Duty[false] = Duty_ready(false)
+	@threadUnsafe lazy val Task_false: Task[false] = Task_ready(false)
 
-	/** Creates a [[Duty]] whose execution never ends.
+	/** Creates a [[Task]] whose execution never ends.
 	 * $threadSafe
 	 *
-	 * @return a [[Duty]] whose execution never ends.
+	 * @return a [[Task]] whose execution never ends.
 	 * */
-	@threadUnsafe lazy val Duty_never: Duty[Nothing] = new Duty_NotEver()
+	@threadUnsafe lazy val Task_never: Task[Nothing] = new Task_NotEver()
 
-	/** Creates a [[Duty]] whose result is calculated at the call site even before the duty is constructed.
+	/** Creates a [[Task]] whose result is calculated at the call site even before the task is constructed.
 	 * $threadSafe
 	 *
-	 * @param a the already calculated result of the returned [[Duty]]. */
-	inline def Duty_ready[A](a: A): Duty[A] = new Duty_Ready(a)
+	 * @param a the already calculated result of the returned [[Task]]. */
+	inline def Task_ready[A](a: A): Task[A] = new Task_Ready(a)
 
-	/** Creates a [[Duty]] that yields the value returned by the provided supplier.
+	/** Creates a [[Task]] that yields the value returned by the provided supplier.
 	 * ===Detailed behavior===
-	 * Creates a duty that, when executed, evaluates the `supplier` within the $DoSerEx. If the evaluation finishes:
+	 * Creates a task that, when executed, evaluates the `supplier` within the $DoSerEx. If the evaluation finishes:
 	 *		- abruptly, will never complete.
 	 *		- normally, completes with the evaluation's result.
 	 *
 	 * $$threadSafe
-	 * TODO rename to Duty_own
+	 * TODO rename to Task_own
 	 *
 	 * @param supplier the supplier of the result. $isExecutedByDoSerEx $notGuarded
-	 * @return the [[Duty]] described in the method description.
+	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Duty_mine[A](supplier: () => A): Duty[A] = new Duty_Mine(supplier)
+	inline def Task_mine[A](supplier: () => A): Task[A] = new Task_Mine(supplier)
 
-	/** Creates a [[Duty]] that yields what the [[Duty]] created by the provided supplier yields.
-	 * Is equivalent to: {{{Duty_mine(supplier).flatMap(identity)}}} but slightly more efficient
+	/** Creates a [[Task]] that yields what the [[Task]] created by the provided supplier yields.
+	 * Is equivalent to: {{{Task_mine(supplier).flatMap(identity)}}} but slightly more efficient
 	 * ===Detailed behavior===
-	 * Creates a duty that, when executed:
+	 * Creates a task that, when executed:
 	 *		- evaluates the `supplier` within the $DoSerEx;
-	 *		- then triggers an execution of the returned Duty;
-	 *		- finally completes with the result of executed duty.
+	 *		- then triggers an execution of the returned Task;
+	 *		- finally completes with the result of executed task.
 	 *
 	 * $$threadSafe
-	 * TODO rename to Duty_ownFlat
+	 * TODO rename to Task_ownFlat
 	 *
-	 * @param supplier the supplier of the duty whose execution will give the result. $isExecutedByDoSerEx $notGuarded
-	 * @return the duty described in the method description.
+	 * @param supplier the supplier of the task whose execution will give the result. $isExecutedByDoSerEx $notGuarded
+	 * @return the task described in the method description.
 	 */
-	inline def Duty_mineFlat[A](supplier: () => Duty[A]): Duty[A] = new Duty_MineFlat(supplier)
+	inline def Task_mineFlat[A](supplier: () => Task[A]): Task[A] = new Task_MineFlat(supplier)
 
-	/** Creates a [[Duty]] that triggers the execution of the provided [[Duty]] by another [[Doer]], and yields its result.
-	 * When triggered, the `foreignDuty` is executed within the `foreignDoer` (in sequence with whatever the `foreignDoer` is doing), and its result is supplied by the created [[Duty]] in sequence with this [[Doer]].
+	/** Creates a [[Task]] that triggers the execution of the provided [[Task]] by another [[Doer]], and yields its result.
+	 * When triggered, the `foreignTask` is executed within the `foreignDoer` (in sequence with whatever the `foreignDoer` is doing), and its result is supplied by the created [[Task]] in sequence with this [[Doer]].
 	 * Useful to start a process in a another [[Doer]] and access its result sequentially.
 	 * $threadSafe
 	 *
-	 * @param foreignDoer the [[Doer]] to whom the `foreignDuty` belongs.
-	 * @param foreignDuty the [[Duty]] to be executed by the `foreignDoer`. Its result will be yielded by the returned [[Duty]] in sequence with this [[Doer]].
-	 * @return a [[Duty]] that produces what the `foreignDuty` produces, but the result is yielded in sequence with this [[Doer]]. */
-	inline def Duty_foreign[A](foreignDoer: Doer)(foreignDuty: foreignDoer.Duty[A]): Duty[A] = {
-		if foreignDoer eq thisDoer then foreignDuty.asInstanceOf[thisDoer.Duty[A]]
-		else new Duty_Foreign[A](foreignDoer, foreignDuty)
+	 * @param foreignDoer the [[Doer]] to whom the `foreignTask` belongs.
+	 * @param foreignTask the [[Task]] to be executed by the `foreignDoer`. Its result will be yielded by the returned [[Task]] in sequence with this [[Doer]].
+	 * @return a [[Task]] that produces what the `foreignTask` produces, but the result is yielded in sequence with this [[Doer]]. */
+	inline def Task_foreign[A](foreignDoer: Doer)(foreignTask: foreignDoer.Task[A]): Task[A] = {
+		if foreignDoer eq thisDoer then foreignTask.asInstanceOf[thisDoer.Task[A]]
+		else new Task_Foreign[A](foreignDoer, foreignTask)
 	}
 
 	/**
-	 * Creates a [[Duty]] that yields the result of applying the bifunction `f` to what the provided duties yield.
-	 * When executed, simultaneously triggers and execution of each duty and returns their results combined by the provided function.
-	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided [[Duty]]s involves foreign ([[Duty_foreign]]) or alien ([[Venture_alien]]) actions.
+	 * Creates a [[Task]] that yields the result of applying the bifunction `f` to what the provided duties yield.
+	 * When executed, simultaneously triggers and execution of each task and returns their results combined by the provided function.
+	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided [[Task]]s involves foreign ([[Task_foreign]]) or alien ([[Venture_alien]]) actions.
 	 * ===Detailed behavior===
-	 * Creates a new [[Duty]] that, when executed:
-	 *		- triggers an execution for both: `dutyA` and `dutyB`
+	 * Creates a new [[Task]] that, when executed:
+	 *		- triggers an execution for both: `taskA` and `taskB`
 	 *		- when both are completed, completes with the value that results of applying the function `f` to their results.
 	 *
 	 * $threadSafe
 	 *
-	 * @param dutyA a [[Duty]]
-	 * @param dutyB a [[Duty]]
-	 * @param f the function that combines the results of the two [[Duty]] instances. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Duty]] described in the method description.
+	 * @param taskA a [[Task]]
+	 * @param taskB a [[Task]]
+	 * @param f the function that combines the results of the two [[Task]] instances. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
+	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Duty_combine[A, B, C](dutyA: Duty[A], dutyB: Duty[B])(f: (A, B) => C): Duty[C] =
-		new Duty_Combined(dutyA, dutyB, f)
+	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B])(f: (A, B) => C): Task[C] =
+		new Task_Combined(taskA, taskB, f)
 
 	/**
-	 * Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Duty]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
-	 * This overload is only convenient for very small lists. For large ones it is not efficient and also may cause stack-overflow when the [[Duty]] is executed.
+	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
+	 * This overload is only convenient for very small lists. For large ones it is not efficient and also may cause stack-overflow when the [[Task]] is executed.
 	 * Use the other overload for large lists or other kind of iterables.
 	 *
 	 * $threadSafe
 	 *
-	 * @param duties the `Iterable` of duties that the returned [[Duty]] will trigger simultaneously to combine their results.
+	 * @param duties the `Iterable` of duties that the returned [[Task]] will trigger simultaneously to combine their results.
 	 * @tparam A the result type of all the duties
-	 * @return the duty described in the method description.
+	 * @return the task described in the method description.
 	 * */
-	def Duty_sequence[A](duties: List[Duty[A]]): Duty[List[A]] = {
+	def Task_sequence[A](duties: List[Task[A]]): Task[List[A]] = {
 		@tailrec
-		def loop(incompleteResult: Duty[List[A]], remainingDuties: List[Duty[A]]): Duty[List[A]] = {
+		def loop(incompleteResult: Task[List[A]], remainingDuties: List[Task[A]]): Task[List[A]] = {
 			remainingDuties match {
 				case Nil =>
 					incompleteResult
 				case head :: tail =>
-					val lessIncompleteResult = Duty_combine(head, incompleteResult) { (a, as) => a :: as }
+					val lessIncompleteResult = Task_combine(head, incompleteResult) { (a, as) => a :: as }
 					loop(lessIncompleteResult, tail)
 			}
 		}
 
 		duties.reverse match {
-			case Nil => Duty_ready(Nil)
-			case lastDuty :: previousDuties => loop(lastDuty.map(List(_)), previousDuties);
+			case Nil => Task_ready(Nil)
+			case lastTask :: previousDuties => loop(lastTask.map(List(_)), previousDuties);
 		}
 	}
 
 	/**
-	 * Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Duty]]s in the received iterable, and completes with a collection containing their results in the same order.
+	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the received iterable, and completes with a collection containing their results in the same order.
 	 * This overload accepts any [[Iterable]] and is more efficient than the other (above). Especially for large iterables.
 	 * $threadSafe
 	 *
 	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @param duties the `Iterable` of duties that the returned [[Duty]] will trigger simultaneously to combine their results.
+	 * @param duties the `Iterable` of duties that the returned [[Task]] will trigger simultaneously to combine their results.
 	 * @tparam A the result type of all the duties
 	 * @tparam C the higher-kinded type of the `Iterable` of duties.
 	 * @tparam To the type of the `Iterable` that will contain the results.
-	 * @return the duty described in the method description.
+	 * @return the task described in the method description.
 	 * */
-	def Duty_sequence[A: ClassTag, C[x] <: Iterable[x], To[_]](factory: IterableFactory[To], duties: C[Duty[A]]): Duty[To[A]] = {
-		Duty_sequenceToArray(duties).map { array =>
+	def Task_sequence[A: ClassTag, C[x] <: Iterable[x], To[_]](factory: IterableFactory[To], duties: C[Task[A]]): Task[To[A]] = {
+		Task_sequenceToArray(duties).map { array =>
 			val builder = factory.newBuilder[A]
 			var index = 0
 			while index < array.length do {
@@ -554,17 +560,17 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** Like [[Duty_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Duty_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]): Duty[Array[A]] = new Duty_Sequence[A, C](duties)
+	/** Like [[Task_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
+	inline def Task_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]): Task[Array[A]] = new Task_Sequence[A, C](duties)
 
-	//// Concrete implementations of [[Duty]] used internally ////
+	//// Concrete implementations of [[Task]] used internally ////
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_FromVenture(trap: Nothing): Any = trap
+	private inline def Task_FromVenture(trap: Nothing): Any = trap
 
-	final class Duty_FromVenture[A, B >: A](ventureA: Venture[A], exceptionHandler: Throwable => B) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = {
-			ventureA.engage { tryA =>
+	final class Task_FromVenture[A, B >: A](ventureA: Venture[A], exceptionHandler: Throwable => B) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = {
+			ventureA.subscribe { tryA =>
 				val b = tryA match {
 					case Success(a) => a
 					case Failure(exception) => exceptionHandler(exception)
@@ -573,107 +579,107 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		override def toString: String = deriveToString[Duty_FromVenture[A, B]](this)
+		override def toString: String = deriveToString[Task_FromVenture[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Map(trap: Nothing): Any = trap
+	private inline def Task_Map(trap: Nothing): Any = trap
 
-	final class Duty_Map[A, B](cA: Duty[A], f: A => B) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit =
-			cA.engage { a => onComplete(f(a)) }
+	final class Task_Map[A, B](cA: Task[A], f: A => B) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit =
+			cA.subscribe { a => onComplete(f(a)) }
 
-		override def toString: String = deriveToString[Duty_Map[A, B]](this)
+		override def toString: String = deriveToString[Task_Map[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_FlatMap(trap: Nothing): Any = trap
+	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
-	final class Duty_FlatMap[A, B](cA: Duty[A], f: A => Duty[B]) extends AbstractDuty[B] {
-		override def engage(onComplete: B => Unit): Unit = cA.engage { a => f(a).engage(onComplete) }
+	final class Task_FlatMap[A, B](cA: Task[A], f: A => Task[B]) extends AbstractTask[B] {
+		override def subscribe(onComplete: B => Unit): Unit = cA.subscribe { a => f(a).subscribe(onComplete) }
 
-		override def toString: String = deriveToString[Duty_FlatMap[A, B]](this)
+		override def toString: String = deriveToString[Task_FlatMap[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_AndThen(trap: Nothing): Any = trap
+	private inline def Task_AndThen(trap: Nothing): Any = trap
 
-	final class Duty_AndThen[A](dutyA: Duty[A], sideEffect: A => Unit) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit =
-			dutyA.engage { a =>
+	final class Task_AndThen[A](taskA: Task[A], sideEffect: A => Unit) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit =
+			taskA.subscribe { a =>
 				sideEffect(a)
 				onComplete(a)
 			}
 
-		override def toString: String = deriveToString[Duty_AndThen[A]](this)
+		override def toString: String = deriveToString[Task_AndThen[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_NotEver(trap: Nothing): Any = trap
+	private inline def Task_NotEver(trap: Nothing): Any = trap
 
-	class Duty_NotEver extends AbstractDuty[Nothing] {
-		override def engage(onComplete: Nothing => Unit): Unit = ()
+	class Task_NotEver extends AbstractTask[Nothing] {
+		override def subscribe(onComplete: Nothing => Unit): Unit = ()
 
-		override def toString: String = deriveToString[Duty_NotEver](this)
+		override def toString: String = deriveToString[Task_NotEver](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Ready(trap: Nothing): Any = trap
+	private inline def Task_Ready(trap: Nothing): Any = trap
 
-	final class Duty_Ready[A](a: A) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = onComplete(a)
+	final class Task_Ready[A](a: A) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit = onComplete(a)
 
 		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
 
-		override def toString: String = deriveToString[Duty_Ready[A]](this)
+		override def toString: String = deriveToString[Task_Ready[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Mine(trap: Nothing): Any = trap
+	private inline def Task_Mine(trap: Nothing): Any = trap
 
-	final class Duty_Mine[A](supplier: () => A) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = onComplete(supplier())
+	final class Task_Mine[A](supplier: () => A) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit = onComplete(supplier())
 
-		override def toString: String = deriveToString[Duty_Mine[A]](this)
+		override def toString: String = deriveToString[Task_Mine[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_MineFlat(trap: Nothing): Any = trap
+	private inline def Task_MineFlat(trap: Nothing): Any = trap
 
-	final class Duty_MineFlat[A](supplier: () => Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = supplier().engage(onComplete)
+	final class Task_MineFlat[A](supplier: () => Task[A]) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit = supplier().subscribe(onComplete)
 
-		override def toString: String = deriveToString[Duty_MineFlat[A]](this)
+		override def toString: String = deriveToString[Task_MineFlat[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Foreign(trap: Nothing): Any = trap
+	private inline def Task_Foreign(trap: Nothing): Any = trap
 
-	final class Duty_Foreign[A](foreignDoer: Doer, foreignDuty: foreignDoer.Duty[A]) extends AbstractDuty[A] {
-		override def engage(onComplete: A => Unit): Unit = foreignDuty.trigger()(a => thisDoer.run(onComplete(a)))
+	final class Task_Foreign[A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
+		override def subscribe(onComplete: A => Unit): Unit = foreignTask.trigger()(a => thisDoer.run(onComplete(a)))
 
-		override def toString: String = deriveToString[Duty_Foreign[A]](this)
+		override def toString: String = deriveToString[Task_Foreign[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Combined(trap: Nothing): Any = trap
+	private inline def Task_Combined(trap: Nothing): Any = trap
 
-	final class Duty_Combined[+A, +B, +C](dutyA: Duty[A], dutyB: Duty[B], f: (A, B) => C) extends AbstractDuty[C] {
-		override def engage(onComplete: C => Unit): Unit = {
+	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C) extends AbstractTask[C] {
+		override def subscribe(onComplete: C => Unit): Unit = {
 			object vars {
 				var aIsCompleted: Boolean = false
 				var bIsCompleted: Boolean = false
 				var maybeA: AnyRef | Null = null
 				var maybeB: AnyRef | Null = null
 			}
-			dutyA.engage { a =>
+			taskA.subscribe { a =>
 				if vars.bIsCompleted then onComplete(f(a, vars.maybeB.asInstanceOf[B]))
 				else {
 					vars.aIsCompleted = true
 					vars.maybeA = a.asInstanceOf[AnyRef]
 				}
 			}
-			dutyB.engage { b =>
+			taskB.subscribe { b =>
 				if vars.aIsCompleted then onComplete(f(vars.maybeA.asInstanceOf[A], b))
 				else {
 					vars.bIsCompleted = true
@@ -682,27 +688,27 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		override def toString: String = deriveToString[Duty_Combined[A, B, C]](this)
+		override def toString: String = deriveToString[Task_Combined[A, B, C]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_Sequence(trap: Nothing): Any = trap
+	private inline def Task_Sequence(trap: Nothing): Any = trap
 
-	/** @see [[Duty_sequenceToArray]] */
-	final class Duty_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Duty[A]]) extends AbstractDuty[Array[A]] {
-		override def engage(onComplete: Array[A] => Unit): Unit = {
+	/** @see [[Task_sequenceToArray]] */
+	final class Task_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]) extends AbstractTask[Array[A]] {
+		override def subscribe(onComplete: Array[A] => Unit): Unit = {
 			val size = duties.size
 			val array = Array.ofDim[A](size)
 			if size == 0 then onComplete(array)
 			else {
-				val dutyIterator = duties.iterator
+				val taskIterator = duties.iterator
 				var completedCounter: Int = 0
 				var index = 0
 				while index < size do {
-					val duty = dutyIterator.next()
-					val dutyIndex = index
-					duty.engage { a =>
-						array(dutyIndex) = a
+					val task = taskIterator.next()
+					val taskIndex = index
+					task.subscribe { a =>
+						array(taskIndex) = a
 						completedCounter += 1
 						if completedCounter == size then onComplete(array)
 					}
@@ -714,17 +720,17 @@ trait Doer { thisDoer =>
 
 	////////////// ONCE ///////////////
 
-	/** A [Duty] that remembers the result of the execution that completes first, and all the others produce the same result as the first.
+	/** A [Task] that remembers the result of the execution that completes first, and all the others produce the same result as the first.
 	 * Once the first completion occurs the result is subsequently delivered deterministically to present and future subscribers.
-	 * Specifically, a [[Duty]] that:
+	 * Specifically, a [[Task]] that:
 	 *		- Is completed a single time and caches the result so that, once completed, subscribing a consumer executes the call-back immediately. Note that linking a down-chain subscribes the first link as consumer.
 	 * 		- The monadic laws are always upheld. Before completion, they can’t be observed because no result exists yet; after completion, they can be observed in the cached result.
 	 *		- Allows to subscribe/unsubscribe consumers of its completion result dynamically.
-	 *		- The source of determination may be intrinsic from the start (e.g. {{{ Covenant[String]().fulfillWith(anIntrinsicallyDeterminedDuty) }}}) or external (e.g. {{{ Covenant[String]().fulfill(someValueDeterminedExternally) }}}); the concrete result value is realized only at completion.
+	 *		- The source of determination may be intrinsic from the start (e.g. {{{ Covenant[String]().fulfillWith(anIntrinsicallyDeterminedTask) }}}) or external (e.g. {{{ Covenant[String]().fulfill(someValueDeterminedExternally) }}}); the concrete result value is realized only at completion.
 	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Covenant]].
-	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingDuty]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
+	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingTask]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
 	 * */
-	sealed abstract class LatchingDuty[+A] extends AbstractDuty[A], Idempotent[A] {
+	sealed abstract class LatchingTask[+A] extends AbstractTask[A], Latching[A] {
 
 		/** @inheritdoc
 		 * @note The override is necessary to specialize the return type; and the implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
@@ -732,50 +738,50 @@ trait Doer { thisDoer =>
 		override def succeed: LatchingVenture[A] = {
 			this match {
 				case c: Covenant[A] @unchecked => c.succeed
-				case rd: ReadyDuty[A] => rd.succeed
+				case rd: ReadyTask[A] => rd.succeed
 			}
 		}
 
-		inline def asDuty: Duty[A] = this
+		inline def asTask: Task[A] = this
 
 		/**
-		 * Transforms this [[LatchingDuty]] by applying the given function to the result of this [[LatchingDuty]].
+		 * Transforms this [[LatchingTask]] by applying the given function to the result of this [[LatchingTask]].
 		 * ===Detailed behavior===
-		 * Creates a [[LatchingDuty]] that yields the result of applying the provided function to the results of this [[LatchingDuty]].
+		 * Creates a [[LatchingTask]] that yields the result of applying the provided function to the results of this [[LatchingTask]].
 		 * @note CAUTION: Must be called within the $DoSerEx
 		 * @note The override is necessary to specialize the return type, and implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
-		 * @param f a function that transforms the result of this [[Duty]].
+		 * @param f a function that transforms the result of this [[Task]].
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $notGuarded
 		 */
-		override def map[B](f: A => B): LatchingDuty[B] = {
+		override def map[B](f: A => B): LatchingTask[B] = {
 			this match {
-				case rd: ReadyDuty[A] => rd.map(f)
+				case rd: ReadyTask[A] => rd.map(f)
 				case c: Covenant[A @unchecked] => c.map(f)
 			}
 		}
 
 
 		/**
-		 * Transforms this [[LatchingDuty]] by applying the provided function to the result of this [[LatchingDuty]] and then subscribing-to the [[LatchingDuty]] returned by said function.
-		 * The returned [[LatchingDuty]] will be already fulfilled if, and only if, this [[LatchingDuty]] is already fulfilled.
+		 * Transforms this [[LatchingTask]] by applying the provided function to the result of this [[LatchingTask]] and then subscribing-to the [[LatchingTask]] returned by said function.
+		 * The returned [[LatchingTask]] will be already fulfilled if, and only if, this [[LatchingTask]] is already fulfilled.
 		 * @note CAUTION: Must be called within the $DoSerEx
-		 * @param f a function that is applied to the result of this [[Duty]] execution to return a [[Duty]] that is executed next to produce the result that the [[Duty]] returned by this method yields.
+		 * @param f a function that is applied to the result of this [[Task]] execution to return a [[Task]] that is executed next to produce the result that the [[Task]] returned by this method yields.
 		 *
 		 * $isExecutedByDoSerEx
 		 *
 		 * $notGuarded
 		 */
-		def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B]
+		def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B]
 
-		/** Creates a new [[LatchingDuty]] that yields exactly the same result (same identity) as this [[LatchingDuty]] but executes the provided side-effecting function before yielding it.
+		/** Creates a new [[LatchingTask]] that yields exactly the same result (same identity) as this [[LatchingTask]] but executes the provided side-effecting function before yielding it.
 		 *
 		 * $threadSafe
 		 *
-		 * @param sideEffect a function that is applied to the result of this [[LatchingDuty]] for its side effects. */
-		override def andThen(sideEffect: A => Unit): LatchingDuty[A] = {
+		 * @param sideEffect a function that is applied to the result of this [[LatchingTask]] for its side effects. */
+		override def andThen(sideEffect: A => Unit): LatchingTask[A] = {
 			subscribe(sideEffect)
 			this
 		}
@@ -783,33 +789,33 @@ trait Doer { thisDoer =>
 
 	//// Once factory methods ////
 
-	/** Creates an already completed [[LatchingDuty]].
-	 * @param immediateResult the immediate result that this [[LatchingDuty]] yields. */
-	inline def LatchingDuty_ready[A](immediateResult: A): ReadyDuty[A] =
-		new ReadyDuty(immediateResult)
+	/** Creates an already completed [[LatchingTask]].
+	 * @param immediateResult the immediate result that this [[LatchingTask]] yields. */
+	inline def LatchingTask_ready[A](immediateResult: A): ReadyTask[A] =
+		new ReadyTask(immediateResult)
 
-	/** An already completed [[LatchingDuty]] that yields [[Unit]].
+	/** An already completed [[LatchingTask]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingDuty_unit: ReadyDuty[Unit] = ReadyDuty(())
+	@threadUnsafe lazy final val LatchingTask_unit: ReadyTask[Unit] = ReadyTask(())
 
-	/** An already completed [[LatchingDuty]] that yields `true`.
+	/** An already completed [[LatchingTask]] that yields `true`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingDuty_true: ReadyDuty[Boolean] = ReadyDuty(true)
+	@threadUnsafe lazy final val LatchingTask_true: ReadyTask[Boolean] = ReadyTask(true)
 
-	/** An already completed [[LatchingDuty]] that yields `false`.
+	/** An already completed [[LatchingTask]] that yields `false`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingDuty_false: ReadyDuty[Boolean] = ReadyDuty(false)
+	@threadUnsafe lazy final val LatchingTask_false: ReadyTask[Boolean] = ReadyTask(false)
 
-	/** Like [[Duty_sequenceVenturesToArray]] but eager (instead of lazy). */
-	inline def LatchingDuty_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]], isWithinDoSerEx: Boolean = isInSequence): LatchingDuty[Array[Try[A]]] =
-		Covenant_triggerAndWire(Duty_sequenceVenturesToArray(ventures), isWithinDoSerEx)
+	/** Like [[Task_sequenceVenturesToArray]] but eager (instead of lazy). */
+	inline def LatchingTask_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]], isWithinDoSerEx: Boolean = isInSequence): LatchingTask[Array[Try[A]]] =
+		Covenant_triggerAndWire(Task_sequenceVenturesToArray(ventures), isWithinDoSerEx)
 
-	//// READY DUTY ////
+	//// READY TASK ////
 
-	/** A [[LatchingDuty]] that is fulfilled since its inception. */
-	final class ReadyDuty[+A](val value: A) extends LatchingDuty[A] {
+	/** A [[LatchingTask]] that is fulfilled since its inception. */
+	final class ReadyTask[+A](val value: A) extends LatchingTask[A] {
 
-		override def engage(onComplete: A => Unit): Unit =
+		override def subscribe(onComplete: A => Unit): Unit =
 			onComplete(value)
 
 		override def succeed: ReadyVenture[A] =
@@ -817,11 +823,6 @@ trait Doer { thisDoer =>
 
 		override val maybeResult: Maybe[A] =
 			Maybe(value)
-
-		override def subscribe(consumer: A => Unit): Unit = {
-			checkWithin()
-			consumer(value)
-		}
 
 		override def unsubscribe(onComplete: A => Unit): Unit =
 			()
@@ -834,12 +835,12 @@ trait Doer { thisDoer =>
 			consumer(value)
 		}
 
-		override def map[B](f: A => B): ReadyDuty[B] = {
+		override def map[B](f: A => B): ReadyTask[B] = {
 			checkWithin()
-			ReadyDuty(f(value))
+			ReadyTask(f(value))
 		}
 
-		override def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B] = {
+		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
 			checkWithin()
 			f(value)
 		}
@@ -847,27 +848,27 @@ trait Doer { thisDoer =>
 		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] =
 			Future.successful(value)
 
-		override def toString: String = deriveToString[ReadyDuty[A]](this)
+		override def toString: String = deriveToString[ReadyTask[A]](this)
 	}
 
-	/** Creates a [[ReadyDuty]] that yields the provided value.
+	/** Creates a [[ReadyTask]] that yields the provided value.
 	 * @note Also suppresses the generation of the synthetic companion object. */
-	inline final def ReadyDuty[A](a: A): ReadyDuty[A] = new ReadyDuty(a)
+	inline final def ReadyTask[A](a: A): ReadyTask[A] = new ReadyTask(a)
 
 	//// COVENANT /////
 
-	/** A [[LatchingDuty]] with dynamic control of its completion (the execution of the subscribed consumers).
+	/** A [[LatchingTask]] with dynamic control of its completion (the execution of the subscribed consumers).
 	 *
 	 * It exposes methods such as [[fulfill]] and [[fulfillWith]] to allow external code to complete it.
 	 *
-	 * [[Covenant]] is to [[Duty]] as [[Commitment]] is to [[Venture]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
+	 * [[Covenant]] is to [[Task]] as [[Commitment]] is to [[Venture]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
 	 * */
-	final class Covenant[A](initialResult: Maybe[A]) extends LatchingDuty[A], SubscriptionHub[A] {
+	final class Covenant[A](initialResult: Maybe[A]) extends LatchingTask[A], SubscriptionHub[A] {
 		private var oResult: Maybe[A] = initialResult
 
 		def this() = this(Maybe.empty)
 
-		override def engage(onComplete: A => Unit): Unit =
+		override def subscribe(onComplete: A => Unit): Unit =
 			oResult.fold(attach(onComplete))(onComplete)
 
 		override def succeed: LatchingVenture[A] = {
@@ -885,11 +886,6 @@ trait Doer { thisDoer =>
 			oResult
 		}
 
-		override def subscribe(consumer: A => Unit): Unit = {
-			checkWithin()
-			oResult.fold(attach(consumer))(consumer)
-		}
-
 		override def unsubscribe(consumer: A => Unit): Unit = {
 			checkWithin()
 			detach(consumer)
@@ -903,18 +899,18 @@ trait Doer { thisDoer =>
 			oResult.fold(subscribe(consumer))(consumer)
 		}
 
-		override def map[B](f: A => B): LatchingDuty[B] = {
+		override def map[B](f: A => B): LatchingTask[B] = {
 			checkWithin()
 			oResult.fold {
 				val covenant = Covenant[B]()
 				this.subscribe(a => covenant.fulfillUnsafe(f(a)))
 				covenant
 			} { a =>
-				new ReadyDuty[B](f(a))
+				new ReadyTask[B](f(a))
 			}
 		}
 
-		override def flatMap[B](f: A => LatchingDuty[B]): LatchingDuty[B] = {
+		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
 			checkWithin()
 			oResult.fold {
 				val covenant = Covenant[B]()
@@ -923,11 +919,11 @@ trait Doer { thisDoer =>
 			}(f)
 		}
 
-		/** The [[LatchingDuty]] whose completion is controlled by this [[Covenant]].
+		/** The [[LatchingTask]] whose completion is controlled by this [[Covenant]].
 		 *
-		 * Provided to mimic containment semantics, allowing external code to treat this [[Covenant]] as if it exposed a separate [[LatchingDuty]] field.
-		 * @return this [[Covenant]] as a [[LatchingDuty]]. */
-		inline def asLatchingDuty: LatchingDuty[A] = this
+		 * Provided to mimic containment semantics, allowing external code to treat this [[Covenant]] as if it exposed a separate [[LatchingTask]] field.
+		 * @return this [[Covenant]] as a [[LatchingTask]]. */
+		inline def asLatchingTask: LatchingTask[A] = this
 
 
 		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled at the time the fulfillment is performed.
@@ -957,7 +953,7 @@ trait Doer { thisDoer =>
 		 * If it is already fulfilled, the provided `result` is ignored.
 		 *
 		 * CAUTION: This method must be called within this [[Doer]].
-		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[LatchingDuty]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
+		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[LatchingTask]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
 		 * CAUTION: Too many subscriptions may overflow the stack upon fulfillment. // TODO consider implementing a list with a pointer to the tail to avoid the recursion loop of the current implementation.
 		 *
 		 * TODO rename to `completeUnsafe`
@@ -981,25 +977,25 @@ trait Doer { thisDoer =>
 			this
 		}
 
-		/** Wires this [[Covenant]] to be completed with the result of a [[Duty]].
+		/** Wires this [[Covenant]] to be completed with the result of a [[Task]].
 		 *
-		 * Arranges this [[Covenant]] to be fulfilled if `fulfillingDuty` completes, unless it was fulfilled before.
+		 * Arranges this [[Covenant]] to be fulfilled if `fulfillingTask` completes, unless it was fulfilled before.
 		 * Always one, and only one, of the two callback is invoked:
 		 *		- `onAlreadyCompleted` if this [[Covenant]] was already fulfilled when the subscription is done.
 		 *		- `onCompletedLater` if this [[Covenant]] is fulfilled after the subscription is done.
 		 * The subscription is synchronic if `isWithinDoSerEx` is true, and asynchronic ASAP otherwise.
 		 *
 		 * TODO rename to `completeWith`
-		 * @param fulfillingDuty the [[Duty]] whose result will be used to complete this [[Covenant]].
+		 * @param fulfillingTask the [[Task]] whose result will be used to complete this [[Covenant]].
 		 * @param isWithinDoSerEx $isWithinDoSerEx
 		 * @param onCompleted optional callback invoked when this [[Covenant]] is fulfilled. The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
-		 * @throws IllegalArgumentException if `fulfillingDuty` is the same instance as this [[Covenant]].
+		 * @throws IllegalArgumentException if `fulfillingTask` is the same instance as this [[Covenant]].
 		 */
-		def fulfillWith(fulfillingDuty: Duty[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ResultOrigin) => Unit = (_, _) => ()): this.type = {
-			if fulfillingDuty eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
+		def fulfillWith(fulfillingTask: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ResultOrigin) => Unit = (_, _) => ()): this.type = {
+			if fulfillingTask eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
 			if isWithinDoSerEx then {
 				oResult.fold {
-					fulfillingDuty.engage(result => fulfillUnsafe(result, onCompleted))
+					fulfillingTask.subscribe(result => fulfillUnsafe(result, onCompleted))
 				} { result =>
 					try onCompleted(result, ANOTHER_BEFORE)
 					catch {
@@ -1007,7 +1003,7 @@ trait Doer { thisDoer =>
 					}
 				}
 			}
-			else run(fulfillWith(fulfillingDuty, true, onCompleted))
+			else run(fulfillWith(fulfillingTask, true, onCompleted))
 			this
 		}
 
@@ -1033,29 +1029,29 @@ trait Doer { thisDoer =>
 		covenant
 	}
 
-	/** Creates a [[Covenant]] that is wired to the [[LatchingDuty]] resulting of executing the provided supplier within the $DoSerEx.
-	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[LatchingDuty]] to which the created [[Covenant]] is wired. */
-	def Covenant_mineFlat[A](supplier: () => LatchingDuty[A]): Covenant[A] = {
+	/** Creates a [[Covenant]] that is wired to the [[LatchingTask]] resulting of executing the provided supplier within the $DoSerEx.
+	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[LatchingTask]] to which the created [[Covenant]] is wired. */
+	def Covenant_mineFlat[A](supplier: () => LatchingTask[A]): Covenant[A] = {
 		val covenant = new Covenant[A]
 		run {
-			supplier().engage(a => covenant.fulfillUnsafe(a))
+			supplier().subscribe(a => covenant.fulfillUnsafe(a))
 		}
 		covenant
 	}
 
-	/** Triggers an execution of the given [[Duty]] and returns a [[Covenant]] that will be completed with the result of the triggered execution if it completes before this [[Covenant]] is completed by other means.
+	/** Triggers an execution of the given [[Task]] and returns a [[Covenant]] that will be completed with the result of the triggered execution if it completes before this [[Covenant]] is completed by other means.
 	 *
-	 * This method initiates an execution of the given [[Duty]] and wires its result to a newly created [[Covenant]].
+	 * This method initiates an execution of the given [[Task]] and wires its result to a newly created [[Covenant]].
 	 * The returned [[Covenant]] acts as a completion handle for the execution triggered by this method, and can be used to observe or react to its result.
 	 *
-	 * @param duty the [[Duty]] to be triggered.
+	 * @param task the [[Task]] to be triggered.
 	 * @param isWithinDoSerEx $isWithinDoSerEx
 	 * @param onFulfilled The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
 	 * @return a [[Covenant]] that will be completed with the result of the execution triggered by this method.
 	 */
-	inline def Covenant_triggerAndWire[A](duty: Duty[A], inline isWithinDoSerEx: Boolean = isInSequence, onFulfilled: (A, ImmediateResultOrigin) => Unit = (_: A, _: ImmediateResultOrigin) => ()): Covenant[A] = {
+	inline def Covenant_triggerAndWire[A](task: Task[A], inline isWithinDoSerEx: Boolean = isInSequence, onFulfilled: (A, ImmediateResultOrigin) => Unit = (_: A, _: ImmediateResultOrigin) => ()): Covenant[A] = {
 		val covenant = new Covenant[A]()
-		duty.trigger(isWithinDoSerEx)(result => covenant.fulfillUnsafe(result, onFulfilled))
+		task.trigger(isWithinDoSerEx)(result => covenant.fulfillUnsafe(result, onFulfilled))
 		covenant
 	}
 
@@ -1063,8 +1059,8 @@ trait Doer { thisDoer =>
 
 	///////////// VENTURE //////////////
 
-	/** A hardy and short-circuiting version of [[Duty]].\
-	 * Advantages of [[Venture]] compared to [[Duty]]:
+	/** A hardy and short-circuiting version of [[Task]].\
+	 * Advantages of [[Venture]] compared to [[Task]]:
 	 *		- results are wrapped withing a [[Try]] which allows the support of failed results.
 	 *		- the call to the routines received by the operations are guarded with a try-catch, which allows to propagate failures through [[Venture]] chains.
 	 *		- can encapsulate a [[Future]] making interoperability with them easier.
@@ -1072,16 +1068,16 @@ trait Doer { thisDoer =>
 	type Venture[+A] = AbstractVenture[A]
 
 
-	/** A hardy and short-circuiting version of [[Duty]].\
+	/** A hardy and short-circuiting version of [[Task]].\
 	 * Design note:
-	 * - The use of mixins to define the hardy side of the hierarchy was explored in Duty3.scala and discarded due to extra allocation in many fundamental operations.
-	 * - Defining [[Venture]] as `opaque type Venture[+A] = Duty[Try[A]]` was explored but discarded due to bugs in the scala compiler. See https://github.com/scala/scala3/issues/25594. This will eliminate many redundant [[Venture]] implementation classes by reusing [[Duty]]'s counterpart, but it may cause IDE issues since [[Venture]] operations would need to be defined as extension methods.
+	 * - The use of mixins to define the hardy side of the hierarchy was explored in Task3.scala and discarded due to extra allocation in many fundamental operations.
+	 * - Defining [[Venture]] as `opaque type Venture[+A] = Task[Try[A]]` was explored but discarded due to bugs in the scala compiler. See https://github.com/scala/scala3/issues/25594. This will eliminate many redundant [[Venture]] implementation classes by reusing [[Task]]'s counterpart, but it may cause IDE issues since [[Venture]] operations would need to be defined as extension methods.
 	 * @tparam A the type of the result obtained when executing this [[Venture]]. */
-	abstract class AbstractVenture[+A] extends AbstractDuty[Try[A]] { thisVenture =>
+	abstract class AbstractVenture[+A] extends AbstractTask[Try[A]] { thisVenture =>
 
-		/** Removes short-circuit semantics by reifying both the successful and failed outcomes as a [[scala.util.Try]] value within a strict [[Duty]].\
-		 * Together with [[Duty.succeed]] this method allow to mix duties and ventures in the same chain. */
-		def reconcile: Duty[Try[A]] = thisVenture
+		/** Removes short-circuit semantics by reifying both the successful and failed outcomes as a [[scala.util.Try]] value within a strict [[Task]].\
+		 * Together with [[Task.succeed]] this method allow to mix duties and ventures in the same chain. */
+		def reconcile: Task[Try[A]] = thisVenture
 
 		/** Triggers an execution of this [[Venture]] and returns a [[Future]] of its result.\
 		 * @param isWithinDoSerEx $isWithinDoSerEx
@@ -1158,7 +1154,7 @@ trait Doer { thisDoer =>
 
 		/** Transforms this [[Venture]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].\
 		 * Equivalent to {{{ transform(_ map f) }}} but more efficient (creates one less closure).\
-		 * See [[recover]] and [[toDuty]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.\
+		 * See [[recover]] and [[toTask]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.\
 		 * **Detailed behavior:**
 		 * Creates a [[Venture]] that yields the result of applying the provided function to successful results of this [[Venture]].
 		 * If the evaluation of the provided function finishes:
@@ -1198,7 +1194,7 @@ trait Doer { thisDoer =>
 		/** Applies the side-effecting function to the result of this [[Venture]] without affecting the propagated value.
 		 * The result of the provided function is always ignored and therefore not propagated in any way.
 		 * This method allows to enforce many callbacks to receive the same value and to be executed in the order they are chained.
-		 * It's worth mentioning that the side-effecting function is executed before triggering the next duty in the chain.\
+		 * It's worth mentioning that the side-effecting function is executed before triggering the next task in the chain.\
 		 * **Detailed description:**
 		 * Returns a [[Venture]] that, when executed:
 		 *  - first executes this [[Venture]];
@@ -1211,17 +1207,17 @@ trait Doer { thisDoer =>
 		override def andThen(sideEffect: Try[A] => Unit): Venture[A] =
 			new Venture_AndThen(thisVenture, sideEffect)
 
-		/** Wraps this [[Venture]] into a [[Duty]] applying the given function to transform failure results into successful ones. This is like [[map]] but for the throwable; and like [[recover]] but with a complete function.
-		 * Together with [[Duty.succeed]] this method allow to mix duties and ventures in the same chain. *
+		/** Wraps this [[Venture]] into a [[Task]] applying the given function to transform failure results into successful ones. This is like [[map]] but for the throwable; and like [[recover]] but with a complete function.
+		 * Together with [[Task.succeed]] this method allow to mix duties and ventures in the same chain. *
 		 * @param exceptionHandler a complete function to apply to the result of this [[Venture]] if it is a [[Failure]].\
 		 * $isExecutedByDoSerEx\
 		 * $notGuarded\
-		 * @return a [[Duty]] that yields the result of this [[Venture]]. */
-		inline final def reconcile[B >: A](exceptionHandler: Throwable => B): Duty[B] =
-			new Duty_FromVenture[A, B](thisVenture, exceptionHandler)
+		 * @return a [[Task]] that yields the result of this [[Venture]]. */
+		inline final def reconcile[B >: A](exceptionHandler: Throwable => B): Task[B] =
+			new Task_FromVenture[A, B](thisVenture, exceptionHandler)
 
-		/** @return a [[Duty]] that yields the result of this [[Venture]]. */
-		inline final def asHardyDuty: Duty[Try[A]] =
+		/** @return a [[Task]] that yields the result of this [[Venture]]. */
+		inline final def asHardyTask: Task[Try[A]] =
 			thisVenture
 
 		/** Transforms this [[Venture]] applying the given partial function to failure results. This is like map but for the throwable; and like [[reconcile]] but with a partial function. Analogous to [[Future.recover]].\
@@ -1267,7 +1263,7 @@ trait Doer { thisDoer =>
 		/** Casts the singleton type of the [[Doer]] instance that owns this [[Venture]] to the singleton-type of the received [[Doer]].\
 		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with [[Venture]]s that correspond to the same [[Doer]] instance but have different type-paths.\
 		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Venture]].\
-		 * Design note: It was decided to make [[Venture]] (and [[Duty]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Venture]] (and [[Duty]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.\
+		 * Design note: It was decided to make [[Venture]] (and [[Task]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Venture]] (and [[Task]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.\
 		 * Using type-path checking to detect contract violations is very valuable but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Venture]]s correspond to the same [[Doer]] instance.
 		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
 		 * This operation ([[castTypePath()]]) is intended to handle those cases. */
@@ -1313,9 +1309,9 @@ trait Doer { thisDoer =>
 	 * @return the [[Venture]] described in the method description. */
 	inline final def Venture_failed[A](throwable: Throwable): Venture[A] = Venture_ready(Failure(throwable))
 
-	/** Transforms a [[Duty]] to a [[Venture]] */
-	def Venture_fromDuty[A](duty: Duty[Try[A]]): Venture[A] =
-		(onComplete: Try[A] => Unit) => duty.engage(onComplete)
+	/** Transforms a [[Task]] to a [[Venture]] */
+	def Venture_fromTask[A](task: Task[Try[A]]): Venture[A] =
+		(onComplete: Try[A] => Unit) => task.subscribe(onComplete)
 
 	/** Creates a [[Venture]] whose result is the result of the provided supplier.\
 	 * **Detailed behavior:**
@@ -1445,17 +1441,17 @@ trait Doer { thisDoer =>
 	inline def Venture_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]): Venture[Array[A]] = new Venture_Sequence[A, C](ventures)
 
 
-	/** Creates a [[Duty]] that, when executed, simultaneously triggers an execution for each [[Venture]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, in the same order.\
+	/** Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Venture]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, in the same order.\
 	 * $threadSafe \
-	 * TODO change return type to [[Duty]] to better expose the fact that always yields a successful result
-	 * @param ventures the [[Iterable]] of [[Venture]]s that the returned [[Duty]] will trigger simultaneously to combine their results.
+	 * TODO change return type to [[Task]] to better expose the fact that always yields a successful result
+	 * @param ventures the [[Iterable]] of [[Venture]]s that the returned [[Task]] will trigger simultaneously to combine their results.
 	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
 	 * @tparam A the result type of all the provided [[Venture]]s.
 	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Venture]]s.
 	 * @tparam To the higher-kinded type of the [[Iterable]] that will contain the results.
-	 * @return the successful duty described in the method description. */
-	def Duty_sequenceVentures[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Venture[A]]): Duty[To[Try[A]]] = {
-		Duty_sequenceVenturesToArray(ventures).map { array =>
+	 * @return the successful task described in the method description. */
+	def Task_sequenceVentures[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Venture[A]]): Task[To[Try[A]]] = {
+		Task_sequenceVenturesToArray(ventures).map { array =>
 			val builder = factory.newBuilder[Try[A]]
 			var index = 0
 			while index < array.length do {
@@ -1466,9 +1462,9 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	/** Like [[Duty_sequenceVentures]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Duty_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]): Duty[Array[Try[A]]] =
-		new Duty_SequenceHardy[A, C](ventures)
+	/** Like [[Task_sequenceVentures]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
+	inline def Task_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]): Task[Array[Try[A]]] =
+		new Task_SequenceHardy[A, C](ventures)
 
 	//// Venture concrete implementations used internally ////
 
@@ -1478,25 +1474,25 @@ trait Doer { thisDoer =>
 	/** A [[Venture]] that never completes.\
 	 * $onCompleteExecutedByDoSerEx */
 	final class Venture_Never extends AbstractVenture[Nothing] {
-		override def engage(onComplete: Try[Nothing] => Unit): Unit = ()
+		override def subscribe(onComplete: Try[Nothing] => Unit): Unit = ()
 
 		override def toString: String = deriveToString[Venture_Never](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_fromDuty(trap: Nothing): Any = trap
+	private inline def Venture_fromTask(trap: Nothing): Any = trap
 
-	final class Venture_fromDuty[A](cA: Duty[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = cA.engage(onComplete.compose(Success.apply))
+	final class Venture_fromTask[A](cA: Task[A]) extends AbstractVenture[A] {
+		override def subscribe(onComplete: Try[A] => Unit): Unit = cA.subscribe(onComplete.compose(Success.apply))
 
-		override def toString: String = deriveToString[Venture_fromDuty[A]](this)
+		override def toString: String = deriveToString[Venture_fromTask[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
 	private inline def Venture_Ready(trap: Nothing): Any = trap
 
 	final class Venture_Ready[A](tryA: Try[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = onComplete(tryA)
+		override def subscribe(onComplete: Try[A] => Unit): Unit = onComplete(tryA)
 
 		override def toString: String = deriveToString[Venture_Ready[A]](this)
 	}
@@ -1505,7 +1501,7 @@ trait Doer { thisDoer =>
 	private inline def Venture_Own(trap: Nothing): Any = trap
 
 	final class Venture_Own[+A](supplier: () => Try[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
 			val result =
 				try supplier()
 				catch {
@@ -1521,13 +1517,13 @@ trait Doer { thisDoer =>
 	private inline def TVenture_OwnFlat(trap: Nothing): Any = trap
 
 	final class Venture_OwnFlat[+A](supplier: () => Venture[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
 			val venturesA =
 				try supplier()
 				catch {
 					case NonFatal(e) => Venture_failed(e)
 				}
-			venturesA.engage(onComplete)
+			venturesA.subscribe(onComplete)
 		}
 
 		override def toString: String = deriveToString[Venture_OwnFlat[A]](this)
@@ -1537,8 +1533,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_Wait(trap: Nothing): Any = trap
 
 	final class Venture_Wait[+A](future: Future[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `subscribe` should not be caught".
 			future.onComplete { tryA =>
 				thisDoer.run(onComplete(tryA))
 			}(using ownSingleThreadExecutionContext)
@@ -1551,13 +1547,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_Alien(trap: Nothing): Any = trap
 
 	final class Venture_Alien[+A](builder: () => Future[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
 			val future =
 				try builder()
 				catch {
 					case NonFatal(e) => Future.failed(e)
 				}
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `engage` should not be caught".
+			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `subscribe` should not be caught".
 			future.onComplete { tryA =>
 				thisDoer.run(onComplete(tryA))
 			}(using ownSingleThreadExecutionContext)
@@ -1570,7 +1566,7 @@ trait Doer { thisDoer =>
 	private inline def Venture_Foreign(trap: Nothing): Any = trap
 
 	final class Venture_Foreign[+A](foreignDoer: Doer, foreignVenture: foreignDoer.Venture[A]) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Unit =
 			foreignVenture.trigger(false) { tryA => run(onComplete(tryA)) }
 
 		override def toString: String = deriveToString[Venture_Foreign[A]](this)
@@ -1580,8 +1576,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_Consume(trap: Nothing): Any = trap
 
 	final class Venture_Consume[A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[Unit] {
-		override def engage(onComplete: Try[Unit] => Unit): Unit = {
-			ventureA.engage { tryA =>
+		override def subscribe(onComplete: Try[Unit] => Unit): Unit = {
+			ventureA.subscribe { tryA =>
 				val tryConsumerResult =
 					try {
 						consumer(tryA)
@@ -1601,8 +1597,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_WithFilter(trap: Nothing): Any = trap
 
 	final class Venture_WithFilter[A](ventureA: Venture[A], predicate: A => Boolean) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			ventureA.engage {
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+			ventureA.subscribe {
 				case sa@Success(a) =>
 					val predicateResult =
 						try {
@@ -1627,8 +1623,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_Transform(trap: Nothing): Any = trap
 
 	final class Venture_Transform[+A, +B](originalVenture: Venture[A], f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit =
-			originalVenture.engage { tryA => onComplete(tryA.reifyBack(f)) }
+		override def subscribe(onComplete: Try[B] => Unit): Unit =
+			originalVenture.subscribe { tryA => onComplete(tryA.reifyBack(f)) }
 
 		override def toString: String = deriveToString[Venture_Transform[A, B]](this)
 	}
@@ -1637,8 +1633,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_Map(trap: Nothing): Any = trap
 
 	final class Venture_Map[+A, +B](originalVenture: Venture[A], f: A => B) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit =
-			originalVenture.engage { tryA => onComplete(tryA.mapFast(f)) }
+		override def subscribe(onComplete: Try[B] => Unit): Unit =
+			originalVenture.subscribe { tryA => onComplete(tryA.mapFast(f)) }
 
 		override def toString: String = deriveToString[Venture_Map[A, B]](this)
 	}
@@ -1648,15 +1644,15 @@ trait Doer { thisDoer =>
 	private inline def Venture_FlatMap(trap: Nothing): Any = trap
 
 	final class Venture_FlatMap[+A, +B](ventureA: Venture[A], f: A => Venture[B]) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			ventureA.engage {
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
+			ventureA.subscribe {
 				case Success(a) =>
 					val maybeVentureB = try Maybe(f(a)) catch {
 						case NonFatal(e) =>
 							onComplete(Failure(e))
 							Maybe.empty
 					}
-					maybeVentureB.foreach(_.engage(onComplete))
+					maybeVentureB.foreach(_.subscribe(onComplete))
 				case failure: Failure[A] =>
 					onComplete(failure.castTo[B])
 			}
@@ -1670,12 +1666,12 @@ trait Doer { thisDoer =>
 	private inline def Venture_TransformWith(trap: Nothing): Any = trap
 
 	final class Venture_TransformWith[+A, +B](ventureA: Venture[A], f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def engage(onComplete: Try[B] => Unit): Unit = {
-			ventureA.engage(tryA =>
+		override def subscribe(onComplete: Try[B] => Unit): Unit = {
+			ventureA.subscribe(tryA =>
 				tryA.reify(e =>
 					onComplete(Failure(e))
 				)(tryA =>
-					f(tryA).engage(onComplete)
+					f(tryA).subscribe(onComplete)
 				)
 			)
 		}
@@ -1687,8 +1683,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_AndThen(trap: Nothing): Any = trap
 
 	final class Venture_AndThen[+A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[A] {
-		override def engage(onComplete: Try[A] => Unit): Unit = {
-			ventureA.engage { tryA =>
+		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+			ventureA.subscribe { tryA =>
 				try consumer(tryA)
 				catch {
 					case NonFatal(e) => reportPanicException(e)
@@ -1705,10 +1701,10 @@ trait Doer { thisDoer =>
 	private inline def Venture_Combined(trap: Nothing): Any = trap
 
 	final class Venture_Combined[+A, +B, +C](ventureA: Venture[A], ventureB: Venture[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractVenture[C] {
-		override def engage(onComplete: Try[C] => Unit): Unit = {
+		override def subscribe(onComplete: Try[C] => Unit): Unit = {
 			var ota: Maybe[Try[A]] = Maybe.empty
 			var otb: Maybe[Try[B]] = Maybe.empty
-			ventureA.engage { tryA =>
+			ventureA.subscribe { tryA =>
 				otb.fold {
 					ota = Maybe(tryA)
 				} { tryB =>
@@ -1720,7 +1716,7 @@ trait Doer { thisDoer =>
 					onComplete(tryC)
 				}
 			}
-			ventureB.engage { tryB =>
+			ventureB.subscribe { tryB =>
 				ota.fold {
 					otb = Maybe(tryB)
 				} { tryA =>
@@ -1741,7 +1737,7 @@ trait Doer { thisDoer =>
 	private inline def Venture_Sequence(trap: Nothing): Any = trap
 
 	final class Venture_Sequence[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractVenture[Array[A]] {
-		override def engage(onComplete: Try[Array[A]] => Unit): Unit = {
+		override def subscribe(onComplete: Try[Array[A]] => Unit): Unit = {
 			val size = ventures.size
 			val array = Array.ofDim[A](size)
 			if size == 0 then onComplete(Success(array))
@@ -1752,7 +1748,7 @@ trait Doer { thisDoer =>
 				while index < size do {
 					val venture = venturesIterator.next()
 					val ventureIndex = index
-					venture.engage {
+					venture.subscribe {
 						case Success(a) =>
 							array(ventureIndex) = a
 							completedCounter += 1
@@ -1768,10 +1764,10 @@ trait Doer { thisDoer =>
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Duty_SequenceHardy(trap: Nothing): Any = trap
+	private inline def Task_SequenceHardy(trap: Nothing): Any = trap
 
-	final class Duty_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractDuty[Array[Try[A]]] {
-		override def engage(onComplete: Array[Try[A]] => Unit): Unit = {
+	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractTask[Array[Try[A]]] {
+		override def subscribe(onComplete: Array[Try[A]] => Unit): Unit = {
 			val size = ventures.size
 			val array = Array.ofDim[Try[A]](size)
 			if size == 0 then onComplete(array)
@@ -1782,7 +1778,7 @@ trait Doer { thisDoer =>
 				while index < size do {
 					val venture = venturesIterator.next()
 					val ventureIndex = index
-					venture.engage { tryA =>
+					venture.subscribe { tryA =>
 						array(ventureIndex) = tryA
 						completedCounter += 1
 						if completedCounter == size then onComplete(array)
@@ -1805,16 +1801,16 @@ trait Doer { thisDoer =>
 	 *  - The source of determination may be intrinsic from the start (e.g. {{{ Covenant[String]().fulfillWith(anIntrinsicallyDeterminedVenture) }}}) or external (e.g. {{{ Covenant[String]().fulfill(someValueDeterminedExternally) }}}); the concrete result value is realized only at completion.\
 	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Covenant]].
 	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingVenture]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result. */
-	sealed abstract class LatchingVenture[+A] extends AbstractVenture[A], Idempotent[Try[A]] { thisLatchingVenture =>
+	sealed abstract class LatchingVenture[+A] extends AbstractVenture[A], Latching[Try[A]] { thisLatchingVenture =>
 
 		inline def asVenture: Venture[A] = this
 
-		override def reconcile: LatchingDuty[Try[A]] = {
+		override def reconcile: LatchingTask[Try[A]] = {
 			maybeResult.fold {
 				val covenant = new Covenant[Try[A]]
 				subscribe(tryA => covenant.fulfillUnsafe(tryA))
 				covenant
-			} { tryA => ReadyDuty(tryA) }
+			} { tryA => ReadyTask(tryA) }
 		}
 
 		override def withFilter(predicate: A => Boolean): LatchingVenture[A] = {
@@ -1854,7 +1850,7 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		/** Transforms this [[LatchingDuty]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].\
+		/** Transforms this [[LatchingTask]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].\
 		 * Equivalent to {{{ transform(_ map f) }}} but more efficient (one less closure allocation).\
 		 * See [[recover]] and [[reconcile]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.\
 		 * **Detailed behavior:**
@@ -1926,16 +1922,11 @@ trait Doer { thisDoer =>
 	/** A [[LatchingVenture]] that is fulfilled since its inception. */
 	final class ReadyVenture[+A](val value: Try[A]) extends LatchingVenture[A] { thisReadyVenture =>
 
-		override def engage(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Unit =
 			onComplete(value)
 
 		override def maybeResult: Maybe[Try[A]] =
 			Maybe(value)
-
-		override def subscribe(consumer: Try[A] => Unit): Unit = {
-			checkWithin()
-			consumer(value)
-		}
 
 		override def unsubscribe(onComplete: Try[A] => Unit): Unit =
 			()
@@ -1998,17 +1989,12 @@ trait Doer { thisDoer =>
 		 * @return this [[Commitment]] as a [[LatchingVenture]] */
 		inline def asLatchingVenture: LatchingVenture[A] = thisCommitment
 
-		override def engage(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Unit =
 			oResult.fold(attach(onComplete))(onComplete)
 
 		override def maybeResult: Maybe[Try[A]] = {
 			checkWithin()
 			oResult
-		}
-
-		override def subscribe(consumer: Try[A] => Unit): Unit = {
-			checkWithin()
-			oResult.fold(attach(consumer))(consumer)
 		}
 
 		override def unsubscribe(onComplete: Try[A] => Unit): Unit = {
@@ -2025,7 +2011,7 @@ trait Doer { thisDoer =>
 			checkWithin()
 			thisCommitment.maybeResult.fold {
 				val commitment = new Commitment[A]
-				thisCommitment.engage { tryA =>
+				thisCommitment.subscribe { tryA =>
 					tryA.foldAndThenReify(
 						commitment.completeUnsafe(_),
 						e => commitment.completeUnsafe(Failure(e)),
@@ -2046,7 +2032,7 @@ trait Doer { thisDoer =>
 			checkWithin()
 			thisCommitment.maybeResult.fold {
 				val commitment = Commitment[B]()
-				thisCommitment.engage { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
+				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
 				commitment
 			} { tryA =>
 				ReadyVenture[B](tryA.reifyBack(f))
@@ -2057,11 +2043,11 @@ trait Doer { thisDoer =>
 			checkWithin()
 			thisCommitment.maybeResult.fold {
 				val commitment = new Commitment[B]
-				thisCommitment.engage(tryA =>
+				thisCommitment.subscribe(tryA =>
 					tryA.reify(e =>
 						commitment.completeUnsafe(Failure(e))
 					)(tryA =>
-						f(tryA).engage(tryB => commitment.completeUnsafe(tryB))
+						f(tryA).subscribe(tryB => commitment.completeUnsafe(tryB))
 					)
 				)
 				commitment
@@ -2072,7 +2058,7 @@ trait Doer { thisDoer =>
 			checkWithin()
 			thisCommitment.maybeResult.fold {
 				val commitment = new Commitment[B]
-				thisCommitment.engage { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
+				thisCommitment.subscribe { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
 				commitment
 			} { tryA =>
 				ReadyVenture(tryA.mapFast(f))
@@ -2083,14 +2069,14 @@ trait Doer { thisDoer =>
 			checkWithin()
 			thisCommitment.maybeResult.fold {
 				val commitment = new Commitment[B]
-				thisCommitment.engage {
+				thisCommitment.subscribe {
 					case success: Success[A] =>
 						val maybeVentureB = try Maybe(f(success.value)) catch {
 							case NonFatal(e) =>
 								commitment.completeUnsafe(Failure(e))
 								Maybe.empty
 						}
-						maybeVentureB.foreach(_.engage(tryB => commitment.completeUnsafe(tryB)))
+						maybeVentureB.foreach(_.subscribe(tryB => commitment.completeUnsafe(tryB)))
 					case failure: Failure[A] =>
 						commitment.completeUnsafe(failure.castTo[B])
 				}
@@ -2182,7 +2168,7 @@ trait Doer { thisDoer =>
 			if completingVenture eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
 			if isWithinDoSerEx then {
 				oResult.fold {
-					completingVenture.engage(result => completeUnsafe(result, onCompleted))
+					completingVenture.subscribe(result => completeUnsafe(result, onCompleted))
 				} { tryA =>
 					try onCompleted(tryA, ANOTHER_BEFORE)
 					catch {
@@ -2230,17 +2216,17 @@ trait Doer { thisDoer =>
 	//////////////// Flow //////////////////////
 
 	def Flow_lift[A, B](f: A => B): Flow[A, B] =
-		(a: A) => Duty_ready(f(a))
+		(a: A) => Task_ready(f(a))
 
-	def Flow_wrap[A, B](builder: A => Duty[B]): Flow[A, B] =
+	def Flow_wrap[A, B](builder: A => Task[B]): Flow[A, B] =
 		(a: A) => builder(a)
 
 	trait Flow[A, B] { thisFlow =>
 
-		protected def flush(a: A): Duty[B]
+		protected def flush(a: A): Task[B]
 
 		inline def apply(a: A, inline isWithinDoSerEx: Boolean = isInSequence)(onComplete: B => Unit): Unit = {
-			def work(): Unit = flush(a).engage(onComplete)
+			def work(): Unit = flush(a).subscribe(onComplete)
 
 			if isWithinDoSerEx then work()
 			else run(work())
@@ -2258,19 +2244,19 @@ trait Doer { thisDoer =>
 
 	//////////////// Subscriptable producer ////////////////////
 
-	/** Memorizes a value latched exactly once, allowing multiple consumers to subscribe.\
-	 * @tparam A The type of the result obtained when the process completes. */
-	trait Idempotent[+A] {
+	/** Facade of a [[Task]] that, once completed, memorizes its result forever. All subscribers receive the same memorized result, even after completion.\
+	 * @tparam A The type of the value. */
+	trait Latching[+A] extends Observable[A] {
 
 		/** @return the result if completed.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		def maybeResult: Maybe[A]
 
-		/** @return true if this [[LatchingDuty]] was fulfilled; or false if it is still pending.
+		/** @return true if this [[LatchingTask]] was fulfilled; or false if it is still pending.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		inline def isCompleted: Boolean = maybeResult.isDefined
 
-		/** @return true if this [[LatchingDuty]] is still pending; or false if it was completed.
+		/** @return true if this [[LatchingTask]] is still pending; or false if it was completed.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		inline def isPending: Boolean = maybeResult.isEmpty
 
@@ -2280,7 +2266,7 @@ trait Doer { thisDoer =>
 		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).\
 		 * @note CAUTION: This method does not prevent duplicate subscriptions.
 		 * @note CAUTION: Must be called within the $DoSerEx */
-		def subscribe(consumer: A => Unit): Unit
+		override def subscribe(consumer: A => Unit): Unit
 
 		/** Removes a subscription done with [[subscribe]].\
 		 * @note CAUTION: Must be called within the $DoSerEx */

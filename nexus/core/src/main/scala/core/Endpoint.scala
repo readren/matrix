@@ -15,7 +15,7 @@ sealed trait Receptor[-M] {
 
 	//	def ask[R](question: M & Receptor[R]): Unit
 //	def ask[R](question: M, replyInbox: Inbox[R]): Unit
-//	def ask[R](question: M, doer: Doer): doer.Duty[R]
+	//	def ask[R](question: M, doer: Doer): doer.Task[R]
 }
 
 case class LocalReceptor[U, M <: U](inqueue: Inqueue[U]) extends Receptor[M] {

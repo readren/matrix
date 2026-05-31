@@ -215,7 +215,7 @@ object Prueba {
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
-			parent.doer.Duty_sequenceToArray(
+			parent.doer.Task_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					val consumerDoer = parent.provideDoer(s"consumer#$consumerIndex", descriptor)
 					parent.spawns[Consumable, consumerDoer.type](actantFactory, consumerDoer) { consumer =>
@@ -242,7 +242,7 @@ object Prueba {
 				parent.doer.checkWithin()
 				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 
-					/** Creates a Duty that builds a producer with operates as follows:
+					/** Creates a Task that builds a producer with operates as follows:
 					 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
 					 * - The Consumables are sent one after the other without waiting any response.
 					 * */
@@ -269,7 +269,7 @@ object Prueba {
 					}
 
 					/**
-					 * Creates a Duty that builds a producer which operates as follows:
+					 * Creates a Task that builds a producer which operates as follows:
 					 * - For each consumer, the following actions are performed sequentially, repeated NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times:
 					 *   - A Consumable is sent to the consumer.
 					 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
@@ -306,7 +306,7 @@ object Prueba {
 						}
 					}
 
-					val buildsProducer: parent.doer.Duty[Actant[?, ?]] =
+					val buildsProducer: parent.doer.Task[Actant[?, ?]] =
 						if useInquisitiveProducer then buildsInquisitiveProducer
 						else buildsRegularProducer
 					buildsProducer.trigger(true) { producer =>
@@ -363,7 +363,7 @@ object Prueba {
 				}
 			}
 
-			parent.stopDuty.trigger() { _ =>
+			parent.stopTask.trigger() { _ =>
 				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")

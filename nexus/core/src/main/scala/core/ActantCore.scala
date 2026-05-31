@@ -96,23 +96,23 @@ abstract class ActantCore[U, D <: Doer](
 	/**
 	 * Should be called only once and within the [[doer]].
 	 * Design note: This method is necessary to initialize the objects referenced by this [[ActantCore]] that also need a reference to this [[ActantCore]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
-	def initialize(): doer.Duty[this.type] = { // send Started signal after all the vals and vars have been initialized
+	def initialize(): doer.Task[this.type] = { // send Started signal after all the vals and vars have been initialized
 		doer.checkWithin()
 		assert(currentBehavior eq null)
-		selfStarts(false, initialBehaviorBuilder).map(_ => thisActant) // TODO considerar hacer que selfStarts devuelva Duty[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Duty[Unit] también hagan lo mismo.
+		selfStarts(false, initialBehaviorBuilder).map(_ => thisActant) // TODO considerar hacer que selfStarts devuelva Task[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Task[Unit] también hagan lo mismo.
 	}
 
 	/** Starts or restarts this [[ActantCore]].
 	 * Should be called only once and within the [[doer]].
 	 * */
-	private def selfStarts(comesFromRestart: Boolean, behaviorBuilder: Actant[U, D] => Behavior[U]): doer.Duty[Unit] = {
+	private def selfStarts(comesFromRestart: Boolean, behaviorBuilder: Actant[U, D] => Behavior[U]): doer.Task[Unit] = {
 		doer.checkWithin()
 		currentBehavior = behaviorBuilder(thisActant)
 		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
-				doer.Duty_unit
+				doer.Task_unit
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart =>
@@ -128,7 +128,7 @@ abstract class ActantCore[U, D <: Doer](
 		initialChildBehaviorBuilder: Actant[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Duty[Actant[V, CD]] = {
+	): doer.Task[Actant[V, CD]] = {
 		doer.checkWithin()
 		oSpawner.fold {
 				val spawner = new Spawner[doer.type](thisActant, doer, serial)
@@ -148,10 +148,10 @@ abstract class ActantCore[U, D <: Doer](
 	}
 
 	/** Calls must be within the [[doer]]. */
-	private final def selfRestarts(stopChildren: Boolean, restartBehaviorBuilder: Actant[U, D] => Behavior[U]): doer.Duty[Unit] = {
+	private final def selfRestarts(stopChildren: Boolean, restartBehaviorBuilder: Actant[U, D] => Behavior[U]): doer.Task[Unit] = {
 		doer.checkWithin()
 
-		def restartMe(): doer.Duty[Unit] = {
+		def restartMe(): doer.Task[Unit] = {
 			// send RestartReceived signal
 			val hr = handleSignal(isSignalTest.restartReceived)
 			mapHrToDecision(hr) match {
@@ -163,11 +163,11 @@ abstract class ActantCore[U, D <: Doer](
 					// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one. The signal handler is NOT called again.
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
-							oSpawner.fold(doer.Duty_unit) { spawner =>
+							oSpawner.fold(doer.Task_unit) { spawner =>
 								spawner.stopsChildren()
 							}
 						}
-						else doer.Duty_unit
+						else doer.Task_unit
 					stopsChildrenIfInstructed.flatMap(_ => selfStarts(true, tr.restartBehaviorBuilder))
 			}
 		}
@@ -181,7 +181,7 @@ abstract class ActantCore[U, D <: Doer](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopDuty: doer.LatchingDuty[Unit] = stopCovenant.asLatchingDuty
+	override def stopTask: doer.LatchingTask[Unit] = stopCovenant.asLatchingTask
 
 	override def watch[CSM <: U](watchedActant: Actant[?, ?], stoppedSignal: CSM, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
@@ -209,8 +209,8 @@ abstract class ActantCore[U, D <: Doer](
 					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
 					activeWatchSubscriptions.computeIfPresent(watchedActant, (_, list) => list.filterNot(_ eq observer))
 					// then undo the subscription, which may be asynchronous. 
-					if watchedActant.doer eq thisActant.doer then watchedActant.stopDuty.unsubscribe(observer)
-					else watchedActant.doer.run(watchedActant.stopDuty.unsubscribe(observer))
+					if watchedActant.doer eq thisActant.doer then watchedActant.stopTask.unsubscribe(observer)
+					else watchedActant.doer.run(watchedActant.stopTask.unsubscribe(observer))
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -225,33 +225,33 @@ abstract class ActantCore[U, D <: Doer](
 			)
 			// and then, make the subscription
 			if watchedActant.doer eq thisActant.doer then {
-				watchedActant.stopDuty.subscribe(observer)
+				watchedActant.stopTask.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), true))
 			} else watchedActant.doer.run {
-				watchedActant.stopDuty.subscribe(observer)
+				watchedActant.stopTask.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), false))
 			}
 			Maybe(observer)
 		}
 	}
 
-	override final def stop(): doer.Duty[Unit] = {
-		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] duty might be triggered more than once, but that is not harmful because it discards repetitions.
+	override final def stop(): doer.Task[Unit] = {
+		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] task might be triggered more than once, but that is not harmful because it discards repetitions.
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
 			isMarkedToStop = true
 			doer.run(selfStop())
 		}
-		stopCovenant.asLatchingDuty
+		stopCovenant.asLatchingTask
 	}
 
 	/**
 	 * Stops this [[ActantCore]].
 	 * Should be called within the [[doer]].
 	 * Supports being called more than one time.
-	 * It is not necessary to trigger the execution of the returned [[Duty]] to start the stop process. The result can be ignored.
-	 * @return a [[Duty]] that completes when this [[ActantCore]] is fully stopped. */
-	private final def selfStop(): doer.Duty[Unit] = {
+	 * It is not necessary to trigger the execution of the returned [[Task]] to start the stop process. The result can be ignored.
+	 * @return a [[Task]] that completes when this [[ActantCore]] is fully stopped. */
+	private final def selfStop(): doer.Task[Unit] = {
 		doer.checkWithin()
 
 		/** should be called within the [[doer]]. */
@@ -274,7 +274,7 @@ abstract class ActantCore[U, D <: Doer](
 				spawner.stopsChildren().trigger(true)(_ => stopMe())
 			}
 		}
-		stopCovenant.asLatchingDuty
+		stopCovenant.asLatchingTask
 	}
 
 	private inline def handleSignal(signal: Option[U]): HandleResult[U] = {
@@ -373,8 +373,8 @@ abstract class ActantCore[U, D <: Doer](
 	}
 
 
-	override def diagnoses: doer.Duty[ActantDiagnostic] =
-		doer.Duty_mine { () =>
+	override def diagnoses: doer.Task[ActantDiagnostic] =
+		doer.Task_mine { () =>
 			val childrenDiagnostic = children.map(_._2.staleDiagnose).toArray
 			ActantDiagnostic(thisActant.isReadyToProcessMsg, thisActant.isMarkedToStop, thisActant.stopWasStarted, inbox.size, inbox.iterator, childrenDiagnostic)
 		}

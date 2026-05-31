@@ -20,8 +20,8 @@ abstract class ActantFactoryTemplate[MS[u] <: Inbox[u] & Inqueue[u]] extends Act
 		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
-	): actantDoer.Duty[ActantCore[U, D]] = {
-		actantDoer.Duty_mineFlat { () =>
+	): actantDoer.Task[ActantCore[U, D]] = {
+		actantDoer.Task_mineFlat { () =>
 			new ActantCore[U, D](serial, actantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)

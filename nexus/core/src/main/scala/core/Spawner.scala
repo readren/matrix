@@ -19,7 +19,7 @@ object Spawner {
 class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: ActantCore.SerialNumber) { thisSpawner =>
 
 	/**
-	 * The [[Doer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Duty]] returned by [[createsActant]]
+	 * The [[Doer]] within which the mutable members of this class are mutated; and the [[Doer]] that contains the [[Task]] returned by [[createsActant]]
 	 * Is the same [[Doer]] instance as the owner's.
 	 */
 
@@ -33,14 +33,14 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 	 * Access must be within the [[doer]]. */
 	val childrenView: MapView[Long, ActantCore[?, ?]] = children.view
 
-	/** Creates a [[Duty]] that creates a new [[ActantCore]].
+	/** Creates a [[Task]] that creates a new [[ActantCore]].
 	 * Calls must be within the [[doer]]. */
 	def createsActant[U, CD <: Doer](
 		childFactory: ActantFactory,
 		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
-	): doer.Duty[Actant[U, CD]] = {
+	): doer.Task[Actant[U, CD]] = {
 		doer.checkWithin()
 		lastChildSerial += 1
 		val childSerial = lastChildSerial
@@ -53,10 +53,10 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 	}
 
 	/** Calls must be within the [[doer]]. */
-	def stopsChildren(): doer.Duty[Array[Unit]] = {
+	def stopsChildren(): doer.Task[Array[Unit]] = {
 		doer.checkWithin()
-		val stopDuties = childrenView.values.map(child => doer.Duty_foreign(child.doer)(child.stop()))
-		doer.Duty_sequenceToArray(stopDuties)
+		val stopDuties = childrenView.values.map(child => doer.Task_foreign(child.doer)(child.stop()))
+		doer.Task_sequenceToArray(stopDuties)
 	}
 
 	/** Calls must be within the [[doer]]. */
