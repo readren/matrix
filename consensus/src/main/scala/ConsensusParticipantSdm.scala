@@ -1804,7 +1804,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 
-			/** Like [[updateRole]] but already knowing the current [[PrimaryState]]. */
+			/** Like [[updateRole]] but already knowing the current [[PrimaryState]].
+			 * TODO rely on a heartbeat that bypasses the [[primaryStateFence]] to demote a leader. It the response the the heartbeat shoule contain a StateInfo to allow discarding false positives (when the follower persistense is silently stuck). */
 			def updateRole(primaryState0: PrimaryState)(using Context): sequencer.LatchingTask[Unit] = {
 				checkWithin()
 				if assertionsEnabled then assert(currentRole eq this)
@@ -2792,6 +2793,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * When a record is successfully replicated to a participant, the index of the next record to send to that participant is incremented.
 			 * When a record is not successfully replicated to a participant, the index of the next record to send to that participant is decremented.
 			 * TODO: Consider initializing the array with the first empty record index unless the last filled ones are configuration changes, in which case initialize with the index of the first of them. Why? Because sending extra [[ConfigChange]] instances is cheap and may avoid rejections due to need of an earlier [[Record]].
+			 * TODO: Cache Peer Progress Across Re-Elections: When demoted, store this and the other arrays in a transit map of the [[ConsensusParticipant]], and use it to initialize the arrays when becoming leader again. That would save many messages when reelected.
 			 */
 			private var indexOfNextRecordToSend_ByParticipantIndex: Array[RecordIndex] = Array.fill(initialConfig.peers.size)(initialPrimaryState.firstEmptyRecordIndex)
 			/** The highest record index known to be replicated to a participant, indexed by the participant index.

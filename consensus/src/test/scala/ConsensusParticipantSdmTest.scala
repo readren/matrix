@@ -1420,6 +1420,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 9, true, -5561042816536613276L),
 			(30, 5, false, 3454827329483479159L), // strange situation during graceful shutdown
 			(30, 6, false, 4377378712223639909L), // LeaderTransition record kind is used.
 			(30, 8, true, 3219848794431902011L),
@@ -1463,10 +1464,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (9, true, -5561042816536613276L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (10, true, -134366791616716141L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 10, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
 	}
 
 	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds.
@@ -1482,7 +1483,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			val clusterSize = clusterSize1 * clusterSize2
 			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 10, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
 		}
 	}
 }

@@ -8,28 +8,30 @@ extension [A](array: IArray[A]) {
 	inline def mapWithIndex[B: ClassTag](inline f: (element: A, index: Int) => B): IArray[B] = {
 		val length = array.length
 		val result = new Array[B](length)
-		var index = length
-		while index > 0 do {
-			index -= 1
+		var index = 0
+		while index < length do {
 			result(index) = f(array(index), index)
+			index += 1
 		}
 		IArray.unsafeFromArray(result)
 	}
 
 	inline def foreachWithIndex(inline consumer: (element: A, index: Int) => Any): Unit = {
-		var index = array.length
-		while index > 0 do {
-			index -= 1
+		val length = array.length
+		var index = 0
+		while index < length do {
 			consumer(array(index), index)
+			index += 1
 		}
 	}
 
 	inline def countWithIndex(inline predicate: (element: A, index: Int) => Boolean): Int = {
-		var index = array.length
-		var counter: Int = 0
-		while index > 0 do {
-			index -= 1
+		val length = array.length
+		var index = 0
+		var counter = 0
+		while index < length do {
 			if predicate(array(index), index) then counter += 1
+			index += 1
 		}
 		counter
 	}
@@ -53,11 +55,12 @@ extension [A](array: IArray[A]) {
 	}
 
 	inline def existsWithIndex(inline predicate: (elem: A, index: Int) => Boolean): Boolean = {
-		var index = array.length
+		val length = array.length
+		var index = 0
 		var exists = false
-		while index > 0 && !exists do {
-			index -= 1
+		while index < length && !exists do {
 			exists = predicate(array(index), index)
+			index += 1
 		}
 		exists
 	}
