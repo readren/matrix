@@ -220,93 +220,138 @@ trait SandboxDoer { thisDoer =>
 	/////////////// Trial hierarchies ///////////////
 
 	/** A lazy exception-aware computation.
-	 * Monadic combinators map/flatMap over the success value of the Try. */
-	trait Venture[+A] extends Task[Try[A]] { thisVenture =>
+	 * Monadic combinators map/flatMap over the success value. */
+	trait Venture[+A] { thisVenture =>
+		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit
+
+		def toTask: Task[Try[A]] =
+			(onComplete: Try[A] => Unit) =>
+				thisVenture.subscribe(
+					a => onComplete(Success(a)),
+					ex => onComplete(Failure(ex))
+				)
 
 		def transform[B](f: Try[A] => Try[B]): Venture[B] =
-			(onComplete: Consumer[Try[B]]) => thisVenture.subscribe { tryA =>
-				val tryB =
-					try f(tryA)
-					catch {
-						case NonFatal(e) => Failure(e)
-					}
-				onComplete(tryB)
-			}
-
-		def transformWith[B](f: Try[A] => Venture[B]): Venture[B] =
-			(onComplete: Consumer[Try[B]]) => thisVenture.subscribe { tryA =>
-				val maybeVentureB =
-					try Maybe(f(tryA))
-					catch {
-						case NonFatal(e) =>
-							onComplete(Failure(e))
-							Maybe.empty
-					}
-				maybeVentureB.foreach(_.subscribe(onComplete))
-			}
-
-		@targetName("mapSuccess") // Differentiates from Task.map(Try[A] => B) to prevent JVM signature clashes on return-type alignment and enable Java interop
-		def map[B](f: A => B): Venture[B] =
-			(onComplete: Consumer[Try[B]]) => thisVenture.subscribe {
-				case Success(a) =>
-					val tryB =
-						try Success(f(a))
-						catch {
-							case NonFatal(e) => Failure(e)
-						}
-					onComplete(tryB)
-				case failure: Failure[A] => onComplete(failure.asInstanceOf[Failure[B]])
-			}
-
-		def flatMap[B](f: A => Venture[B]): Venture[B] =
-			(onComplete: Consumer[Try[B]]) => {
-				thisVenture.subscribe {
-					case Success(a) =>
-						val maybeVentureB =
-							try Maybe(f(a))
-							catch {
-								case NonFatal(e) =>
-									onComplete(Failure(e))
-									Maybe.empty
-							}
-						maybeVentureB.foreach(_.subscribe(onComplete))
-					case failure: Failure[A] =>
-						onComplete(failure.asInstanceOf[Failure[B]])
-				}
-			}
-
-		@targetName("flatMapSuccess")
-		def flatMap[B](f: A => Observable[Try[B]]): Venture[B] =
-			(onComplete: Consumer[Try[B]]) => thisVenture.subscribe {
-				case Success(a) =>
-					val maybeObservable =
-						try Maybe(f(a))
-						catch {
+			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+				thisVenture.subscribe(
+					a => {
+						val b = try Maybe.some(f(Success(a))) catch {
 							case NonFatal(e) =>
-								onComplete(Failure(e))
+								onError(e)
 								Maybe.empty
 						}
-					maybeObservable.foreach(_.subscribe(onComplete))
-				case failure: Failure[A] =>
-					onComplete(failure.asInstanceOf[Failure[B]])
-			}
+						b.foreach {
+							case Success(res) => onSuccess(res)
+							case Failure(err) => onError(err)
+						}
+					},
+					ex => {
+						val b = try Maybe.some(f(Failure(ex))) catch {
+							case NonFatal(e) =>
+								onError(e)
+								Maybe.empty
+						}
+						b.foreach {
+							case Success(res) => onSuccess(res)
+							case Failure(err) => onError(err)
+						}
+					}
+				)
+
+		def transformWith[B](f: Try[A] => Venture[B]): Venture[B] =
+			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+				thisVenture.subscribe(
+					a => {
+						val venture = try Maybe.some(f(Success(a))) catch {
+							case NonFatal(e) =>
+								onError(e)
+								Maybe.empty
+						}
+						venture.foreach(_.subscribe(onSuccess, onError))
+					},
+					ex => {
+						val venture = try Maybe.some(f(Failure(ex))) catch {
+							case NonFatal(e) =>
+								onError(e)
+								Maybe.empty
+						}
+						venture.foreach(_.subscribe(onSuccess, onError))
+					}
+				)
+
+		@targetName("mapSuccess")
+		def map[B](f: A => B): Venture[B] =
+			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+				thisVenture.subscribe(
+					a => {
+						val b = try Maybe.some(f(a)) catch {
+							case NonFatal(e) =>
+								onError(e)
+								Maybe.empty
+						}
+						b.foreach(onSuccess)
+					},
+					onError
+				)
+
+		def flatMap[B](f: A => Venture[B]): Venture[B] =
+			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+				thisVenture.subscribe(
+					a => {
+						val venture = try Maybe.some(f(a)) catch {
+							case NonFatal(e) =>
+								onError(e)
+								Maybe.empty
+						}
+						venture.foreach(_.subscribe(onSuccess, onError))
+					},
+					onError
+				)
 	}
 
 	def Venture_ready[A](tryA: Try[A]): Venture[A] =
-		(onComplete: Consumer[Try[A]]) => onComplete(tryA)
+		(onSuccess: A => Unit, onError: Throwable => Unit) =>
+			tryA match {
+				case Success(a) => onSuccess(a)
+				case Failure(e) => onError(e)
+			}
 
 
 	/** Exception-aware latching result (caches a Try[A]).
-	 * Monadic combinators map/flatMap over the success value of the Try.
+	 * Monadic combinators map/flatMap over the success value.
 	 */
-	sealed trait TrialCapturer[+A] extends Settling[Try[A]] { thisTrialCapturer =>
+	sealed trait TrialCapturer[+A] { thisTrialCapturer =>
+		def maybeValue: Maybe[Try[A]]
 
-		override def map[B](f: Try[A] => B): Capturer[B] = thisTrialCapturer match {
+		inline def isCompleted: Boolean = maybeValue.isDefined
+
+		inline def isPending: Boolean = maybeValue.isEmpty
+
+		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit =
+			subscribe((a, _, _) => onSuccess(a), onError, null, -1, -1)
+
+		def subscribe(
+			onSuccess: MatrixConsumer[A],
+			onError: Throwable => Unit,
+			key: Key,
+			upChain: Int,
+			downChain: Int
+		): Unit
+
+		def unsubscribe(key: Key): Unit
+
+		def unsubscribe(onSuccess: A => Unit): Unit
+
+		def isSubscribed(key: Key): Boolean
+
+		def isSubscribed(onSuccess: A => Unit): Boolean
+
+		def map[B](f: Try[A] => B): Capturer[B] = thisTrialCapturer match {
 			case keeper: TrialKeeper[A] => keeper.map(f)
 			case captor: TrialCaptor[A] @unchecked => captor.map(f)
 		}
 
-		override def flatMap[B](f: Try[A] => Observable[B]): Observable[B] = thisTrialCapturer match {
+		def flatMap[B](f: Try[A] => Observable[B]): Observable[B] = thisTrialCapturer match {
 			case keeper: TrialKeeper[A] => keeper.flatMap(f)
 			case captor: TrialCaptor[A] @unchecked => captor.flatMap(f)
 		}
@@ -316,7 +361,7 @@ trait SandboxDoer { thisDoer =>
 			case captor: TrialCaptor[A] @unchecked => captor.flatMap(f)
 		}
 
-		@targetName("mapSuccess") // Differentiates from Settling.map(Try[A] => B) to prevent JVM signature clashes on return-type alignment and enable Java interop
+		@targetName("mapSuccess")
 		def map[B](f: A => B): TrialCapturer[B] = thisTrialCapturer match {
 			case keeper: TrialKeeper[A] => keeper.map(f)
 			case captor: TrialCaptor[A] @unchecked => captor.map(f)
@@ -326,28 +371,29 @@ trait SandboxDoer { thisDoer =>
 			case keeper: TrialKeeper[A] => keeper.flatMap(f)
 			case captor: TrialCaptor[A] @unchecked => captor.flatMap(f)
 		}
-
-		@targetName("flatMapSuccess")
-		def flatMap[B](f: A => Observable[Try[B]]): Observable[Try[B]] = thisTrialCapturer match {
-			case keeper: TrialKeeper[A] => keeper.flatMap(f)
-			case captor: TrialCaptor[A] @unchecked => captor.flatMap(f)
-		}
 	}
 
 	class TrialKeeper[+A](val value: Try[A]) extends TrialCapturer[A] {
 		override def maybeValue: Maybe[Try[A]] = Maybe(value)
 
-		override def subscribe(consumer: Consumer[Try[A]]): Unit = consumer(value)
+		override def subscribe(
+			onSuccess: MatrixConsumer[A],
+			onError: Throwable => Unit,
+			key: Key,
+			upChain: Int,
+			downChain: Int
+		): Unit = value match {
+			case Success(a) => onSuccess(a, upChain, downChain)
+			case Failure(ex) => onError(ex)
+		}
 
 		override def unsubscribe(key: Key): Unit = ()
 
-		override def unsubscribe(consumer: Consumer[Try[A]]): Unit = ()
+		override def unsubscribe(onSuccess: A => Unit): Unit = ()
 
 		override def isSubscribed(key: Key): Boolean = false
 
-		override def isSubscribed(consumer: Consumer[Try[A]]): Boolean = false
-
-		override def subscribe(consumer: MatrixConsumer[Try[A]], key: Key, upChain: Int, downChain: Int): Unit = consumer(value, upChain, downChain)
+		override def isSubscribed(onSuccess: A => Unit): Boolean = false
 
 		override def map[B](f: Try[A] => B): Capturer[B] = new Keeper(f(value))
 
@@ -358,27 +404,14 @@ trait SandboxDoer { thisDoer =>
 		@targetName("mapSuccess")
 		override def map[B](f: A => B): TrialKeeper[B] = value match {
 			case Success(a) =>
-				val tryB =
-					try Success(f(a))
-					catch {
-						case NonFatal(e) => Failure(e)
-					}
-				new TrialKeeper(tryB)
-			case Failure(e) =>
-				this.asInstanceOf[TrialKeeper[B]]
-		}
-
-		override def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = value match {
-			case Success(a) =>
-				try f(a)
+				try new TrialKeeper(Success(f(a)))
 				catch {
 					case NonFatal(e) => new TrialKeeper(Failure(e))
 				}
 			case Failure(e) => this.asInstanceOf[TrialKeeper[B]]
 		}
 
-		@targetName("flatMapSuccess")
-		override def flatMap[B](f: A => Observable[Try[B]]): Observable[Try[B]] = value match {
+		override def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = value match {
 			case Success(a) =>
 				try f(a)
 				catch {
@@ -390,60 +423,70 @@ trait SandboxDoer { thisDoer =>
 
 	class TrialCaptor[A](initialState: Maybe[Try[A]] = Maybe.empty) extends TrialCapturer[A] {
 		private var state: Maybe[Try[A]] = initialState
-		private var subscribers: List[Consumer[Try[A]] | (Key, MatrixConsumer[Try[A]], Int, Int)] = Nil
+		private var subscribers: List[
+			(MatrixConsumer[A], Throwable => Unit) |
+				(Key, MatrixConsumer[A], Throwable => Unit, Int, Int)
+		] = Nil
 
 		override def maybeValue: Maybe[Try[A]] = state
 
-		override def subscribe(consumer: Consumer[Try[A]]): Unit = {
-			state.fold {
-				subscribers = consumer :: subscribers
-			} { tryA =>
-				consumer(tryA)
-			}
-		}
-
-		override def subscribe(consumer: MatrixConsumer[Try[A]], key: Key, upChain: Int, downChain: Int): Unit = {
+		override def subscribe(
+			onSuccess: MatrixConsumer[A],
+			onError: Throwable => Unit,
+			key: Key,
+			upChain: Int,
+			downChain: Int
+		): Unit = {
 			state.fold {
 				if key != null then unsubscribe(key)
-				subscribers = (key, consumer, upChain, downChain) :: subscribers
-			} { tryA =>
-				consumer(tryA, upChain, downChain)
+				subscribers = (key, onSuccess, onError, upChain, downChain) :: subscribers
+			} {
+				case Success(a) => onSuccess(a, upChain, downChain)
+				case Failure(ex) => onError(ex)
 			}
 		}
 
 		override def unsubscribe(key: Key): Unit = {
 			if key != null then
 				subscribers = subscribers.filterNot {
-					case (k: Key, _, _, _) => k == key
+					case (k: Key, _, _, _, _) => k == key
 					case _ => false
 				}
 		}
 
-		override def unsubscribe(consumer: Consumer[Try[A]]): Unit = {
+		override def unsubscribe(onSuccess: A => Unit): Unit = {
 			subscribers = subscribers.filterNot {
-				case c: Consumer[Try[A]] @unchecked => c eq consumer
+				case (onS: MatrixConsumer[A] @unchecked, _) => false
 				case _ => false
 			}
 		}
 
 		override def isSubscribed(key: Key): Boolean = {
 			key != null && subscribers.exists {
-				case (k: Key, _, _, _) => k == key
+				case (k: Key, _, _, _, _) => k == key
 				case _ => false
 			}
 		}
 
-		override def isSubscribed(consumer: Consumer[Try[A]]): Boolean = {
-			subscribers.exists {
-				case c: Consumer[Try[A]] @unchecked => c eq consumer
-				case _ => false
-			}
-		}
+		override def isSubscribed(onSuccess: A => Unit): Boolean = false
 
 		override def map[B](f: Try[A] => B): Capturer[B] = {
 			state.fold {
 				val captor = new Captor[B]()
-				this.subscribe(tryA => captor.capture(f(tryA)))
+				this.subscribe(
+					a => {
+						val b = try Maybe.some(f(Success(a))) catch {
+							case NonFatal(e) => Maybe.empty
+						}
+						b.foreach(captor.capture)
+					},
+					ex => {
+						val b = try Maybe.some(f(Failure(ex))) catch {
+							case NonFatal(e) => Maybe.empty
+						}
+						b.foreach(captor.capture)
+					}
+				)
 				captor
 			} { tryA =>
 				new Keeper(f(tryA))
@@ -453,7 +496,10 @@ trait SandboxDoer { thisDoer =>
 		override def flatMap[B](f: Try[A] => Observable[B]): Observable[B] = {
 			state.fold {
 				val captor = new Captor[B]()
-				this.subscribe(tryA => f(tryA).subscribe(b => captor.capture(b)))
+				this.subscribe(
+					a => f(Success(a)).subscribe(b => captor.capture(b)),
+					ex => f(Failure(ex)).subscribe(b => captor.capture(b))
+				)
 				captor
 			}(f)
 		}
@@ -461,7 +507,10 @@ trait SandboxDoer { thisDoer =>
 		override def flatMap[B](f: Try[A] => Capturer[B]): Capturer[B] = {
 			state.fold {
 				val captor = new Captor[B]()
-				this.subscribe(tryA => f(tryA).subscribe(b => captor.capture(b)))
+				this.subscribe(
+					a => f(Success(a)).subscribe(b => captor.capture(b)),
+					ex => f(Failure(ex)).subscribe(b => captor.capture(b))
+				)
 				captor
 			}(f)
 		}
@@ -470,47 +519,43 @@ trait SandboxDoer { thisDoer =>
 		override def map[B](f: A => B): TrialCapturer[B] = {
 			state.fold {
 				val captor = new TrialCaptor[B]()
-				this.subscribe {
-					case Success(a) =>
-						val tryB =
-							try Success(f(a))
-							catch {
-								case NonFatal(e) => Failure(e)
-							}
-						captor.capture(tryB)
-					case failure: Failure[A] =>
-						captor.capture(failure.asInstanceOf[Failure[B]])
-				}
+				this.subscribe(
+					a => {
+						val res = try Success(f(a)) catch {
+							case NonFatal(e) => Failure(e)
+						}
+						captor.capture(res)
+					},
+					ex => captor.capture(Failure(ex))
+				)
 				captor
 			} {
 				case Success(a) =>
-					val tryB =
-						try Success(f(a))
-						catch {
-							case NonFatal(e) => Failure(e)
-						}
-					new TrialKeeper(tryB)
-				case failure: Failure[A] =>
-					this.asInstanceOf[TrialCapturer[B]]
+					try new TrialKeeper(Success(f(a)))
+					catch {
+						case NonFatal(e) => new TrialKeeper(Failure(e))
+					}
+				case Failure(ex) => this.asInstanceOf[TrialCapturer[B]]
 			}
 		}
 
 		override def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = {
 			state.fold {
 				val captor = new TrialCaptor[B]()
-				this.subscribe {
-					case Success(a) =>
-						val maybeCapturer =
-							try Maybe(f(a))
-							catch {
-								case NonFatal(e) =>
-									captor.capture(Failure(e))
-									Maybe.empty
-							}
-						maybeCapturer.foreach(_.subscribe(tryB => captor.capture(tryB)))
-					case failure: Failure[A] =>
-						captor.capture(failure.asInstanceOf[Failure[B]])
-				}
+				this.subscribe(
+					a => {
+						val inner = try Maybe.some(f(a)) catch {
+							case NonFatal(e) =>
+								captor.capture(Failure(e))
+								Maybe.empty
+						}
+						inner.foreach(_.subscribe(
+							b => captor.capture(Success(b)),
+							ex => captor.capture(Failure(ex))
+						))
+					},
+					ex => captor.capture(Failure(ex))
+				)
 				captor
 			} {
 				case Success(a) =>
@@ -518,36 +563,7 @@ trait SandboxDoer { thisDoer =>
 					catch {
 						case NonFatal(e) => new TrialKeeper(Failure(e))
 					}
-				case failure: Failure[A] => this.asInstanceOf[TrialCapturer[B]]
-			}
-		}
-
-		@targetName("flatMapSuccess")
-		override def flatMap[B](f: A => Observable[Try[B]]): Observable[Try[B]] = {
-			state.fold {
-				val captor = new TrialCaptor[B]()
-				this.subscribe {
-					case Success(a) =>
-						val maybeObservable =
-							try Maybe(f(a))
-							catch {
-								case NonFatal(e) =>
-									captor.capture(Failure(e))
-									Maybe.empty
-							}
-						maybeObservable.foreach(_.subscribe(captor.capture))
-					case failure: Failure[A] =>
-						captor.capture(failure.asInstanceOf[Failure[B]])
-				}
-				captor
-			} {
-				case Success(a) =>
-					try f(a)
-					catch {
-						case NonFatal(e) => new TrialKeeper(Failure(e))
-					}
-				case failure: Failure[A] =>
-					new TrialKeeper(failure.castTo[B])
+				case Failure(ex) => this.asInstanceOf[TrialCapturer[B]]
 			}
 		}
 
@@ -557,10 +573,16 @@ trait SandboxDoer { thisDoer =>
 				val currentSubscribers = subscribers
 				subscribers = Nil
 				currentSubscribers.reverse.foreach {
-					case consumer: Consumer[Try[A]] @unchecked =>
-						consumer(result)
-					case (_, consumer: MatrixConsumer[Try[A]] @unchecked, upChain: Int, downChain: Int) =>
-						consumer(result, upChain, downChain)
+					case (onSuccess: MatrixConsumer[A] @unchecked, onError) =>
+						result match {
+							case Success(a) => onSuccess(a, -1, -1)
+							case Failure(ex) => onError(ex)
+						}
+					case (_, onSuccess: MatrixConsumer[A] @unchecked, onError, upChain, downChain) =>
+						result match {
+							case Success(a) => onSuccess(a, upChain, downChain)
+							case Failure(ex) => onError(ex)
+						}
 				}
 			}(_ => ())
 		}
@@ -618,6 +640,47 @@ trait SandboxDoer { thisDoer =>
 		def take(n: Int): ObservableArray[A]
 
 		def takeWhile(p: A => Boolean): ObservableArray[A]
+
+		/** Collapses the stream into a single value, allowing early termination via Maybe.empty. */
+		def foldWhile[B](initial: B)(f: (B, A) => Maybe[B]): Venture[B] = {
+			(onSuccess: B => Unit, onError: Throwable => Unit) => {
+				var state = initial
+				var active = true
+
+				this.subscribe(
+					onNext = (a, up, down) => {
+						if (active) {
+							val next = try f(state, a) catch {
+								case NonFatal(ex) =>
+									active = false
+									onError(ex)
+									Maybe.empty
+							}
+							if (active) {
+								next.fold {
+									active = false
+									onSuccess(state)
+								} { nextState =>
+									state = nextState
+								}
+							}
+						}
+					},
+					onError = ex => {
+						if (active) {
+							active = false
+							onError(ex)
+						}
+					},
+					onComplete = () => {
+						if (active) {
+							active = false
+							onSuccess(state)
+						}
+					}
+				)
+			}
+		}
 	}
 
 	/** Partial implementation of [[ObservableArray]] */
@@ -676,6 +739,7 @@ trait SandboxDoer { thisDoer =>
 					DefaultObservableArray.this.subscribe(
 						new MatrixConsumer[A] {
 							private var state = initial
+
 							def apply(a: A, upChain: Int, downChain: Int): Unit = {
 								state = f(state, a)
 								onNext(state, upChain, downChain)
@@ -698,6 +762,7 @@ trait SandboxDoer { thisDoer =>
 					class BufferedConsumer extends MatrixConsumer[A] {
 						private var count = 0
 						private var chunkIndex = 0
+
 						def apply(a: A, up: Int, down: Int): Unit = {
 							buf(count) = a
 							count += 1
@@ -709,6 +774,7 @@ trait SandboxDoer { thisDoer =>
 								onNext(chunk, up, idx)
 							}
 						}
+
 						def flush(): Unit = {
 							if (count > 0) {
 								val partial = IArray.unsafeFromArray(buf.take(count))
@@ -744,6 +810,7 @@ trait SandboxDoer { thisDoer =>
 						new MatrixConsumer[A] {
 							private var count = 0
 							private var active = true
+
 							def apply(a: A, up: Int, down: Int): Unit = {
 								if (active) {
 									if (count < n) {
@@ -775,6 +842,7 @@ trait SandboxDoer { thisDoer =>
 						new MatrixConsumer[A] {
 							private var active = true
 							private var counter = 0
+
 							def apply(a: A, up: Int, down: Int): Unit = {
 								if (active) {
 									if (p(a)) {
@@ -995,6 +1063,7 @@ trait SandboxDoer { thisDoer =>
 					DefaultTaskArray.this.subscribe(
 						new MatrixConsumer[A] {
 							private var state = initial
+
 							def apply(a: A, upChain: Int, downChain: Int): Unit = {
 								state = f(state, a)
 								onNext(state, upChain, downChain)
@@ -1017,6 +1086,7 @@ trait SandboxDoer { thisDoer =>
 					class BufferedConsumer extends MatrixConsumer[A] {
 						private var count = 0
 						private var chunkIndex = 0
+
 						def apply(a: A, up: Int, down: Int): Unit = {
 							buf(count) = a
 							count += 1
@@ -1028,6 +1098,7 @@ trait SandboxDoer { thisDoer =>
 								onNext(chunk, up, idx)
 							}
 						}
+
 						def flush(): Unit = {
 							if (count > 0) {
 								val partial = IArray.unsafeFromArray(buf.take(count))
@@ -1067,6 +1138,7 @@ trait SandboxDoer { thisDoer =>
 						new MatrixConsumer[A] {
 							private var count = 0
 							private var active = true
+
 							def apply(a: A, up: Int, down: Int): Unit = {
 								if (active) {
 									if (count < n) {
@@ -1098,6 +1170,7 @@ trait SandboxDoer { thisDoer =>
 						new MatrixConsumer[A] {
 							private var active = true
 							private var counter = 0
+
 							def apply(a: A, up: Int, down: Int): Unit = {
 								if (active) {
 									if (p(a)) {
@@ -1346,15 +1419,18 @@ trait SandboxDoer { thisDoer =>
 					} else {
 						var completedCount = 0
 						var errorFired = false
+
 						def tryComplete(): Unit = {
 							if (completedCount == size && !errorFired) onComplete()
 						}
+
 						def handleFailure(ex: Throwable): Unit = {
 							if (!errorFired) {
 								errorFired = true
 								onError(ex)
 							}
 						}
+
 						values.foreachWithIndex { (a, outerIndex) =>
 							f(a).subscribe(
 								(b, innerOuter, innerInner) => onNext(b, outerIndex, innerInner),
@@ -1386,15 +1462,18 @@ trait SandboxDoer { thisDoer =>
 					} else {
 						var completedCount = 0
 						var errorFired = false
+
 						def tryComplete(): Unit = {
 							if (completedCount == size && !errorFired) onComplete()
 						}
+
 						def handleFailure(ex: Throwable): Unit = {
 							if (!errorFired) {
 								errorFired = true
 								onError(ex)
 							}
 						}
+
 						values.foreachWithIndex { (a, outerIndex) =>
 							f(a, outerIndex).subscribe(
 								(b, innerOuter, innerInner) => onNext(b, outerIndex, innerInner),
@@ -2206,6 +2285,7 @@ trait SandboxDoer { thisDoer =>
 			inline def asCapturer: Capturer[Maybe[ChainNode[A]]] = chain
 		}
 	}
+
 	import ChainOps.Chain
 
 	/** A producer class for dynamically generating an asynchronous promise-chained functional stream.

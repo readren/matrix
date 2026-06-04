@@ -31,7 +31,8 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 - Use `compile` as the validation baseline.
 
 ### Format
-- Never wrap text. Let the container do that.
+
+- No hard wraps or newlines in paragraphs. Let container soft-wrap.
 
 ## High-level architecture
 

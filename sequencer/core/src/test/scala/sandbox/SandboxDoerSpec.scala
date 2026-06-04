@@ -4,10 +4,12 @@ package sandbox
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop
 import readren.common.Maybe
+import scala.util.{Try, Success, Failure}
 
 object TestSandboxDoer extends SandboxDoer
 
 class SandboxDoerSpec extends ScalaCheckEffectSuite {
+
 	import TestSandboxDoer.*
 
 	private def makeTask[A](value: A): Task[A] = new Task[A] {
@@ -501,4 +503,237 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(collectedTakeWhile, List(1, 2))
 		assertEquals(completedTakeWhile, true)
 	}
+
+	test("Venture - basic success and failure propagation") {
+		var successVal = -1
+		var failureEx: Throwable = null
+
+		val successV = Venture_ready(Success(42))
+		successV.subscribe(
+			onSuccess = v => successVal = v,
+			onError = ex => failureEx = ex
+		)
+		assertEquals(successVal, 42)
+		assert(failureEx == null)
+
+		val testEx = new Exception("venture-err")
+		val failureV = Venture_ready(Failure[Int](testEx))
+		failureV.subscribe(
+			onSuccess = v => successVal = v,
+			onError = ex => failureEx = ex
+		)
+		assertEquals(successVal, 42) // unchanged
+		assertEquals(failureEx, testEx)
+	}
+
+	test("Venture - toTask conversion") {
+		val vSuccess = Venture_ready(Success(10))
+		val taskSuccess = vSuccess.toTask
+		var resSuccess: Try[Int] = null
+		taskSuccess.subscribe(t => resSuccess = t)
+		assertEquals(resSuccess, Success(10))
+
+		val testEx = new Exception("task-err")
+		val vFailure = Venture_ready(Failure[Int](testEx))
+		val taskFailure = vFailure.toTask
+		var resFailure: Try[Int] = null
+		taskFailure.subscribe(t => resFailure = t)
+		assertEquals(resFailure, Failure(testEx))
+	}
+
+	test("Venture - monadic operations (map, flatMap, transform, transformWith)") {
+		val v = Venture_ready(Success(5))
+
+		// map success
+		var mapRes = 0
+		var mapErr: Throwable = null
+		v.map(_ * 2).subscribe(onSuccess = mapRes = _, onError = mapErr = _)
+		assertEquals(mapRes, 10)
+		assert(mapErr == null)
+
+		// map throwing exception
+		val testEx = new Exception("map-err")
+		v.map[Int](_ => throw testEx).subscribe(onSuccess = mapRes = _, onError = mapErr = _)
+		assertEquals(mapErr, testEx)
+
+		// flatMap success
+		var flatMapRes = 0
+		v.flatMap(x => Venture_ready(Success(x + 10))).subscribe(onSuccess = flatMapRes = _, onError = _ => ())
+		assertEquals(flatMapRes, 15)
+
+		// flatMap failure propagation
+		var flatMapErr: Throwable = null
+		v.flatMap(x => Venture_ready(Failure[Int](testEx))).subscribe(onSuccess = _ => (), onError = flatMapErr = _)
+		assertEquals(flatMapErr, testEx)
+
+		// transform success to failure
+		var transErr: Throwable = null
+		v.transform {
+			case Success(n) => Failure(testEx)
+			case Failure(_) => Success(0)
+		}.subscribe(onSuccess = _ => (), onError = transErr = _)
+		assertEquals(transErr, testEx)
+
+		// transformWith failure to success
+		var transWithRes = 0
+		val vErr = Venture_ready(Failure[Int](testEx))
+		vErr.transformWith {
+			case Success(_) => Venture_ready(Success(0))
+			case Failure(_) => Venture_ready(Success(99))
+		}.subscribe(onSuccess = transWithRes = _, onError = _ => ())
+		assertEquals(transWithRes, 99)
+	}
+
+	test("TrialKeeper - basic operations and mapping") {
+		val keeperSuccess = new TrialKeeper(Success(42))
+		assertEquals(keeperSuccess.maybeValue, Maybe(Success(42)))
+		assert(keeperSuccess.isCompleted)
+		assert(!keeperSuccess.isPending)
+
+		var successVal = 0
+		var errorVal: Throwable = null
+		keeperSuccess.subscribe(onSuccess = successVal = _, onError = errorVal = _)
+		assertEquals(successVal, 42)
+		assert(errorVal == null)
+
+		val keeperFailure = new TrialKeeper[Int](Failure(new Exception("keeper-err")))
+		assert(keeperFailure.isCompleted)
+		keeperFailure.subscribe(onSuccess = successVal = _, onError = errorVal = _)
+		assertEquals(errorVal.getMessage, "keeper-err")
+
+		// map and flatMap
+		val mapped = keeperSuccess.map((x: Int) => x * 2) // TrialCapturer.map(A => B) -> TrialCapturer[B]
+		var mappedVal = 0
+		mapped.subscribe(onSuccess = mappedVal = _, onError = _ => ())
+		assertEquals(mappedVal, 84)
+
+		val flatMapped = keeperSuccess.flatMap((x: Int) => new TrialKeeper(Success(x.toString)))
+		var flatMappedVal = ""
+		flatMapped.subscribe(onSuccess = flatMappedVal = _, onError = _ => ())
+		assertEquals(flatMappedVal, "42")
+	}
+
+	test("TrialCaptor - lifecycle, callbacks and unsubscribing") {
+		val captor = new TrialCaptor[Int]()
+		assert(!captor.isCompleted)
+		assert(captor.isPending)
+		assertEquals(captor.maybeValue, Maybe.empty)
+
+		var successVal = 0
+		var errorVal: Throwable = null
+		captor.subscribe(onSuccess = successVal = _, onError = errorVal = _)
+
+		// capture success
+		captor.capture(Success(100))
+		assert(captor.isCompleted)
+		assertEquals(successVal, 100)
+		assert(errorVal == null)
+
+		// subsequent subscription should receive it immediately
+		var successVal2 = 0
+		captor.subscribe(onSuccess = successVal2 = _, onError = _ => ())
+		assertEquals(successVal2, 100)
+
+		// check subscription removal/key matching
+		val captor2 = new TrialCaptor[Int]()
+		val key = new AnyRef()
+		var count1 = 0
+		var count2 = 0
+		captor2.subscribe(
+			onSuccess = (v, up, down) => count1 += 1,
+			onError = _ => (),
+			key = key,
+			upChain = 0,
+			downChain = 0
+		)
+		captor2.subscribe(
+			onSuccess = (v, up, down) => count2 += 1,
+			onError = _ => (),
+			key = key, // should auto-unsubscribe key from count1
+			upChain = 0,
+			downChain = 0
+		)
+		captor2.capture(Success(200))
+		assertEquals(count1, 0)
+		assertEquals(count2, 1)
+	}
+
+	test("TrialCaptor - monadic operations propagation") {
+		val captor = new TrialCaptor[Int]()
+		val mapped = captor.map((x: Int) => x * 3) // map(A => B)
+		var mappedVal = 0
+		mapped.subscribe(onSuccess = mappedVal = _, onError = _ => ())
+
+		val flatMapped = captor.flatMap((x: Int) => new TrialKeeper(Success(x + 5)))
+		var flatMappedVal = 0
+		flatMapped.subscribe(onSuccess = flatMappedVal = _, onError = _ => ())
+
+		captor.capture(Success(10))
+		assertEquals(mappedVal, 30)
+		assertEquals(flatMappedVal, 15)
+	}
+
+	test("Venture - subscriber errors propagate and are not caught by map") {
+		val v = Venture_ready(Success(5))
+		val testEx = new Exception("subscriber-err")
+		interceptMessage[Exception]("subscriber-err") {
+			v.map(_ * 2).subscribe(
+				onSuccess = _ => throw testEx,
+				onError = _ => ()
+			)
+		}
+	}
+
+	test("TrialCaptor - subscriber errors propagate and are not caught by capture") {
+		val captor = new TrialCaptor[Int]()
+		val mapped = captor.map((x: Int) => x * 2)
+		val testEx = new Exception("subscriber-err")
+		mapped.subscribe(
+			onSuccess = _ => throw testEx,
+			onError = _ => ()
+		)
+		interceptMessage[Exception]("subscriber-err") {
+			captor.capture(Success(10))
+		}
+	}
+
+	test("ObservableArray.fold - complete fold and early termination") {
+		val emitter = new StreamEmitter[Int]()
+		val foldV = emitter.foldWhile(0)((sum, x) => Maybe.some(sum + x))
+
+		var result = -1
+		foldV.subscribe(onSuccess = result = _, onError = _ => ())
+
+		emitter.emit(1)
+		emitter.emit(2)
+		emitter.emit(3)
+		emitter.end()
+		assertEquals(result, 6)
+
+		// Early termination fold
+		val emitter2 = new StreamEmitter[Int]()
+		val foldV2 = emitter2.foldWhile(0)((sum, x) => if (sum + x <= 5) Maybe.some(sum + x) else Maybe.empty)
+
+		var result2 = -1
+		foldV2.subscribe(onSuccess = result2 = _, onError = _ => ())
+
+		emitter2.emit(2)
+		emitter2.emit(3) // sum is 5
+		assertEquals(result2, -1) // not complete yet
+		emitter2.emit(2) // sum would be 7 > 5 -> terminates early
+		assertEquals(result2, 5) // completed early with previous valid state
+	}
+
+	test("ObservableArray.fold - error propagation") {
+		val emitter = new StreamEmitter[Int]()
+		val testEx = new Exception("fold-err")
+		val foldV = emitter.foldWhile(0)((sum, x) => throw testEx)
+
+		var caughtEx: Throwable = null
+		foldV.subscribe(onSuccess = _ => (), onError = caughtEx = _)
+
+		emitter.emit(1)
+		assertEquals(caughtEx, testEx)
+	}
 }
+
