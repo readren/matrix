@@ -32,6 +32,7 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 
 ### Format
 
+- Use scala 3 syntax but never omit braces around a block of more than one line (i.e.: Do not rely on indentation for block delimitation).
 - No hard wraps or newlines in paragraphs. Let container soft-wrap.
 
 ## High-level architecture

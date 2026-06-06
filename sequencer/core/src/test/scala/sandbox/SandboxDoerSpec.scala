@@ -127,8 +127,8 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		var innerCoords = List[(String, Int)]()
 		var outerCoords = List[(String, Int)]()
 
-		matrix.flattenToInner.subscribe((v, idx) => innerCoords = innerCoords :+ (v, idx))
-		matrix.flattenToOuter.subscribe((v, idx) => outerCoords = outerCoords :+ (v, idx))
+		matrix.flattenToInner.foreachWithIndex((v, idx) => innerCoords = innerCoords :+ (v, idx))
+		matrix.flattenToOuter.foreachWithIndex((v, idx) => outerCoords = outerCoords :+ (v, idx))
 
 		captorOuter.capture(1)
 		captorInner.capture("a")
@@ -143,7 +143,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 			val mapped = keeperArray.map(_ * 2)
 
 			var collected = List[Int]()
-			mapped.subscribe((v, idx) => collected = collected :+ v)
+			mapped.foreachWithIndex((v, idx) => collected = collected :+ v)
 
 			collected == nums.map(_ * 2)
 		}
@@ -173,7 +173,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		// Subsequent subscription receives completion immediately
 		var completed2 = false
 		emitter.subscribe(
-			onNext = (_, _) => (),
+			onNext = (_, _, _) => (),
 			onError = _ => (),
 			onComplete = () => completed2 = true
 		)

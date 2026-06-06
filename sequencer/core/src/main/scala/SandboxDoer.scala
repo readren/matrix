@@ -19,6 +19,8 @@ trait SandboxDoer { thisDoer =>
 	type Consumer[-A] = A => Unit
 	type ArrayConsumer[-A] = (A, Int) => Unit
 	type MatrixConsumer[-A] = (A, Int, Int) => Unit
+	type ErrorConsumer = Throwable => Unit
+	type CompleteConsumer = () => Unit
 
 	/** Root super trait of all asynchronous observables. */
 	trait Observable[+A] {
@@ -65,8 +67,8 @@ trait SandboxDoer { thisDoer =>
 
 	/** Exception-unaware single result capturer. Ex LatchingTask
 	 * Does not inherit from Task, cleanly separating results from doable work. */
-	sealed trait Capturer[+A] extends Settling[A] with Observable[A] { thisLatch =>
-		override def subscribe(consumer: Consumer[A]): Unit = subscribe((a, _, _) => consumer(a), null, -1, -1)
+	sealed trait Capturer[+A] extends Settling[A], Observable[A] { thisLatch =>
+		override def subscribe(consumer: Consumer[A]): Unit
 
 		/** Subscribes with coordinate tracking.
 		 * @param consumer the callback invoked when the value is captured.\
@@ -153,11 +155,12 @@ trait SandboxDoer { thisDoer =>
 		}
 
 		override def unsubscribe(key: Key): Unit = {
-			if key != null then
+			if key != null then {
 				subscribers = subscribers.filterNot {
 					case (k: Key, _, _, _) => k == key
 					case _ => false
 				}
+			}
 		}
 
 		override def unsubscribe(consumer: Consumer[A]): Unit = {
@@ -228,7 +231,7 @@ trait SandboxDoer { thisDoer =>
 	/** A lazy exception-aware computation.
 	 * Monadic combinators map/flatMap over the success value. */
 	trait Venture[+A] { thisVenture =>
-		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit
+		def subscribe(onSuccess: A => Unit, onError: ErrorConsumer): Unit
 
 		def toTask: Task[Try[A]] =
 			(onComplete: Try[A] => Unit) =>
@@ -238,7 +241,7 @@ trait SandboxDoer { thisDoer =>
 				)
 
 		def transform[B](f: Try[A] => Try[B]): Venture[B] =
-			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+			(onSuccess: B => Unit, onError: ErrorConsumer) =>
 				thisVenture.subscribe(
 					a => {
 						val b = try Maybe.some(f(Success(a))) catch {
@@ -265,7 +268,7 @@ trait SandboxDoer { thisDoer =>
 				)
 
 		def transformWith[B](f: Try[A] => Venture[B]): Venture[B] =
-			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+			(onSuccess: B => Unit, onError: ErrorConsumer) =>
 				thisVenture.subscribe(
 					a => {
 						val venture = try Maybe.some(f(Success(a))) catch {
@@ -287,7 +290,7 @@ trait SandboxDoer { thisDoer =>
 
 		@targetName("mapSuccess")
 		def map[B](f: A => B): Venture[B] =
-			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+			(onSuccess: B => Unit, onError: ErrorConsumer) =>
 				thisVenture.subscribe(
 					a => {
 						val b = try Maybe.some(f(a)) catch {
@@ -301,7 +304,7 @@ trait SandboxDoer { thisDoer =>
 				)
 
 		def flatMap[B](f: A => Venture[B]): Venture[B] =
-			(onSuccess: B => Unit, onError: Throwable => Unit) =>
+			(onSuccess: B => Unit, onError: ErrorConsumer) =>
 				thisVenture.subscribe(
 					a => {
 						val venture = try Maybe.some(f(a)) catch {
@@ -316,7 +319,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	def Venture_ready[A](tryA: Try[A]): Venture[A] =
-		(onSuccess: A => Unit, onError: Throwable => Unit) =>
+		(onSuccess: A => Unit, onError: ErrorConsumer) =>
 			tryA match {
 				case Success(a) => onSuccess(a)
 				case Failure(e) => onError(e)
@@ -327,7 +330,7 @@ trait SandboxDoer { thisDoer =>
 	 * Monadic combinators map/flatMap over the success value.
 	 */
 	sealed trait TrialCapturer[+A] extends Settling[Try[A]] { thisTrialCapturer =>
-		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit =
+		def subscribe(onSuccess: A => Unit, onError: ErrorConsumer): Unit =
 			subscribe((a, _, _) => onSuccess(a), onError, null, -1, -1)
 
 		/** Subscribes with coordinate tracking.
@@ -340,13 +343,7 @@ trait SandboxDoer { thisDoer =>
 		 * @param key the key used for identification and unsubscription.
 		 * @param upChain the outer/row coordinate index.
 		 * @param downChain the inner/column coordinate index. */
-		def subscribe(
-			onSuccess: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			key: Key,
-			upChain: Int,
-			downChain: Int
-		): Unit
+		def subscribe(onSuccess: MatrixConsumer[A], onError: ErrorConsumer, key: Key, upChain: Int, downChain: Int): Unit
 
 		def unsubscribe(onSuccess: A => Unit): Unit
 
@@ -382,13 +379,7 @@ trait SandboxDoer { thisDoer =>
 	class TrialKeeper[+A](val value: Try[A]) extends TrialCapturer[A] {
 		override def maybeValue: Maybe[Try[A]] = Maybe(value)
 
-		override def subscribe(
-			onSuccess: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			key: Key,
-			upChain: Int,
-			downChain: Int
-		): Unit = value match {
+		override def subscribe(onSuccess: MatrixConsumer[A], onError: ErrorConsumer, key: Key, upChain: Int, downChain: Int): Unit = value match {
 			case Success(a) => onSuccess(a, upChain, downChain)
 			case Failure(ex) => onError(ex)
 		}
@@ -430,19 +421,13 @@ trait SandboxDoer { thisDoer =>
 	class TrialCaptor[A](initialState: Maybe[Try[A]] = Maybe.empty) extends TrialCapturer[A] {
 		private var state: Maybe[Try[A]] = initialState
 		private var subscribers: List[
-			(MatrixConsumer[A], Throwable => Unit) |
-				(Key, MatrixConsumer[A], Throwable => Unit, Int, Int)
+			(MatrixConsumer[A], ErrorConsumer) |
+				(Key, MatrixConsumer[A], ErrorConsumer, Int, Int)
 		] = Nil
 
 		override def maybeValue: Maybe[Try[A]] = state
 
-		override def subscribe(
-			onSuccess: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			key: Key,
-			upChain: Int,
-			downChain: Int
-		): Unit = {
+		override def subscribe(onSuccess: MatrixConsumer[A], onError: ErrorConsumer, key: Key, upChain: Int, downChain: Int): Unit = {
 			state.fold {
 				if key != null then unsubscribe(key)
 				subscribers = (key, onSuccess, onError, upChain, downChain) :: subscribers
@@ -453,11 +438,12 @@ trait SandboxDoer { thisDoer =>
 		}
 
 		override def unsubscribe(key: Key): Unit = {
-			if key != null then
+			if key != null then {
 				subscribers = subscribers.filterNot {
 					case (k: Key, _, _, _, _) => k == key
 					case _ => false
 				}
+			}
 		}
 
 		override def unsubscribe(onSuccess: A => Unit): Unit = {
@@ -608,31 +594,14 @@ trait SandboxDoer { thisDoer =>
 		 * Unified as a [[MatrixConsumer]] (carrying both `upChain` and `downChain` indices) instead of an [[ArrayConsumer]] to avoid adapter allocations during flatMap and flattening operations. Because this is a 1-dimensional stream:
 		 * - `upChain` is always `0`.
 		 * - `downChain` represents the sequential index of the emitted element in the stream. */
-		def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit = _ => (),
-			onComplete: () => Unit = () => ()
-		): Unit
+		def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer = _ => (), onComplete: CompleteConsumer = () => ()): Unit
 
-		def subscribe(
-			onNext: ArrayConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = subscribe((a, _, downChain) => onNext(a, downChain), onError, onComplete)
+		inline def subscribe(inline onNext: ArrayConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+			subscribe((a, _, downChain) => onNext(a, downChain), onError, onComplete)
 
-		def subscribe(onNext: ArrayConsumer[A]): Unit = subscribe(onNext, _ => (), () => ())
+		inline def foreach(inline consumer: Consumer[A]): Unit = subscribe((a, _, _) => consumer(a), _ => (), () => ())
 
-		def subscribe(
-			onNext: Consumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = subscribe((a, _, _) => onNext(a), onError, onComplete)
-
-		def subscribe(onNext: Consumer[A]): Unit = subscribe(onNext, _ => (), () => ())
-
-		def foreach(consumer: Consumer[A]): Unit = subscribe(consumer)
-
-		inline def foreachWithIndex(consumer: ArrayConsumer[A]): Unit = subscribe(consumer)
+		inline def foreachWithIndex(inline consumer: ArrayConsumer[A]): Unit = subscribe((a, _, downChain) => consumer(a, downChain), _ => (), () => ())
 
 		def map[B: ClassTag](f: A => B): ObservableArray[B]
 
@@ -654,20 +623,20 @@ trait SandboxDoer { thisDoer =>
 
 		/** Collapses the stream into a single value, allowing early termination via Maybe.empty. */
 		def foldWhile[B](initial: B)(f: (B, A) => Maybe[B]): Venture[B] = {
-			(onSuccess: B => Unit, onError: Throwable => Unit) => {
+			(onSuccess: B => Unit, onError: ErrorConsumer) => {
 				var state = initial
 				var active = true
 
 				this.subscribe(
 					onNext = (a, up, down) => {
-						if (active) {
+						if active then {
 							val next = try f(state, a) catch {
 								case NonFatal(ex) =>
 									active = false
 									onError(ex)
 									Maybe.empty
 							}
-							if (active) {
+							if active then {
 								next.fold {
 									active = false
 									onSuccess(state)
@@ -678,13 +647,13 @@ trait SandboxDoer { thisDoer =>
 						}
 					},
 					onError = ex => {
-						if (active) {
+						if active then {
 							active = false
 							onError(ex)
 						}
 					},
 					onComplete = () => {
-						if (active) {
+						if active then {
 							active = false
 							onSuccess(state)
 						}
@@ -698,11 +667,7 @@ trait SandboxDoer { thisDoer =>
 	trait DefaultObservableArray[+A] extends ObservableArray[A] {
 		override def map[B: ClassTag](f: A => B): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = DefaultObservableArray.this.subscribe(
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = DefaultObservableArray.this.subscribe(
 					(a, upChain, downChain) => onNext(f(a), upChain, downChain),
 					onError,
 					onComplete
@@ -711,11 +676,7 @@ trait SandboxDoer { thisDoer =>
 
 		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = DefaultObservableArray.this.subscribe(
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = DefaultObservableArray.this.subscribe(
 					(a, upChain, downChain) => onNext(f(a, downChain), upChain, downChain),
 					onError,
 					onComplete
@@ -724,86 +685,25 @@ trait SandboxDoer { thisDoer =>
 
 		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapSubscribe(DefaultObservableArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapSubscribe(DefaultObservableArray.this, f, onNext, onError, onComplete)
 			}
 
 		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapWithIndexSubscribe(DefaultObservableArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapWithIndexSubscribe(DefaultObservableArray.this, f, onNext, onError, onComplete)
 			}
 
 		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultObservableArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var state = initial
-
-							def apply(a: A, upChain: Int, downChain: Int): Unit = {
-								state = f(state, a)
-								onNext(state, upChain, downChain)
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultObservableArray.this.subscribe(new ScanConsumer(initial, f, onNext), onError, onComplete)
 			}
 
 		override def buffer[T >: A : ClassTag](size: Int): ObservableArray[IArray[T]] =
 			new DefaultObservableArray[IArray[T]] {
-				override def subscribe(
-					onNext: MatrixConsumer[IArray[T]],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					val buf = new Array[T](size)
-					class BufferedConsumer extends MatrixConsumer[A] {
-						private var count = 0
-						private var chunkIndex = 0
-
-						def apply(a: A, up: Int, down: Int): Unit = {
-							buf(count) = a
-							count += 1
-							if (count == size) {
-								val chunk = IArray.unsafeFromArray(buf.clone())
-								count = 0
-								val idx = chunkIndex
-								chunkIndex += 1
-								onNext(chunk, up, idx)
-							}
-						}
-
-						def flush(): Unit = {
-							if (count > 0) {
-								val partial = IArray.unsafeFromArray(buf.take(count))
-								val idx = chunkIndex
-								chunkIndex += 1
-								onNext(partial, 0, idx)
-							}
-						}
-					}
-					val consumer = new BufferedConsumer()
-					DefaultObservableArray.this.subscribe(
-						consumer,
-						onError,
-						onComplete = () => {
-							consumer.flush()
-							onComplete()
-						}
-					)
+				override def subscribe(onNext: MatrixConsumer[IArray[T]], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+					val consumer = new BufferedConsumer[A, T](size, onNext, onComplete)
+					DefaultObservableArray.this.subscribe(consumer, onError, consumer)
 				}
 			}
 
@@ -812,65 +712,14 @@ trait SandboxDoer { thisDoer =>
 
 		override def take(n: Int): ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultObservableArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var count = 0
-							private var active = true
-
-							def apply(a: A, up: Int, down: Int): Unit = {
-								if (active) {
-									if (count < n) {
-										val currentCount = count
-										count += 1
-										onNext(a, up, currentCount)
-										if (count == n) {
-											active = false
-											onComplete()
-										}
-									}
-								}
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultObservableArray.this.subscribe(new TakeConsumer(n, onNext, onComplete), onError, onComplete)
 			}
 
 		override def takeWhile(p: A => Boolean): ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultObservableArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var active = true
-							private var counter = 0
-
-							def apply(a: A, up: Int, down: Int): Unit = {
-								if (active) {
-									if (p(a)) {
-										val currentCounter = counter
-										counter += 1
-										onNext(a, up, currentCounter)
-									} else {
-										active = false
-										onComplete()
-									}
-								}
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultObservableArray.this.subscribe(new TakeWhileConsumer(p, onNext, onComplete), onError, onComplete)
 			}
 	}
 
@@ -880,11 +729,7 @@ trait SandboxDoer { thisDoer =>
 		 * A [[MatrixConsumer]] carrying both `upChain` and `downChain` indices. Because this is a 2-dimensional stream:
 		 * - `upChain` represents the outer (row) index of the emitted element.
 		 * - `downChain` represents the inner (column) index of the emitted element. */
-		def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit = _ => (),
-			onComplete: () => Unit = () => ()
-		): Unit
+		def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer = _ => (), onComplete: CompleteConsumer = () => ()): Unit
 
 		def flattenToInner: ObservableArray[A]
 
@@ -904,71 +749,43 @@ trait SandboxDoer { thisDoer =>
 	trait DefaultObservableMatrix[+A] extends ObservableMatrix[A] {
 		override def flattenToInner: ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultObservableMatrix.this.subscribe((a, upChain, downChain) => onNext(a, 0, downChain), onError, onComplete)
 			}
 
 		override def flattenToOuter: ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultObservableMatrix.this.subscribe((a, upChain, downChain) => onNext(a, 0, upChain), onError, onComplete)
 			}
 
 		override def flattenWith(f: (A, Int, Int) => Int): ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultObservableMatrix.this.subscribe((a, upChain, downChain) => onNext(a, 0, f(a, upChain, downChain)), onError, onComplete)
 			}
 
 		override def flattenToSequential: ObservableArray[A] =
 			new DefaultObservableArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenToSequentialSubscribe(DefaultObservableMatrix.this, onNext, onError, onComplete)
 			}
 
 		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenMapSubscribe(DefaultObservableMatrix.this, f, onNext, onError, onComplete)
 			}
 
 		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenMapWithIndexSubscribe(DefaultObservableMatrix.this, valueMap, indexMap, onNext, onError, onComplete)
 			}
 
 		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): ObservableArray[B] =
 			new DefaultObservableArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenFoldSubscribe(DefaultObservableMatrix.this, initialState, f, onNext, onError, onComplete)
 			}
 	}
@@ -1007,11 +824,7 @@ trait SandboxDoer { thisDoer =>
 	trait DefaultTaskArray[+A] extends TaskArray[A] {
 		override def map[B: ClassTag](f: A => B): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = DefaultTaskArray.this.subscribe(
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = DefaultTaskArray.this.subscribe(
 					(a, upChain, downChain) => onNext(f(a), upChain, downChain),
 					onError,
 					onComplete
@@ -1020,11 +833,7 @@ trait SandboxDoer { thisDoer =>
 
 		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = DefaultTaskArray.this.subscribe(
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = DefaultTaskArray.this.subscribe(
 					(a, upChain, downChain) => onNext(f(a, downChain), upChain, downChain),
 					onError,
 					onComplete
@@ -1033,106 +842,37 @@ trait SandboxDoer { thisDoer =>
 
 		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
 			}
 
 		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
 			}
 
 		@targetName("flatMapTask")
 		override def flatMap[B: ClassTag](f: A => TaskArray[B]): TaskMatrix[B] =
 			new DefaultTaskMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
 			}
 
 		@targetName("flatMapTaskWithIndex")
 		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => TaskArray[B]): TaskMatrix[B] =
 			new DefaultTaskMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, onNext, onError, onComplete)
 			}
 
 		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultTaskArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var state = initial
-
-							def apply(a: A, upChain: Int, downChain: Int): Unit = {
-								state = f(state, a)
-								onNext(state, upChain, downChain)
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultTaskArray.this.subscribe(new ScanConsumer(initial, f, onNext), onError, onComplete)
 			}
 
 		override def buffer[T >: A : ClassTag](size: Int): TaskArray[IArray[T]] =
 			new DefaultTaskArray[IArray[T]] {
-				override def subscribe(
-					onNext: MatrixConsumer[IArray[T]],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					val buf = new Array[T](size)
-					class BufferedConsumer extends MatrixConsumer[A] {
-						private var count = 0
-						private var chunkIndex = 0
-
-						def apply(a: A, up: Int, down: Int): Unit = {
-							buf(count) = a
-							count += 1
-							if (count == size) {
-								val chunk = IArray.unsafeFromArray(buf.clone())
-								count = 0
-								val idx = chunkIndex
-								chunkIndex += 1
-								onNext(chunk, up, idx)
-							}
-						}
-
-						def flush(): Unit = {
-							if (count > 0) {
-								val partial = IArray.unsafeFromArray(buf.take(count))
-								val idx = chunkIndex
-								chunkIndex += 1
-								onNext(partial, 0, idx)
-							}
-						}
-					}
-					val consumer = new BufferedConsumer()
-					DefaultTaskArray.this.subscribe(
-						consumer,
-						onError,
-						onComplete = () => {
-							consumer.flush()
-							onComplete()
-						}
-					)
+				override def subscribe(onNext: MatrixConsumer[IArray[T]], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+					val consumer = new BufferedConsumer[A, T](size, onNext, onComplete)
+					DefaultTaskArray.this.subscribe(consumer, onError, consumer)
 				}
 			}
 
@@ -1145,65 +885,14 @@ trait SandboxDoer { thisDoer =>
 
 		override def take(n: Int): TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultTaskArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var count = 0
-							private var active = true
-
-							def apply(a: A, up: Int, down: Int): Unit = {
-								if (active) {
-									if (count < n) {
-										val currentCount = count
-										count += 1
-										onNext(a, up, currentCount)
-										if (count == n) {
-											active = false
-											onComplete()
-										}
-									}
-								}
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultTaskArray.this.subscribe(new TakeConsumer(n, onNext, onComplete), onError, onComplete)
 			}
 
 		override def takeWhile(p: A => Boolean): TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					DefaultTaskArray.this.subscribe(
-						new MatrixConsumer[A] {
-							private var active = true
-							private var counter = 0
-
-							def apply(a: A, up: Int, down: Int): Unit = {
-								if (active) {
-									if (p(a)) {
-										val currentCounter = counter
-										counter += 1
-										onNext(a, up, currentCounter)
-									} else {
-										active = false
-										onComplete()
-									}
-								}
-							}
-						},
-						onError,
-						onComplete
-					)
-				}
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+					DefaultTaskArray.this.subscribe(new TakeWhileConsumer(p, onNext, onComplete), onError, onComplete)
 			}
 	}
 
@@ -1226,71 +915,43 @@ trait SandboxDoer { thisDoer =>
 	trait DefaultTaskMatrix[+A] extends TaskMatrix[A] {
 		override def flattenToInner: TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultTaskMatrix.this.subscribe((a, o, i) => onNext(a, 0, i), onError, onComplete)
 			}
 
 		override def flattenToOuter: TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultTaskMatrix.this.subscribe((a, o, i) => onNext(a, 0, o), onError, onComplete)
 			}
 
 		override def flattenWith(f: (A, Int, Int) => Int): TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					DefaultTaskMatrix.this.subscribe((a, o, i) => onNext(a, 0, f(a, o, i)), onError, onComplete)
 			}
 
 		override def flattenToSequential: TaskArray[A] =
 			new DefaultTaskArray[A] {
-				override def subscribe(
-					onNext: MatrixConsumer[A],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenToSequentialSubscribe(DefaultTaskMatrix.this, onNext, onError, onComplete)
 			}
 
 		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenMapSubscribe(DefaultTaskMatrix.this, f, onNext, onError, onComplete)
 			}
 
 		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenMapWithIndexSubscribe(DefaultTaskMatrix.this, valueMap, indexMap, onNext, onError, onComplete)
 			}
 
 		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): TaskArray[B] =
 			new DefaultTaskArray[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					flattenFoldSubscribe(DefaultTaskMatrix.this, initialState, f, onNext, onError, onComplete)
 			}
 	}
@@ -1303,24 +964,16 @@ trait SandboxDoer { thisDoer =>
 		new TaskArray_FromTasks(tasks)
 
 	private final class TaskArray_FromTasks[+A](tasks: IArray[Task[A]]) extends DefaultTaskArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
 			val size = tasks.length
-			if (size == 0) {
-				onComplete()
-			} else {
+			if size == 0 then onComplete()
+			else {
 				var completedCount = 0
 				tasks.foreachWithIndex { (task, index) =>
 					task.subscribe { a =>
 						onNext(a, 0, index)
-						val done = TaskArray_FromTasks.this.synchronized {
-							completedCount += 1
-							completedCount == size
-						}
-						if (done) onComplete()
+						completedCount += 1
+						if completedCount == size then onComplete()
 					}
 				}
 			}
@@ -1328,18 +981,9 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	trait KeyedObservableArray[+A] extends DefaultObservableArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit = _ => (),
-			onComplete: () => Unit = () => ()
-		): Unit = subscribe(onNext, onError, onComplete, null)
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer = _ => (), onComplete: CompleteConsumer = () => ()): Unit = subscribe(onNext, onError, onComplete, null)
 
-		def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit
+		def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit
 
 		def subscribe(onNext: ArrayConsumer[A], key: Key): Unit = subscribe((a, _, inner) => onNext(a, inner), _ => (), () => (), key)
 
@@ -1366,16 +1010,8 @@ trait SandboxDoer { thisDoer =>
 			new MappedKeyedCapturerArray(this, f)
 	}
 
-	final class MappedKeyedCapturerArray[A, +B](
-		val source: KeyedCapturerArray[A],
-		val f: (A, Int) => B
-	) extends KeyedCapturerArray[B] {
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+	final class MappedKeyedCapturerArray[A, +B](val source: KeyedCapturerArray[A], val f: (A, Int) => B) extends KeyedCapturerArray[B] {
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			source.subscribe((a, outer, inner) => onNext(f(a, inner), outer, inner), onError, onComplete, key)
 
 		override def unsubscribe(key: Key): Unit = source.unsubscribe(key)
@@ -1383,7 +1019,7 @@ trait SandboxDoer { thisDoer =>
 		override def isSubscribed(key: Key): Boolean = source.isSubscribed(key)
 	}
 
-	sealed trait CapturerArray[+A] extends SettlingArray[A] with KeyedCapturerArray[A] {
+	sealed trait CapturerArray[+A] extends SettlingArray[A], KeyedCapturerArray[A] {
 		override def map[B: ClassTag](f: A => B): CapturerArray[B] = this match {
 			case keeper: KeeperArray[A] => keeper.map(f)
 			case captor: CaptorArray[A] @unchecked => captor.map(f)
@@ -1404,12 +1040,7 @@ trait SandboxDoer { thisDoer =>
 	final class KeeperArray[+A](values: IArray[A]) extends CapturerArray[A] {
 		override def maybeResult(index: Int): Maybe[A] = Maybe(values(index))
 
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			values.foreachWithIndex((a, index) => onNext(a, 0, index))
 			onComplete()
 		}
@@ -1424,40 +1055,9 @@ trait SandboxDoer { thisDoer =>
 
 		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					val size = values.length
-					if (size == 0) {
-						onComplete()
-					} else {
-						var completedCount = 0
-						var errorFired = false
-
-						def tryComplete(): Unit = {
-							if (completedCount == size && !errorFired) onComplete()
-						}
-
-						val handleFailure: Throwable => Unit = ex => {
-							if (!errorFired) {
-								errorFired = true
-								onError(ex)
-							}
-						}
-
-						values.foreachWithIndex { (a, outerIndex) =>
-							f(a).subscribe(
-								(b, innerOuter, innerInner) => onNext(b, outerIndex, innerInner),
-								handleFailure,
-								() => {
-									completedCount += 1
-									tryComplete()
-								}
-							)
-						}
-					}
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+					if values.length == 0 then onComplete()
+					else new FlatMapMatrixSubscription(values, f, onNext, onError, onComplete).start()
 				}
 			}
 
@@ -1467,40 +1067,9 @@ trait SandboxDoer { thisDoer =>
 
 		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit = {
-					val size = values.length
-					if (size == 0) {
-						onComplete()
-					} else {
-						var completedCount = 0
-						var errorFired = false
-
-						def tryComplete(): Unit = {
-							if (completedCount == size && !errorFired) onComplete()
-						}
-
-						val handleFailure: Throwable => Unit = ex => {
-							if (!errorFired) {
-								errorFired = true
-								onError(ex)
-							}
-						}
-
-						values.foreachWithIndex { (a, outerIndex) =>
-							f(a, outerIndex).subscribe(
-								(b, innerOuter, innerInner) => onNext(b, outerIndex, innerInner),
-								handleFailure,
-								() => {
-									completedCount += 1
-									tryComplete()
-								}
-							)
-						}
-					}
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+					if values.length == 0 then onComplete()
+					else new FlatMapWithIndexMatrixSubscription(values, f, onNext, onError, onComplete).start()
 				}
 			}
 
@@ -1512,44 +1081,38 @@ trait SandboxDoer { thisDoer =>
 	final class CaptorArray[A](val capturers: IArray[Capturer[A]]) extends CapturerArray[A] { thisCaptorArray =>
 		override def maybeResult(index: Int): Maybe[A] = capturers(index).maybeValue
 
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			if key != null then unsubscribe(key)
 			val size = capturers.length
-			if (size == 0) {
-				onComplete()
-			} else {
+			if size == 0 then onComplete()
+			else {
 				var completedCount = 0
 				var i = 0
-				while i < size do
+				while i < size do {
 					val index = i
 					capturers(index).subscribe(
 						(a, up, down) => {
 							onNext(a, 0, index)
-							val done = thisCaptorArray.synchronized {
-								completedCount += 1
-								completedCount == size
-							}
-							if (done) onComplete()
+							completedCount += 1
+							if completedCount == size then onComplete()
 						},
 						key,
 						0,
 						index
 					)
 					i += 1
+				}
 			}
 		}
 
 		override def unsubscribe(key: Key): Unit = {
-			if key != null then
+			if key != null then {
 				var i = 0
-				while i < capturers.length do
+				while i < capturers.length do {
 					capturers(i).unsubscribe(key)
 					i += 1
+				}
+			}
 		}
 
 		override def isSubscribed(key: Key): Boolean = {
@@ -1566,21 +1129,13 @@ trait SandboxDoer { thisDoer =>
 
 		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					arrayFlatMapSubscribe(thisCaptorArray, f, onNext, onError, onComplete)
 			}
 
 		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(
-					onNext: MatrixConsumer[B],
-					onError: Throwable => Unit,
-					onComplete: () => Unit
-				): Unit =
+				override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
 					arrayFlatMapWithIndexSubscribe(thisCaptorArray, f, onNext, onError, onComplete)
 			}
 
@@ -1594,18 +1149,10 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	trait KeyedObservableMatrix[+A] extends ObservableMatrix[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit = _ => (),
-			onComplete: () => Unit = () => ()
-		): Unit = subscribe(onNext, onError, onComplete, null)
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer = _ => (), onComplete: CompleteConsumer = () => ()): Unit =
+			subscribe(onNext, onError, onComplete, null)
 
-		def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit
+		def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit
 
 		def unsubscribe(key: Key): Unit
 
@@ -1659,26 +1206,21 @@ trait SandboxDoer { thisDoer =>
 		override def maybeResult(outerIndex: Int, innerIndex: Int): Maybe[B] =
 			source.maybeResult(outerIndex).flatMap(a => f(a).maybeResult(innerIndex))
 
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			if key != null then unsubscribe(key)
 			flatMappedMatrixSubscribe(source, (a, _) => f(a), activeInnerSubscriptions, onNext, onError, onComplete, key)
 		}
 
 		override def unsubscribe(key: Key): Unit = {
-			if key != null then
+			if key != null then {
 				source.unsubscribe(key)
 				activeInnerSubscriptions.remove(key).foreach { list =>
 					list.foreach(_.unsubscribe(key))
 				}
+			}
 		}
 
-		override def isSubscribed(key: Key): Boolean =
-			key != null && source.isSubscribed(key)
+		override def isSubscribed(key: Key): Boolean = key != null && source.isSubscribed(key)
 
 		override def flattenToInner: KeyedCapturerArray[B] = new FlattenedToInnerArray(this)
 
@@ -1704,26 +1246,21 @@ trait SandboxDoer { thisDoer =>
 		override def maybeResult(outerIndex: Int, innerIndex: Int): Maybe[B] =
 			source.maybeResult(outerIndex).flatMap(a => f(a, outerIndex).maybeResult(innerIndex))
 
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			if key != null then unsubscribe(key)
 			flatMappedMatrixSubscribe(source, f, activeInnerSubscriptions, onNext, onError, onComplete, key)
 		}
 
 		override def unsubscribe(key: Key): Unit = {
-			if key != null then
+			if key != null then {
 				source.unsubscribe(key)
 				activeInnerSubscriptions.remove(key).foreach { list =>
 					list.foreach(_.unsubscribe(key))
 				}
+			}
 		}
 
-		override def isSubscribed(key: Key): Boolean =
-			key != null && source.isSubscribed(key)
+		override def isSubscribed(key: Key): Boolean = key != null && source.isSubscribed(key)
 
 		override def flattenToInner: KeyedCapturerArray[B] = new FlattenedToInnerArray(this)
 
@@ -1741,12 +1278,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToInnerArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			matrix.subscribe((a, outer, inner) => onNext(a, 0, inner), onError, onComplete, key)
 
 		override def unsubscribe(key: Key): Unit = matrix.unsubscribe(key)
@@ -1755,12 +1287,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToOuterArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			matrix.subscribe((a, outer, inner) => onNext(a, 0, outer), onError, onComplete, key)
 
 		override def unsubscribe(key: Key): Unit = matrix.unsubscribe(key)
@@ -1769,12 +1296,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedWithArray[A](val matrix: KeyedObservableMatrix[A], val f: (A, Int, Int) => Int) extends KeyedCapturerArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			matrix.subscribe((a, outer, inner) => onNext(a, 0, f(a, outer, inner)), onError, onComplete, key)
 
 		override def unsubscribe(key: Key): Unit = matrix.unsubscribe(key)
@@ -1783,12 +1305,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToSequentialArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			var counter = 0
 			matrix.subscribe(
 				(a, outer, inner) => {
@@ -1808,12 +1325,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedMapArray[A, +B](val matrix: KeyedObservableMatrix[A], val f: (A, Int, Int) => (B, Int)) extends KeyedCapturerArray[B] {
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			matrix.subscribe(
 				(a, outer, inner) => {
 					val (b, index) = f(a, outer, inner)
@@ -1834,12 +1346,7 @@ trait SandboxDoer { thisDoer =>
 		val valueMap: (A, Int, Int) => B,
 		val indexMap: (A, B, Int, Int) => Int
 	) extends KeyedCapturerArray[B] {
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit =
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit =
 			matrix.subscribe(
 				(a, outer, inner) => {
 					val b = valueMap(a, outer, inner)
@@ -1860,12 +1367,7 @@ trait SandboxDoer { thisDoer =>
 		val initialState: S,
 		val f: (S, A, Int, Int) => (S, B, Int)
 	) extends KeyedCapturerArray[B] {
-		override def subscribe(
-			onNext: MatrixConsumer[B],
-			onError: Throwable => Unit,
-			onComplete: () => Unit,
-			key: Key
-		): Unit = {
+		override def subscribe(onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
 			var state = initialState
 			matrix.subscribe(
 				(a, outer, inner) => {
@@ -1884,69 +1386,76 @@ trait SandboxDoer { thisDoer =>
 		override def isSubscribed(key: Key): Boolean = matrix.isSubscribed(key)
 	}
 
+	private final class ZipSubscription[A, B, C](
+		left: ObservableArray[A],
+		right: ObservableArray[B],
+		f: (A, B) => C,
+		onNext: MatrixConsumer[C],
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer
+	) extends ErrorConsumer {
+		val leftValues = scala.collection.mutable.Map[Int, A]()
+		val rightValues = scala.collection.mutable.Map[Int, B]()
+		var leftCompleted = false
+		var rightCompleted = false
+		var errorFired = false
+
+		def checkComplete(): Unit = {
+			if (leftCompleted && leftValues.isEmpty) || (rightCompleted && rightValues.isEmpty) || (leftCompleted && rightCompleted) then onComplete()
+		}
+
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				onError(ex)
+			}
+		}
+
+		def start(): Unit = {
+			left.subscribe(new LeftSubscriber, this, new LeftSubscriber)
+			right.subscribe(new RightSubscriber, this, new RightSubscriber)
+		}
+
+		private final class LeftSubscriber extends MatrixConsumer[A], CompleteConsumer {
+			override def apply(a: A, up: Int, down: Int): Unit = {
+				rightValues.remove(down) match {
+					case Some(b) =>
+						onNext(f(a, b), up, down)
+						checkComplete()
+					case None =>
+						leftValues(down) = a
+				}
+			}
+			override def apply(): Unit = {
+				leftCompleted = true
+				checkComplete()
+			}
+		}
+
+		private final class RightSubscriber extends MatrixConsumer[B], CompleteConsumer {
+			override def apply(b: B, up: Int, down: Int): Unit = {
+				leftValues.remove(down) match {
+					case Some(a) =>
+						onNext(f(a, b), up, down)
+						checkComplete()
+					case None =>
+						rightValues(down) = b
+				}
+			}
+			override def apply(): Unit = {
+				rightCompleted = true
+				checkComplete()
+			}
+		}
+	}
+
 	private final class ZippedObservableArray[A, B, C](
 		val left: ObservableArray[A],
 		val right: ObservableArray[B],
 		val f: (A, B) => C
 	) extends DefaultObservableArray[C] {
-		override def subscribe(
-			onNext: MatrixConsumer[C],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = {
-			val leftValues = scala.collection.mutable.Map[Int, A]()
-			val rightValues = scala.collection.mutable.Map[Int, B]()
-			var leftCompleted = false
-			var rightCompleted = false
-			var errorFired = false
-
-			def checkComplete(): Unit = {
-				if ((leftCompleted && leftValues.isEmpty) || (rightCompleted && rightValues.isEmpty) || (leftCompleted && rightCompleted)) {
-					onComplete()
-				}
-			}
-
-			val handleFailure: Throwable => Unit = ex => {
-				if (!errorFired) {
-					errorFired = true
-					onError(ex)
-				}
-			}
-
-			left.subscribe(
-				(a, up, down) => {
-					rightValues.remove(down) match {
-						case Some(b) =>
-							onNext(f(a, b), up, down)
-							checkComplete()
-						case None =>
-							leftValues(down) = a
-					}
-				},
-				handleFailure,
-				() => {
-					leftCompleted = true
-					checkComplete()
-				}
-			)
-
-			right.subscribe(
-				(b, up, down) => {
-					leftValues.remove(down) match {
-						case Some(a) =>
-							onNext(f(a, b), up, down)
-							checkComplete()
-						case None =>
-							rightValues(down) = b
-					}
-				},
-				handleFailure,
-				() => {
-					rightCompleted = true
-					checkComplete()
-				}
-			)
-		}
+		override def subscribe(onNext: MatrixConsumer[C], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit =
+			new ZipSubscription(left, right, f, onNext, onError, onComplete).start()
 	}
 
 	private final class ZippedTaskArray[A, B, C](
@@ -1954,106 +1463,131 @@ trait SandboxDoer { thisDoer =>
 		val right: TaskArray[B],
 		val f: (A, B) => C
 	) extends DefaultTaskArray[C] {
-		override def subscribe(
-			onNext: MatrixConsumer[C],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = {
-			val leftValues = scala.collection.mutable.Map[Int, A]()
-			val rightValues = scala.collection.mutable.Map[Int, B]()
-			var leftCompleted = false
-			var rightCompleted = false
-			var errorFired = false
+		override def subscribe(onNext: MatrixConsumer[C], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+			new ZipSubscription(left, right, f, onNext, onError, onComplete).start()
+		}
+	}
 
-			def checkComplete(): Unit = {
-				if ((leftCompleted && leftValues.isEmpty) || (rightCompleted && rightValues.isEmpty) || (leftCompleted && rightCompleted)) {
+	private final class TakeConsumer[A](
+		n: Int,
+		onNext: MatrixConsumer[A],
+		onComplete: CompleteConsumer
+	) extends MatrixConsumer[A] {
+		private var count = 0
+		private var active = true
+
+		def apply(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if count < n then {
+					val currentCount = count
+					count += 1
+					onNext(a, up, currentCount)
+					if count == n then {
+						active = false
+						onComplete()
+					}
+				}
+			}
+		}
+	}
+
+	private final class TakeWhileConsumer[A](
+		p: A => Boolean,
+		onNext: MatrixConsumer[A],
+		onComplete: CompleteConsumer
+	) extends MatrixConsumer[A] {
+		private var active = true
+		private var counter = 0
+
+		def apply(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if p(a) then {
+					val currentCounter = counter
+					counter += 1
+					onNext(a, up, currentCounter)
+				} else {
+					active = false
 					onComplete()
 				}
 			}
+		}
+	}
 
-			val handleFailure: Throwable => Unit = ex => {
-				if (!errorFired) {
-					errorFired = true
-					onError(ex)
-				}
+	private final class BufferedConsumer[A, T >: A: ClassTag](
+		size: Int,
+		onNext: MatrixConsumer[IArray[T]],
+		onComplete: CompleteConsumer
+	) extends MatrixConsumer[A], CompleteConsumer {
+		private val buf = new Array[T](size)
+		private var count = 0
+		private var chunkIndex = 0
+
+		override def apply(a: A, up: Int, down: Int): Unit = {
+			buf(count) = a
+			count += 1
+			if count == size then {
+				val chunk = IArray.unsafeFromArray(buf.clone())
+				count = 0
+				val idx = chunkIndex
+				chunkIndex += 1
+				onNext(chunk, up, idx)
 			}
+		}
 
-			left.subscribe(
-				(a, up, down) => {
-					rightValues.remove(down) match {
-						case Some(b) =>
-							onNext(f(a, b), up, down)
-							checkComplete()
-						case None =>
-							leftValues(down) = a
-					}
-				},
-				handleFailure,
-				() => {
-					leftCompleted = true
-					checkComplete()
-				}
-			)
+		override def apply(): Unit = {
+			if count > 0 then {
+				val partial = IArray.unsafeFromArray(buf.take(count))
+				val idx = chunkIndex
+				chunkIndex += 1
+				onNext(partial, 0, idx)
+			}
+			onComplete()
+		}
+	}
 
-			right.subscribe(
-				(b, up, down) => {
-					leftValues.remove(down) match {
-						case Some(a) =>
-							onNext(f(a, b), up, down)
-							checkComplete()
-						case None =>
-							rightValues(down) = b
-					}
-				},
-				handleFailure,
-				() => {
-					rightCompleted = true
-					checkComplete()
-				}
-			)
+	private final class ScanConsumer[A, B](
+		initial: B,
+		f: (B, A) => B,
+		onNext: MatrixConsumer[B]
+	) extends MatrixConsumer[A] {
+		private var state = initial
+
+		def apply(a: A, upChain: Int, downChain: Int): Unit = {
+			state = f(state, a)
+			onNext(state, upChain, downChain)
 		}
 	}
 
 	final class StreamEmitter[A] extends DefaultObservableArray[A] {
-		private var subscribers: List[(MatrixConsumer[A], Throwable => Unit, () => Unit)] = Nil
+		private var subscribers: List[(MatrixConsumer[A], ErrorConsumer, CompleteConsumer)] = Nil
 		private var counter = 0
 		private var completed = false
 		private var error: Throwable | Null = null
 
-		override def subscribe(
-			onNext: MatrixConsumer[A],
-			onError: Throwable => Unit,
-			onComplete: () => Unit
-		): Unit = {
-			StreamEmitter.this.synchronized {
-				if (error != null) {
-					onError(error.asInstanceOf[Throwable])
-				} else if (completed) {
-					onComplete()
-				} else {
-					subscribers = (onNext, onError, onComplete) :: subscribers
-				}
-			}
+		override def subscribe(onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
+			if error != null then onError(error.asInstanceOf[Throwable])
+			else if completed then onComplete()
+			else subscribers = (onNext, onError, onComplete) :: subscribers
 		}
 
-		def emit(value: A): Unit = StreamEmitter.this.synchronized {
-			if (!completed && error == null) {
+		def emit(value: A): Unit = {
+			if !completed && error == null then {
 				val idx = counter
 				counter += 1
 				subscribers.foreach(_._1(value, 0, idx))
 			}
 		}
 
-		def fail(ex: Throwable): Unit = StreamEmitter.this.synchronized {
-			if (!completed && error == null) {
+		def fail(ex: Throwable): Unit = {
+			if !completed && error == null then {
 				error = ex
 				subscribers.foreach(_._2(ex))
 				subscribers = Nil
 			}
 		}
 
-		def end(): Unit = StreamEmitter.this.synchronized {
-			if (!completed && error == null) {
+		def end(): Unit = {
+			if !completed && error == null then {
 				completed = true
 				subscribers.foreach(_._3())
 				subscribers = Nil
@@ -2069,112 +1603,168 @@ trait SandboxDoer { thisDoer =>
 	inline def CapturerArray_fromCapturers[A](capturers: IArray[Capturer[A]]): CapturerArray[A] =
 		new CaptorArray(capturers)
 
-	private final class FlatMapSubscription[A, B](
+	private final class FlatMapMatrixSubscription[A, B](
+		values: IArray[A],
 		f: A => ObservableArray[B],
 		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	) extends MatrixConsumer[A] {
-		var outerCompleted = false
-		var activeInnerCount = 0
-		var errorFired = false
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer
+	) extends ErrorConsumer {
+		private val size = values.length
+		private var completedCount = 0
+		private var errorFired = false
 
-		def tryComplete(): Unit = {
-			if (outerCompleted && activeInnerCount == 0 && !errorFired) {
-				onComplete()
-			}
-		}
-
-		val handleFailure: Throwable => Unit = ex => {
-			if (!errorFired) {
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
 				errorFired = true
 				onError(ex)
 			}
 		}
 
-		def apply(a: A, outerOuter: Int, outerDown: Int): Unit = {
+		def start(): Unit = {
+			values.foreachWithIndex { (a, outerIndex) =>
+				new ElementSubscription(outerIndex).start(a)
+			}
+		}
+
+		private final class ElementSubscription(outerIndex: Int) extends MatrixConsumer[B], CompleteConsumer {
+			def start(a: A): Unit = {
+				f(a).subscribe(this, FlatMapMatrixSubscription.this, this)
+			}
+			override def apply(b: B, innerOuter: Int, innerInner: Int): Unit = {
+				onNext(b, outerIndex, innerInner)
+			}
+			override def apply(): Unit = {
+				completedCount += 1
+				if completedCount == size && !errorFired then onComplete()
+			}
+		}
+	}
+
+	private final class FlatMapWithIndexMatrixSubscription[A, B](
+		values: IArray[A],
+		f: (A, Int) => ObservableArray[B],
+		onNext: MatrixConsumer[B],
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer
+	) extends ErrorConsumer {
+		private val size = values.length
+		private var completedCount = 0
+		private var errorFired = false
+
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				onError(ex)
+			}
+		}
+
+		def start(): Unit = {
+			values.foreachWithIndex { (a, outerIndex) =>
+				new ElementSubscription(outerIndex).start(a)
+			}
+		}
+
+		private final class ElementSubscription(outerIndex: Int) extends MatrixConsumer[B], CompleteConsumer {
+			def start(a: A): Unit = {
+				f(a, outerIndex).subscribe(this, FlatMapWithIndexMatrixSubscription.this, this)
+			}
+			override def apply(b: B, innerOuter: Int, innerInner: Int): Unit = {
+				onNext(b, outerIndex, innerInner)
+			}
+			override def apply(): Unit = {
+				completedCount += 1
+				if completedCount == size && !errorFired then onComplete()
+			}
+		}
+	}
+
+	private final class FlatMapSubscription[A, B](
+		f: A => ObservableArray[B],
+		onNext: MatrixConsumer[B],
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer
+	) extends MatrixConsumer[A], ErrorConsumer, CompleteConsumer {
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
+
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				onError(ex)
+			}
+		}
+
+		override def apply(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		override def apply(a: A, outerOuter: Int, outerDown: Int): Unit = {
 			activeInnerCount += 1
 			f(a).subscribe(
 				(b, innerUp, innerDown) => onNext(b, outerDown, innerDown),
-				handleFailure,
+				this,
 				() => {
 					activeInnerCount -= 1
 					tryComplete()
 				}
 			)
 		}
+
+		inline def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then onComplete()
+		}
 	}
 
-	private inline def arrayFlatMapSubscribe[A, B](
-		array: ObservableArray[A],
-		inline f: A => ObservableArray[B],
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = {
+	private inline def arrayFlatMapSubscribe[A, B](array: ObservableArray[A], inline f: A => ObservableArray[B], onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
 		val sub = new FlatMapSubscription(f, onNext, onError, onComplete)
-		array.subscribe(
-			sub,
-			sub.handleFailure,
-			() => {
-				sub.outerCompleted = true
-				sub.tryComplete()
-			}
-		)
+		array.subscribe(sub, sub, sub)
 	}
 
 	private final class FlatMapWithIndexSubscription[A, B](
 		f: (A, Int) => ObservableArray[B],
 		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	) extends MatrixConsumer[A] {
-		var outerCompleted = false
-		var activeInnerCount = 0
-		var errorFired = false
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer
+	) extends MatrixConsumer[A], ErrorConsumer, CompleteConsumer {
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
 
-		def tryComplete(): Unit = {
-			if (outerCompleted && activeInnerCount == 0 && !errorFired) {
-				onComplete()
-			}
-		}
-
-		val handleFailure: Throwable => Unit = ex => {
-			if (!errorFired) {
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
 				errorFired = true
 				onError(ex)
 			}
 		}
 
-		def apply(a: A, outerOuter: Int, outerDown: Int): Unit = {
+		override def apply(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		override def apply(a: A, outerOuter: Int, outerDown: Int): Unit = {
 			activeInnerCount += 1
 			f(a, outerDown).subscribe(
 				(b, innerUp, innerDown) => onNext(b, outerDown, innerDown),
-				handleFailure,
+				this,
 				() => {
 					activeInnerCount -= 1
 					tryComplete()
 				}
 			)
 		}
+
+		inline def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then onComplete()
+		}
 	}
 
-	private inline def arrayFlatMapWithIndexSubscribe[A, B](
-		array: ObservableArray[A],
-		inline f: (A, Int) => ObservableArray[B],
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = {
+	private inline def arrayFlatMapWithIndexSubscribe[A, B](array: ObservableArray[A], inline f: (A, Int) => ObservableArray[B], onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
 		val sub = new FlatMapWithIndexSubscription(f, onNext, onError, onComplete)
-		array.subscribe(
-			sub,
-			sub.handleFailure,
-			() => {
-				sub.outerCompleted = true
-				sub.tryComplete()
-			}
-		)
+		array.subscribe(sub, sub, sub)
 	}
 
 	private final class SequentialConsumer[A](
@@ -2182,19 +1772,14 @@ trait SandboxDoer { thisDoer =>
 	) extends MatrixConsumer[A] {
 		private var counter = 0
 
-		def apply(a: A, up: Int, down: Int): Unit = {
+		override def apply(a: A, up: Int, down: Int): Unit = {
 			val index = counter
 			counter += 1
 			onNext(a, 0, index)
 		}
 	}
 
-	private inline def flattenToSequentialSubscribe[A](
-		matrix: ObservableMatrix[A],
-		onNext: MatrixConsumer[A],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = {
+	private inline def flattenToSequentialSubscribe[A](matrix: ObservableMatrix[A], onNext: MatrixConsumer[A], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
 		matrix.subscribe(
 			new SequentialConsumer(onNext),
 			onError,
@@ -2202,13 +1787,7 @@ trait SandboxDoer { thisDoer =>
 		)
 	}
 
-	private inline def flattenMapSubscribe[A, B](
-		matrix: ObservableMatrix[A],
-		f: (A, Int, Int) => (B, Int),
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = matrix.subscribe(
+	private inline def flattenMapSubscribe[A, B](matrix: ObservableMatrix[A], f: (A, Int, Int) => (B, Int), onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = matrix.subscribe(
 		(a, up, down) => {
 			val (b, index) = f(a, up, down)
 			onNext(b, 0, index)
@@ -2217,14 +1796,7 @@ trait SandboxDoer { thisDoer =>
 		onComplete
 	)
 
-	private inline def flattenMapWithIndexSubscribe[A, B](
-		matrix: ObservableMatrix[A],
-		valueMap: (A, Int, Int) => B,
-		indexMap: (A, B, Int, Int) => Int,
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = matrix.subscribe(
+	private inline def flattenMapWithIndexSubscribe[A, B](matrix: ObservableMatrix[A], valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int, onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = matrix.subscribe(
 		(a, up, down) => {
 			val b = valueMap(a, up, down)
 			onNext(b, 0, indexMap(a, b, up, down))
@@ -2247,14 +1819,7 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private inline def flattenFoldSubscribe[A, B, S](
-		matrix: ObservableMatrix[A],
-		initialState: S,
-		f: (S, A, Int, Int) => (S, B, Int),
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit
-	): Unit = {
+	private inline def flattenFoldSubscribe[A, B, S](matrix: ObservableMatrix[A], initialState: S, f: (S, A, Int, Int) => (S, B, Int), onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer): Unit = {
 		matrix.subscribe(
 			new FoldConsumer(initialState, f, onNext),
 			onError,
@@ -2266,28 +1831,31 @@ trait SandboxDoer { thisDoer =>
 		getInner: (A, Int) => CapturerArray[B],
 		activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]],
 		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit,
+		onError: ErrorConsumer,
+		onComplete: CompleteConsumer,
 		key: Key
-	) extends MatrixConsumer[A] {
-		var outerCompleted = false
-		var activeInnerCount = 0
-		var errorFired = false
+	) extends MatrixConsumer[A], ErrorConsumer, CompleteConsumer {
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
 
 		def tryComplete(): Unit = {
-			if (outerCompleted && activeInnerCount == 0 && !errorFired) {
-				onComplete()
-			}
+			if outerCompleted && activeInnerCount == 0 && !errorFired then onComplete()
 		}
 
-		val handleFailure: Throwable => Unit = ex => {
-			if (!errorFired) {
+		override def apply(ex: Throwable): Unit = {
+			if !errorFired then {
 				errorFired = true
 				onError(ex)
 			}
 		}
 
-		def apply(a: A, outerOuter: Int, outerInner: Int): Unit = {
+		override def apply(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		override def apply(a: A, outerOuter: Int, outerInner: Int): Unit = {
 			val inner = getInner(a, outerInner)
 			if key != null then activeInnerSubscriptions.updateWith(key) {
 				case Some(list) => Some(inner :: list)
@@ -2296,7 +1864,7 @@ trait SandboxDoer { thisDoer =>
 			activeInnerCount += 1
 			inner.subscribe(
 				(b, innerOuter, innerInner) => onNext(b, outerInner, innerInner),
-				handleFailure,
+				this,
 				() => {
 					activeInnerCount -= 1
 					tryComplete()
@@ -2306,28 +1874,11 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private inline def flatMappedMatrixSubscribe[A, B](
-		source: CapturerArray[A],
-		inline getInner: (A, Int) => CapturerArray[B],
-		activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]],
-		onNext: MatrixConsumer[B],
-		onError: Throwable => Unit,
-		onComplete: () => Unit,
-		key: Key
-	): Unit = {
-		if key != null then
-			activeInnerSubscriptions(key) = Nil
+	private inline def flatMappedMatrixSubscribe[A, B](source: CapturerArray[A], inline getInner: (A, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], onNext: MatrixConsumer[B], onError: ErrorConsumer, onComplete: CompleteConsumer, key: Key): Unit = {
+		if key != null then activeInnerSubscriptions(key) = Nil
 
 		val sub = new FlatMappedMatrixSubscription(getInner, activeInnerSubscriptions, onNext, onError, onComplete, key)
-		source.subscribe(
-			sub,
-			sub.handleFailure,
-			() => {
-				sub.outerCompleted = true
-				sub.tryComplete()
-			},
-			key
-		)
+		source.subscribe(sub, sub, sub, key)
 	}
 
 	///////////////////////////////////////
@@ -2406,10 +1957,8 @@ trait SandboxDoer { thisDoer =>
 				maybeNode.fold {
 					new Keeper(Maybe.empty)
 				} { node =>
-					if p(node.value) then
-						new Keeper(Maybe(ChainNode(node.value, node.next.filter(p))))
-					else
-						node.next.filter(p).asCapturer
+					if p(node.value) then new Keeper(Maybe(ChainNode(node.value, node.next.filter(p))))
+					else node.next.filter(p).asCapturer
 				}
 			})
 		}
