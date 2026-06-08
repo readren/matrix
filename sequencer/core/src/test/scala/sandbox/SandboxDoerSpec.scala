@@ -3,8 +3,7 @@ package sandbox
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop
-import readren.common.Maybe
-import scala.util.{Try, Success, Failure}
+import readren.common.{Maybe, Trial}
 
 object TestSandboxDoer extends SandboxDoer
 
@@ -25,17 +24,28 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val key1 = new AnyRef()
 		var callCount = 0
 		var lastValue = -1
+		var lastUpChain = -1
+		var lastDownChain = -1
 
 		// Subscribe with key1
-		array.subscribe({ (v, index) =>
-			callCount += 1
-			lastValue = v
-		}, key1)
+		array.keyedSubscribeCallbacks(
+			onNextCallback = (v, up, down) => {
+				callCount += 1
+				lastValue = v
+				lastUpChain = up
+				lastDownChain = down
+			},
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => (),
+			key = key1
+		)
 
 		// Complete the capturer
 		capturer.capture(42)
 		assertEquals(callCount, 1)
 		assertEquals(lastValue, 42)
+		assertEquals(lastUpChain, 0)
+		assertEquals(lastDownChain, 0)
 
 		// Unsubscribe with key1
 		array.unsubscribe(key1)
@@ -45,7 +55,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val array2 = new CaptorArray[Int](IArray(capturer2))
 		var callCount2 = 0
 
-		array2.subscribe((_, _) => callCount2 += 1, key1)
+		array2.keyedSubscribeCallbacks((_, _, _) => callCount2 += 1, _ => (), () => (), key1)
 		array2.unsubscribe(key1)
 		capturer2.capture(100)
 		assertEquals(callCount2, 0) // unsubscribed, should not be called
@@ -58,8 +68,8 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		var count1 = 0
 		var count2 = 0
 
-		array.subscribe((_, _) => count1 += 1, key)
-		array.subscribe((_, _) => count2 += 1, key) // should unsubscribe the first one
+		array.keyedSubscribeCallbacks((_, _, _) => count1 += 1, _ => (), () => (), key)
+		array.keyedSubscribeCallbacks((_, _, _) => count2 += 1, _ => (), () => (), key) // should unsubscribe the first one
 
 		capturer.capture(99)
 		assertEquals(count1, 0)
@@ -101,22 +111,22 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		)
 		val seqArray = matrix.flattenToSequential
 
-		var sub1List = List[(Int, Int)]()
-		var sub2List = List[(Int, Int)]()
+		var sub1List = List[(Int, Int, Int)]()
+		var sub2List = List[(Int, Int, Int)]()
 
 		val key1 = new AnyRef()
 		val key2 = new AnyRef()
 
-		seqArray.subscribe((v, idx) => sub1List = sub1List :+ (v, idx), key1)
-		seqArray.subscribe((v, idx) => sub2List = sub2List :+ (v, idx), key2)
+		seqArray.keyedSubscribeCallbacks((v, up, down) => sub1List = sub1List :+ (v, up, down), _ => (), () => (), key1)
+		seqArray.keyedSubscribeCallbacks((v, up, down) => sub2List = sub2List :+ (v, up, down), _ => (), () => (), key2)
 
 		// Complete cell 1
 		captor1.capture(10)
 		captor2.capture(20)
 
-		// Both should receive value 20 with sequential index 0
-		assertEquals(sub1List, List((20, 0)))
-		assertEquals(sub2List, List((20, 0)))
+		// Both should receive value 20 with sequential coordinates (0, 0)
+		assertEquals(sub1List, List((20, 0, 0)))
+		assertEquals(sub2List, List((20, 0, 0)))
 	}
 
 	test("FlattenedToInnerArray and FlattenedToOuterArray coordinates") {
@@ -127,17 +137,17 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 			x => new CaptorArray[String](IArray(captorInner))
 		)
 
-		var innerCoords = List[(String, Int)]()
-		var outerCoords = List[(String, Int)]()
+		var innerCoords = List[(String, Int, Int)]()
+		var outerCoords = List[(String, Int, Int)]()
 
-		matrix.flattenToInner.foreachWithIndex((v, idx) => innerCoords = innerCoords :+ (v, idx))
-		matrix.flattenToOuter.foreachWithIndex((v, idx) => outerCoords = outerCoords :+ (v, idx))
+		matrix.flattenToInner.keyedSubscribeCallbacks((v, up, down) => innerCoords = innerCoords :+ (v, up, down), _ => (), () => (), null)
+		matrix.flattenToOuter.keyedSubscribeCallbacks((v, up, down) => outerCoords = outerCoords :+ (v, up, down), _ => (), () => (), null)
 
 		captorOuter.capture(1)
 		captorInner.capture("a")
 
-		assertEquals(innerCoords, List(("a", 0))) // innerIndex is 0
-		assertEquals(outerCoords, List(("a", 0))) // outerIndex is 0
+		assertEquals(innerCoords, List(("a", 0, 0)))
+		assertEquals(outerCoords, List(("a", 0, 0)))
 	}
 
 	test("Property-based test: MappedKeyedCapturerArray correctness") {
@@ -154,19 +164,19 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("StreamEmitter basic emissions, completion, and error") {
 		val emitter = new StreamEmitter[Int]()
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 		var error: Option[Throwable] = None
 
-		emitter.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = ex => error = Some(ex),
-			onComplete = () => completed = true
+		emitter.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = ex => error = Some(ex),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
 		emitter.emit(2)
-		assertEquals(collected, List(1, 2))
+		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -175,20 +185,20 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		// Subsequent subscription receives completion immediately
 		var completed2 = false
-		emitter.subscribe(
-			onNext = (_, _, _) => (),
-			onError = _ => (),
-			onComplete = () => completed2 = true
+		emitter.subscribeCallbacks(
+			onNextCallback = (_, _, _) => (),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed2 = true
 		)
 		assertEquals(completed2, true)
 
 		// Check failure propagation
 		val emitterErr = new StreamEmitter[Int]()
 		var errorErr: Option[Throwable] = None
-		emitterErr.subscribe(
-			onNext = (_, _) => (),
-			onError = ex => errorErr = Some(ex),
-			onComplete = () => ()
+		emitterErr.subscribeCallbacks(
+			onNextCallback = (_, _, _) => (),
+			onErrorCallback = ex => errorErr = Some(ex),
+			onCompleteCallback = () => ()
 		)
 		val testEx = new Exception("test")
 		emitterErr.fail(testEx)
@@ -196,10 +206,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		// Subsequent subscription receives failure immediately
 		var errorErr2: Option[Throwable] = None
-		emitterErr.subscribe(
-			onNext = (_, _) => (),
-			onError = ex => errorErr2 = Some(ex),
-			onComplete = () => ()
+		emitterErr.subscribeCallbacks(
+			onNextCallback = (_, _, _) => (),
+			onErrorCallback = ex => errorErr2 = Some(ex),
+			onCompleteCallback = () => ()
 		)
 		assertEquals(errorErr2, Some(testEx))
 	}
@@ -207,19 +217,19 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("map propagation of completion and error") {
 		val emitter = new StreamEmitter[Int]()
 		val mapped = emitter.map(_ * 10)
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 		var error: Option[Throwable] = None
 
-		mapped.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = ex => error = Some(ex),
-			onComplete = () => completed = true
+		mapped.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = ex => error = Some(ex),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
 		emitter.emit(2)
-		assertEquals(collected, List(10, 20))
+		assertEquals(collected, List((10, 0, 0), (20, 0, 1)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -228,10 +238,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val emitterErr = new StreamEmitter[Int]()
 		val mappedErr = emitterErr.map(_ * 10)
 		var errorErr: Option[Throwable] = None
-		mappedErr.subscribe(
-			onNext = (_, _) => (),
-			onError = ex => errorErr = Some(ex),
-			onComplete = () => ()
+		mappedErr.subscribeCallbacks(
+			onNextCallback = (_, _, _) => (),
+			onErrorCallback = ex => errorErr = Some(ex),
+			onCompleteCallback = () => ()
 		)
 		val testEx = new Exception("test")
 		emitterErr.fail(testEx)
@@ -241,19 +251,19 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("scan propagation") {
 		val emitter = new StreamEmitter[Int]()
 		val scanned = emitter.scan(0)(_ + _)
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 
-		scanned.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		scanned.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
 		emitter.emit(2)
 		emitter.emit(3)
-		assertEquals(collected, List(1, 3, 6))
+		assertEquals(collected, List((1, 0, 0), (3, 0, 1), (6, 0, 2)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -263,13 +273,13 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("take(n) early completion") {
 		val emitter = new StreamEmitter[Int]()
 		val taken = emitter.take(2)
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 
-		taken.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		taken.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
@@ -277,23 +287,23 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		emitter.emit(2)
 		// Should complete immediately when taking limit is reached
 		assertEquals(completed, true)
-		assertEquals(collected, List(1, 2))
+		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
 
 		// Subsequent emissions from emitter are ignored by take(2)
 		emitter.emit(3)
-		assertEquals(collected, List(1, 2))
+		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
 	}
 
 	test("takeWhile early completion") {
 		val emitter = new StreamEmitter[Int]()
 		val taken = emitter.takeWhile(_ < 3)
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 
-		taken.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		taken.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
@@ -301,39 +311,39 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(completed, false)
 		emitter.emit(3) // doesn't satisfy predicate, should complete immediately
 		assertEquals(completed, true)
-		assertEquals(collected, List(1, 2))
+		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
 
 		emitter.emit(1)
-		assertEquals(collected, List(1, 2))
+		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
 	}
 
 	test("buffer flushing trailing elements on complete") {
 		val emitter = new StreamEmitter[Int]()
 		val buffered = emitter.buffer[Int](3)
-		var collected = List[IArray[Int]]()
+		var collected = List[(IArray[Int], Int, Int)]()
 		var completed = false
 
-		buffered.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		buffered.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
 
 		emitter.emit(1)
 		emitter.emit(2)
-		assertEquals(collected.map(_.toList), Nil)
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), Nil)
 
 		emitter.emit(3)
-		assertEquals(collected.map(_.toList), List(List(1, 2, 3)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0)))
 
 		emitter.emit(4)
 		emitter.emit(5)
-		assertEquals(collected.map(_.toList), List(List(1, 2, 3)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0)))
 
 		emitter.end()
 		// Completing should flush the remaining (4, 5) and trigger complete
 		assertEquals(completed, true)
-		assertEquals(collected.map(_.toList), List(List(1, 2, 3), List(4, 5)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0), (List(4, 5), 0, 1)))
 	}
 
 	test("zip coordinate-aligned completion and error propagation") {
@@ -341,18 +351,18 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val rightEmitter = new StreamEmitter[String]()
 		val zipped = leftEmitter.zip(rightEmitter)((a, b) => s"$a-$b")
 
-		var collected = List[String]()
+		var collected = List[(String, Int, Int)]()
 		var completed = false
 
-		zipped.subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		zipped.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
 
 		leftEmitter.emit(10) // left: Map(0 -> 10)
 		rightEmitter.emit("a") // match: 10-a
-		assertEquals(collected, List("10-a"))
+		assertEquals(collected, List(("10-a", 0, 0)))
 		assertEquals(completed, false)
 
 		leftEmitter.emit(20)
@@ -360,7 +370,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(completed, false)
 
 		rightEmitter.emit("b")
-		assertEquals(collected, List("10-a", "20-b"))
+		assertEquals(collected, List(("10-a", 0, 0), ("20-b", 0, 1)))
 		assertEquals(completed, true)
 	}
 
@@ -370,10 +380,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val zipped = leftEmitter.zip(rightEmitter)((a, b) => s"$a-$b")
 
 		var error: Option[Throwable] = None
-		zipped.subscribe(
-			onNext = (_, _) => (),
-			onError = ex => error = Some(ex),
-			onComplete = () => ()
+		zipped.subscribeCallbacks(
+			onNextCallback = (_, _, _) => (),
+			onErrorCallback = ex => error = Some(ex),
+			onCompleteCallback = () => ()
 		)
 
 		val testEx = new Exception("zip-err")
@@ -386,23 +396,23 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val t2 = makeTask(2)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2))
 
-		var collectedMap = List[Int]()
+		var collectedMap = List[(Int, Int, Int)]()
 		var completedMap = false
-		taskArray.map(_ * 10).subscribe(
-			onNext = (v, idx) => collectedMap = collectedMap :+ v,
-			onError = _ => (),
-			onComplete = () => completedMap = true
+		taskArray.map(_ * 10).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collectedMap = collectedMap :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completedMap = true
 		)
-		assertEquals(collectedMap, List(10, 20))
+		assertEquals(collectedMap, List((10, 0, 0), (20, 0, 1)))
 		assertEquals(completedMap, true)
 
-		var collectedMapWithIdx = List[(Int, Int)]()
-		taskArray.mapWithIndex((v, idx) => v + idx).subscribe(
-			onNext = (v, idx) => collectedMapWithIdx = collectedMapWithIdx :+ (v, idx),
-			onError = _ => (),
-			onComplete = () => ()
+		var collectedMapWithIdx = List[(Int, Int, Int)]()
+		taskArray.mapWithIndex((v, idx) => v + idx).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collectedMapWithIdx = collectedMapWithIdx :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => ()
 		)
-		assertEquals(collectedMapWithIdx, List((1, 0), (3, 1)))
+		assertEquals(collectedMapWithIdx, List((1, 0, 0), (3, 0, 1)))
 	}
 
 	test("TaskArray flatMap and flatMapWithIndex") {
@@ -415,14 +425,14 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 			TaskArray_fromTasks(IArray(makeTask(x * 10), makeTask(x * 100)))
 		}
 
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
 		flatMapped.subscribe(
-			onNext = (v, up, down) => collected = collected :+ v,
+			onNext = (v, up, down) => collected = collected :+ (v, up, down),
 			onError = _ => (),
 			onComplete = () => completed = true
 		)
-		assertEquals(collected, List(10, 100, 20, 200))
+		assertEquals(collected, List((10, 0, 0), (100, 0, 1), (20, 1, 0), (200, 1, 1)))
 		assertEquals(completed, true)
 	}
 
@@ -432,14 +442,14 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val t3 = makeTask(3)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2, t3))
 
-		var collected = List[Int]()
+		var collected = List[(Int, Int, Int)]()
 		var completed = false
-		taskArray.scan(0)(_ + _).subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		taskArray.scan(0)(_ + _).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
-		assertEquals(collected, List(1, 3, 6))
+		assertEquals(collected, List((1, 0, 0), (3, 0, 1), (6, 0, 2)))
 		assertEquals(completed, true)
 	}
 
@@ -449,14 +459,14 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val t3 = makeTask(3)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2, t3))
 
-		var collected = List[IArray[Int]]()
+		var collected = List[(IArray[Int], Int, Int)]()
 		var completed = false
-		taskArray.buffer[Int](2).subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		taskArray.buffer[Int](2).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
-		assertEquals(collected.map(_.toList), List(List(1, 2), List(3)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2), 0, 0), (List(3), 0, 1)))
 		assertEquals(completed, true)
 	}
 
@@ -469,14 +479,14 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val t4 = makeTask("b")
 		val right = TaskArray_fromTasks(IArray(t3, t4))
 
-		var collected = List[String]()
+		var collected = List[(String, Int, Int)]()
 		var completed = false
-		left.zip(right)((a, b) => s"$a-$b").subscribe(
-			onNext = (v, idx) => collected = collected :+ v,
-			onError = _ => (),
-			onComplete = () => completed = true
+		left.zip(right)((a, b) => s"$a-$b").subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
 		)
-		assertEquals(collected, List("1-a", "2-b"))
+		assertEquals(collected, List(("1-a", 0, 0), ("2-b", 0, 1)))
 		assertEquals(completed, true)
 	}
 
@@ -486,226 +496,219 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val t3 = makeTask(3)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2, t3))
 
-		var collectedTake = List[Int]()
+		var collectedTake = List[(Int, Int, Int)]()
 		var completedTake = false
-		taskArray.take(2).subscribe(
-			onNext = (v, idx) => collectedTake = collectedTake :+ v,
-			onError = _ => (),
-			onComplete = () => completedTake = true
+		taskArray.take(2).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collectedTake = collectedTake :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completedTake = true
 		)
-		assertEquals(collectedTake, List(1, 2))
+		assertEquals(collectedTake, List((1, 0, 0), (2, 0, 1)))
 		assertEquals(completedTake, true)
 
-		var collectedTakeWhile = List[Int]()
+		var collectedTakeWhile = List[(Int, Int, Int)]()
 		var completedTakeWhile = false
-		taskArray.takeWhile(_ < 3).subscribe(
-			onNext = (v, idx) => collectedTakeWhile = collectedTakeWhile :+ v,
-			onError = _ => (),
-			onComplete = () => completedTakeWhile = true
+		taskArray.takeWhile(_ < 3).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collectedTakeWhile = collectedTakeWhile :+ (v, up, down),
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completedTakeWhile = true
 		)
-		assertEquals(collectedTakeWhile, List(1, 2))
+		assertEquals(collectedTakeWhile, List((1, 0, 0), (2, 0, 1)))
 		assertEquals(completedTakeWhile, true)
 	}
 
-	test("Venture - basic success and failure propagation") {
+	private def subscribeHelper[A](observable: Observable[A])(onNext: A => Unit, onError: Throwable => Unit = _ => (), onComplete: () => Unit = () => ()): Unit = {
+		val onNextLocal = onNext
+		val onErrorLocal = onError
+		val onCompleteLocal = onComplete
+		observable.subscribe(new Observer[A] {
+			override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextLocal(value)
+
+			override def onError(ex: Throwable): Unit = onErrorLocal(ex)
+
+			override def onComplete(): Unit = onCompleteLocal()
+		})
+	}
+
+	test("Task - mapGuarded success and failure propagation") {
 		var successVal = -1
 		var failureEx: Throwable = null
 
-		val successV = Venture_ready(Success(42))
-		successV.subscribe(
-			onSuccess = v => successVal = v,
-			onError = ex => failureEx = ex
-		)
+		val taskSuccess = makeTask(42).mapGuarded(identity)
+		subscribeHelper(taskSuccess)(v => successVal = v, ex => failureEx = ex)
 		assertEquals(successVal, 42)
 		assert(failureEx == null)
 
-		val testEx = new Exception("venture-err")
-		val failureV = Venture_ready(Failure[Int](testEx))
-		failureV.subscribe(
-			onSuccess = v => successVal = v,
-			onError = ex => failureEx = ex
-		)
+		val testEx = new Exception("guarded-err")
+		val taskFailure = makeTask(42).mapGuarded[Int](_ => throw testEx)
+		subscribeHelper(taskFailure)(v => successVal = v, ex => failureEx = ex)
 		assertEquals(successVal, 42) // unchanged
 		assertEquals(failureEx, testEx)
 	}
 
-	test("Venture - toTask conversion") {
-		val vSuccess = Venture_ready(Success(10))
-		val taskSuccess = vSuccess.toTask
+	test("Task.guarded decorator success and failure propagation") {
+		val taskSuccess = makeTask(10).guarded.map(identity)
 		var resSuccess = -1
-		taskSuccess.subscribe(t => resSuccess = t)
+		subscribeHelper(taskSuccess)(t => resSuccess = t)
 		assertEquals(resSuccess, 10)
 
 		val testEx = new Exception("task-err")
-		val vFailure = Venture_ready(Failure[Int](testEx))
-		val taskFailure = vFailure.toTask
+		val taskFailure = makeTask(5).guarded.map[Int](_ => throw testEx)
 		var failed = false
 		taskFailure.subscribe(new Observer[Int] {
 			override def onNext(value: Int, up: Int, down: Int): Unit = ()
-
 			override def onError(ex: Throwable): Unit = {
 				assertEquals(ex, testEx)
 				failed = true
 			}
-
 			override def onComplete(): Unit = ()
 		})
 		assert(failed)
 	}
 
-	test("Venture - monadic operations (map, flatMap, transform, transformWith)") {
-		val v = Venture_ready(Success(5))
+	test("Task - mapGuarded and flatMapGuarded monadic operations") {
+		val t = makeTask(5)
 
-		// map success
+		// mapGuarded success
 		var mapRes = 0
 		var mapErr: Throwable = null
-		v.map(_ * 2).subscribe(onSuccess = mapRes = _, onError = mapErr = _)
+		subscribeHelper(t.mapGuarded(_ * 2))(mapRes = _, mapErr = _)
 		assertEquals(mapRes, 10)
 		assert(mapErr == null)
 
-		// map throwing exception
+		// mapGuarded throwing exception
 		val testEx = new Exception("map-err")
-		v.map[Int](_ => throw testEx).subscribe(onSuccess = mapRes = _, onError = mapErr = _)
+		subscribeHelper(t.mapGuarded[Int](_ => throw testEx))(mapRes = _, mapErr = _)
 		assertEquals(mapErr, testEx)
 
-		// flatMap success
+		// flatMapGuarded success
 		var flatMapRes = 0
-		v.flatMap(x => Venture_ready(Success(x + 10))).subscribe(onSuccess = flatMapRes = _, onError = _ => ())
+		subscribeHelper(t.flatMapGuarded(x => makeTask(x + 10)))(flatMapRes = _, _ => ())
 		assertEquals(flatMapRes, 15)
 
-		// flatMap failure propagation
+		// flatMapGuarded failure propagation
 		var flatMapErr: Throwable = null
-		v.flatMap(x => Venture_ready(Failure[Int](testEx))).subscribe(onSuccess = _ => (), onError = flatMapErr = _)
+		subscribeHelper(t.flatMapGuarded[Int](x => new Task[Int] {
+			override def subscribe(observer: Observer[Int]): Unit = observer.onError(testEx)
+		}))(onNext = _ => (), onError = flatMapErr = _)
 		assertEquals(flatMapErr, testEx)
-
-		// transform success to failure
-		var transErr: Throwable = null
-		v.transform {
-			case Success(n) => Failure(testEx)
-			case Failure(_) => Success(0)
-		}.subscribe(onSuccess = _ => (), onError = transErr = _)
-		assertEquals(transErr, testEx)
-
-		// transformWith failure to success
-		var transWithRes = 0
-		val vErr = Venture_ready(Failure[Int](testEx))
-		vErr.transformWith {
-			case Success(_) => Venture_ready(Success(0))
-			case Failure(_) => Venture_ready(Success(99))
-		}.subscribe(onSuccess = transWithRes = _, onError = _ => ())
-		assertEquals(transWithRes, 99)
 	}
 
-	test("TrialKeeper - basic operations and mapping") {
-		val keeperSuccess = new TrialKeeper(Success(42))
-		assertEquals(keeperSuccess.maybeValue, Maybe(42))
-		assert(keeperSuccess.isCompleted)
-		assert(!keeperSuccess.isPending)
+	test("Keeper - mapGuarded and guarded") {
+		val keeper = new Keeper(42)
+		assertEquals(keeper.maybeValue, Maybe(42))
+		assert(keeper.isCompleted)
+		assert(!keeper.isPending)
 
 		var successVal = 0
 		var errorVal: Throwable = null
-		keeperSuccess.subscribe(onSuccess = successVal = _, onError = errorVal = _)
+		subscribeHelper(keeper)(successVal = _, errorVal = _)
 		assertEquals(successVal, 42)
 		assert(errorVal == null)
 
-		val keeperFailure = new TrialKeeper[Int](Failure(new Exception("keeper-err")))
-		assert(!keeperFailure.isCompleted)
-		keeperFailure.subscribe(onSuccess = successVal = _, onError = errorVal = _)
-		assertEquals(errorVal.getMessage, "keeper-err")
-
-		// map and flatMap
-		val mapped = keeperSuccess.map((x: Int) => x * 2) // TrialCapturer.map(A => B) -> TrialCapturer[B]
+		// mapGuarded
+		val mapped = keeper.mapGuarded((x: Int) => x * 2)
 		var mappedVal = 0
-		mapped.subscribe(onSuccess = mappedVal = _, onError = _ => ())
+		subscribeHelper(mapped)(mappedVal = _, _ => ())
 		assertEquals(mappedVal, 84)
 
-		val flatMapped = keeperSuccess.flatMap((x: Int) => new TrialKeeper(Success(x.toString)))
-		var flatMappedVal = ""
-		flatMapped.subscribe(onSuccess = flatMappedVal = _, onError = _ => ())
-		assertEquals(flatMappedVal, "42")
+		val testEx = new Exception("keeper-err")
+		val failed = keeper.mapGuarded[Int](_ => throw testEx)
+		subscribeHelper(failed)(onNext = _ => (), onError = errorVal = _)
+		assertEquals(errorVal, testEx)
 	}
 
-	test("TrialCaptor - lifecycle, callbacks and unsubscribing") {
-		val captor = new TrialCaptor[Int]()
+	test("Captor - mapGuarded, guarded, and lifecycle") {
+		val captor = new Captor[Int]()
 		assert(!captor.isCompleted)
 		assert(captor.isPending)
 		assertEquals(captor.maybeValue, Maybe.empty)
 
 		var successVal = 0
 		var errorVal: Throwable = null
-		captor.subscribe(onSuccess = successVal = _, onError = errorVal = _)
+		subscribeHelper(captor)(successVal = _, errorVal = _)
 
 		// capture success
-		captor.capture(Success(100))
+		captor.capture(100)
 		assert(captor.isCompleted)
 		assertEquals(successVal, 100)
 		assert(errorVal == null)
 
 		// subsequent subscription should receive it immediately
 		var successVal2 = 0
-		captor.subscribe(onSuccess = successVal2 = _, onError = _ => ())
+		subscribeHelper(captor)(successVal2 = _, _ => ())
 		assertEquals(successVal2, 100)
 
 		// check subscription removal/key matching
-		val captor2 = new TrialCaptor[Int]()
+		val captor2 = new Captor[Int]()
 		val key = new AnyRef()
 		var count1 = 0
 		var count2 = 0
 		captor2.subscribe(
-			onSuccess = (v, up, down) => count1 += 1,
-			onError = _ => (),
-			key = key,
+			new Observer[Int] {
+				override def onNext(v: Int, up: Int, down: Int): Unit = count1 += 1
+
+				override def onError(ex: Throwable): Unit = ()
+
+				override def onComplete(): Unit = ()
+			},
+			key,
 			upChain = 0,
 			downChain = 0
 		)
 		captor2.subscribe(
-			onSuccess = (v, up, down) => count2 += 1,
-			onError = _ => (),
-			key = key, // should auto-unsubscribe key from count1
+			new Observer[Int] {
+				override def onNext(v: Int, up: Int, down: Int): Unit = count2 += 1
+
+				override def onError(ex: Throwable): Unit = ()
+
+				override def onComplete(): Unit = ()
+			},
+			key, // should auto-unsubscribe key from count1
 			upChain = 0,
 			downChain = 0
 		)
-		captor2.capture(Success(200))
+		captor2.capture(200)
 		assertEquals(count1, 0)
 		assertEquals(count2, 1)
 	}
 
-	test("TrialCaptor - monadic operations propagation") {
-		val captor = new TrialCaptor[Int]()
-		val mapped = captor.map((x: Int) => x * 3) // map(A => B)
+	test("Captor - mapGuarded/flatMapGuarded propagation") {
+		val captor = new Captor[Int]()
+		val mapped = captor.mapGuarded((x: Int) => x * 3)
 		var mappedVal = 0
-		mapped.subscribe(onSuccess = mappedVal = _, onError = _ => ())
+		subscribeHelper(mapped)(mappedVal = _, _ => ())
 
-		val flatMapped = captor.flatMap((x: Int) => new TrialKeeper(Success(x + 5)))
+		val flatMapped = captor.flatMapGuarded((x: Int) => new Keeper(x + 5))
 		var flatMappedVal = 0
-		flatMapped.subscribe(onSuccess = flatMappedVal = _, onError = _ => ())
+		subscribeHelper(flatMapped)(flatMappedVal = _, _ => ())
 
-		captor.capture(Success(10))
+		captor.capture(10)
 		assertEquals(mappedVal, 30)
 		assertEquals(flatMappedVal, 15)
 	}
 
-	test("Venture - observer errors propagate and are not caught by map") {
-		val v = Venture_ready(Success(5))
+	test("Task - observer errors propagate out of mapGuarded") {
+		val task = makeTask(5)
 		val testEx = new Exception("observer-err")
 		interceptMessage[Exception]("observer-err") {
-			v.map(_ * 2).subscribe(
-				onSuccess = _ => throw testEx,
+			subscribeHelper(task.mapGuarded(_ * 2))(
+				onNext = _ => throw testEx,
 				onError = _ => ()
 			)
 		}
 	}
 
-	test("TrialCaptor - observer errors propagate and are not caught by capture") {
-		val captor = new TrialCaptor[Int]()
-		val mapped = captor.map((x: Int) => x * 2)
+	test("Captor - observer errors propagate out of mapGuarded/capture") {
+		val captor = new Captor[Int]()
+		val mapped = captor.mapGuarded((x: Int) => x * 2)
 		val testEx = new Exception("observer-err")
-		mapped.subscribe(
-			onSuccess = _ => throw testEx,
+		subscribeHelper(mapped)(
+			onNext = _ => throw testEx,
 			onError = _ => ()
 		)
 		interceptMessage[Exception]("observer-err") {
-			captor.capture(Success(10))
+			captor.capture(10)
 		}
 	}
 
@@ -714,7 +717,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val foldV = emitter.foldWhile(0)((sum, x) => Maybe.some(sum + x))
 
 		var result = -1
-		foldV.subscribe(onSuccess = result = _, onError = _ => ())
+		subscribeHelper(foldV)(result = _, _ => ())
 
 		emitter.emit(1)
 		emitter.emit(2)
@@ -727,7 +730,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val foldV2 = emitter2.foldWhile(0)((sum, x) => if (sum + x <= 5) Maybe.some(sum + x) else Maybe.empty)
 
 		var result2 = -1
-		foldV2.subscribe(onSuccess = result2 = _, onError = _ => ())
+		subscribeHelper(foldV2)(result2 = _, _ => ())
 
 		emitter2.emit(2)
 		emitter2.emit(3) // sum is 5
@@ -742,10 +745,71 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val foldV = emitter.foldWhile(0)((sum, x) => throw testEx)
 
 		var caughtEx: Throwable = null
-		foldV.subscribe(onSuccess = _ => (), onError = caughtEx = _)
+		subscribeHelper(foldV)(_ => (), caughtEx = _)
 
 		emitter.emit(1)
 		assertEquals(caughtEx, testEx)
+	}
+
+	test("Task.guarded for-comprehension non-sticky behavior") {
+		val tA = makeTask(5)
+		val tB = makeTask(10)
+
+		var evaluatedA = false
+		var evaluatedYield = false
+
+		val testEx = new Exception("untrusted-generator-err")
+
+		// Case 1: Exception thrown in guarded generator's transition lambda is caught
+		val pipeline1 = for {
+			a <- tA.guarded
+			b <- {
+				evaluatedA = true
+				throw testEx
+				tB
+			}
+		} yield {
+			evaluatedYield = true
+			a + b
+		}
+
+		var caughtEx: Throwable = null
+		subscribeHelper(pipeline1)(_ => (), caughtEx = _)
+
+		assert(evaluatedA)
+		assert(!evaluatedYield)
+		assertEquals(caughtEx, testEx)
+
+		// Case 2: Exception thrown in subsequent generator (which is plain Task) is NOT caught
+		val pipeline2 = for {
+			a <- tA.guarded
+			b <- tB
+		} yield {
+			throw testEx
+		}
+
+		interceptMessage[Exception]("untrusted-generator-err") {
+			subscribeHelper(pipeline2)(_ => (), _ => ())
+		}
+	}
+
+	test("Failed - direct construction and map/flatMap propagation") {
+		val testEx = new Exception("failed-keeper-err")
+		val failed = new Failed(testEx)
+		assertEquals(failed.trial, Trial.failure(testEx))
+		assertEquals(failed.maybeValue, Maybe.empty)
+		assert(failed.isCompleted)
+		assert(!failed.isPending)
+
+		var caughtEx: Throwable = null
+		subscribeHelper(failed)(_ => (), caughtEx = _)
+		assertEquals(caughtEx, testEx)
+
+		val mapped = failed.map((x: Nothing) => 42)
+		assertEquals(mapped, failed)
+
+		val flatMapped = failed.flatMap((x: Nothing) => makeTask(42))
+		assertEquals(flatMapped, failed)
 	}
 }
 

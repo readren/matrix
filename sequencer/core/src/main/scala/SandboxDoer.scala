@@ -5,19 +5,15 @@ import readren.common.*
 import scala.annotation.targetName
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
-import scala.util.{Failure, Success, Try}
 
-/** A sandbox prototyping the Task (work) and Settling (result) hierarchies under Observable,
+/** A sandbox prototyping the Task (work) and Capturer (result) hierarchies under Observable,
  * verifying path-dependent typing, covariance, and flatMap/map signature specialization
- * with specialized flatMap methods and monadic Venture/TrialCapturer behaviors.
+ * with guarded methods and decorators.
  */
 trait SandboxDoer { thisDoer =>
 	type Key = AnyRef
 
 	inline given CanEqual[Key, Key] = CanEqual.derived
-
-	type Consumer[-A] = A => Unit
-	type ArrayConsumer[-A] = (A, Int) => Unit
 
 	inline val NOT_APPLICABLE_INDEX = -1
 
@@ -43,7 +39,7 @@ trait SandboxDoer { thisDoer =>
 			})
 		}
 
-		def foreach(consumer: Consumer[A]): Unit = {
+		def foreach(consumer: A => Unit): Unit = {
 			subscribe(new Observer[A] {
 				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value)
 
@@ -100,26 +96,73 @@ trait SandboxDoer { thisDoer =>
 				})
 			}
 		}
+
+		def mapGuarded[B](f: A => B): Task[B] = {
+			(observer: Observer[B]) => {
+				thisTask.subscribe(new Observer[A] {
+					override def onNext(value: A, upChain: Int, downChain: Int): Unit = {
+						val maybeB = try Maybe(f(value)) catch {
+							case NonFatal(e) =>
+								observer.onError(e)
+								Maybe.empty
+						}
+						maybeB.foreach(observer.onNext(_, upChain, downChain))
+					}
+
+					override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+					override def onComplete(): Unit = observer.onComplete()
+				})
+			}
+		}
+
+		def flatMapGuarded[B](f: A => Observable[B]): Task[B] = {
+			(observer: Observer[B]) => {
+				thisTask.subscribe(new Observer[A] {
+					override def onNext(value: A, upChain: Int, downChain: Int): Unit = {
+						val maybeObs = try Maybe(f(value)) catch {
+							case NonFatal(e) =>
+								observer.onError(e)
+								Maybe.empty
+						}
+						maybeObs.foreach(_.subscribe(observer))
+					}
+
+					override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+					override def onComplete(): Unit = observer.onComplete()
+				})
+			}
+		}
+
+		@targetName("flatMapTaskGuarded")
+		def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
+			(observer: Observer[B]) => {
+				thisTask.subscribe(new Observer[A] {
+					override def onNext(value: A, upChain: Int, downChain: Int): Unit = {
+						val maybeTask = try Maybe(f(value)) catch {
+							case NonFatal(e) =>
+								observer.onError(e)
+								Maybe.empty
+						}
+						maybeTask.foreach(_.subscribe(observer))
+					}
+
+					override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+					override def onComplete(): Unit = observer.onComplete()
+				})
+			}
+		}
+
+		def guarded: Task[A] = new GuardedTask(thisTask)
 	}
 
 	// ==================== ASYNCHRONOUS RESULT HIERARCHY ====================
 
-	/** Root covariant facade of a memoized/caching result of an already started task. */
-	trait Settling[+T] { thisSettling =>
-		def maybeValue: Maybe[T]
-
-		inline def isCompleted: Boolean = maybeValue.isDefined
-
-		inline def isPending: Boolean = maybeValue.isEmpty
-
-		def unsubscribe(key: Key): Unit
-
-		def isSubscribed(key: Key): Boolean
-	}
-
 	/** Exception-unaware single result capturer. Ex LatchingTask
 	 * Does not inherit from Task, cleanly separating results from doable work. */
-	sealed trait Capturer[+A] extends Settling[A], Observable[A] { thisLatch =>
+	sealed trait Capturer[+A] extends Observable[A] { thisLatch =>
 		override def subscribe(observer: Observer[A]): Unit = subscribe(observer, null, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
 
 		/** Subscribes with coordinate tracking.
@@ -130,7 +173,7 @@ trait SandboxDoer { thisDoer =>
 		 * - When managed by a parent [[CapturerMatrix]], `upChain` represents the outer/row index and `downChain` represents the inner/column index. */
 		def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit
 
-		override def subscribe(consumer: Consumer[A]): Unit = {
+		override def subscribe(consumer: A => Unit): Unit = {
 			subscribe(new Observer[A] {
 				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value)
 
@@ -155,6 +198,18 @@ trait SandboxDoer { thisDoer =>
 			)
 		}
 
+		def trial: Trial[A]
+
+		def maybeValue: Maybe[A] = trial.toMaybe
+
+		inline def isCompleted: Boolean = trial.isDefined
+
+		inline def isPending: Boolean = trial.isEmpty
+
+		def unsubscribe(key: Key): Unit
+
+		def isSubscribed(key: Key): Boolean
+
 		def unsubscribe(observer: Observer[A]): Unit
 
 		def isSubscribed(observer: Observer[A]): Boolean
@@ -163,10 +218,12 @@ trait SandboxDoer { thisDoer =>
 			this match {
 				case ready: Keeper[A] =>
 					ready.map(f)
+				case failed: Failed =>
+					failed.map(f)
 				case captor: Captor[A] @unchecked =>
 					captor.map(f)
-				case trial: TrialCapturer[A] @unchecked =>
-					trial.map(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.map(f)
 			}
 		}
 
@@ -174,30 +231,75 @@ trait SandboxDoer { thisDoer =>
 			this match {
 				case ready: Keeper[A] =>
 					ready.flatMap(f)
+				case failed: Failed =>
+					failed.flatMap(f)
 				case captor: Captor[A] @unchecked =>
 					captor.flatMap(f)
-				case trial: TrialCapturer[A] @unchecked =>
-					trial.flatMap(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.flatMap(f)
 			}
 		}
 
-		// Specialized flatMap
 		@targetName("flatMapCapturer")
 		def flatMap[B](f: A => Capturer[B]): Capturer[B] = { // necessary to downcast the result type when a subclass isn't covariant.
 			this match {
 				case ready: Keeper[A] =>
 					ready.flatMap(f)
+				case failed: Failed =>
+					failed.flatMap(f)
 				case captor: Captor[A] @unchecked =>
 					captor.flatMap(f)
-				case trial: TrialCapturer[A] @unchecked =>
-					trial.flatMap(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.flatMap(f)
 			}
 		}
+
+		def mapGuarded[B](f: A => B): Capturer[B] = {
+			this match {
+				case ready: Keeper[A] =>
+					ready.mapGuarded(f)
+				case failed: Failed =>
+					failed.mapGuarded(f)
+				case captor: Captor[A] @unchecked =>
+					captor.mapGuarded(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.mapGuarded(f)
+			}
+		}
+
+		def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+			this match {
+				case ready: Keeper[A] =>
+					ready.flatMapGuarded(f)
+				case failed: Failed =>
+					failed.flatMapGuarded(f)
+				case captor: Captor[A] @unchecked =>
+					captor.flatMapGuarded(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.flatMapGuarded(f)
+			}
+		}
+
+		@targetName("flatMapCapturerGuarded")
+		def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
+			this match {
+				case ready: Keeper[A] =>
+					ready.flatMapGuarded(f)
+				case failed: Failed =>
+					failed.flatMapGuarded(f)
+				case captor: Captor[A] @unchecked =>
+					captor.flatMapGuarded(f)
+				case guarded: GuardedCapturer[A] =>
+					guarded.flatMapGuarded(f)
+			}
+		}
+
+		def guarded: Capturer[A] = new GuardedCapturer(thisLatch)
 	}
 
 	/** A [[Capturer]] that has already captured a value. Ex ReadyTask */
 	class Keeper[+A](val value: A) extends Capturer[A] {
-		override def maybeValue: Maybe[A] = Maybe(value)
+		override def trial: Trial[A] = Trial.success(value)
 
 		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
 			observer.onNext(value, upChain, downChain)
@@ -218,14 +320,62 @@ trait SandboxDoer { thisDoer =>
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = f(value)
+
+		override def mapGuarded[B](f: A => B): Capturer[B] = {
+			try new Keeper(f(value)) catch {
+				case NonFatal(e) => new Failed(e)
+			}
+		}
+
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+			try f(value) catch {
+				case NonFatal(e) => new Failed(e)
+			}
+		}
+
+		@targetName("flatMapCapturerGuarded")
+		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
+			try f(value) catch {
+				case NonFatal(e) => new Failed(e)
+			}
+		}
 	}
 
-	/** Ex Covenant. */
-	class Captor[A](initialState: Maybe[A] = Maybe.empty) extends Capturer[A] {
-		private var state: Maybe[A] = initialState
+	class Failed(val exception: Throwable) extends Capturer[Nothing] {
+		override def trial: Trial[Nothing] = Trial.failure(exception)
+
+		override def subscribe(observer: Observer[Nothing], key: Key, upChain: Int, downChain: Int): Unit = {
+			observer.onError(exception)
+		}
+
+		override def unsubscribe(observer: Observer[Nothing]): Unit = ()
+
+		override def unsubscribe(key: Key): Unit = ()
+
+		override def isSubscribed(observer: Observer[Nothing]): Boolean = false
+
+		override def isSubscribed(key: Key): Boolean = false
+
+		override def map[B](f: Nothing => B): Capturer[B] = this.asInstanceOf[Failed]
+
+		override def flatMap[B](f: Nothing => Observable[B]): Observable[B] = this.asInstanceOf[Failed]
+
+		@targetName("flatMapCapturer")
+		override def flatMap[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
+
+		override def mapGuarded[B](f: Nothing => B): Capturer[B] = this.asInstanceOf[Failed]
+
+		override def flatMapGuarded[B](f: Nothing => Observable[B]): Observable[B] = this.asInstanceOf[Failed]
+
+		@targetName("flatMapCapturerGuarded")
+		override def flatMapGuarded[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
+	}
+
+	class Captor[A](initialState: Trial[A] = Trial.empty) extends Capturer[A] {
+		private var state: Trial[A] = initialState
 		private var observers: List[(Key, Observer[A], Int, Int)] = Nil
 
-		override def maybeValue: Maybe[A] = state
+		override def trial: Trial[A] = state
 
 		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
 			state.fold {
@@ -233,6 +383,8 @@ trait SandboxDoer { thisDoer =>
 					unsubscribe(key)
 				}
 				observers = (key, observer, upChain, downChain) :: observers
+			} { ex =>
+				observer.onError(ex)
 			} { a =>
 				observer.onNext(a, upChain, downChain)
 				observer.onComplete()
@@ -258,7 +410,11 @@ trait SandboxDoer { thisDoer =>
 					override def onComplete(): Unit = ()
 				})
 				captor
-			}(a => new Keeper(f(a)))
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				new Keeper(f(a))
+			}
 		}
 
 		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
@@ -279,8 +435,12 @@ trait SandboxDoer { thisDoer =>
 
 					override def onComplete(): Unit = ()
 				})
-				captor
-			}(f)
+				captor: Observable[B]
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				f(a)
+			}
 		}
 
 		@targetName("flatMapCapturer")
@@ -303,559 +463,173 @@ trait SandboxDoer { thisDoer =>
 					override def onComplete(): Unit = ()
 				})
 				captor
-			}(f)
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				f(a)
+			}
+		}
+
+		override def mapGuarded[B](f: A => B): Capturer[B] = {
+			state.fold {
+				val captor = new Captor[B]()
+				this.subscribe(new Observer[A] {
+					override def onNext(a: A, up: Int, down: Int): Unit = {
+						val maybeB = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								captor.fail(e)
+								Maybe.empty
+						}
+						maybeB.foreach(captor.capture)
+					}
+
+					override def onError(ex: Throwable): Unit = captor.fail(ex)
+
+					override def onComplete(): Unit = ()
+				})
+				captor
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				try new Keeper(f(a)) catch {
+					case NonFatal(e) => new Failed(e)
+				}
+			}
+		}
+
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+			state.fold {
+				val captor = new Captor[B]()
+				this.subscribe(new Observer[A] {
+					override def onNext(a: A, up: Int, down: Int): Unit = {
+						val maybeObs = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								captor.fail(e)
+								Maybe.empty
+						}
+						maybeObs.foreach { obs =>
+							obs.subscribe(new Observer[B] {
+								override def onNext(b: B, u: Int, d: Int): Unit = captor.capture(b)
+
+								override def onError(ex: Throwable): Unit = captor.fail(ex)
+
+								override def onComplete(): Unit = ()
+							})
+						}
+					}
+
+					override def onError(ex: Throwable): Unit = captor.fail(ex)
+
+					override def onComplete(): Unit = ()
+				})
+				captor: Observable[B]
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				try f(a) catch {
+					case NonFatal(e) => new Failed(e)
+				}
+			}
+		}
+
+		@targetName("flatMapCapturerGuarded")
+		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
+			state.fold {
+				val captor = new Captor[B]()
+				this.subscribe(new Observer[A] {
+					override def onNext(a: A, up: Int, down: Int): Unit = {
+						val maybeCaptor = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								captor.fail(e)
+								Maybe.empty
+						}
+						maybeCaptor.foreach { c =>
+							c.subscribe(new Observer[B] {
+								override def onNext(b: B, u: Int, d: Int): Unit = captor.capture(b)
+
+								override def onError(ex: Throwable): Unit = captor.fail(ex)
+
+								override def onComplete(): Unit = ()
+							})
+						}
+					}
+
+					override def onError(ex: Throwable): Unit = captor.fail(ex)
+
+					override def onComplete(): Unit = ()
+				})
+				captor
+			} { ex =>
+				new Failed(ex)
+			} { a =>
+				try f(a) catch {
+					case NonFatal(e) => new Failed(e)
+				}
+			}
 		}
 
 		def capture(result: A): Unit = {
-			state.fold {
-				state = Maybe(result)
+			if state.isEmpty then {
+				state = Trial.success(result)
 				val currentObservers = observers
 				observers = Nil
 				currentObservers.reverse.foreach { (_, observer, upChain, downChain) =>
 					observer.onNext(result, upChain, downChain)
 					observer.onComplete()
 				}
-			}(_ => ())
+			}
 		}
 
 		def fail(ex: Throwable): Unit = {
-			state.fold {
+			if state.isEmpty then {
+				state = Trial.failure(ex)
 				val currentObservers = observers
 				observers = Nil
-				currentObservers.reverse.foreach {
-					(_, observer, _, _) => observer.onError(ex)
+				currentObservers.reverse.foreach { (_, observer, _, _) =>
+					observer.onError(ex)
 				}
-			}(_ => ())
+			}
 		}
 	}
 
-	/////////////// Trial hierarchies ///////////////
+	class GuardedTask[+A](underlying: Task[A]) extends Task[A] {
+		override def subscribe(observer: Observer[A]): Unit = underlying.subscribe(observer)
 
-	/** A lazy exception-aware computation.
-	 * Monadic combinators map/flatMap over the success value. */
-	trait Venture[+A] extends Task[A] { thisVenture =>
-		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit = {
-			val onSuccessLocal = onSuccess
-			val onErrorLocal = onError
-			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = onSuccessLocal(value)
+		override def map[B](f: A => B): Task[B] = underlying.mapGuarded(f)
 
-				override def onError(ex: Throwable): Unit = onErrorLocal(ex)
-
-				override def onComplete(): Unit = ()
-			})
-		}
-
-		def toTask: Task[A] = thisVenture
-
-		def transform[B](f: Try[A] => Try[B]): Venture[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeTryB = try Maybe(f(Success(a))) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeTryB.foreach {
-							case Success(b) =>
-								observer.onNext(b, upChain, downChain)
-								observer.onComplete()
-							case Failure(ex) =>
-								observer.onError(ex)
-						}
-					}
-
-					override def onError(ex: Throwable): Unit = {
-						val maybeTryB = try Maybe(f(Failure(ex))) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeTryB.foreach {
-							case Success(b) =>
-								observer.onNext(b, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
-								observer.onComplete()
-							case Failure(ex2) =>
-								observer.onError(ex2)
-						}
-					}
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
-
-		def transformWith[B](f: Try[A] => Venture[B]): Venture[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeV = try Maybe(f(Success(a))) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeV.foreach(_.subscribe(observer))
-					}
-
-					override def onError(ex: Throwable): Unit = {
-						val maybeV = try Maybe(f(Failure(ex))) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeV.foreach(_.subscribe(observer))
-					}
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
-
-		override def map[B](f: A => B): Venture[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeB = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeB.foreach { b =>
-							observer.onNext(b, upChain, downChain)
-							observer.onComplete()
-						}
-					}
-
-					override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
-
-		override def flatMap[B](f: A => Observable[B]): Task[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeObs = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeObs.foreach(_.subscribe(observer))
-					}
-
-					override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
+		override def flatMap[B](f: A => Observable[B]): Task[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapTask")
-		override def flatMap[B](f: A => Task[B]): Task[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeTask = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeTask.foreach(_.subscribe(observer))
-					}
-
-					override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
-
-		@targetName("flatMapVenture")
-		def flatMap[B](f: A => Venture[B]): Venture[B] = {
-			(observer: Observer[B]) => {
-				thisVenture.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeVenture = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								observer.onError(e)
-								Maybe.empty
-						}
-						maybeVenture.foreach(_.subscribe(observer))
-					}
-
-					override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-					override def onComplete(): Unit = ()
-				})
-			}
-		}
+		override def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
 	}
 
-	def Venture_ready[A](tryA: Try[A]): Venture[A] = {
-		(observer: Observer[A]) => {
-			tryA match {
-				case Success(a) =>
-					observer.onNext(a, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
-					observer.onComplete()
-				case Failure(ex) =>
-					observer.onError(ex)
-			}
-		}
-	}
+	class GuardedCapturer[+A](underlying: Capturer[A]) extends Capturer[A] {
+		override def trial: Trial[A] = underlying.trial
 
-	/** Exception-aware latching result (caches a Try[A]).
-	 * Monadic combinators map/flatMap over the success value.
-	 */
-	sealed trait TrialCapturer[+A] extends Capturer[A] { thisTrialCapturer =>
-		def subscribe(onSuccess: A => Unit, onError: Throwable => Unit): Unit = {
-			val onSuccessLocal = onSuccess
-			val onErrorLocal = onError
-			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = onSuccessLocal(value)
+		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit =
+			underlying.subscribe(observer, key, upChain, downChain)
 
-				override def onError(ex: Throwable): Unit = onErrorLocal(ex)
+		override def unsubscribe(key: Key): Unit = underlying.unsubscribe(key)
 
-				override def onComplete(): Unit = ()
-			})
-		}
+		override def unsubscribe(observer: Observer[A]): Unit = underlying.unsubscribe(observer)
 
-		/** Subscribes with coordinate tracking.
-		 * @param onSuccess the callback invoked when the success value is captured.
-		 * @param onError the callback invoked when the failure value is captured.
-		 * @param key the key used for identification and unsubscription.
-		 * @param upChain the outer/row coordinate index.
-		 * @param downChain the inner/column coordinate index. */
-		def subscribe(onSuccess: (A, Int, Int) => Unit, onError: Throwable => Unit, key: Key, upChain: Int, downChain: Int): Unit = {
-			val onSuccessLocal = onSuccess
-			val onErrorLocal = onError
-			subscribe(
-				new Observer[A] {
-					override def onNext(value: A, upChain: Int, downChain: Int): Unit = onSuccessLocal(value, upChain, downChain)
+		override def isSubscribed(key: Key): Boolean = underlying.isSubscribed(key)
 
-					override def onError(ex: Throwable): Unit = onErrorLocal(ex)
+		override def isSubscribed(observer: Observer[A]): Boolean = underlying.isSubscribed(observer)
 
-					override def onComplete(): Unit = ()
-				},
-				key,
-				upChain,
-				downChain
-			)
-		}
+		override def map[B](f: A => B): Capturer[B] = underlying.mapGuarded(f)
 
-		def unsubscribe(onSuccess: A => Unit): Unit = ()
-
-		def isSubscribed(onSuccess: A => Unit): Boolean = false
-
-		override def map[B](f: A => B): TrialCapturer[B] = {
-			thisTrialCapturer match {
-				case keeper: TrialKeeper[A] =>
-					keeper.map(f)
-				case captor: TrialCaptor[A] @unchecked =>
-					captor.map(f)
-			}
-		}
-
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
-			thisTrialCapturer match {
-				case keeper: TrialKeeper[A] =>
-					keeper.flatMap(f)
-				case captor: TrialCaptor[A] @unchecked =>
-					captor.flatMap(f)
-			}
-		}
+		override def flatMap[B](f: A => Observable[B]): Observable[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapCapturer")
-		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
-			thisTrialCapturer match {
-				case keeper: TrialKeeper[A] =>
-					keeper.flatMap(f)
-				case captor: TrialCaptor[A] @unchecked =>
-					captor.flatMap(f)
-			}
-		}
+		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
 
-		def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = {
-			thisTrialCapturer match {
-				case keeper: TrialKeeper[A] =>
-					keeper.flatMap(f)
-				case captor: TrialCaptor[A] @unchecked =>
-					captor.flatMap(f)
-			}
-		}
-	}
+		override def mapGuarded[B](f: A => B): Capturer[B] = underlying.mapGuarded(f)
 
-	class TrialKeeper[+A](val result: Try[A]) extends TrialCapturer[A] {
-		override def maybeValue: Maybe[A] = {
-			result match {
-				case Success(a) =>
-					Maybe(a)
-				case Failure(_) =>
-					Maybe.empty
-			}
-		}
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = underlying.flatMapGuarded(f)
 
-		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
-			result match {
-				case Success(a) =>
-					observer.onNext(a, upChain, downChain)
-					observer.onComplete()
-				case Failure(ex) =>
-					observer.onError(ex)
-			}
-		}
-
-		override def unsubscribe(observer: Observer[A]): Unit = ()
-
-		override def isSubscribed(observer: Observer[A]): Boolean = false
-		override def unsubscribe(key: Key): Unit = ()
-		override def isSubscribed(key: Key): Boolean = false
-
-		override def map[B](f: A => B): TrialKeeper[B] = {
-			result match {
-				case Success(a) =>
-					try new TrialKeeper(Success(f(a))) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(e) =>
-					this.asInstanceOf[TrialKeeper[B]]
-			}
-		}
-
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
-			result match {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					this.asInstanceOf[TrialKeeper[B]]
-			}
-		}
-
-		@targetName("flatMapCapturer")
-		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
-			result match {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					this.asInstanceOf[TrialKeeper[B]]
-			}
-		}
-
-		override def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = {
-			result match {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(e) =>
-					this.asInstanceOf[TrialKeeper[B]]
-			}
-		}
-	}
-
-	class TrialCaptor[A](initialState: Maybe[Try[A]] = Maybe.empty) extends TrialCapturer[A] {
-		private var state: Maybe[Try[A]] = initialState
-		private var observers: List[(Key, Observer[A], Int, Int)] = Nil
-
-		override def maybeValue: Maybe[A] = {
-			state.flatMap {
-				case Success(a) =>
-					Maybe(a)
-				case Failure(_) =>
-					Maybe.empty
-			}
-		}
-
-		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
-			state.fold {
-				if key != null then {
-					observers = observers.filterNot(_._1 == key)
-				}
-				observers = (key, observer, upChain, downChain) :: observers
-			} {
-				case Success(a) =>
-					observer.onNext(a, upChain, downChain)
-					observer.onComplete()
-				case Failure(ex) =>
-					observer.onError(ex)
-			}
-		}
-
-		override def unsubscribe(observer: Observer[A]): Unit = observers = observers.filterNot(_._2 eq observer)
-
-		override def isSubscribed(observer: Observer[A]): Boolean = observers.exists(_._2 eq observer)
-
-		override def unsubscribe(key: Key): Unit = observers = observers.filterNot(_._1 == key)
-
-		override def isSubscribed(key: Key): Boolean = observers.exists(_._1 == key)
-
-		def capture(result: Try[A]): Unit = {
-			state.fold {
-				state = Maybe(result)
-				val currentObservers = observers
-				observers = Nil
-				currentObservers.reverse.foreach { (_, observer, upChain, downChain) =>
-					result match {
-						case Success(a) =>
-							observer.onNext(a, upChain, downChain)
-							observer.onComplete()
-						case Failure(ex) =>
-							observer.onError(ex)
-					}
-				}
-			}(_ => ())
-		}
-
-		override def map[B](f: A => B): TrialCapturer[B] = {
-			state.fold {
-				val captor = new TrialCaptor[B]()
-				this.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeB = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								captor.capture(Failure(e))
-								Maybe.empty
-						}
-						maybeB.foreach(b => captor.capture(Success(b)))
-					}
-
-					override def onError(ex: Throwable): Unit = captor.capture(Failure(ex))
-
-					override def onComplete(): Unit = ()
-				})
-				captor
-			} {
-				case Success(a) =>
-					try new TrialKeeper(Success(f(a))) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					new TrialKeeper(Failure(ex))
-			}
-		}
-
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
-			state.fold {
-				val res = new TrialCaptor[B]()
-				this.subscribe(new Observer[A] {
-					override def onNext(a: A, up: Int, down: Int): Unit = {
-						val maybeObs = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								res.capture(Failure(e))
-								Maybe.empty
-						}
-						maybeObs.foreach { obs =>
-							obs.subscribe(new Observer[B] {
-								override def onNext(b: B, u: Int, d: Int): Unit = res.capture(Success(b))
-
-								override def onError(ex: Throwable): Unit = res.capture(Failure(ex))
-
-								override def onComplete(): Unit = ()
-							})
-						}
-					}
-
-					override def onError(ex: Throwable): Unit = res.capture(Failure(ex))
-
-					override def onComplete(): Unit = ()
-				})
-				res: Observable[B]
-			} {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					new TrialKeeper(Failure(ex))
-			}
-		}
-
-		@targetName("flatMapCapturer")
-		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
-			state.fold {
-				val res = new TrialCaptor[B]()
-				this.subscribe(new Observer[A] {
-					override def onNext(a: A, up: Int, down: Int): Unit = {
-						val maybeCaptor = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								res.capture(Failure(e))
-								Maybe.empty
-						}
-						maybeCaptor.foreach { captor =>
-							captor.subscribe(new Observer[B] {
-								override def onNext(b: B, u: Int, d: Int): Unit = res.capture(Success(b))
-
-								override def onError(ex: Throwable): Unit = res.capture(Failure(ex))
-
-								override def onComplete(): Unit = ()
-							})
-						}
-					}
-
-					override def onError(ex: Throwable): Unit = res.capture(Failure(ex))
-
-					override def onComplete(): Unit = ()
-				})
-				res
-			} {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					new TrialKeeper(Failure(ex))
-			}
-		}
-
-		override def flatMap[B](f: A => TrialCapturer[B]): TrialCapturer[B] = {
-			state.fold {
-				val captor = new TrialCaptor[B]()
-				this.subscribe(new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
-						val maybeTrial = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								captor.capture(Failure(e))
-								Maybe.empty
-						}
-						maybeTrial.foreach { tc =>
-							tc.subscribe(new Observer[B] {
-								override def onNext(b: B, u: Int, d: Int): Unit = captor.capture(Success(b))
-
-								override def onError(e: Throwable): Unit = captor.capture(Failure(e))
-
-								override def onComplete(): Unit = ()
-							})
-						}
-					}
-
-					override def onError(ex: Throwable): Unit = captor.capture(Failure(ex))
-
-					override def onComplete(): Unit = ()
-				})
-				captor
-			} {
-				case Success(a) =>
-					try f(a) catch {
-						case NonFatal(e) =>
-							new TrialKeeper(Failure(e))
-					}
-				case Failure(ex) =>
-					new TrialKeeper(Failure(ex))
-			}
-		}
+		@targetName("flatMapCapturerGuarded")
+		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
 	}
 
 	// ===================================================================
@@ -866,27 +640,20 @@ trait SandboxDoer { thisDoer =>
 	//////////// PUSH BASED ///////////////
 	///////////////////////////////////////
 
-	trait ObservableArray[+A] {
+	trait ObservableArray[+A] { thisObservableArray =>
 		def subscribe(observer: Observer[A]): Unit
 
-		def subscribe(onNext: (A, Int, Int) => Unit, onError: Throwable => Unit = _ => (), onComplete: () => Unit = () => ()): Unit = {
-			val onNextLocal = onNext
-			val onErrorLocal = onError
-			val onCompleteLocal = onComplete
+		inline def subscribeCallbacks(onNextCallback: (A, Int, Int) => Unit, onErrorCallback: Throwable => Unit = _ => (), onCompleteCallback: () => Unit = () => ()): Unit = {
 			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextLocal(value, upChain, downChain)
+				override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextCallback(value, upChain, downChain)
 
-				override def onError(ex: Throwable): Unit = onErrorLocal(ex)
+				override def onError(ex: Throwable): Unit = onErrorCallback(ex)
 
-				override def onComplete(): Unit = onCompleteLocal()
+				override def onComplete(): Unit = onCompleteCallback()
 			})
 		}
 
-		inline def subscribe(inline onNext: ArrayConsumer[A], onError: Throwable => Unit, onComplete: () => Unit): Unit = {
-			subscribe((a, _, downChain) => onNext(a, downChain), onError, onComplete)
-		}
-
-		inline def foreach(inline consumer: Consumer[A]): Unit = {
+		inline def foreach(inline consumer: A => Unit): Unit = {
 			subscribe(new Observer[A] {
 				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value)
 
@@ -896,7 +663,7 @@ trait SandboxDoer { thisDoer =>
 			})
 		}
 
-		inline def foreachWithIndex(inline consumer: ArrayConsumer[A]): Unit = {
+		inline def foreachWithIndex(inline consumer: (A, Int) => Unit): Unit = {
 			subscribe(new Observer[A] {
 				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value, downChain)
 
@@ -925,7 +692,7 @@ trait SandboxDoer { thisDoer =>
 		def takeWhile(p: A => Boolean): ObservableArray[A]
 
 		/** Collapses the stream into a single value, allowing early termination via Maybe.empty. */
-		def foldWhile[B](initial: B)(f: (B, A) => Maybe[B]): Venture[B] = {
+		def foldWhile[B](initial: B)(f: (B, A) => Maybe[B]): Task[B] = {
 			(observer: Observer[B]) => {
 				var state = initial
 				var active = true
@@ -1342,29 +1109,22 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	trait KeyedObservableArray[+A] extends DefaultObservableArray[A] {
-		override def subscribe(observer: Observer[A]): Unit = subscribe(observer, null)
+		override def subscribe(observer: Observer[A]): Unit = keyedSubscribe(observer, null)
 
-		def subscribe(observer: Observer[A], key: Key): Unit
+		def keyedSubscribe(observer: Observer[A], key: Key): Unit
 
-		def subscribe(onNext: (A, Int, Int) => Unit, onError: Throwable => Unit, onComplete: () => Unit, key: Key): Unit = {
-			val onNextLocal = onNext
-			val onErrorLocal = onError
-			val onCompleteLocal = onComplete
-			subscribe(
+		inline def keyedSubscribeCallbacks(inline onNextCallback: (A, Int, Int) => Unit, inline onErrorCallback: Throwable => Unit = _ => (), inline onCompleteCallback: () => Unit = () => (), key: Key): Unit = {
+			keyedSubscribe(
 				new Observer[A] {
-					override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextLocal(value, upChain, downChain)
+					override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextCallback(value, upChain, downChain)
 
-					override def onError(ex: Throwable): Unit = onErrorLocal(ex)
+					override def onError(ex: Throwable): Unit = onErrorCallback(ex)
 
-					override def onComplete(): Unit = onCompleteLocal()
+					override def onComplete(): Unit = onCompleteCallback()
 				},
 				key
 			)
 		}
-
-		def subscribe(onNext: ArrayConsumer[A], key: Key): Unit = subscribe((a, _, inner) => onNext(a, inner), _ => (), () => (), key)
-
-		def subscribe(onNext: Consumer[A], key: Key): Unit = subscribe((a, _, _) => onNext(a), _ => (), () => (), key)
 
 		def unsubscribe(key: Key): Unit
 
@@ -1386,8 +1146,8 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class MappedKeyedCapturerArray[A, +B](val source: KeyedCapturerArray[A], val f: (A, Int) => B) extends KeyedCapturerArray[B] {
-		override def subscribe(observer: Observer[B], key: Key): Unit = {
-			source.subscribe(
+		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
+			source.keyedSubscribe(
 				new Observer[A] {
 					override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a, downChain), upChain, downChain)
 
@@ -1429,7 +1189,7 @@ trait SandboxDoer { thisDoer =>
 	final class KeeperArray[+A](values: IArray[A]) extends CapturerArray[A] {
 		override def maybeResult(index: Int): Maybe[A] = Maybe(values(index))
 
-		override def subscribe(observer: Observer[A], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			values.foreachWithIndex((a, index) => observer.onNext(a, 0, index))
 			observer.onComplete()
 		}
@@ -1469,7 +1229,7 @@ trait SandboxDoer { thisDoer =>
 	final class CaptorArray[A](val capturers: IArray[Capturer[A]]) extends CapturerArray[A] { thisCaptorArray =>
 		override def maybeResult(index: Int): Maybe[A] = capturers(index).maybeValue
 
-		override def subscribe(observer: Observer[A], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			if key != null then unsubscribe(key)
 			val size = capturers.length
 			if size == 0 then observer.onComplete()
@@ -1676,7 +1436,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToInnerArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(observer: Observer[A], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
 					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, inner)
@@ -1695,7 +1455,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToOuterArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(observer: Observer[A], key: Key): Unit =
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit =
 			matrix.subscribe(
 				new Observer[A] {
 					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, outer)
@@ -1713,7 +1473,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedWithArray[A](val matrix: KeyedObservableMatrix[A], val f: (A, Int, Int) => Int) extends KeyedCapturerArray[A] {
-		override def subscribe(observer: Observer[A], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
 					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, f(a, outer, inner))
@@ -1732,7 +1492,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedToSequentialArray[+A](val matrix: KeyedObservableMatrix[A]) extends KeyedCapturerArray[A] {
-		override def subscribe(observer: Observer[A], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			var counter = 0
 			matrix.subscribe(
 				new Observer[A] {
@@ -1756,7 +1516,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedMapArray[A, +B](val matrix: KeyedObservableMatrix[A], val f: (A, Int, Int) => (B, Int)) extends KeyedCapturerArray[B] {
-		override def subscribe(observer: Observer[B], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
 			matrix.subscribe(new Observer[A] {
 				override def onNext(a: A, outer: Int, inner: Int): Unit = {
 					val (b, index) = f(a, outer, inner)
@@ -1775,7 +1535,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedMapWithIndexArray[A, B](val matrix: KeyedObservableMatrix[A], val valueMap: (A, Int, Int) => B, val indexMap: (A, B, Int, Int) => Int) extends KeyedCapturerArray[B] {
-		override def subscribe(observer: Observer[B], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
 					override def onNext(a: A, outer: Int, inner: Int): Unit = {
@@ -1797,7 +1557,7 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	final class FlattenedFoldArray[A, B, S](val matrix: KeyedObservableMatrix[A], val initialState: S, val f: (S, A, Int, Int) => (S, B, Int)) extends KeyedCapturerArray[B] {
-		override def subscribe(observer: Observer[B], key: Key): Unit = {
+		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
 			var state = initialState
 			matrix.subscribe(
 				new Observer[A] {
@@ -2065,7 +1825,7 @@ trait SandboxDoer { thisDoer =>
 				}
 			}
 			activeInnerCount += 1
-			inner.subscribe(new Observer[B] {
+			inner.keyedSubscribe(new Observer[B] {
 				override def onNext(b: B, innerOuter: Int, innerInner: Int): Unit = observer.onNext(b, outerInner, innerInner)
 
 				override def onError(ex: Throwable): Unit = FlatMappedMatrixObserver.this.onError(ex)
@@ -2081,7 +1841,7 @@ trait SandboxDoer { thisDoer =>
 	private inline def flatMappedMatrixSubscribe[A, B](source: CapturerArray[A], inline getInner: (A, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], observer: Observer[B], key: Key): Unit = {
 		if key != null then activeInnerSubscriptions(key) = Nil
 		val sub = new FlatMappedMatrixObserver(getInner, activeInnerSubscriptions, observer, key)
-		source.subscribe(sub, key)
+		source.keyedSubscribe(sub, key)
 	}
 
 	private final class ZipObservation[A, B, C](left: ObservableArray[A], right: ObservableArray[B], f: (A, B) => C, observer: Observer[C]) {
