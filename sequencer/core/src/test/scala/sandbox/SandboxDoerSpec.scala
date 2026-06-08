@@ -13,7 +13,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	import TestSandboxDoer.*
 
 	private def makeTask[A](value: A): Task[A] = new Task[A] {
-		override def subscribe(onComplete: Consumer[A]): Unit = onComplete(value)
+		override def subscribe(observer: Observer[A]): Unit = {
+			observer.onNext(value, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
+			observer.onComplete()
+		}
 	}
 
 	test("Keyed subscription lifecycle and auto-unsubscribe") {
@@ -529,16 +532,25 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("Venture - toTask conversion") {
 		val vSuccess = Venture_ready(Success(10))
 		val taskSuccess = vSuccess.toTask
-		var resSuccess: Try[Int] = null
+		var resSuccess = -1
 		taskSuccess.subscribe(t => resSuccess = t)
-		assertEquals(resSuccess, Success(10))
+		assertEquals(resSuccess, 10)
 
 		val testEx = new Exception("task-err")
 		val vFailure = Venture_ready(Failure[Int](testEx))
 		val taskFailure = vFailure.toTask
-		var resFailure: Try[Int] = null
-		taskFailure.subscribe(t => resFailure = t)
-		assertEquals(resFailure, Failure(testEx))
+		var failed = false
+		taskFailure.subscribe(new Observer[Int] {
+			override def onNext(value: Int, up: Int, down: Int): Unit = ()
+
+			override def onError(ex: Throwable): Unit = {
+				assertEquals(ex, testEx)
+				failed = true
+			}
+
+			override def onComplete(): Unit = ()
+		})
+		assert(failed)
 	}
 
 	test("Venture - monadic operations (map, flatMap, transform, transformWith)") {
@@ -586,7 +598,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("TrialKeeper - basic operations and mapping") {
 		val keeperSuccess = new TrialKeeper(Success(42))
-		assertEquals(keeperSuccess.maybeValue, Maybe(Success(42)))
+		assertEquals(keeperSuccess.maybeValue, Maybe(42))
 		assert(keeperSuccess.isCompleted)
 		assert(!keeperSuccess.isPending)
 
@@ -597,7 +609,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assert(errorVal == null)
 
 		val keeperFailure = new TrialKeeper[Int](Failure(new Exception("keeper-err")))
-		assert(keeperFailure.isCompleted)
+		assert(!keeperFailure.isCompleted)
 		keeperFailure.subscribe(onSuccess = successVal = _, onError = errorVal = _)
 		assertEquals(errorVal.getMessage, "keeper-err")
 
@@ -673,10 +685,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(flatMappedVal, 15)
 	}
 
-	test("Venture - subscriber errors propagate and are not caught by map") {
+	test("Venture - observer errors propagate and are not caught by map") {
 		val v = Venture_ready(Success(5))
-		val testEx = new Exception("subscriber-err")
-		interceptMessage[Exception]("subscriber-err") {
+		val testEx = new Exception("observer-err")
+		interceptMessage[Exception]("observer-err") {
 			v.map(_ * 2).subscribe(
 				onSuccess = _ => throw testEx,
 				onError = _ => ()
@@ -684,15 +696,15 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		}
 	}
 
-	test("TrialCaptor - subscriber errors propagate and are not caught by capture") {
+	test("TrialCaptor - observer errors propagate and are not caught by capture") {
 		val captor = new TrialCaptor[Int]()
 		val mapped = captor.map((x: Int) => x * 2)
-		val testEx = new Exception("subscriber-err")
+		val testEx = new Exception("observer-err")
 		mapped.subscribe(
 			onSuccess = _ => throw testEx,
 			onError = _ => ()
 		)
-		interceptMessage[Exception]("subscriber-err") {
+		interceptMessage[Exception]("observer-err") {
 			captor.capture(Success(10))
 		}
 	}

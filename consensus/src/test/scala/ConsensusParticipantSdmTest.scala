@@ -398,11 +398,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 					netSequencer.Venture_fromTask(
 						netSequencer.Task_mineFlat { () =>
-							covenant.map {
-								case (response, requestId) =>
-									// TODO consider moving this to the line after calling `covenant.fulfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
-									scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
-									response
+							covenant.map { (response, requestId) =>
+								// TODO consider moving this to the line after calling `covenant.fulfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
+								scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
+								response
 							}
 						}
 					)
@@ -444,7 +443,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			if isConfigNoiseEnabled then {
 				configNoiseInjection_count += 1
 				configNoiseInjectionsSinceLastClientCommand_count += 1
-				determineNewConfig(changeProbability).foreach { case (previousConfigMask, newConfigMask) =>
+				determineNewConfig(changeProbability).foreach { (previousConfigMask, newConfigMask) =>
 					val configChangeRequest = createNewConfigChangeRequestId()
 
 					// trigger all those duties in their respective node's sequencer

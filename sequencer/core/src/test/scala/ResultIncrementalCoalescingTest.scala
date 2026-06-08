@@ -76,7 +76,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				expectedResult <- intGen
 				contender <- genTask(expectedResult)
 			} yield (expectedResult, doer.Covenant_triggerAndWire(contender): doer.LatchingTask[Int])
-		} { case (expectedResult, contender) =>
+		} { (expectedResult, contender) =>
 
 			val promise = Promise[Unit]()
 
@@ -115,7 +115,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int],
 				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
 			)
-		} { case (expectedResult2, firstContender, secondContender) =>
+		} { (expectedResult2, firstContender, secondContender) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -155,7 +155,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				expectedResult1,
 				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int]
 			)
-		} { case (expectedResult1, firstContender) =>
+		} { (expectedResult1, firstContender) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -204,7 +204,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				expectedResult2,
 				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
 			)
-		} { case (expectedResult1, firstContender, expectedResult2, secondContender) =>
+		} { (expectedResult1, firstContender, expectedResult2, secondContender) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise

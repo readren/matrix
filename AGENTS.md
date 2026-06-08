@@ -32,7 +32,8 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 
 ### Format
 
-- Use scala 3 syntax but never omit braces around a block of more than one line (i.e.: Do not rely on indentation for block delimitation).
+- Use Scala 3 syntax, putting braces around all multi-line blocks that would require them if the "-no-indent" flag was active (do not rely on indentation for multi-line block delimitation).
+- Never add braces around single-line blocks or single-line case expressions (e.g. write `case Success(a) => expression`, NOT `case Success(a) => { expression }`).
 - No hard wraps or newlines in paragraphs. Let container soft-wrap.
 
 ## High-level architecture
