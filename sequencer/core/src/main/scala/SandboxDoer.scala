@@ -3,6 +3,8 @@ package readren.sequencer
 import readren.common.*
 
 import scala.annotation.targetName
+import scala.annotation.unchecked.uncheckedVariance
+import scala.compiletime.uninitialized
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
@@ -29,25 +31,17 @@ trait SandboxDoer { thisDoer =>
 	trait Observable[+A] {
 		def subscribe(observer: Observer[A]): Unit
 
-		def subscribe(callback: A => Unit): Unit = {
-			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = callback(value)
+		inline def subscribeCallbacks(inline next: (A, Int, Int) => Unit, inline error: Throwable => Unit = _ => (), inline complete: () => Unit = () => ()): Unit = {
+			subscribe(new Observer {
+				override def onNext(value: A, upChain: Int, downChain: Int): Unit = next(value, upChain, downChain)
 
-				override def onError(ex: Throwable): Unit = ()
+				override def onError(ex: Throwable): Unit = error(ex)
 
-				override def onComplete(): Unit = ()
+				override def onComplete(): Unit = complete()
 			})
 		}
 
-		def foreach(consumer: A => Unit): Unit = {
-			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value)
-
-				override def onError(ex: Throwable): Unit = ()
-
-				override def onComplete(): Unit = ()
-			})
-		}
+		inline def foreach(inline consumer: A => Unit): Unit = subscribeCallbacks((a, _, _) => consumer(a))
 
 		def map[B](f: A => B): Observable[B]
 
@@ -163,7 +157,7 @@ trait SandboxDoer { thisDoer =>
 	/** Exception-unaware single result capturer. Ex LatchingTask
 	 * Does not inherit from Task, cleanly separating results from doable work. */
 	sealed trait Capturer[+A] extends Observable[A] { thisLatch =>
-		override def subscribe(observer: Observer[A]): Unit = subscribe(observer, null, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
+		override def subscribe(observer: Observer[A]): Unit = subscribeWithCoords(observer, null, NOT_APPLICABLE_INDEX, NOT_APPLICABLE_INDEX)
 
 		/** Subscribes with coordinate tracking.
 		 * @param observer the observer invoked when the value is captured.
@@ -171,32 +165,7 @@ trait SandboxDoer { thisDoer =>
 		 * - Standalone/direct subscriptions default both `upChain` and `downChain` to `-1`.
 		 * - When managed by a parent [[CapturerArray]], `upChain` is `0` and `downChain` represents the element's index.
 		 * - When managed by a parent [[CapturerMatrix]], `upChain` represents the outer/row index and `downChain` represents the inner/column index. */
-		def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit
-
-		override def subscribe(consumer: A => Unit): Unit = {
-			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value)
-
-				override def onError(ex: Throwable): Unit = ()
-
-				override def onComplete(): Unit = ()
-			})
-		}
-
-		def subscribe(consumer: (A, Int, Int) => Unit, key: Key, upChain: Int, downChain: Int): Unit = {
-			subscribe(
-				new Observer[A] {
-					override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value, upChain, downChain)
-
-					override def onError(ex: Throwable): Unit = ()
-
-					override def onComplete(): Unit = ()
-				},
-				key,
-				upChain,
-				downChain
-			)
-		}
+		def subscribeWithCoords(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit
 
 		def trial: Trial[A]
 
@@ -301,7 +270,7 @@ trait SandboxDoer { thisDoer =>
 	class Keeper[+A](val value: A) extends Capturer[A] {
 		override def trial: Trial[A] = Trial.success(value)
 
-		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
+		override def subscribeWithCoords(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
 			observer.onNext(value, upChain, downChain)
 			observer.onComplete()
 		}
@@ -344,9 +313,7 @@ trait SandboxDoer { thisDoer =>
 	class Failed(val exception: Throwable) extends Capturer[Nothing] {
 		override def trial: Trial[Nothing] = Trial.failure(exception)
 
-		override def subscribe(observer: Observer[Nothing], key: Key, upChain: Int, downChain: Int): Unit = {
-			observer.onError(exception)
-		}
+		override def subscribeWithCoords(observer: Observer[Nothing], key: Key, upChain: Int, downChain: Int): Unit = observer.onError(exception)
 
 		override def unsubscribe(observer: Observer[Nothing]): Unit = ()
 
@@ -377,11 +344,9 @@ trait SandboxDoer { thisDoer =>
 
 		override def trial: Trial[A] = state
 
-		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
+		override def subscribeWithCoords(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit = {
 			state.fold {
-				if key != null then {
-					unsubscribe(key)
-				}
+				if key != null then unsubscribe(key)
 				observers = (key, observer, upChain, downChain) :: observers
 			} { ex =>
 				observer.onError(ex)
@@ -606,8 +571,8 @@ trait SandboxDoer { thisDoer =>
 	class GuardedCapturer[+A](underlying: Capturer[A]) extends Capturer[A] {
 		override def trial: Trial[A] = underlying.trial
 
-		override def subscribe(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit =
-			underlying.subscribe(observer, key, upChain, downChain)
+		override def subscribeWithCoords(observer: Observer[A], key: Key, upChain: Int, downChain: Int): Unit =
+			underlying.subscribeWithCoords(observer, key, upChain, downChain)
 
 		override def unsubscribe(key: Key): Unit = underlying.unsubscribe(key)
 
@@ -640,10 +605,10 @@ trait SandboxDoer { thisDoer =>
 	//////////// PUSH BASED ///////////////
 	///////////////////////////////////////
 
-	trait ObservableArray[+A] { thisObservableArray =>
+	trait ObservableStream[+A] { thisObservableStream =>
 		def subscribe(observer: Observer[A]): Unit
 
-		inline def subscribeCallbacks(onNextCallback: (A, Int, Int) => Unit, onErrorCallback: Throwable => Unit = _ => (), onCompleteCallback: () => Unit = () => ()): Unit = {
+		inline def subscribeCallbacks(inline onNextCallback: (A, Int, Int) => Unit, inline onErrorCallback: Throwable => Unit = _ => (), inline onCompleteCallback: () => Unit = () => ()): Unit = {
 			subscribe(new Observer[A] {
 				override def onNext(value: A, upChain: Int, downChain: Int): Unit = onNextCallback(value, upChain, downChain)
 
@@ -663,9 +628,9 @@ trait SandboxDoer { thisDoer =>
 			})
 		}
 
-		inline def foreachWithIndex(inline consumer: (A, Int) => Unit): Unit = {
+		inline def foreachWithCoords(inline consumer: (A, Int, Int) => Unit): Unit = {
 			subscribe(new Observer[A] {
-				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value, downChain)
+				override def onNext(value: A, upChain: Int, downChain: Int): Unit = consumer(value, upChain, downChain)
 
 				override def onError(ex: Throwable): Unit = ()
 
@@ -673,23 +638,23 @@ trait SandboxDoer { thisDoer =>
 			})
 		}
 
-		def map[B: ClassTag](f: A => B): ObservableArray[B]
+		def map[B: ClassTag](f: A => B): ObservableStream[B]
 
-		def mapWithIndex[B: ClassTag](f: (A, Int) => B): ObservableArray[B]
+		def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): ObservableStream[B]
 
-		def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B]
+		def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B]
 
-		def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B]
+		def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B]
 
-		def scan[B: ClassTag](initial: B)(f: (B, A) => B): ObservableArray[B]
+		def scan[B: ClassTag](initial: B)(f: (B, A) => B): ObservableStream[B]
 
-		def buffer[T >: A : ClassTag](size: Int): ObservableArray[IArray[T]]
+		def buffer[T >: A : ClassTag](size: Int): ObservableStream[IArray[T]]
 
-		def zip[B, C: ClassTag](other: ObservableArray[B])(f: (A, B) => C): ObservableArray[C]
+		def zip[B, C: ClassTag](other: ObservableStream[B])(f: (A, B) => C): ObservableStream[C]
 
-		def take(n: Int): ObservableArray[A]
+		def take(n: Int): ObservableStream[A]
 
-		def takeWhile(p: A => Boolean): ObservableArray[A]
+		def takeWhile(p: A => Boolean): ObservableStream[A]
 
 		/** Collapses the stream into a single value, allowing early termination via Maybe.empty. */
 		def foldWhile[B](initial: B)(f: (B, A) => Maybe[B]): Task[B] = {
@@ -737,70 +702,148 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	/** Partial implementation of [[ObservableArray]] */
-	trait DefaultObservableArray[+A] extends ObservableArray[A] {
-		override def map[B: ClassTag](f: A => B): ObservableArray[B] = {
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = {
-					DefaultObservableArray.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a), upChain, downChain)
+	object ObservableStream {
+		def empty[A]: ObservableStream[A] = new DefaultObservableStream[A] {
+			override def subscribe(observer: Observer[A]): Unit = observer.onComplete()
+		}
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		def apply[A](elements: A*): ObservableStream[A] = fromIterable(elements)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
+		def fromIterable[A](iterable: Iterable[A]): ObservableStream[A] = new DefaultObservableStream[A] {
+			override def subscribe(observer: Observer[A]): Unit = {
+				val it = iterable.iterator
+				var index = 0
+				while it.hasNext do {
+					val v = it.next()
+					observer.onNext(v, NOT_APPLICABLE_INDEX, index)
+					index += 1
+				}
+				observer.onComplete()
+			}
+		}
+
+		def fromIterableGuarded[A](iterable: Iterable[A]): ObservableStream[A] = new DefaultObservableStream[A] {
+			override def subscribe(observer: Observer[A]): Unit = {
+				val it = iterable.iterator
+				var index = 0
+				var active = true
+				while active do {
+					val hasNext = try it.hasNext catch {
+						case NonFatal(e) =>
+							observer.onError(e)
+							active = false
+							false
+					}
+					if hasNext then {
+						try {
+							val v = it.next()
+							observer.onNext(v, NOT_APPLICABLE_INDEX, index)
+							index += 1
+						} catch {
+							case NonFatal(e) =>
+								observer.onError(e)
+								active = false
+						}
+					} else if active then {
+						observer.onComplete()
+						active = false
+					}
 				}
 			}
 		}
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): ObservableArray[B] =
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = {
-					DefaultObservableArray.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a, downChain), upChain, downChain)
+		def generate[A](supplier: () => A): ObservableStream[A] = new DefaultObservableStream[A] {
+			override def subscribe(observer: Observer[A]): Unit = {
+				var index = 0
+				var active = true
+				while active do {
+					val maybeVal = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							active = false
+							observer.onError(e)
+							Maybe.empty
+					}
+					maybeVal.foreach { v =>
+						observer.onNext(v, NOT_APPLICABLE_INDEX, index)
+						index += 1
+					}
+				}
+			}
+		}
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		def generateKeyed[A](supplier: () => A): KeyedObservableStream[A] = new KeyedObservableStream[A] {
+			private val activeKeys = scala.collection.mutable.Set[Key]()
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
+			override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
+				if key != null then activeKeys.add(key)
+				var index = 0
+				while (key == null || activeKeys.contains(key)) do {
+					val maybeVal = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							if key != null then activeKeys.remove(key)
+							observer.onError(e)
+							Maybe.empty
+					}
+					maybeVal.foreach { v =>
+						observer.onNext(v, NOT_APPLICABLE_INDEX, index)
+						index += 1
+					}
 				}
 			}
 
-		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
-			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapSubscribe(DefaultObservableArray.this, f, observer)
-			}
+			override def unsubscribe(key: Key): Unit = if key != null then activeKeys.remove(key)
 
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
-			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapWithIndexSubscribe(DefaultObservableArray.this, f, observer)
-			}
+			override def isSubscribed(key: Key): Boolean = key != null && activeKeys.contains(key)
+		}
 
-		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): ObservableArray[B] =
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = DefaultObservableArray.this.subscribe(new ScanConsumer(initial, f, observer))
-			}
-
-		override def buffer[T >: A : ClassTag](size: Int): ObservableArray[IArray[T]] =
-			new DefaultObservableArray[IArray[T]] {
-				override def subscribe(observer: Observer[IArray[T]]): Unit = {
-					val consumer = new BufferedConsumer[A, T](size, observer)
-					DefaultObservableArray.this.subscribe(consumer)
+		def unfold[S, A](initial: S)(f: S => Maybe[(A, S)]): ObservableStream[A] = new DefaultObservableStream[A] {
+			override def subscribe(observer: Observer[A]): Unit = {
+				var state = initial
+				var index = 0
+				var active = true
+				while active do {
+					val maybeStep = try Maybe(f(state)) catch {
+						case NonFatal(e) =>
+							active = false
+							observer.onError(e)
+							Maybe.empty
+					}
+					maybeStep.fold {
+						active = false
+					} {
+						_.fold {
+							active = false
+							observer.onComplete()
+						} { step =>
+							state = step._2
+							observer.onNext(step._1, NOT_APPLICABLE_INDEX, index)
+							index += 1
+						}
+					}
 				}
 			}
+		}
+	}
 
-		override def zip[B, C: ClassTag](other: ObservableArray[B])(f: (A, B) => C): ObservableArray[C] =
-			new ZippedObservableArray(this, other, f)
+	/** Partial implementation of [[ObservableStream]] */
+	trait DefaultObservableStream[+A] extends ObservableStream[A] {
+		override def map[B: ClassTag](f: A => B): ObservableStream[B] = new MappedObservableStream(this, f)
 
-		override def take(n: Int): ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = DefaultObservableArray.this.subscribe(new TakeConsumer(n, observer))
-			}
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): ObservableStream[B] = new MappedWithCoordsObservableStream(this, f)
 
-		override def takeWhile(p: A => Boolean): ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = DefaultObservableArray.this.subscribe(new TakeWhileConsumer(p, observer))
-			}
+		override def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B] = new FlatMappedObservableMatrix(this, f)
+
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B] = new FlatMappedWithCoordsObservableMatrix(this, f)
+
+		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): ObservableStream[B] = new ScannedObservableStream(this, initial, f)
+
+		override def buffer[T >: A : ClassTag](size: Int): ObservableStream[IArray[T]] = new BufferedObservableStream[A, T](this, size)
+
+		override def zip[B, C: ClassTag](other: ObservableStream[B])(f: (A, B) => C): ObservableStream[C] = new ZippedObservableStream(this, other, f)
+
+		override def take(n: Int): ObservableStream[A] = new TakeObservableStream(this, n)
+
+		override def takeWhile(p: A => Boolean): ObservableStream[A] = new TakeWhileObservableStream(this, p)
 	}
 
 	trait ObservableMatrix[+A] {
@@ -819,102 +862,57 @@ trait SandboxDoer { thisDoer =>
 			})
 		}
 
-		def flattenToInner: ObservableArray[A]
+		def flattenToInner: ObservableStream[A]
 
-		def flattenToOuter: ObservableArray[A]
+		def flattenToOuter: ObservableStream[A]
 
-		def flattenWith(f: (A, Int, Int) => Int): ObservableArray[A]
+		def flattenWith(f: (A, Int, Int) => Int): ObservableStream[A]
 
-		def flattenToSequential: ObservableArray[A]
+		def flattenToSequential: ObservableStream[A]
 
-		def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): ObservableArray[B]
+		def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): ObservableStream[B]
 
-		def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): ObservableArray[B]
+		def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): ObservableStream[B]
 
-		def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): ObservableArray[B]
+		def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): ObservableStream[B]
 	}
 
 	trait DefaultObservableMatrix[+A] extends ObservableMatrix[A] {
-		override def flattenToInner: ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = {
-					DefaultObservableMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, downChain)
+		override def flattenToInner: ObservableStream[A] = new FlattenedToInnerStream(this)
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		override def flattenToOuter: ObservableStream[A] = new FlattenedToOuterStream(this)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
-				}
-			}
+		override def flattenWith(f: (A, Int, Int) => Int): ObservableStream[A] = new FlattenedWithStream(this, f)
 
-		override def flattenToOuter: ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = {
-					DefaultObservableMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, upChain)
+		override def flattenToSequential: ObservableStream[A] = new FlattenedToSequentialStream(this)
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): ObservableStream[B] = new FlattenedMapStream(this, f)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
-				}
-			}
+		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): ObservableStream[B] = new FlattenedMapWithCoordsStream(this, valueMap, indexMap)
 
-		override def flattenWith(f: (A, Int, Int) => Int): ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = {
-					DefaultObservableMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, f(a, upChain, downChain))
-
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-						override def onComplete(): Unit = observer.onComplete()
-					})
-				}
-			}
-
-		override def flattenToSequential: ObservableArray[A] =
-			new DefaultObservableArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = flattenToSequentialSubscribe(DefaultObservableMatrix.this, observer)
-			}
-
-		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): ObservableArray[B] =
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenMapSubscribe(DefaultObservableMatrix.this, f, observer)
-			}
-
-		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): ObservableArray[B] =
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenMapWithIndexSubscribe(DefaultObservableMatrix.this, valueMap, indexMap, observer)
-			}
-
-		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): ObservableArray[B] =
-			new DefaultObservableArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenFoldSubscribe(DefaultObservableMatrix.this, initialState, f, observer)
-			}
+		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): ObservableStream[B] = new FlattenedFoldStream(this, initialState, f)
 	}
 
-	trait TaskArray[+A] extends ObservableArray[A] {
+	trait TaskArray[+A] extends ObservableStream[A] {
 		override def map[B: ClassTag](f: A => B): TaskArray[B]
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): TaskArray[B]
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): TaskArray[B]
 
-		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B]
+		override def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B]
 
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B]
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B]
 
 		@targetName("flatMapTask")
 		def flatMap[B: ClassTag](f: A => TaskArray[B]): TaskMatrix[B]
 
-		@targetName("flatMapTaskWithIndex")
-		def flatMapWithIndex[B: ClassTag](f: (A, Int) => TaskArray[B]): TaskMatrix[B]
+		@targetName("flatMapTaskWithCoords")
+		def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => TaskArray[B]): TaskMatrix[B]
 
 		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): TaskArray[B]
 
 		override def buffer[T >: A : ClassTag](size: Int): TaskArray[IArray[T]]
 
-		override def zip[B, C: ClassTag](other: ObservableArray[B])(f: (A, B) => C): ObservableArray[C]
+		override def zip[B, C: ClassTag](other: ObservableStream[B])(f: (A, B) => C): ObservableStream[C]
 
 		@targetName("zipTask")
 		def zip[B, C: ClassTag](other: TaskArray[B])(f: (A, B) => C): TaskArray[C]
@@ -925,82 +923,33 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	/** Partial implementation of [[TaskArray]] */
-	trait DefaultTaskArray[+A] extends TaskArray[A] with DefaultObservableArray[A] {
-		override def map[B: ClassTag](f: A => B): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit =
-					DefaultTaskArray.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a), upChain, downChain)
+	trait DefaultTaskArray[+A] extends TaskArray[A] with DefaultObservableStream[A] {
+		override def map[B: ClassTag](f: A => B): TaskArray[B] = new MappedTaskArray(this, f)
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): TaskArray[B] = new MappedWithCoordsTaskArray(this, f)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
-			}
+		override def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B] = new FlatMappedObservableMatrix(this, f)
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = {
-					DefaultTaskArray.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a, downChain), upChain, downChain)
-
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-						override def onComplete(): Unit = observer.onComplete()
-					})
-				}
-			}
-
-		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
-			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, observer)
-			}
-
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] = {
-			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, observer)
-			}
-		}
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B] = new FlatMappedWithCoordsObservableMatrix(this, f)
 
 		@targetName("flatMapTask")
-		override def flatMap[B: ClassTag](f: A => TaskArray[B]): TaskMatrix[B] =
-			new DefaultTaskMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapSubscribe(DefaultTaskArray.this, f, observer)
-			}
+		override def flatMap[B: ClassTag](f: A => TaskArray[B]): TaskMatrix[B] = new FlatMappedTaskMatrix(this, f)
 
-		@targetName("flatMapTaskWithIndex")
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => TaskArray[B]): TaskMatrix[B] =
-			new DefaultTaskMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapWithIndexSubscribe(DefaultTaskArray.this, f, observer)
-			}
+		@targetName("flatMapTaskWithCoords")
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => TaskArray[B]): TaskMatrix[B] = new FlatMappedWithCoordsTaskMatrix(this, f)
 
-		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = DefaultTaskArray.this.subscribe(new ScanConsumer(initial, f, observer))
-			}
+		override def scan[B: ClassTag](initial: B)(f: (B, A) => B): TaskArray[B] = new ScannedTaskArray(this, initial, f)
 
-		override def buffer[T >: A : ClassTag](size: Int): TaskArray[IArray[T]] =
-			new DefaultTaskArray[IArray[T]] {
-				override def subscribe(observer: Observer[IArray[T]]): Unit = {
-					val consumer = new BufferedConsumer[A, T](size, observer)
-					DefaultTaskArray.this.subscribe(consumer)
-				}
-			}
+		override def buffer[T >: A : ClassTag](size: Int): TaskArray[IArray[T]] = new BufferedTaskArray[A, T](this, size)
 
-		override def zip[B, C: ClassTag](other: ObservableArray[B])(f: (A, B) => C): ObservableArray[C] = new ZippedObservableArray(this, other, f)
+		override def zip[B, C: ClassTag](other: ObservableStream[B])(f: (A, B) => C): ObservableStream[C] = new ZippedObservableStream(this, other, f)
 
 		@targetName("zipTask")
 		override def zip[B, C: ClassTag](other: TaskArray[B])(f: (A, B) => C): TaskArray[C] = new ZippedTaskArray(this, other, f)
 
-		override def take(n: Int): TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = DefaultTaskArray.this.subscribe(new TakeConsumer(n, observer))
-			}
+		override def take(n: Int): TaskArray[A] = new TakeTaskArray(this, n)
 
-		override def takeWhile(p: A => Boolean): TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = DefaultTaskArray.this.subscribe(new TakeWhileConsumer(p, observer))
-			}
+		override def takeWhile(p: A => Boolean): TaskArray[A] = new TakeWhileTaskArray(this, p)
 	}
 
 	trait TaskMatrix[+A] extends ObservableMatrix[A] {
@@ -1020,61 +969,19 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	trait DefaultTaskMatrix[+A] extends TaskMatrix[A] with DefaultObservableMatrix[A] {
-		override def flattenToInner: TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit =
-					DefaultTaskMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, downChain)
+		override def flattenToInner: TaskArray[A] = new FlattenedToInnerTaskArray(this)
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		override def flattenToOuter: TaskArray[A] = new FlattenedToOuterTaskArray(this)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
-			}
+		override def flattenWith(f: (A, Int, Int) => Int): TaskArray[A] = new FlattenedWithTaskArray(this, f)
 
-		override def flattenToOuter: TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit =
-					DefaultTaskMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, upChain)
+		override def flattenToSequential: TaskArray[A] = new FlattenedToSequentialTaskArray(this)
 
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
+		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): TaskArray[B] = new FlattenedMapTaskArray(this, f)
 
-						override def onComplete(): Unit = observer.onComplete()
-					})
-			}
+		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): TaskArray[B] = new FlattenedMapWithCoordsTaskArray(this, valueMap, indexMap)
 
-		override def flattenWith(f: (A, Int, Int) => Int): TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit =
-					DefaultTaskMatrix.this.subscribe(new Observer[A] {
-						override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, 0, f(a, upChain, downChain))
-
-						override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-						override def onComplete(): Unit = observer.onComplete()
-					})
-			}
-
-		override def flattenToSequential: TaskArray[A] =
-			new DefaultTaskArray[A] {
-				override def subscribe(observer: Observer[A]): Unit = flattenToSequentialSubscribe(DefaultTaskMatrix.this, observer)
-			}
-
-		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenMapSubscribe(DefaultTaskMatrix.this, f, observer)
-			}
-
-		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenMapWithIndexSubscribe(DefaultTaskMatrix.this, valueMap, indexMap, observer)
-			}
-
-		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): TaskArray[B] =
-			new DefaultTaskArray[B] {
-				override def subscribe(observer: Observer[B]): Unit = flattenFoldSubscribe(DefaultTaskMatrix.this, initialState, f, observer)
-			}
+		override def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): TaskArray[B] = new FlattenedFoldTaskArray(this, initialState, f)
 	}
 
 
@@ -1108,7 +1015,7 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	trait KeyedObservableArray[+A] extends DefaultObservableArray[A] {
+	trait KeyedObservableStream[+A] extends DefaultObservableStream[A] {
 		override def subscribe(observer: Observer[A]): Unit = keyedSubscribe(observer, null)
 
 		def keyedSubscribe(observer: Observer[A], key: Key): Unit
@@ -1131,7 +1038,7 @@ trait SandboxDoer { thisDoer =>
 		def isSubscribed(key: Key): Boolean
 	}
 
-	trait SettlingArray[+A] extends KeyedObservableArray[A] {
+	trait SettlingArray[+A] extends KeyedObservableStream[A] {
 		def maybeResult(index: Int): Maybe[A]
 
 		inline def isCompleted(index: Int): Boolean = maybeResult(index).isDefined
@@ -1139,30 +1046,13 @@ trait SandboxDoer { thisDoer =>
 		inline def isPending(index: Int): Boolean = maybeResult(index).isEmpty
 	}
 
-	trait KeyedCapturerArray[+A] extends KeyedObservableArray[A] {
-		override def map[B: ClassTag](f: A => B): KeyedCapturerArray[B] = new MappedKeyedCapturerArray(this, (a, index) => f(a))
+	trait KeyedCapturerArray[+A] extends KeyedObservableStream[A] {
+		override def map[B: ClassTag](f: A => B): KeyedCapturerArray[B] = new MappedKeyedCapturerArray(this, (a, up, down) => f(a))
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): KeyedCapturerArray[B] = new MappedKeyedCapturerArray(this, f)
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): KeyedCapturerArray[B] = new MappedKeyedCapturerArray(this, f)
 	}
 
-	final class MappedKeyedCapturerArray[A, +B](val source: KeyedCapturerArray[A], val f: (A, Int) => B) extends KeyedCapturerArray[B] {
-		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
-			source.keyedSubscribe(
-				new Observer[A] {
-					override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a, downChain), upChain, downChain)
-
-					override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-					override def onComplete(): Unit = observer.onComplete()
-				},
-				key
-			)
-		}
-
-		override def unsubscribe(key: Key): Unit = source.unsubscribe(key)
-
-		override def isSubscribed(key: Key): Boolean = source.isSubscribed(key)
-	}
+	// MappedKeyedCapturerArray refactored at the bottom of the file
 
 	sealed trait CapturerArray[+A] extends SettlingArray[A], KeyedCapturerArray[A] {
 		override def map[B: ClassTag](f: A => B): CapturerArray[B] = {
@@ -1172,21 +1062,21 @@ trait SandboxDoer { thisDoer =>
 			}
 		}
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): CapturerArray[B] = {
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): CapturerArray[B] = {
 			this match {
-				case keeper: KeeperArray[A] => keeper.mapWithIndex(f)
-				case captor: CaptorArray[A] @unchecked => captor.mapWithIndex(f)
+				case keeper: KeeperArray[A] => keeper.mapWithCoords(f)
+				case captor: CaptorArray[A] @unchecked => captor.mapWithCoords(f)
 			}
 		}
 
 		@targetName("flatMapCapturer")
 		def flatMap[B: ClassTag](f: A => CapturerArray[B]): CapturerMatrix[B]
 
-		@targetName("flatMapCapturerWithIndex")
-		def flatMapWithIndex[B: ClassTag](f: (A, Int) => CapturerArray[B]): CapturerMatrix[B]
+		@targetName("flatMapCapturerWithCoords")
+		def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => CapturerArray[B]): CapturerMatrix[B]
 	}
 
-	final class KeeperArray[+A](values: IArray[A]) extends CapturerArray[A] {
+	final class KeeperArray[A](values: IArray[A]) extends CapturerArray[A] {
 		override def maybeResult(index: Int): Maybe[A] = Maybe(values(index))
 
 		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
@@ -1195,14 +1085,13 @@ trait SandboxDoer { thisDoer =>
 		}
 
 		override def unsubscribe(key: Key): Unit = ()
-
 		override def isSubscribed(key: Key): Boolean = false
 
 		override def map[B: ClassTag](f: A => B): KeeperArray[B] = new KeeperArray[B](values.mapWithIndex { (a, i) => f(a) })
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): KeeperArray[B] = new KeeperArray[B](values.mapWithIndex(f))
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): KeeperArray[B] = new KeeperArray[B](values.mapWithIndex { (a, i) => f(a, 0, i) })
 
-		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
+		override def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
 				override def subscribe(observer: Observer[B]): Unit = {
 					if values.length == 0 then observer.onComplete()
@@ -1210,20 +1099,20 @@ trait SandboxDoer { thisDoer =>
 				}
 			}
 
-		@targetName("flatMapCapturer")
-		override def flatMap[B: ClassTag](f: A => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedCapturerMatrix(this, f)
-
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] = {
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B] = {
 			new DefaultObservableMatrix[B] {
 				override def subscribe(observer: Observer[B]): Unit = {
 					if values.length == 0 then observer.onComplete()
-					else new FlatMapWithIndexMatrixObserver(values, f, observer).start()
+					else new FlatMapWithCoordsMatrixObserver(values, f, observer).start()
 				}
 			}
 		}
 
-		@targetName("flatMapCapturerWithIndex")
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedWithIndexCapturerMatrix(this, f)
+		@targetName("flatMapCapturerWithCoords")
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedWithCoordsCapturerMatrix(this, f)
+
+		@targetName("flatMapCapturer")
+		override def flatMap[B: ClassTag](f: A => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedCapturerMatrix(this, f)		
 	}
 
 	final class CaptorArray[A](val capturers: IArray[Capturer[A]]) extends CapturerArray[A] { thisCaptorArray =>
@@ -1238,7 +1127,7 @@ trait SandboxDoer { thisDoer =>
 				var i = 0
 				while i < size do {
 					val index = i
-					capturers(index).subscribe(
+					capturers(index).subscribeWithCoords(
 						new Observer[A] {
 							override def onNext(a: A, up: Int, down: Int): Unit = {
 								observer.onNext(a, 0, index)
@@ -1277,24 +1166,24 @@ trait SandboxDoer { thisDoer =>
 		override def map[B: ClassTag](f: A => B): CapturerArray[B] =
 			new CaptorArray(capturers.mapWithIndex((capturer, _) => capturer.map(f)))
 
-		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): CapturerArray[B] =
-			new CaptorArray(capturers.mapWithIndex((capturer, index) => capturer.map(a => f(a, index))))
+		override def mapWithCoords[B: ClassTag](f: (A, Int, Int) => B): CapturerArray[B] =
+			new CaptorArray(capturers.mapWithIndex((capturer, index) => capturer.map(a => f(a, 0, index))))
 
-		override def flatMap[B: ClassTag](f: A => ObservableArray[B]): ObservableMatrix[B] =
+		override def flatMap[B: ClassTag](f: A => ObservableStream[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapSubscribe(thisCaptorArray, f, observer)
+				override def subscribe(observer: Observer[B]): Unit = streamFlatMapSubscribe(thisCaptorArray, f, observer)
 			}
 
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => ObservableArray[B]): ObservableMatrix[B] =
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => ObservableStream[B]): ObservableMatrix[B] =
 			new DefaultObservableMatrix[B] {
-				override def subscribe(observer: Observer[B]): Unit = arrayFlatMapWithIndexSubscribe(thisCaptorArray, f, observer)
+				override def subscribe(observer: Observer[B]): Unit = streamFlatMapWithCoordsSubscribe(thisCaptorArray, f, observer)
 			}
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B: ClassTag](f: A => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedCapturerMatrix(this, f)
 
-		@targetName("flatMapCapturerWithIndex")
-		override def flatMapWithIndex[B: ClassTag](f: (A, Int) => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedWithIndexCapturerMatrix(this, f)
+		@targetName("flatMapCapturerWithCoords")
+		override def flatMapWithCoords[B: ClassTag](f: (A, Int, Int) => CapturerArray[B]): CapturerMatrix[B] = new FlatMappedWithCoordsCapturerMatrix(this, f)
 	}
 
 	trait KeyedObservableMatrix[+A] extends ObservableMatrix[A] {
@@ -1330,19 +1219,19 @@ trait SandboxDoer { thisDoer =>
 
 		inline def isPending(outerIndex: Int, innerIndex: Int): Boolean = maybeResult(outerIndex, innerIndex).isEmpty
 
-		override def flattenToInner: KeyedObservableArray[A]
+		override def flattenToInner: KeyedObservableStream[A]
 
-		override def flattenToOuter: KeyedObservableArray[A]
+		override def flattenToOuter: KeyedObservableStream[A]
 
-		override def flattenWith(f: (A, Int, Int) => Int): KeyedObservableArray[A]
+		override def flattenWith(f: (A, Int, Int) => Int): KeyedObservableStream[A]
 
-		override def flattenToSequential: KeyedObservableArray[A]
+		override def flattenToSequential: KeyedObservableStream[A]
 
-		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): KeyedObservableArray[B]
+		override def flattenMap[B: ClassTag](f: (A, Int, Int) => (B, Int)): KeyedObservableStream[B]
 
-		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): KeyedObservableArray[B]
+		override def flattenMap[B: ClassTag](valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int): KeyedObservableStream[B]
 
-		def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): KeyedObservableArray[B]
+		def flattenFold[B: ClassTag, S](initialState: S)(f: (S, A, Int, Int) => (S, B, Int)): KeyedObservableStream[B]
 	}
 
 	trait CapturerMatrix[+A] extends SettlingMatrix[A] {
@@ -1368,7 +1257,7 @@ trait SandboxDoer { thisDoer =>
 
 		override def subscribe(observer: Observer[B], key: Key): Unit = {
 			if key != null then unsubscribe(key)
-			flatMappedMatrixSubscribe(source, (a, _) => f(a), activeInnerSubscriptions, observer, key)
+			flatMappedMatrixSubscribe(source, (a, _, _) => f(a), activeInnerSubscriptions, observer, key)
 		}
 
 		override def unsubscribe(key: Key): Unit = {
@@ -1392,15 +1281,15 @@ trait SandboxDoer { thisDoer =>
 
 		override def flattenMap[C: ClassTag](f: (B, Int, Int) => (C, Int)): KeyedCapturerArray[C] = new FlattenedMapArray(this, f)
 
-		override def flattenMap[C: ClassTag](valueMap: (B, Int, Int) => C, indexMap: (B, C, Int, Int) => Int): KeyedCapturerArray[C] = new FlattenedMapWithIndexArray[B, C](this, valueMap, indexMap)
+		override def flattenMap[C: ClassTag](valueMap: (B, Int, Int) => C, indexMap: (B, C, Int, Int) => Int): KeyedCapturerArray[C] = new FlattenedMapWithCoordsArray[B, C](this, valueMap, indexMap)
 
 		override def flattenFold[C: ClassTag, S](initialState: S)(f: (S, B, Int, Int) => (S, C, Int)): KeyedCapturerArray[C] = new FlattenedFoldArray(this, initialState, f)
 	}
 
-	final class FlatMappedWithIndexCapturerMatrix[A, B](val source: CapturerArray[A], val f: (A, Int) => CapturerArray[B]) extends CapturerMatrix[B] {
+	final class FlatMappedWithCoordsCapturerMatrix[A, B](val source: CapturerArray[A], val f: (A, Int, Int) => CapturerArray[B]) extends CapturerMatrix[B] {
 		private val activeInnerSubscriptions = scala.collection.mutable.Map[Key, List[CapturerArray[B]]]()
 
-		override def maybeResult(outerIndex: Int, innerIndex: Int): Maybe[B] = source.maybeResult(outerIndex).flatMap(a => f(a, outerIndex).maybeResult(innerIndex))
+		override def maybeResult(outerIndex: Int, innerIndex: Int): Maybe[B] = source.maybeResult(outerIndex).flatMap(a => f(a, 0, outerIndex).maybeResult(innerIndex))
 
 		override def subscribe(observer: Observer[B], key: Key): Unit = {
 			if key != null then unsubscribe(key)
@@ -1430,7 +1319,7 @@ trait SandboxDoer { thisDoer =>
 
 		override def flattenMap[C: ClassTag](f: (B, Int, Int) => (C, Int)): KeyedCapturerArray[C] = new FlattenedMapArray(this, f)
 
-		override def flattenMap[C: ClassTag](valueMap: (B, Int, Int) => C, indexMap: (B, C, Int, Int) => Int): KeyedCapturerArray[C] = new FlattenedMapWithIndexArray[B, C](this, valueMap, indexMap)
+		override def flattenMap[C: ClassTag](valueMap: (B, Int, Int) => C, indexMap: (B, C, Int, Int) => Int): KeyedCapturerArray[C] = new FlattenedMapWithCoordsArray[B, C](this, valueMap, indexMap)
 
 		override def flattenFold[C: ClassTag, S](initialState: S)(f: (S, B, Int, Int) => (S, C, Int)): KeyedCapturerArray[C] = new FlattenedFoldArray(this, initialState, f)
 	}
@@ -1439,7 +1328,7 @@ trait SandboxDoer { thisDoer =>
 		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, inner)
+					override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, down)
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
 
@@ -1458,7 +1347,7 @@ trait SandboxDoer { thisDoer =>
 		override def keyedSubscribe(observer: Observer[A], key: Key): Unit =
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, outer)
+					override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, up)
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
 
@@ -1476,7 +1365,7 @@ trait SandboxDoer { thisDoer =>
 		override def keyedSubscribe(observer: Observer[A], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = observer.onNext(a, 0, f(a, outer, inner))
+					override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, f(a, up, down))
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
 
@@ -1496,10 +1385,10 @@ trait SandboxDoer { thisDoer =>
 			var counter = 0
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = {
+					override def onNext(a: A, up: Int, down: Int): Unit = {
 						val index = counter
 						counter += 1
-						observer.onNext(a, 0, index)
+						observer.onNext(a, NOT_APPLICABLE_INDEX, index)
 					}
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1518,9 +1407,9 @@ trait SandboxDoer { thisDoer =>
 	final class FlattenedMapArray[A, +B](val matrix: KeyedObservableMatrix[A], val f: (A, Int, Int) => (B, Int)) extends KeyedCapturerArray[B] {
 		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
 			matrix.subscribe(new Observer[A] {
-				override def onNext(a: A, outer: Int, inner: Int): Unit = {
-					val (b, index) = f(a, outer, inner)
-					observer.onNext(b, 0, index)
+				override def onNext(a: A, up: Int, down: Int): Unit = {
+					val (b, index) = f(a, up, down)
+					observer.onNext(b, NOT_APPLICABLE_INDEX, index)
 				}
 
 				override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1534,13 +1423,13 @@ trait SandboxDoer { thisDoer =>
 		override def isSubscribed(key: Key): Boolean = matrix.isSubscribed(key)
 	}
 
-	final class FlattenedMapWithIndexArray[A, B](val matrix: KeyedObservableMatrix[A], val valueMap: (A, Int, Int) => B, val indexMap: (A, B, Int, Int) => Int) extends KeyedCapturerArray[B] {
+	final class FlattenedMapWithCoordsArray[A, B](val matrix: KeyedObservableMatrix[A], val valueMap: (A, Int, Int) => B, val indexMap: (A, B, Int, Int) => Int) extends KeyedCapturerArray[B] {
 		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = {
-						val b = valueMap(a, outer, inner)
-						observer.onNext(b, 0, indexMap(a, b, outer, inner))
+					override def onNext(a: A, up: Int, down: Int): Unit = {
+						val b = valueMap(a, up, down)
+						observer.onNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
 					}
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1561,10 +1450,10 @@ trait SandboxDoer { thisDoer =>
 			var state = initialState
 			matrix.subscribe(
 				new Observer[A] {
-					override def onNext(a: A, outer: Int, inner: Int): Unit = {
-						val (newState, b, index) = f(state, a, outer, inner)
+					override def onNext(a: A, up: Int, down: Int): Unit = {
+						val (newState, b, index) = f(state, a, up, down)
 						state = newState
-						observer.onNext(b, 0, index)
+						observer.onNext(b, NOT_APPLICABLE_INDEX, index)
 					}
 
 					override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1580,7 +1469,7 @@ trait SandboxDoer { thisDoer =>
 		override def isSubscribed(key: Key): Boolean = matrix.isSubscribed(key)
 	}
 
-	private final class FlatMapMatrixObserver[A, B](values: IArray[A], f: A => ObservableArray[B], observer: Observer[B]) {
+	private final class FlatMapMatrixObserver[A, B](values: IArray[A], f: A => ObservableStream[B], observer: Observer[B]) {
 		private val size = values.length
 		private var completedCount = 0
 		private var errorFired = false
@@ -1614,7 +1503,7 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private final class FlatMapWithIndexMatrixObserver[A, B](values: IArray[A], f: (A, Int) => ObservableArray[B], observer: Observer[B]) {
+	private final class FlatMapWithCoordsMatrixObserver[A, B](values: IArray[A], f: (A, Int, Int) => ObservableStream[B], observer: Observer[B]) {
 		private val size = values.length
 		private var completedCount = 0
 		private var errorFired = false
@@ -1633,7 +1522,7 @@ trait SandboxDoer { thisDoer =>
 		}
 
 		private final class ElementSubscription(outerIndex: Int) extends Observer[B] {
-			def start(a: A): Unit = f(a, outerIndex).subscribe(this)
+			def start(a: A): Unit = f(a, 0, outerIndex).subscribe(this)
 
 			override def onNext(b: B, innerOuter: Int, innerInner: Int): Unit = observer.onNext(b, outerIndex, innerInner)
 
@@ -1648,7 +1537,7 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private final class FlatMapObserver[A, B](f: A => ObservableArray[B], observer: Observer[B]) extends Observer[A] {
+	private final class FlatMapObserver[A, B](f: A => ObservableStream[B], observer: Observer[B]) extends Observer[A] {
 		private var outerCompleted = false
 		private var activeInnerCount = 0
 		private var errorFired = false
@@ -1684,11 +1573,11 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private inline def arrayFlatMapSubscribe[A, B](array: ObservableArray[A], inline f: A => ObservableArray[B], observer: Observer[B]): Unit = {
+	private inline def streamFlatMapSubscribe[A, B](array: ObservableStream[A], inline f: A => ObservableStream[B], observer: Observer[B]): Unit = {
 		array.subscribe(new FlatMapObserver(f, observer))
 	}
 
-	private final class FlatMapWithIndexObserver[A, B](f: (A, Int) => ObservableArray[B], observer: Observer[B]) extends Observer[A] {
+	private final class FlatMapWithCoordsObserver[A, B](f: (A, Int, Int) => ObservableStream[B], observer: Observer[B]) extends Observer[A] {
 		private var outerCompleted = false
 		private var activeInnerCount = 0
 		private var errorFired = false
@@ -1707,13 +1596,13 @@ trait SandboxDoer { thisDoer =>
 
 		override def onNext(a: A, outerOuter: Int, outerDown: Int): Unit = {
 			activeInnerCount += 1
-			f(a, outerDown).subscribe(new Observer[B] {
+			f(a, outerOuter, outerDown).subscribe(new Observer[B] {
 				override def onNext(b: B, innerUp: Int, innerDown: Int): Unit = {
 					observer.onNext(b, outerDown, innerDown)
 				}
 
 				override def onError(ex: Throwable): Unit = {
-					FlatMapWithIndexObserver.this.onError(ex)
+					FlatMapWithCoordsObserver.this.onError(ex)
 				}
 
 				override def onComplete(): Unit = {
@@ -1730,8 +1619,8 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private inline def arrayFlatMapWithIndexSubscribe[A, B](array: ObservableArray[A], inline f: (A, Int) => ObservableArray[B], observer: Observer[B]): Unit = {
-		array.subscribe(new FlatMapWithIndexObserver(f, observer))
+	private inline def streamFlatMapWithCoordsSubscribe[A, B](array: ObservableStream[A], inline f: (A, Int, Int) => ObservableStream[B], observer: Observer[B]): Unit = {
+		array.subscribe(new FlatMapWithCoordsObserver(f, observer))
 	}
 
 	private final class SequentialConsumer[A](observer: Observer[A]) extends Observer[A] {
@@ -1740,7 +1629,7 @@ trait SandboxDoer { thisDoer =>
 		override def onNext(a: A, up: Int, down: Int): Unit = {
 			val index = counter
 			counter += 1
-			observer.onNext(a, 0, index)
+			observer.onNext(a, NOT_APPLICABLE_INDEX, index)
 		}
 
 		override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1756,7 +1645,7 @@ trait SandboxDoer { thisDoer =>
 		matrix.subscribe(new Observer[A] {
 			override def onNext(a: A, up: Int, down: Int): Unit = {
 				val (b, index) = f(a, up, down)
-				observer.onNext(b, 0, index)
+				observer.onNext(b, NOT_APPLICABLE_INDEX, index)
 			}
 
 			override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1765,11 +1654,11 @@ trait SandboxDoer { thisDoer =>
 		})
 	}
 
-	private inline def flattenMapWithIndexSubscribe[A, B](matrix: ObservableMatrix[A], valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int, observer: Observer[B]): Unit = {
+	private inline def flattenMapWithCoordsSubscribe[A, B](matrix: ObservableMatrix[A], valueMap: (A, Int, Int) => B, indexMap: (A, B, Int, Int) => Int, observer: Observer[B]): Unit = {
 		matrix.subscribe(new Observer[A] {
 			override def onNext(a: A, up: Int, down: Int): Unit = {
 				val b = valueMap(a, up, down)
-				observer.onNext(b, 0, indexMap(a, b, up, down))
+				observer.onNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
 			}
 
 			override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1784,7 +1673,7 @@ trait SandboxDoer { thisDoer =>
 		override def onNext(a: A, up: Int, down: Int): Unit = {
 			val (newState, b, index) = f(state, a, up, down)
 			state = newState
-			observer.onNext(b, 0, index)
+			observer.onNext(b, NOT_APPLICABLE_INDEX, index)
 		}
 
 		override def onError(ex: Throwable): Unit = observer.onError(ex)
@@ -1795,7 +1684,7 @@ trait SandboxDoer { thisDoer =>
 	private inline def flattenFoldSubscribe[A, B, S](matrix: ObservableMatrix[A], initialState: S, f: (S, A, Int, Int) => (S, B, Int), observer: Observer[B]): Unit =
 		matrix.subscribe(new FoldConsumer(initialState, f, observer))
 
-	private final class FlatMappedMatrixObserver[A, B](getInner: (A, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], observer: Observer[B], key: Key) extends Observer[A] {
+	private final class FlatMappedMatrixObserver[A, B](getInner: (A, Int, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], observer: Observer[B], key: Key) extends Observer[A] {
 		private var outerCompleted = false
 		private var activeInnerCount = 0
 		private var errorFired = false
@@ -1817,7 +1706,7 @@ trait SandboxDoer { thisDoer =>
 		}
 
 		override def onNext(a: A, outerOuter: Int, outerInner: Int): Unit = {
-			val inner = getInner(a, outerInner)
+			val inner = getInner(a, outerOuter, outerInner)
 			if key != null then {
 				activeInnerSubscriptions.updateWith(key) {
 					case Some(list) => Some(inner :: list)
@@ -1838,13 +1727,13 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private inline def flatMappedMatrixSubscribe[A, B](source: CapturerArray[A], inline getInner: (A, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], observer: Observer[B], key: Key): Unit = {
+	private inline def flatMappedMatrixSubscribe[A, B](source: CapturerArray[A], inline getInner: (A, Int, Int) => CapturerArray[B], activeInnerSubscriptions: scala.collection.mutable.Map[Key, List[CapturerArray[B]]], observer: Observer[B], key: Key): Unit = {
 		if key != null then activeInnerSubscriptions(key) = Nil
 		val sub = new FlatMappedMatrixObserver(getInner, activeInnerSubscriptions, observer, key)
 		source.keyedSubscribe(sub, key)
 	}
 
-	private final class ZipObservation[A, B, C](left: ObservableArray[A], right: ObservableArray[B], f: (A, B) => C, observer: Observer[C]) {
+	private final class ZipObservation[A, B, C](left: ObservableStream[A], right: ObservableStream[B], f: (A, B) => C, observer: Observer[C]) {
 		val leftValues = scala.collection.mutable.Map[Int, A]()
 		val rightValues = scala.collection.mutable.Map[Int, B]()
 		var leftCompleted = false
@@ -1906,7 +1795,7 @@ trait SandboxDoer { thisDoer =>
 		}
 	}
 
-	private final class ZippedObservableArray[A, B, C](val left: ObservableArray[A], val right: ObservableArray[B], val f: (A, B) => C) extends DefaultObservableArray[C] {
+	private final class ZippedObservableStream[A, B, C](val left: ObservableStream[A], val right: ObservableStream[B], val f: (A, B) => C) extends DefaultObservableStream[C] {
 		override def subscribe(observer: Observer[C]): Unit = {
 			new ZipObservation(left, right, f, observer).start()
 		}
@@ -1984,21 +1873,22 @@ trait SandboxDoer { thisDoer =>
 	}
 
 	private final class BufferedConsumer[A, T >: A : ClassTag](size: Int, observer: Observer[IArray[T]]) extends Observer[A] {
-		private val buf = new Array[T](size)
+		private var buffer = new Array[T](size)
 		private var count = 0
 		private var chunkIndex = 0
 		private var active = true
 
 		override def onNext(a: A, up: Int, down: Int): Unit = {
 			if active then {
-				buf(count) = a
+				buffer(count) = a
 				count += 1
 				if count == size then {
-					val chunk = IArray.unsafeFromArray(buf.clone())
+					val chunk = IArray.unsafeFromArray(buffer)
+					buffer = new Array[T](size)
 					count = 0
 					val idx = chunkIndex
 					chunkIndex += 1
-					observer.onNext(chunk, up, idx)
+					observer.onNext(chunk, NOT_APPLICABLE_INDEX, idx)
 				}
 			}
 		}
@@ -2014,10 +1904,8 @@ trait SandboxDoer { thisDoer =>
 			if active then {
 				active = false
 				if count > 0 then {
-					val partial = IArray.unsafeFromArray(buf.take(count))
-					val idx = chunkIndex
-					chunkIndex += 1
-					observer.onNext(partial, 0, idx)
+					val partial = IArray.unsafeFromArray(buffer.take(count))
+					observer.onNext(partial, NOT_APPLICABLE_INDEX, chunkIndex)
 				}
 				observer.onComplete()
 			}
@@ -2037,7 +1925,7 @@ trait SandboxDoer { thisDoer =>
 		override def onComplete(): Unit = observer.onComplete()
 	}
 
-	final class StreamEmitter[A] extends DefaultObservableArray[A] {
+	final class StreamEmitter[A] extends DefaultObservableStream[A] {
 		private var observers: List[Observer[A]] = Nil
 		private var counter = 0
 		private var completed = false
@@ -2053,7 +1941,7 @@ trait SandboxDoer { thisDoer =>
 			if !completed && error == null then {
 				val idx = counter
 				counter += 1
-				observers.foreach(_.onNext(value, 0, idx))
+				observers.foreach(_.onNext(value, NOT_APPLICABLE_INDEX, idx))
 			}
 		}
 
@@ -2178,5 +2066,1063 @@ trait SandboxDoer { thisDoer =>
 				}
 			})
 		}
+	}
+
+	// ===================================================================
+	// ========== OPTIMIZED CONCRETE CLASSES (SINGLE-SLOT CACHING) =======
+	// ===================================================================
+
+	trait SingleSlotObservableStream[A, +B] extends DefaultObservableStream[B] with Observer[A] {
+		protected val source: ObservableStream[A]
+
+		private var downstreamObserver: Observer[B] @uncheckedVariance = uninitialized
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(createDelegate(observer))
+			}
+		}
+
+		protected def createDelegate(observer: Observer[B]): Observer[A]
+
+		protected def resetState(): Unit = ()
+
+		protected def forwardNext(value: B @uncheckedVariance, up: Int, down: Int): Unit = {
+			val obs = downstreamObserver
+			if obs != null then obs.onNext(value, up, down)
+		}
+
+		protected def forwardError(ex: Throwable): Unit = {
+			val obs = downstreamObserver
+			downstreamObserver = null
+			resetState()
+			if obs != null then obs.onError(ex)
+		}
+
+		protected def forwardComplete(): Unit = {
+			val obs = downstreamObserver
+			downstreamObserver = null
+			resetState()
+			if obs != null then obs.onComplete()
+		}
+	}
+
+	trait SingleSlotObservableMatrixStream[A, +B] extends DefaultObservableStream[B] with Observer[A] {
+		protected val source: ObservableMatrix[A]
+
+		private var downstreamObserver: Observer[B] @uncheckedVariance = uninitialized
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(createDelegate(observer))
+			}
+		}
+
+		protected def createDelegate(observer: Observer[B]): Observer[A]
+
+		protected def resetState(): Unit = ()
+
+		protected def forwardNext(value: B @uncheckedVariance, up: Int, down: Int): Unit = {
+			val obs = downstreamObserver
+			if obs != null then obs.onNext(value, up, down)
+		}
+
+		protected def forwardError(ex: Throwable): Unit = {
+			val obs = downstreamObserver
+			downstreamObserver = null
+			resetState()
+			if obs != null then obs.onError(ex)
+		}
+
+		protected def forwardComplete(): Unit = {
+			val obs = downstreamObserver
+			downstreamObserver = null
+			resetState()
+			if obs != null then obs.onComplete()
+		}
+	}
+
+	trait SingleSlotKeyedStream[A, +B] extends KeyedObservableStream[B] with Observer[A] {
+		protected val source: KeyedObservableStream[A]
+
+		private var downstreamObserver: Observer[B] @uncheckedVariance = uninitialized
+		private var activeKey: Key = uninitialized
+
+		override def keyedSubscribe(observer: Observer[B], key: Key): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				this.activeKey = key
+				source.keyedSubscribe(this, key)
+			} else {
+				source.keyedSubscribe(createDelegate(observer), key)
+			}
+		}
+
+		protected def createDelegate(observer: Observer[B]): Observer[A]
+
+		protected def resetState(): Unit = ()
+
+		protected def forwardNext(value: B @uncheckedVariance, up: Int, down: Int): Unit = {
+			val obs = downstreamObserver
+			if obs != null then obs.onNext(value, up, down)
+		}
+
+		protected def forwardError(ex: Throwable): Unit = {
+			val obs = downstreamObserver
+			clearSlot()
+			if obs != null then obs.onError(ex)
+		}
+
+		protected def forwardComplete(): Unit = {
+			val obs = downstreamObserver
+			clearSlot()
+			if obs != null then obs.onComplete()
+		}
+
+		override def unsubscribe(key: Key): Unit = {
+			if key != null && key == activeKey then clearSlot()
+			source.unsubscribe(key)
+		}
+
+		override def isSubscribed(key: Key): Boolean = {
+			(key != null && key == activeKey) || source.isSubscribed(key)
+		}
+
+		private def clearSlot(): Unit = {
+			downstreamObserver = null
+			activeKey = null
+			resetState()
+		}
+	}
+
+	final class MappedKeyedCapturerArray[A, +B](val source: KeyedCapturerArray[A], val f: (A, Int, Int) => B)
+		extends SingleSlotKeyedStream[A, B] with KeyedCapturerArray[B] {
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
+			forwardNext(f(a, upChain, downChain), upChain, downChain)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(f(a, upChain, downChain), upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class MappedObservableStream[A, B](val source: ObservableStream[A], val f: A => B) extends SingleSlotObservableStream[A, B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = forwardNext(f(a), up, down)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(f(a), up, down)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class MappedWithCoordsObservableStream[A, B](val source: ObservableStream[A], val f: (A, Int, Int) => B) extends SingleSlotObservableStream[A, B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = forwardNext(f(a, up, down), up, down)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(f(a, up, down), up, down)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlatMappedObservableMatrix[A, B](val source: ObservableStream[A], val f: A => ObservableStream[B])
+		extends DefaultObservableMatrix[B] with Observer[A] {
+
+		private var downstreamObserver: Observer[B] = uninitialized
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(new FlatMapObserver(f, observer))
+			}
+		}
+
+		private def resetState(): Unit = {
+			outerCompleted = false
+			activeInnerCount = 0
+			errorFired = false
+		}
+
+		private def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then {
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onComplete()
+			}
+		}
+
+		override def onNext(a: A, outerOuter: Int, outerDown: Int): Unit = {
+			activeInnerCount += 1
+			f(a).subscribe(new InnerObserver(outerDown))
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		private final class InnerObserver(outerDown: Int) extends Observer[B] {
+			override def onNext(b: B, innerUp: Int, innerDown: Int): Unit = {
+				val obs = downstreamObserver
+				if obs != null then obs.onNext(b, outerDown, innerDown)
+			}
+
+			override def onError(ex: Throwable): Unit = FlatMappedObservableMatrix.this.onError(ex)
+
+			override def onComplete(): Unit = {
+				activeInnerCount -= 1
+				tryComplete()
+			}
+		}
+	}
+
+	final class FlatMappedWithCoordsObservableMatrix[A, B](val source: ObservableStream[A], val f: (A, Int, Int) => ObservableStream[B])
+		extends DefaultObservableMatrix[B] with Observer[A] {
+
+		private var downstreamObserver: Observer[B] = uninitialized
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(new FlatMapWithCoordsObserver(f, observer))
+			}
+		}
+
+		private def resetState(): Unit = {
+			outerCompleted = false
+			activeInnerCount = 0
+			errorFired = false
+		}
+
+		private def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then {
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onComplete()
+			}
+		}
+
+		override def onNext(a: A, outerOuter: Int, outerDown: Int): Unit = {
+			activeInnerCount += 1
+			f(a, outerOuter, outerDown).subscribe(new InnerObserver(outerDown))
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		private final class InnerObserver(outerDown: Int) extends Observer[B] {
+			override def onNext(b: B, innerUp: Int, innerDown: Int): Unit = {
+				val obs = downstreamObserver
+				if obs != null then obs.onNext(b, outerDown, innerDown)
+			}
+
+			override def onError(ex: Throwable): Unit = FlatMappedWithCoordsObservableMatrix.this.onError(ex)
+
+			override def onComplete(): Unit = {
+				activeInnerCount -= 1
+				tryComplete()
+			}
+		}
+	}
+
+	final class ScannedObservableStream[A, B](val source: ObservableStream[A], val initial: B, val f: (B, A) => B)
+		extends SingleSlotObservableStream[A, B] {
+
+		private var state = initial
+
+		override protected def resetState(): Unit = state = initial
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
+			state = f(state, a)
+			forwardNext(state, upChain, downChain)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new ScanConsumer(initial, f, observer)
+	}
+
+	final class BufferedObservableStream[A, T >: A : ClassTag](val source: ObservableStream[A], val size: Int)
+		extends SingleSlotObservableStream[A, IArray[T]] {
+
+		private var buffer = new Array[T](size)
+		private var count = 0
+		private var chunkIndex = 0
+		private var active = true
+
+		override protected def resetState(): Unit = {
+			count = 0
+			chunkIndex = 0
+			active = true
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				buffer(count) = a
+				count += 1
+				if count == size then {
+					val chunk = IArray.unsafeFromArray(buffer)
+					buffer = new Array[T](size)
+					count = 0
+					val idx = chunkIndex
+					chunkIndex += 1
+					forwardNext(chunk, NOT_APPLICABLE_INDEX, idx)
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				if count > 0 then {
+					val partial = IArray.unsafeFromArray(buffer.take(count))
+					forwardNext(partial, NOT_APPLICABLE_INDEX, chunkIndex)
+				}
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[IArray[T]]): Observer[A] = new BufferedConsumer[A, T](size, observer)
+	}
+
+	final class TakeObservableStream[A](val source: ObservableStream[A], val n: Int) extends SingleSlotObservableStream[A, A] {
+		private var count = 0
+		private var active = true
+
+		override protected def resetState(): Unit = {
+			count = 0
+			active = true
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if count < n then {
+					val currentCount = count
+					count += 1
+					forwardNext(a, up, currentCount)
+					if count == n then {
+						active = false
+						forwardComplete()
+					}
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new TakeConsumer(n, observer)
+	}
+
+	final class TakeWhileObservableStream[A](val source: ObservableStream[A], val p: A => Boolean) extends SingleSlotObservableStream[A, A] {
+		private var active = true
+		private var counter = 0
+
+		override protected def resetState(): Unit = {
+			active = true
+			counter = 0
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if p(a) then {
+					val currentCounter = counter
+					counter += 1
+					forwardNext(a, up, currentCounter)
+				} else {
+					active = false
+					forwardComplete()
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new TakeWhileConsumer(p, observer)
+	}
+
+	final class FlattenedToInnerStream[A](val source: ObservableMatrix[A]) extends SingleSlotObservableMatrixStream[A, A] {
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, downChain)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, downChain)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedToOuterStream[A](val source: ObservableMatrix[A]) extends SingleSlotObservableMatrixStream[A, A] {
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, upChain)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, upChain)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedWithStream[A](val source: ObservableMatrix[A], val f: (A, Int, Int) => Int) extends SingleSlotObservableMatrixStream[A, A] {
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, f(a, upChain, downChain))
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, f(a, upChain, downChain))
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedToSequentialStream[A](val source: ObservableMatrix[A]) extends SingleSlotObservableMatrixStream[A, A] {
+		private var counter = 0
+
+		override protected def resetState(): Unit = counter = 0
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val idx = counter
+			counter += 1
+			forwardNext(a, NOT_APPLICABLE_INDEX, idx)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new SequentialConsumer(observer)
+	}
+
+	final class FlattenedMapStream[A, B](val source: ObservableMatrix[A], val f: (A, Int, Int) => (B, Int)) extends SingleSlotObservableMatrixStream[A, B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val (b, index) = f(a, up, down)
+			forwardNext(b, NOT_APPLICABLE_INDEX, index)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = {
+				val (b, index) = f(a, up, down)
+				observer.onNext(b, NOT_APPLICABLE_INDEX, index)
+			}
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedMapWithCoordsStream[A, B](val source: ObservableMatrix[A], val valueMap: (A, Int, Int) => B, val indexMap: (A, B, Int, Int) => Int) extends SingleSlotObservableMatrixStream[A, B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val b = valueMap(a, up, down)
+			forwardNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = {
+				val b = valueMap(a, up, down)
+				observer.onNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
+			}
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedFoldStream[A, B, S](val source: ObservableMatrix[A], val initialState: S, val f: (S, A, Int, Int) => (S, B, Int)) extends SingleSlotObservableMatrixStream[A, B] {
+		private var state = initialState
+
+		override protected def resetState(): Unit = state = initialState
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val (newState, b, index) = f(state, a, up, down)
+			state = newState
+			forwardNext(b, NOT_APPLICABLE_INDEX, index)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new FoldConsumer(initialState, f, observer)
+	}
+
+	final class MappedTaskArray[A, B](val source: TaskArray[A], val f: A => B)
+		extends SingleSlotObservableStream[A, B] with DefaultTaskArray[B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = forwardNext(f(a), up, down)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(f(a), up, down)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class MappedWithCoordsTaskArray[A, B](val source: TaskArray[A], val f: (A, Int, Int) => B)
+		extends SingleSlotObservableStream[A, B] with DefaultTaskArray[B] {
+		override def onNext(a: A, up: Int, down: Int): Unit = forwardNext(f(a, up, down), up, down)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = observer.onNext(f(a, up, down), up, down)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlatMappedTaskMatrix[A, B](val source: TaskArray[A], val f: A => TaskArray[B])
+		extends DefaultTaskMatrix[B] with Observer[A] {
+
+		private var downstreamObserver: Observer[B] = uninitialized
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(new FlatMapObserver(f, observer))
+			}
+		}
+
+		private def resetState(): Unit = {
+			outerCompleted = false
+			activeInnerCount = 0
+			errorFired = false
+		}
+
+		private def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then {
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onComplete()
+			}
+		}
+
+		override def onNext(a: A, outerOuter: Int, outerDown: Int): Unit = {
+			activeInnerCount += 1
+			f(a).subscribe(new InnerObserver(outerDown))
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		private final class InnerObserver(outerDown: Int) extends Observer[B] {
+			override def onNext(b: B, innerUp: Int, innerDown: Int): Unit = {
+				val obs = downstreamObserver
+				if obs != null then obs.onNext(b, outerDown, innerDown)
+			}
+
+			override def onError(ex: Throwable): Unit = FlatMappedTaskMatrix.this.onError(ex)
+
+			override def onComplete(): Unit = {
+				activeInnerCount -= 1
+				tryComplete()
+			}
+		}
+	}
+
+	final class FlatMappedWithCoordsTaskMatrix[A, B](val source: TaskArray[A], val f: (A, Int, Int) => TaskArray[B])
+		extends DefaultTaskMatrix[B] with Observer[A] {
+
+		private var downstreamObserver: Observer[B] = uninitialized
+		private var outerCompleted = false
+		private var activeInnerCount = 0
+		private var errorFired = false
+
+		override def subscribe(observer: Observer[B]): Unit = {
+			if downstreamObserver == null then {
+				this.downstreamObserver = observer
+				source.subscribe(this)
+			} else {
+				source.subscribe(new FlatMapWithCoordsObserver(f, observer))
+			}
+		}
+
+		private def resetState(): Unit = {
+			outerCompleted = false
+			activeInnerCount = 0
+			errorFired = false
+		}
+
+		private def tryComplete(): Unit = {
+			if outerCompleted && activeInnerCount == 0 && !errorFired then {
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onComplete()
+			}
+		}
+
+		override def onNext(a: A, outerOuter: Int, outerDown: Int): Unit = {
+			activeInnerCount += 1
+			f(a, outerOuter, outerDown).subscribe(new InnerObserver(outerDown))
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if !errorFired then {
+				errorFired = true
+				val obs = downstreamObserver
+				downstreamObserver = null
+				resetState()
+				if obs != null then obs.onError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			outerCompleted = true
+			tryComplete()
+		}
+
+		private final class InnerObserver(outerDown: Int) extends Observer[B] {
+			override def onNext(b: B, innerUp: Int, innerDown: Int): Unit = {
+				val obs = downstreamObserver
+				if obs != null then obs.onNext(b, outerDown, innerDown)
+			}
+
+			override def onError(ex: Throwable): Unit = FlatMappedWithCoordsTaskMatrix.this.onError(ex)
+
+			override def onComplete(): Unit = {
+				activeInnerCount -= 1
+				tryComplete()
+			}
+		}
+	}
+
+	final class ScannedTaskArray[A, B](val source: TaskArray[A], val initial: B, val f: (B, A) => B)
+		extends SingleSlotObservableStream[A, B] with DefaultTaskArray[B] {
+
+		private var state = initial
+
+		override protected def resetState(): Unit = state = initial
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = {
+			state = f(state, a)
+			forwardNext(state, upChain, downChain)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new ScanConsumer(initial, f, observer)
+	}
+
+	final class BufferedTaskArray[A, T >: A : ClassTag](val source: TaskArray[A], val size: Int)
+		extends SingleSlotObservableStream[A, IArray[T]] with DefaultTaskArray[IArray[T]] {
+
+		private val buf = new Array[T](size)
+		private var count = 0
+		private var chunkIndex = 0
+		private var active = true
+
+		override protected def resetState(): Unit = {
+			count = 0
+			chunkIndex = 0
+			active = true
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				buf(count) = a
+				count += 1
+				if count == size then {
+					val chunk = IArray.unsafeFromArray(buf.clone())
+					count = 0
+					val idx = chunkIndex
+					chunkIndex += 1
+					forwardNext(chunk, up, idx)
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				if count > 0 then {
+					val partial = IArray.unsafeFromArray(buf.take(count))
+					val idx = chunkIndex
+					chunkIndex += 1
+					forwardNext(partial, 0, idx)
+				}
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[IArray[T]]): Observer[A] = new BufferedConsumer[A, T](size, observer)
+	}
+
+	final class TakeTaskArray[A](val source: TaskArray[A], val n: Int)
+		extends SingleSlotObservableStream[A, A] with DefaultTaskArray[A] {
+
+		private var count = 0
+		private var active = true
+
+		override protected def resetState(): Unit = {
+			count = 0
+			active = true
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if count < n then {
+					val currentCount = count
+					count += 1
+					forwardNext(a, up, currentCount)
+					if count == n then {
+						active = false
+						forwardComplete()
+					}
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new TakeConsumer(n, observer)
+	}
+
+	final class TakeWhileTaskArray[A](val source: TaskArray[A], val p: A => Boolean)
+		extends SingleSlotObservableStream[A, A] with DefaultTaskArray[A] {
+
+		private var active = true
+		private var counter = 0
+
+		override protected def resetState(): Unit = {
+			active = true
+			counter = 0
+		}
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			if active then {
+				if p(a) then {
+					val currentCounter = counter
+					counter += 1
+					forwardNext(a, up, currentCounter)
+				} else {
+					active = false
+					forwardComplete()
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			if active then {
+				active = false
+				forwardError(ex)
+			}
+		}
+
+		override def onComplete(): Unit = {
+			if active then {
+				active = false
+				forwardComplete()
+			}
+		}
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new TakeWhileConsumer(p, observer)
+	}
+
+	final class FlattenedToInnerTaskArray[A](val source: TaskMatrix[A])
+		extends SingleSlotObservableMatrixStream[A, A] with DefaultTaskArray[A] {
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, downChain)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, downChain)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedToOuterTaskArray[A](val source: TaskMatrix[A])
+		extends SingleSlotObservableMatrixStream[A, A] with DefaultTaskArray[A] {
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, upChain)
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, upChain)
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedWithTaskArray[A](val source: TaskMatrix[A], val f: (A, Int, Int) => Int)
+		extends SingleSlotObservableMatrixStream[A, A] with DefaultTaskArray[A] {
+
+		override def onNext(a: A, upChain: Int, downChain: Int): Unit = forwardNext(a, NOT_APPLICABLE_INDEX, f(a, upChain, downChain))
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, upChain: Int, downChain: Int): Unit = observer.onNext(a, NOT_APPLICABLE_INDEX, f(a, upChain, downChain))
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedToSequentialTaskArray[A](val source: TaskMatrix[A])
+		extends SingleSlotObservableMatrixStream[A, A] with DefaultTaskArray[A] {
+
+		private var counter = 0
+
+		override protected def resetState(): Unit = counter = 0
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val idx = counter
+			counter += 1
+			forwardNext(a, NOT_APPLICABLE_INDEX, idx)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[A]): Observer[A] = new SequentialConsumer(observer)
+	}
+
+	final class FlattenedMapTaskArray[A, B](val source: TaskMatrix[A], val f: (A, Int, Int) => (B, Int))
+		extends SingleSlotObservableMatrixStream[A, B] with DefaultTaskArray[B] {
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val (b, index) = f(a, up, down)
+			forwardNext(b, NOT_APPLICABLE_INDEX, index)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = {
+				val (b, index) = f(a, up, down)
+				observer.onNext(b, NOT_APPLICABLE_INDEX, index)
+			}
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedMapWithCoordsTaskArray[A, B](val source: TaskMatrix[A], val valueMap: (A, Int, Int) => B, val indexMap: (A, B, Int, Int) => Int)
+		extends SingleSlotObservableMatrixStream[A, B] with DefaultTaskArray[B] {
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val b = valueMap(a, up, down)
+			forwardNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new Observer[A] {
+			override def onNext(a: A, up: Int, down: Int): Unit = {
+				val b = valueMap(a, up, down)
+				observer.onNext(b, NOT_APPLICABLE_INDEX, indexMap(a, b, up, down))
+			}
+
+			override def onError(ex: Throwable): Unit = observer.onError(ex)
+
+			override def onComplete(): Unit = observer.onComplete()
+		}
+	}
+
+	final class FlattenedFoldTaskArray[A, B, S](val source: TaskMatrix[A], val initialState: S, val f: (S, A, Int, Int) => (S, B, Int))
+		extends SingleSlotObservableMatrixStream[A, B] with DefaultTaskArray[B] {
+
+		private var state = initialState
+
+		override protected def resetState(): Unit = state = initialState
+
+		override def onNext(a: A, up: Int, down: Int): Unit = {
+			val (newState, b, index) = f(state, a, up, down)
+			state = newState
+			forwardNext(b, NOT_APPLICABLE_INDEX, index)
+		}
+
+		override def onError(ex: Throwable): Unit = forwardError(ex)
+
+		override def onComplete(): Unit = forwardComplete()
+
+		override protected def createDelegate(observer: Observer[B]): Observer[A] = new FoldConsumer(initialState, f, observer)
 	}
 }

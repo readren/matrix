@@ -124,9 +124,9 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		captor1.capture(10)
 		captor2.capture(20)
 
-		// Both should receive value 20 with sequential coordinates (0, 0)
-		assertEquals(sub1List, List((20, 0, 0)))
-		assertEquals(sub2List, List((20, 0, 0)))
+		// Both should receive value 20 with sequential coordinates (NOT_APPLICABLE_INDEX, 0)
+		assertEquals(sub1List, List((20, NOT_APPLICABLE_INDEX, 0)))
+		assertEquals(sub2List, List((20, NOT_APPLICABLE_INDEX, 0)))
 	}
 
 	test("FlattenedToInnerArray and FlattenedToOuterArray coordinates") {
@@ -146,8 +146,8 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		captorOuter.capture(1)
 		captorInner.capture("a")
 
-		assertEquals(innerCoords, List(("a", 0, 0)))
-		assertEquals(outerCoords, List(("a", 0, 0)))
+		assertEquals(innerCoords, List(("a", NOT_APPLICABLE_INDEX, 0)))
+		assertEquals(outerCoords, List(("a", NOT_APPLICABLE_INDEX, 0)))
 	}
 
 	test("Property-based test: MappedKeyedCapturerArray correctness") {
@@ -156,7 +156,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 			val mapped = keeperArray.map(_ * 2)
 
 			var collected = List[Int]()
-			mapped.foreachWithIndex((v, idx) => collected = collected :+ v)
+			mapped.foreach(v => collected = collected :+ v)
 
 			collected == nums.map(_ * 2)
 		}
@@ -176,7 +176,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		emitter.emit(1)
 		emitter.emit(2)
-		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (2, NOT_APPLICABLE_INDEX, 1)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -229,7 +229,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		emitter.emit(1)
 		emitter.emit(2)
-		assertEquals(collected, List((10, 0, 0), (20, 0, 1)))
+		assertEquals(collected, List((10, NOT_APPLICABLE_INDEX, 0), (20, NOT_APPLICABLE_INDEX, 1)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -263,7 +263,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		emitter.emit(1)
 		emitter.emit(2)
 		emitter.emit(3)
-		assertEquals(collected, List((1, 0, 0), (3, 0, 1), (6, 0, 2)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (3, NOT_APPLICABLE_INDEX, 1), (6, NOT_APPLICABLE_INDEX, 2)))
 		assertEquals(completed, false)
 
 		emitter.end()
@@ -287,11 +287,11 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		emitter.emit(2)
 		// Should complete immediately when taking limit is reached
 		assertEquals(completed, true)
-		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (2, NOT_APPLICABLE_INDEX, 1)))
 
 		// Subsequent emissions from emitter are ignored by take(2)
 		emitter.emit(3)
-		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (2, NOT_APPLICABLE_INDEX, 1)))
 	}
 
 	test("takeWhile early completion") {
@@ -311,10 +311,10 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(completed, false)
 		emitter.emit(3) // doesn't satisfy predicate, should complete immediately
 		assertEquals(completed, true)
-		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (2, NOT_APPLICABLE_INDEX, 1)))
 
 		emitter.emit(1)
-		assertEquals(collected, List((1, 0, 0), (2, 0, 1)))
+		assertEquals(collected, List((1, NOT_APPLICABLE_INDEX, 0), (2, NOT_APPLICABLE_INDEX, 1)))
 	}
 
 	test("buffer flushing trailing elements on complete") {
@@ -334,16 +334,16 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), Nil)
 
 		emitter.emit(3)
-		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), NOT_APPLICABLE_INDEX, 0)))
 
 		emitter.emit(4)
 		emitter.emit(5)
-		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), NOT_APPLICABLE_INDEX, 0)))
 
 		emitter.end()
 		// Completing should flush the remaining (4, 5) and trigger complete
 		assertEquals(completed, true)
-		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), 0, 0), (List(4, 5), 0, 1)))
+		assertEquals(collected.map(c => (c._1.toList, c._2, c._3)), List((List(1, 2, 3), NOT_APPLICABLE_INDEX, 0), (List(4, 5), NOT_APPLICABLE_INDEX, 1)))
 	}
 
 	test("zip coordinate-aligned completion and error propagation") {
@@ -362,7 +362,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		leftEmitter.emit(10) // left: Map(0 -> 10)
 		rightEmitter.emit("a") // match: 10-a
-		assertEquals(collected, List(("10-a", 0, 0)))
+		assertEquals(collected, List(("10-a", NOT_APPLICABLE_INDEX, 0)))
 		assertEquals(completed, false)
 
 		leftEmitter.emit(20)
@@ -370,7 +370,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(completed, false)
 
 		rightEmitter.emit("b")
-		assertEquals(collected, List(("10-a", 0, 0), ("20-b", 0, 1)))
+		assertEquals(collected, List(("10-a", NOT_APPLICABLE_INDEX, 0), ("20-b", NOT_APPLICABLE_INDEX, 1)))
 		assertEquals(completed, true)
 	}
 
@@ -391,7 +391,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(error, Some(testEx))
 	}
 
-	test("TaskArray map and mapWithIndex") {
+	test("TaskArray map and mapWithCoords") {
 		val t1 = makeTask(1)
 		val t2 = makeTask(2)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2))
@@ -406,16 +406,16 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(collectedMap, List((10, 0, 0), (20, 0, 1)))
 		assertEquals(completedMap, true)
 
-		var collectedMapWithIdx = List[(Int, Int, Int)]()
-		taskArray.mapWithIndex((v, idx) => v + idx).subscribeCallbacks(
-			onNextCallback = (v, up, down) => collectedMapWithIdx = collectedMapWithIdx :+ (v, up, down),
+		var collectedMapWithCoords = List[(Int, Int, Int)]()
+		taskArray.mapWithCoords((v, up, down) => v + down).subscribeCallbacks(
+			onNextCallback = (v, up, down) => collectedMapWithCoords = collectedMapWithCoords :+ (v, up, down),
 			onErrorCallback = _ => (),
 			onCompleteCallback = () => ()
 		)
-		assertEquals(collectedMapWithIdx, List((1, 0, 0), (3, 0, 1)))
+		assertEquals(collectedMapWithCoords, List((1, 0, 0), (3, 0, 1)))
 	}
 
-	test("TaskArray flatMap and flatMapWithIndex") {
+	test("TaskArray flatMap and flatMapWithCoords") {
 		val t1 = makeTask(1)
 		val t2 = makeTask(2)
 		val taskArray = TaskArray_fromTasks(IArray(t1, t2))
@@ -424,6 +424,19 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val flatMapped = taskArray.flatMap[Int] { x =>
 			TaskArray_fromTasks(IArray(makeTask(x * 10), makeTask(x * 100)))
 		}
+
+		// flatMapWithCoords to TaskArray
+		val flatMappedCoords = taskArray.flatMapWithCoords[Int] { (x, up, down) =>
+			TaskArray_fromTasks(IArray(makeTask(x * 10 + up), makeTask(x * 100 + down)))
+		}
+
+		var collectedCoords = List[(Int, Int, Int)]()
+		flatMappedCoords.subscribe(
+			onNext = (v, up, down) => collectedCoords = collectedCoords :+ (v, up, down),
+			onError = _ => (),
+			onComplete = () => ()
+		)
+		assertEquals(collectedCoords, List((10, 0, 0), (100, 0, 1), (20, 1, 0), (201, 1, 1)))
 
 		var collected = List[(Int, Int, Int)]()
 		var completed = false
@@ -644,7 +657,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val key = new AnyRef()
 		var count1 = 0
 		var count2 = 0
-		captor2.subscribe(
+		captor2.subscribeWithCoords(
 			new Observer[Int] {
 				override def onNext(v: Int, up: Int, down: Int): Unit = count1 += 1
 
@@ -656,7 +669,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 			upChain = 0,
 			downChain = 0
 		)
-		captor2.subscribe(
+		captor2.subscribeWithCoords(
 			new Observer[Int] {
 				override def onNext(v: Int, up: Int, down: Int): Unit = count2 += 1
 
@@ -712,7 +725,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		}
 	}
 
-	test("ObservableArray.fold - complete fold and early termination") {
+	test("ObservableStream.fold - complete fold and early termination") {
 		val emitter = new StreamEmitter[Int]()
 		val foldV = emitter.foldWhile(0)((sum, x) => Maybe.some(sum + x))
 
@@ -739,7 +752,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		assertEquals(result2, 5) // completed early with previous valid state
 	}
 
-	test("ObservableArray.fold - error propagation") {
+	test("ObservableStream.fold - error propagation") {
 		val emitter = new StreamEmitter[Int]()
 		val testEx = new Exception("fold-err")
 		val foldV = emitter.foldWhile(0)((sum, x) => throw testEx)
@@ -810,6 +823,838 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		val flatMapped = failed.flatMap((x: Nothing) => makeTask(42))
 		assertEquals(flatMapped, failed)
+	}
+
+	test("ObservableStream - empty factory method") {
+		var nextCount = 0
+		var errorCount = 0
+		var completeCount = 0
+
+		val stream = ObservableStream.empty[Int]
+		stream.subscribeCallbacks(
+			onNextCallback = (v, up, down) => nextCount += 1,
+			onErrorCallback = _ => errorCount += 1,
+			onCompleteCallback = () => completeCount += 1
+		)
+
+		assertEquals(nextCount, 0)
+		assertEquals(errorCount, 0)
+		assertEquals(completeCount, 1)
+	}
+
+	test("ObservableStream - apply and fromIterable factory methods") {
+		var receivedFromIterable = List.empty[Int]
+		var completedFromIterable = false
+		val streamIterable = ObservableStream.fromIterable(List(1, 2, 3))
+
+		streamIterable.subscribeCallbacks(
+			onNextCallback = (v, up, down) => receivedFromIterable = receivedFromIterable :+ v,
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completedFromIterable = true
+		)
+
+		assertEquals(receivedFromIterable, List(1, 2, 3))
+		assertEquals(completedFromIterable, true)
+
+		var receivedApply = List.empty[String]
+		var completedApply = false
+		val streamApply = ObservableStream("a", "b")
+
+		streamApply.subscribeCallbacks(
+			onNextCallback = (v, up, down) => receivedApply = receivedApply :+ v,
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completedApply = true
+		)
+
+		assertEquals(receivedApply, List("a", "b"))
+		assertEquals(completedApply, true)
+	}
+
+	test("ObservableStream - generateKeyed factory method and synchronous cancellation") {
+		val key = new AnyRef()
+		var count = 0
+		val stream = ObservableStream.generateKeyed(() => {
+			count += 1
+			count
+		})
+
+		val received = scala.collection.mutable.Buffer[Int]()
+		stream.keyedSubscribe(new Observer[Int] {
+			override def onNext(v: Int, upChain: Int, downChain: Int): Unit = {
+				received += v
+				if v >= 5 then stream.unsubscribe(key)
+			}
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		}, key)
+
+		assertEquals(received.toList, List(1, 2, 3, 4, 5))
+		assertEquals(count, 5)
+	}
+
+	test("ObservableStream - unfold factory method") {
+		var received = List.empty[String]
+		var completed = false
+		val stream = ObservableStream.unfold(0)(s => if s < 3 then Maybe((s.toString, s + 1)) else Maybe.empty)
+
+		stream.subscribeCallbacks(
+			onNextCallback = (v, up, down) => received = received :+ v,
+			onErrorCallback = _ => (),
+			onCompleteCallback = () => completed = true
+		)
+
+		assertEquals(received, List("0", "1", "2"))
+		assertEquals(completed, true)
+	}
+
+	test("ObservableStream - fromIterableGuarded handles failure in hasNext") {
+		val badIterable = new Iterable[Int] {
+			override def iterator: Iterator[Int] = new Iterator[Int] {
+				override def hasNext: Boolean = throw new RuntimeException("bad-has-next")
+
+				override def next(): Int = 42
+			}
+		}
+
+		var nextCount = 0
+		var caughtEx: Throwable = null
+		var completed = false
+
+		ObservableStream.fromIterableGuarded(badIterable).subscribeCallbacks(
+			onNextCallback = (v, up, down) => nextCount += 1,
+			onErrorCallback = ex => caughtEx = ex,
+			onCompleteCallback = () => completed = true
+		)
+
+		assertEquals(nextCount, 0)
+		assert(caughtEx != null)
+		assertEquals(caughtEx.getMessage, "bad-has-next")
+		assertEquals(completed, false)
+	}
+
+	test("ObservableStream - fromIterableGuarded handles failure in next") {
+		val badIterable = new Iterable[Int] {
+			override def iterator: Iterator[Int] = new Iterator[Int] {
+				private var count = 0
+
+				override def hasNext: Boolean = count < 2
+
+				override def next(): Int = {
+					count += 1
+					if count == 1 then 10 else throw new RuntimeException("bad-next")
+				}
+			}
+		}
+
+		var received = List.empty[Int]
+		var caughtEx: Throwable = null
+		var completed = false
+
+		ObservableStream.fromIterableGuarded(badIterable).subscribeCallbacks(
+			onNextCallback = (v, up, down) => received = received :+ v,
+			onErrorCallback = ex => caughtEx = ex,
+			onCompleteCallback = () => completed = true
+		)
+
+		assertEquals(received, List(10))
+		assert(caughtEx != null)
+		assertEquals(caughtEx.getMessage, "bad-next")
+		assertEquals(completed, false)
+	}
+
+	test("Single-slot caching: MappedObservableStream supports multiple subscriptions with fallback") {
+		val emitter = new StreamEmitter[Int]()
+		val mapped = emitter.map(_ * 2)
+
+		var list1 = List[Int]()
+		var list2 = List[Int]()
+		var completed1 = false
+		var completed2 = false
+
+		mapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list1 = list1 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		mapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list2 = list2 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(10)
+		emitter.emit(20)
+		emitter.end()
+
+		assertEquals(list1, List(20, 40))
+		assertEquals(list2, List(20, 40))
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("Single-slot caching: ScannedObservableStream supports multiple subscriptions with state separation") {
+		val emitter = new StreamEmitter[Int]()
+		val scanned = emitter.scan(0)(_ + _)
+
+		var list1 = List[Int]()
+		var list2 = List[Int]()
+		var completed1 = false
+		var completed2 = false
+
+		scanned.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list1 = list1 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		scanned.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list2 = list2 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(1)
+		emitter.emit(2)
+		emitter.end()
+
+		assertEquals(list1, List(1, 3))
+		assertEquals(list2, List(1, 3))
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("Single-slot caching: FlatMappedObservableMatrix supports multiple subscriptions and delegates inner completions") {
+		val emitter = new StreamEmitter[Int]()
+		val flatMapped = emitter.flatMap(x => ObservableStream(x, x + 1))
+
+		var list1 = List[(Int, Int, Int)]()
+		var list2 = List[(Int, Int, Int)]()
+		var completed1 = false
+		var completed2 = false
+
+		flatMapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list1 = list1 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		flatMapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list2 = list2 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(10)
+		emitter.end()
+
+		val expected = List((10, 0, 0), (11, 0, 1))
+		assertEquals(list1, expected)
+		assertEquals(list2, expected)
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("Single-slot caching: Keyed stream multiple subscriptions and unsubscription works correctly") {
+		class TestKeyedSource extends KeyedCapturerArray[Int] {
+			var activeObserver: Observer[Int] = scala.compiletime.uninitialized
+			var secondaryObserver: Observer[Int] = scala.compiletime.uninitialized
+			var activeKey: Key = scala.compiletime.uninitialized
+
+			override def keyedSubscribe(observer: Observer[Int], key: Key): Unit = {
+				if activeObserver == null then {
+					activeObserver = observer
+					activeKey = key
+				} else {
+					secondaryObserver = observer
+				}
+			}
+
+			override def unsubscribe(key: Key): Unit = {
+				if key eq activeKey then {
+					activeObserver = null
+					activeKey = null
+				}
+			}
+
+			override def isSubscribed(key: Key): Boolean = key eq activeKey
+
+			override def subscribe(observer: Observer[Int]): Unit = keyedSubscribe(observer, null)
+		}
+
+		val source = new TestKeyedSource()
+		val key1 = new AnyRef()
+		val key2 = new AnyRef()
+
+		val mapped = source.map(_ * 2)
+
+		var list1 = List[Int]()
+		var list2 = List[Int]()
+
+		mapped.keyedSubscribe(new Observer[Int] {
+			override def onNext(value: Int, up: Int, down: Int): Unit = list1 = list1 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		}, key1)
+
+		mapped.keyedSubscribe(new Observer[Int] {
+			override def onNext(value: Int, up: Int, down: Int): Unit = list2 = list2 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		}, key2)
+
+		source.activeObserver.onNext(5, -1, 0)
+		source.secondaryObserver.onNext(5, -1, 0)
+
+		assertEquals(list1, List(10))
+		assertEquals(list2, List(10))
+
+		mapped.unsubscribe(key1)
+		assert(source.activeObserver == null)
+
+		source.secondaryObserver.onNext(10, -1, 1)
+		assertEquals(list2, List(10, 20))
+	}
+
+	// ====================================================================
+	// Area 1 — 2D Coordinate Integrity Tests
+	// ====================================================================
+
+	test("1.1 flatMap matrix coordinates: outer downChain becomes matrix upChain") {
+		val emitter = new StreamEmitter[Int]()
+		val matrix = emitter.flatMap(x => ObservableStream(x, x + 1))
+
+		var collected = List[(Int, Int, Int)]()
+		var completed = false
+		matrix.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = collected = collected :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed = true
+		})
+
+		emitter.emit(10) // outer downChain = 0 → matrix upChain = 0; inner emits (10, 0, 0), (11, 0, 1)
+		emitter.emit(20) // outer downChain = 1 → matrix upChain = 1; inner emits (20, 1, 0), (21, 1, 1)
+		emitter.end()
+
+		assertEquals(collected, List((10, 0, 0), (11, 0, 1), (20, 1, 0), (21, 1, 1)))
+		assertEquals(completed, true)
+	}
+
+	test("1.2 flattenToInner projects inner coordinate, discards outer") {
+		val emitter = new StreamEmitter[Int]()
+		// inner streams: x → [x, x+1, x+2]
+		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1, x + 2)).flattenToInner
+
+		var collected = List[(Int, Int, Int)]()
+		flattened.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		emitter.emit(10)
+		emitter.emit(20)
+		emitter.end()
+
+		// flattenToInner on ObservableMatrix uses NOT_APPLICABLE_INDEX for upChain
+		// downChain keeps the inner position
+		assertEquals(collected, List(
+			(10, NOT_APPLICABLE_INDEX, 0), (11, NOT_APPLICABLE_INDEX, 1), (12, NOT_APPLICABLE_INDEX, 2),
+			(20, NOT_APPLICABLE_INDEX, 0), (21, NOT_APPLICABLE_INDEX, 1), (22, NOT_APPLICABLE_INDEX, 2)
+		))
+	}
+
+	test("1.3 flattenToOuter projects outer coordinate, discards inner") {
+		val emitter = new StreamEmitter[Int]()
+		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1)).flattenToOuter
+
+		var collected = List[(Int, Int, Int)]()
+		flattened.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		emitter.emit(10)
+		emitter.emit(20)
+		emitter.end()
+
+		// flattenToOuter on ObservableMatrix: upChain = NOT_APPLICABLE_INDEX, downChain = matrix upChain (the outer position)
+		assertEquals(collected, List(
+			(10, NOT_APPLICABLE_INDEX, 0), (11, NOT_APPLICABLE_INDEX, 0),
+			(20, NOT_APPLICABLE_INDEX, 1), (21, NOT_APPLICABLE_INDEX, 1)
+		))
+	}
+
+	test("1.4 flattenToSequential emits monotonic counter, ignoring matrix coordinates") {
+		val emitter = new StreamEmitter[Int]()
+		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1)).flattenToSequential
+
+		var collected = List[(Int, Int, Int)]()
+		flattened.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		emitter.emit(10)
+		emitter.emit(20)
+		emitter.end()
+
+		assertEquals(collected, List(
+			(10, NOT_APPLICABLE_INDEX, 0), (11, NOT_APPLICABLE_INDEX, 1),
+			(20, NOT_APPLICABLE_INDEX, 2), (21, NOT_APPLICABLE_INDEX, 3)
+		))
+	}
+
+	test("1.5 flattenMap receives correct matrix coords and emits user-defined index") {
+		val emitter = new StreamEmitter[Int]()
+		val matrix = emitter.flatMap(x => ObservableStream(x, x + 1))
+		// flattenMap transforms value and produces (newValue, newIndex)
+		val flattened = matrix.flattenMap[String]((v, up, down) => (s"$v@$up,$down", up * 10 + down))
+
+		var collected = List[(String, Int, Int)]()
+		flattened.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		emitter.emit(10)
+		emitter.emit(20)
+		emitter.end()
+
+		// Matrix coords: (10, up=0, down=0), (11, up=0, down=1), (20, up=1, down=0), (21, up=1, down=1)
+		// flattenMap output: upChain = NOT_APPLICABLE_INDEX, downChain = up*10+down
+		assertEquals(collected, List(
+			("10@0,0", NOT_APPLICABLE_INDEX, 0),
+			("11@0,1", NOT_APPLICABLE_INDEX, 1),
+			("20@1,0", NOT_APPLICABLE_INDEX, 10),
+			("21@1,1", NOT_APPLICABLE_INDEX, 11)
+		))
+	}
+
+	test("1.6 zip coordinate alignment with interleaved arrival") {
+		val left = new StreamEmitter[Int]()
+		val right = new StreamEmitter[String]()
+		val zipped = left.zip(right)((a, b) => s"$a-$b")
+
+		var collected = List[(String, Int, Int)]()
+		var completed = false
+		zipped.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => completed = true
+		)
+
+		// Interleave: right first, then left
+		right.emit("a") // downChain=0 on right, buffered
+		right.emit("b") // downChain=1 on right, buffered
+		left.emit(1) // downChain=0 on left, matches right's downChain=0
+		left.emit(2) // downChain=1 on left, matches right's downChain=1
+
+		left.end()
+		right.end()
+
+		// zip matches by downChain index; output preserves the match index as downChain
+		assertEquals(collected, List(("1-a", NOT_APPLICABLE_INDEX, 0), ("2-b", NOT_APPLICABLE_INDEX, 1)))
+		assertEquals(completed, true)
+	}
+
+	test("1.7 mapWithCoords on TaskArray receives correct (0, elementIndex) coordinates") {
+		val taskArray = TaskArray_fromTasks(IArray(makeTask(10), makeTask(20), makeTask(30)))
+		// mapWithCoords receives (value, upChain=0, downChain=elementIndex)
+		val mapped = taskArray.mapWithCoords((v, up, down) => v + up * 1000 + down)
+
+		var collected = List[(Int, Int, Int)]()
+		mapped.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		// Each task at index i gets up=0, down=i. Value = original + 0*1000 + i
+		assertEquals(collected, List((10, 0, 0), (21, 0, 1), (32, 0, 2)))
+	}
+
+	test("1.8 flatMapWithCoords on TaskArray → matrix → flattenToSequential round-trip") {
+		val taskArray = TaskArray_fromTasks(IArray(makeTask(10), makeTask(20)))
+
+		// flatMapWithCoords: each element (v, up, down) produces a TaskArray of 2 elements encoding the matrix coords
+		val matrix: TaskMatrix[String] = taskArray.flatMapWithCoords[String] { (v, up, down) =>
+			TaskArray_fromTasks(IArray(makeTask(s"$v:$up,$down,inner0"), makeTask(s"$v:$up,$down,inner1")))
+		}
+
+		val flattened = matrix.flattenToSequential
+		var collected = List[(String, Int, Int)]()
+		flattened.subscribeCallbacks(
+			onNextCallback = (v, up, down) => collected = collected :+ (v, up, down),
+			onCompleteCallback = () => ()
+		)
+
+		// TaskMatrix flatten uses NOT_APPLICABLE_INDEX for upChain, sequential counter for downChain
+		assertEquals(collected.map(_._2).distinct, List(NOT_APPLICABLE_INDEX)) // all upChain = -1
+		assertEquals(collected.map(_._3), List(0, 1, 2, 3)) // sequential counter
+		// Values encode original coords: first task at (up=0, down=0), second at (up=0, down=1)
+		assertEquals(collected.map(_._1), List("10:0,0,inner0", "10:0,0,inner1", "20:0,1,inner0", "20:0,1,inner1"))
+	}
+
+	// ====================================================================
+	// Area 2 — Single-Slot Caching / Delegate-Fallback Verification
+	// ====================================================================
+
+	test("2.1 MappedObservableStream: two subscribers receive identical coordinates") {
+		val emitter = new StreamEmitter[Int]()
+		val mapped = emitter.map(_ * 2)
+
+		var coords1 = List[(Int, Int, Int)]()
+		var coords2 = List[(Int, Int, Int)]()
+
+		mapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = coords1 = coords1 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		})
+
+		mapped.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = coords2 = coords2 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		})
+
+		emitter.emit(5)
+		emitter.emit(10)
+		emitter.end()
+
+		assertEquals(coords1, List((10, NOT_APPLICABLE_INDEX, 0), (20, NOT_APPLICABLE_INDEX, 1)))
+		assertEquals(coords2, List((10, NOT_APPLICABLE_INDEX, 0), (20, NOT_APPLICABLE_INDEX, 1)))
+		assertEquals(coords1, coords2)
+	}
+
+	test("2.2 ScannedObservableStream: late subscriber starts from initial state, not accumulated") {
+		val emitter = new StreamEmitter[Int]()
+		val scanned = emitter.scan(0)(_ + _)
+
+		var list1 = List[Int]()
+		var completed1 = false
+
+		scanned.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list1 = list1 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		// Emit some values before second subscription
+		emitter.emit(1) // scan state: 0+1=1
+		emitter.emit(2) // scan state: 1+2=3
+
+		assertEquals(list1, List(1, 3))
+
+		// Late subscriber — should start from initial state (0), not from 3
+		var list2 = List[Int]()
+		var completed2 = false
+
+		scanned.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list2 = list2 :+ value
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(10) // sub1 scan: 3+10=13; sub2 scan: 0+10=10
+
+		assertEquals(list1, List(1, 3, 13))
+		assertEquals(list2, List(10)) // independent state, started from 0
+
+		emitter.end()
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("2.3 BufferedObservableStream: two subscribers receive same buffer chunks with identical coordinates") {
+		val emitter = new StreamEmitter[Int]()
+		val buffered = emitter.buffer[Int](2)
+
+		var chunks1 = List[(List[Int], Int, Int)]()
+		var chunks2 = List[(List[Int], Int, Int)]()
+		var completed1 = false
+		var completed2 = false
+
+		buffered.subscribe(new Observer[IArray[Int]] {
+			override def onNext(value: IArray[Int], upChain: Int, downChain: Int): Unit = chunks1 = chunks1 :+ (value.toList, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		buffered.subscribe(new Observer[IArray[Int]] {
+			override def onNext(value: IArray[Int], upChain: Int, downChain: Int): Unit = chunks2 = chunks2 :+ (value.toList, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(1)
+		emitter.emit(2) // flush chunk [1,2]
+		emitter.emit(3)
+		emitter.emit(4) // flush chunk [3,4]
+		emitter.emit(5)
+		emitter.end() // flush partial chunk [5]
+
+		val expected = List((List(1, 2), NOT_APPLICABLE_INDEX, 0), (List(3, 4), NOT_APPLICABLE_INDEX, 1), (List(5), NOT_APPLICABLE_INDEX, 2))
+		assertEquals(chunks1, expected)
+		assertEquals(chunks2, expected)
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("2.4 FlatMappedObservableMatrix: two subscribers track inner completions independently") {
+		val emitter = new StreamEmitter[Int]()
+		// each outer element produces a stream of variable length
+		val matrix = emitter.flatMap { x =>
+			if x == 1 then ObservableStream(10, 11)
+			else ObservableStream(20, 21, 22)
+		}
+
+		var list1 = List[(Int, Int, Int)]()
+		var list2 = List[(Int, Int, Int)]()
+		var completed1 = false
+		var completed2 = false
+
+		matrix.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list1 = list1 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		matrix.subscribe(new Observer[Int] {
+			override def onNext(value: Int, upChain: Int, downChain: Int): Unit = list2 = list2 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		emitter.emit(1) // outer downChain=0 → upChain=0
+		emitter.emit(2) // outer downChain=1 → upChain=1
+		emitter.end()
+
+		val expected = List((10, 0, 0), (11, 0, 1), (20, 1, 0), (21, 1, 1), (22, 1, 2))
+		assertEquals(list1, expected)
+		assertEquals(list2, expected)
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	test("2.5 ZippedObservableStream: two subscribers with independent match buffers") {
+		val left = new StreamEmitter[Int]()
+		val right = new StreamEmitter[String]()
+		val zipped = left.zip(right)((a, b) => s"$a-$b")
+
+		var list1 = List[(String, Int, Int)]()
+		var list2 = List[(String, Int, Int)]()
+		var completed1 = false
+		var completed2 = false
+
+		zipped.subscribe(new Observer[String] {
+			override def onNext(value: String, upChain: Int, downChain: Int): Unit = list1 = list1 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed1 = true
+		})
+
+		zipped.subscribe(new Observer[String] {
+			override def onNext(value: String, upChain: Int, downChain: Int): Unit = list2 = list2 :+ (value, upChain, downChain)
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed2 = true
+		})
+
+		// Interleaved arrival
+		right.emit("a") // right downChain=0, buffered
+		left.emit(1) // left downChain=0, matches right 0
+		left.emit(2) // left downChain=1, buffered
+		right.emit("b") // right downChain=1, matches left 1
+
+		left.end()
+		right.end()
+
+		val expected = List(("1-a", NOT_APPLICABLE_INDEX, 0), ("2-b", NOT_APPLICABLE_INDEX, 1))
+		assertEquals(list1, expected)
+		assertEquals(list2, expected)
+		assertEquals(completed1, true)
+		assertEquals(completed2, true)
+	}
+
+	// ====================================================================
+	// Area 3 — Keyed Stream Lifecycle Tests
+	// ====================================================================
+
+	test("3.1 CaptorArray: unsubscribe(key) halts emissions for that key only") {
+		val c1 = new Captor[Int]()
+		val c2 = new Captor[Int]()
+		val array = new CaptorArray[Int](IArray(c1, c2))
+
+		val k1 = new AnyRef()
+		val k2 = new AnyRef()
+		var k1Values = List[(Int, Int, Int)]()
+		var k2Values = List[(Int, Int, Int)]()
+
+		array.keyedSubscribeCallbacks((v, up, down) => k1Values = k1Values :+ (v, up, down), _ => (), () => (), k1)
+		array.keyedSubscribeCallbacks((v, up, down) => k2Values = k2Values :+ (v, up, down), _ => (), () => (), k2)
+
+		// Unsubscribe k1 before any captures
+		array.unsubscribe(k1)
+
+		c1.capture(10)
+		c2.capture(20)
+
+		// k1 should have received nothing; k2 should have received both
+		assertEquals(k1Values, Nil)
+		assertEquals(k2Values, List((10, 0, 0), (20, 0, 1)))
+	}
+
+	test("3.2 MappedKeyedCapturerArray: key delegation through map operator") {
+		val c1 = new Captor[Int]()
+		val array = new CaptorArray[Int](IArray(c1))
+		val mapped = array.map(_ * 3)
+
+		val k1 = new AnyRef()
+		val k2 = new AnyRef()
+		var k1Values = List[Int]()
+		var k2Values = List[Int]()
+
+		mapped.keyedSubscribeCallbacks((v, _, _) => k1Values = k1Values :+ v, _ => (), () => (), k1)
+		mapped.keyedSubscribeCallbacks((v, _, _) => k2Values = k2Values :+ v, _ => (), () => (), k2)
+
+		// Unsubscribe k1 through the mapped array — should propagate to source
+		mapped.unsubscribe(k1)
+		assert(!array.isSubscribed(k1), "k1 should be unsubscribed from source array after mapped.unsubscribe")
+
+		c1.capture(10)
+
+		assertEquals(k1Values, Nil)
+		assertEquals(k2Values, List(30))
+	}
+
+	test("3.3 CaptorArray: duplicate key auto-unsubscribes previous observer") {
+		val c1 = new Captor[Int]()
+		val array = new CaptorArray[Int](IArray(c1))
+		val key = new AnyRef()
+
+		var observerA_values = List[Int]()
+		var observerB_values = List[Int]()
+
+		array.keyedSubscribeCallbacks((v, _, _) => observerA_values = observerA_values :+ v, _ => (), () => (), key)
+		// Re-subscribing with same key auto-unsubscribes observer A
+		array.keyedSubscribeCallbacks((v, _, _) => observerB_values = observerB_values :+ v, _ => (), () => (), key)
+
+		c1.capture(42)
+
+		assertEquals(observerA_values, Nil)
+		assertEquals(observerB_values, List(42))
+	}
+
+	test("3.4 FlattenedToSequentialArray: unsubscribe(key) propagates through matrix to all captors") {
+		val outerCaptor1 = new Captor[Int]()
+		val outerCaptor2 = new Captor[Int]()
+		val outerArray = new CaptorArray[Int](IArray(outerCaptor1, outerCaptor2))
+
+		val innerCaptor1 = new Captor[String]()
+		val innerCaptor2 = new Captor[String]()
+
+		val matrix = outerArray.flatMap[String] { x =>
+			new CaptorArray[String](IArray(if x == 1 then innerCaptor1 else innerCaptor2))
+		}
+
+		val seqArray = matrix.flattenToSequential
+		val key = new AnyRef()
+		var received = List[(String, Int, Int)]()
+
+		seqArray.keyedSubscribeCallbacks((v, up, down) => received = received :+ (v, up, down), _ => (), () => (), key)
+
+		// Complete first outer captor → triggers inner subscription
+		outerCaptor1.capture(1)
+		// Complete the inner captor for it
+		innerCaptor1.capture("first")
+		assertEquals(received, List(("first", NOT_APPLICABLE_INDEX, 0)))
+
+		// Now unsubscribe mid-stream (before second outer completes)
+		seqArray.unsubscribe(key)
+
+		// Complete second outer and its inner — observer should NOT receive anything
+		outerCaptor2.capture(2)
+		innerCaptor2.capture("second")
+		assertEquals(received, List(("first", NOT_APPLICABLE_INDEX, 0))) // unchanged
+	}
+
+	test("3.5 generateKeyed: second subscription continues from supplier's captured state") {
+		var count = 0
+		val stream = ObservableStream.generateKeyed(() => {
+			count += 1
+			count
+		})
+
+		// First subscriber: take 3 values then cancel
+		val key1 = new AnyRef()
+		val received1 = scala.collection.mutable.Buffer[Int]()
+		stream.keyedSubscribe(new Observer[Int] {
+			override def onNext(v: Int, upChain: Int, downChain: Int): Unit = {
+				received1 += v
+				if v >= 3 then stream.unsubscribe(key1)
+			}
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		}, key1)
+
+		assertEquals(received1.toList, List(1, 2, 3))
+		assertEquals(count, 3)
+
+		// Second subscriber: continues from where the supplier's state was left (count=3)
+		val key2 = new AnyRef()
+		val received2 = scala.collection.mutable.Buffer[Int]()
+		stream.keyedSubscribe(new Observer[Int] {
+			override def onNext(v: Int, upChain: Int, downChain: Int): Unit = {
+				received2 += v
+				if v >= 6 then stream.unsubscribe(key2)
+			}
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		}, key2)
+
+		assertEquals(received2.toList, List(4, 5, 6)) // continues from count=3
+		assertEquals(count, 6)
 	}
 }
 
