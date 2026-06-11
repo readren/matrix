@@ -830,7 +830,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		var errorCount = 0
 		var completeCount = 0
 
-		val stream = ObservableStream.empty[Int]
+		val stream = Flux.empty[Int]
 		stream.subscribeCallbacks(
 			onNextCallback = (v, up, down) => nextCount += 1,
 			onErrorCallback = _ => errorCount += 1,
@@ -845,7 +845,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("ObservableStream - apply and fromIterable factory methods") {
 		var receivedFromIterable = List.empty[Int]
 		var completedFromIterable = false
-		val streamIterable = ObservableStream.fromIterable(List(1, 2, 3))
+		val streamIterable = Flux.fromIterable(List(1, 2, 3))
 
 		streamIterable.subscribeCallbacks(
 			onNextCallback = (v, up, down) => receivedFromIterable = receivedFromIterable :+ v,
@@ -858,7 +858,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 		var receivedApply = List.empty[String]
 		var completedApply = false
-		val streamApply = ObservableStream("a", "b")
+		val streamApply = Flux("a", "b")
 
 		streamApply.subscribeCallbacks(
 			onNextCallback = (v, up, down) => receivedApply = receivedApply :+ v,
@@ -873,7 +873,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("ObservableStream - generateKeyed factory method and synchronous cancellation") {
 		val key = new AnyRef()
 		var count = 0
-		val stream = ObservableStream.generateKeyed(() => {
+		val stream = Flux.generateKeyed(() => {
 			count += 1
 			count
 		})
@@ -897,7 +897,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("ObservableStream - unfold factory method") {
 		var received = List.empty[String]
 		var completed = false
-		val stream = ObservableStream.unfold(0)(s => if s < 3 then Maybe((s.toString, s + 1)) else Maybe.empty)
+		val stream = Flux.unfold(0)(s => if s < 3 then Maybe((s.toString, s + 1)) else Maybe.empty)
 
 		stream.subscribeCallbacks(
 			onNextCallback = (v, up, down) => received = received :+ v,
@@ -922,7 +922,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		var caughtEx: Throwable = null
 		var completed = false
 
-		ObservableStream.fromIterableGuarded(badIterable).subscribeCallbacks(
+		Flux.fromIterableGuarded(badIterable).subscribeCallbacks(
 			onNextCallback = (v, up, down) => nextCount += 1,
 			onErrorCallback = ex => caughtEx = ex,
 			onCompleteCallback = () => completed = true
@@ -952,7 +952,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		var caughtEx: Throwable = null
 		var completed = false
 
-		ObservableStream.fromIterableGuarded(badIterable).subscribeCallbacks(
+		Flux.fromIterableGuarded(badIterable).subscribeCallbacks(
 			onNextCallback = (v, up, down) => received = received :+ v,
 			onErrorCallback = ex => caughtEx = ex,
 			onCompleteCallback = () => completed = true
@@ -1036,7 +1036,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("Single-slot caching: FlatMappedObservableMatrix supports multiple subscriptions and delegates inner completions") {
 		val emitter = new StreamEmitter[Int]()
-		val flatMapped = emitter.flatMap(x => ObservableStream(x, x + 1))
+		val flatMapped = emitter.flatMap(x => Flux(x, x + 1))
 
 		var list1 = List[(Int, Int, Int)]()
 		var list2 = List[(Int, Int, Int)]()
@@ -1140,7 +1140,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("1.1 flatMap matrix coordinates: outer downChain becomes matrix upChain") {
 		val emitter = new StreamEmitter[Int]()
-		val matrix = emitter.flatMap(x => ObservableStream(x, x + 1))
+		val matrix = emitter.flatMap(x => Flux(x, x + 1))
 
 		var collected = List[(Int, Int, Int)]()
 		var completed = false
@@ -1163,7 +1163,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 	test("1.2 flattenToInner projects inner coordinate, discards outer") {
 		val emitter = new StreamEmitter[Int]()
 		// inner streams: x → [x, x+1, x+2]
-		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1, x + 2)).flattenToInner
+		val flattened = emitter.flatMap(x => Flux(x, x + 1, x + 2)).flattenToInner
 
 		var collected = List[(Int, Int, Int)]()
 		flattened.subscribeCallbacks(
@@ -1185,7 +1185,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("1.3 flattenToOuter projects outer coordinate, discards inner") {
 		val emitter = new StreamEmitter[Int]()
-		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1)).flattenToOuter
+		val flattened = emitter.flatMap(x => Flux(x, x + 1)).flattenToOuter
 
 		var collected = List[(Int, Int, Int)]()
 		flattened.subscribeCallbacks(
@@ -1206,7 +1206,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("1.4 flattenToSequential emits monotonic counter, ignoring matrix coordinates") {
 		val emitter = new StreamEmitter[Int]()
-		val flattened = emitter.flatMap(x => ObservableStream(x, x + 1)).flattenToSequential
+		val flattened = emitter.flatMap(x => Flux(x, x + 1)).flattenToSequential
 
 		var collected = List[(Int, Int, Int)]()
 		flattened.subscribeCallbacks(
@@ -1226,7 +1226,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("1.5 flattenMap receives correct matrix coords and emits user-defined index") {
 		val emitter = new StreamEmitter[Int]()
-		val matrix = emitter.flatMap(x => ObservableStream(x, x + 1))
+		val matrix = emitter.flatMap(x => Flux(x, x + 1))
 		// flattenMap transforms value and produces (newValue, newIndex)
 		val flattened = matrix.flattenMap[String]((v, up, down) => (s"$v@$up,$down", up * 10 + down))
 
@@ -1435,8 +1435,8 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 		val emitter = new StreamEmitter[Int]()
 		// each outer element produces a stream of variable length
 		val matrix = emitter.flatMap { x =>
-			if x == 1 then ObservableStream(10, 11)
-			else ObservableStream(20, 21, 22)
+			if x == 1 then Flux(10, 11)
+			else Flux(20, 21, 22)
 		}
 
 		var list1 = List[(Int, Int, Int)]()
@@ -1617,7 +1617,7 @@ class SandboxDoerSpec extends ScalaCheckEffectSuite {
 
 	test("3.5 generateKeyed: second subscription continues from supplier's captured state") {
 		var count = 0
-		val stream = ObservableStream.generateKeyed(() => {
+		val stream = Flux.generateKeyed(() => {
 			count += 1
 			count
 		})
