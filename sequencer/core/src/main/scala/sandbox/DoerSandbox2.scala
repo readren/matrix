@@ -165,7 +165,7 @@ class DoerSandbox2 {
 
 		def countOccurrencesOf(monoObserver: MonoObserver[A]): Int
 
-		def countOccurrencesOf(key: Key): Int
+		def countObserversAssociatedTo(key: Key): Int
 
 		override def map[B](f: A => B): Capturer[B] = { // necessary to downcast the result type when a subclass isn't covariant.
 			this match {
@@ -268,7 +268,7 @@ class DoerSandbox2 {
 
 		override def countOccurrencesOf(monoObserver: MonoObserver[A]): Int = 0
 
-		override def countOccurrencesOf(key: Key): Int = 0
+		override def countObserversAssociatedTo(key: Key): Int = 0
 
 		override def map[B](f: A => B): Capturer[B] = new Keeper(f(value))
 
@@ -314,7 +314,7 @@ class DoerSandbox2 {
 
 		override def countOccurrencesOf(monoObserver: MonoObserver[Nothing]): Int = 0
 
-		override def countOccurrencesOf(key: Key): Int = 0
+		override def countObserversAssociatedTo(key: Key): Int = 0
 
 		override def map[B](f: Nothing => B): Capturer[B] = this.asInstanceOf[Failed]
 
@@ -331,7 +331,7 @@ class DoerSandbox2 {
 		override def flatMapGuarded[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
 	}
 
-	trait Muxer[A, Observer[_] <: AnyRef] {
+	trait Muxer[A, Observer[-_] <: AnyRef] {
 		type Entry = Observer[A] | (Key, Observer[A])
 		type EntryId = Observer[A] | Key
 
@@ -463,7 +463,7 @@ class DoerSandbox2 {
 
 		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = removeAllMatching(monoObserver)
 
-		override def countOccurrencesOf(key: Key): Int = if key == null then 0 else countAllMatching(key)
+		override def countObserversAssociatedTo(key: Key): Int = if key == null then 0 else countAllMatching(key)
 
 		override def countOccurrencesOf(monoObserver: MonoObserver[A]): Int = countAllMatching(monoObserver)
 
@@ -630,7 +630,7 @@ class DoerSandbox2 {
 
 		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = underlying.unsubscribe(monoObserver)
 
-		override def countOccurrencesOf(key: Key): Int = underlying.countOccurrencesOf(key)
+		override def countObserversAssociatedTo(key: Key): Int = underlying.countObserversAssociatedTo(key)
 
 		override def countOccurrencesOf(monoObserver: MonoObserver[A]): Int = underlying.countOccurrencesOf(monoObserver)
 
@@ -666,19 +666,34 @@ class DoerSandbox2 {
 	}
 
 	trait Flux[+A] { thisFlux =>
-		def subscribe(observer: FluxObserver[A]): Unit
+		def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit
 
-		inline def subscribeCallbacks(inline next: (A, Int) => Unit, inline error: Throwable => Unit = _ => (), inline complete: () => Unit = () => ()): Unit = {
-			subscribe(new FluxObserver[A] {
-				override def onNext(value: A, index: Int): Unit = next(value, index)
+		inline def subscribeCallbacks(inline next: (A, Int) => Unit, inline error: Throwable => Unit = _ => (), inline complete: () => Unit = () => (), key: Key | Null = null): Unit = {
+			subscribe(
+				new FluxObserver[A] {
+					override def onNext(value: A, index: Int): Unit = next(value, index)
 
-				override def onError(ex: Throwable): Unit = error(ex)
+					override def onError(ex: Throwable): Unit = error(ex)
 
-				override def onComplete(): Unit = complete()
-			})
+					override def onComplete(): Unit = complete()
+				},
+				key
+			)
 		}
 
-		inline def foreach(inline consumer: A => Unit): Unit = subscribeCallbacks { (a, _) => consumer(a) }
+		def unsubscribe(observer: FluxObserver[A]): Unit
+
+		def unsubscribe(key: Key): Unit
+
+		def countOccurrencesOf(observer: FluxObserver[A]): Int
+
+		def countObserversAssociatedTo(key: Key): Int
+
+		inline def isSubscribed(observer: FluxObserver[A]): Boolean = countOccurrencesOf(observer) != 0
+
+		inline def isSubscribed(key: Key): Boolean = countObserversAssociatedTo(key) != 0
+
+		inline def foreach(inline consumer: A => Unit): Unit = subscribeCallbacks(next = (a, _) => consumer(a))
 
 		inline def foreachWithCoords(inline consumer: (A, Int) => Unit): Unit = subscribeCallbacks(consumer)
 
@@ -738,17 +753,14 @@ class DoerSandbox2 {
 
 
 	object Flux {
-		def empty[A]: Flux[A] = new DefaultFlux[A] {
-			override def subscribe(observer: FluxObserver[A]): Unit = {
-				observer.onComplete()
-				// TODO call `this.unsubscribe(observer)`.
-			}
+		def empty[A]: Flux[A] = new DefaultFlux[A] with ImmediateCompletion[A] {
+			override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = observer.onComplete()
 		}
 
 		def apply[A](elements: A*): Flux[A] = fromIterable(elements)
 
-		def fromIterable[A](iterable: Iterable[A]): Flux[A] = new DefaultFlux[A] {
-			override def subscribe(observer: FluxObserver[A]): Unit = {
+		def fromIterable[A](iterable: Iterable[A]): Flux[A] = new DefaultFlux[A] with ImmediateCompletion[A] {
+			override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = {
 				val it = iterable.iterator
 				var index = 0
 				while it.hasNext do {
@@ -761,8 +773,8 @@ class DoerSandbox2 {
 			}
 		}
 
-		def fromIterableGuarded[A](iterable: Iterable[A]): Flux[A] = new DefaultFlux[A] {
-			override def subscribe(observer: FluxObserver[A]): Unit = {
+		def fromIterableGuarded[A](iterable: Iterable[A]): Flux[A] = new DefaultFlux[A] with ImmediateCompletion[A] {
+			override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = {
 				val it = iterable.iterator
 				var index = 0
 				var active = true // TODO call `this.unsubscribe(observer)` whenever it is set to false.
@@ -791,8 +803,47 @@ class DoerSandbox2 {
 			}
 		}
 
+		def generate[A](supplier: Int => A): Flux[A] = new DefaultFlux[A] with ImmediateCompletion[A] {
+			override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = {
+				var index = 0
+				var active = true // TODO call `this.unsubscribe(observer)` whenever it is set to false.
+				while active do {
+					val maybeVal = try Maybe(supplier(index)) catch {
+						case NonFatal(e) =>
+							active = false
+							observer.onError(e)
+							Maybe.empty
+					}
+					maybeVal.foreach { v =>
+						observer.onNext(v, index)
+						index += 1
+					}
+				}
+			}
+		}
+
+		def generateStatefully[A](supplierBuilder: () => Int => A): Flux[A] = new DefaultFlux[A] with ImmediateCompletion[A] {
+			override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = {
+				val supplier = supplierBuilder()
+				var index = 0
+				var active = true // TODO call `this.unsubscribe(observer)` whenever it is set to false.
+				while active do {
+					val maybeVal = try Maybe(supplier(index)) catch {
+						case NonFatal(e) =>
+							active = false
+							observer.onError(e)
+							Maybe.empty
+					}
+					maybeVal.foreach { v =>
+						observer.onNext(v, index)
+						index += 1
+					}
+				}
+			}
+		}
+
 		def fromObservablesArray[A](array: IArray[Observable[A]]): Flux[A] = new DefaultFlux[A] {
-			override def subscribe(fluxObserver: FluxObserver[A]): Unit = {
+			override def subscribe(fluxObserver: FluxObserver[A], key: Key | Null = null): Unit = {
 
 				class AllElemsObserver extends MonoObserver[A] {
 					private var sequenceIndex = 0
@@ -817,50 +868,6 @@ class DoerSandbox2 {
 				val allElemsObserver = new AllElemsObserver
 				array.foreachWithIndex { (observable, index) => observable.subscribe(allElemsObserver) }
 			}
-		}
-
-		def generate[A](supplier: Int => A): Flux[A] = new DefaultFlux[A] {
-			override def subscribe(observer: FluxObserver[A]): Unit = {
-				var index = 0
-				var active = true // TODO call `this.unsubscribe(observer)` whenever it is set to false.
-				while active do {
-					val maybeVal = try Maybe(supplier(index)) catch {
-						case NonFatal(e) =>
-							active = false
-							observer.onError(e)
-							Maybe.empty
-					}
-					maybeVal.foreach { v =>
-						observer.onNext(v, index)
-						index += 1
-					}
-				}
-			}
-		}
-
-		def generateKeyed[A](supplier: Int => A): KeyedFlux[A] = new KeyedFlux[A] {
-			private val activeKeys = scala.collection.mutable.Set[Key]()
-
-			override def keyedSubscribe(key: Key, observer: FluxObserver[A]): Unit = {
-				if key != null then activeKeys.add(key)
-				var index = 0
-				while key == null || activeKeys.contains(key) do {
-					val maybeVal = try Maybe(supplier(index)) catch {
-						case NonFatal(e) =>
-							if key != null then activeKeys.remove(key)
-							observer.onError(e)
-							Maybe.empty
-					}
-					maybeVal.foreach { v =>
-						observer.onNext(v, index)
-						index += 1
-					}
-				}
-			}
-
-			override def unsubscribe(key: Key): Unit = if key != null then activeKeys.remove(key)
-
-			override def isSubscribed(key: Key): Boolean = key != null && activeKeys.contains(key)
 		}
 	}
 
@@ -889,35 +896,13 @@ class DoerSandbox2 {
 		override def takeWhile(p: (a: A, index: Int, count: Int) => Boolean): Flux[A] = new Flux_TakeWhile(this, p)
 	}
 
-	trait KeyedFlux[+A] extends DefaultFlux[A] {
-		override def subscribe(observer: FluxObserver[A]): Unit = keyedSubscribe(null, observer)
-
-		def keyedSubscribe(key: Key, observer: FluxObserver[A]): Unit
-
-		inline def keyedSubscribeCallbacks(key: Key, inline next: (A, Int) => Unit, inline error: Throwable => Unit = _ => (), inline complete: () => Unit = () => ()): Unit = {
-			keyedSubscribe(
-				key,
-				new FluxObserver[A] {
-					override def onNext(value: A, index: Int): Unit = next(value, index)
-
-					override def onError(ex: Throwable): Unit = error(ex)
-
-					override def onComplete(): Unit = complete()
-				}
-			)
-		}
-
-		def unsubscribe(key: Key): Unit
-
-		def isSubscribed(key: Key): Boolean
-	}
 
 	trait SingleSlotFluxOp[A, +B] extends DefaultFlux[B], FluxObserver[A] {
 		protected val source: Flux[A]
 
 		private var downChainObserverSlot: FluxObserver[B] @uncheckedVariance = uninitialized
 
-		override def subscribe(downChainObserver: FluxObserver[B]): Unit = {
+		override def subscribe(downChainObserver: FluxObserver[B], key: Key | Null = null): Unit = {
 			if downChainObserverSlot == null then {
 				this.downChainObserverSlot = downChainObserver
 				source.subscribe(this)
@@ -950,6 +935,16 @@ class DoerSandbox2 {
 		}
 	}
 
+	trait ImmediateCompletion[+A] { thisFlux: Flux[A] =>
+		override def unsubscribe(observer: FluxObserver[A]): Unit = ()
+
+		override def unsubscribe(key: Key): Unit = ()
+
+		override def countOccurrencesOf(observer: FluxObserver[A]): Int = 0
+
+		override def countObserversAssociatedTo(key: Key): Int = 0
+	}
+
 	/////////////////////////
 	//// Concrete Fluxes ////
 	/////////////////////////
@@ -959,7 +954,7 @@ class DoerSandbox2 {
 		private var completed = false
 		private var error: Throwable | Null = null
 
-		override def subscribe(observer: FluxObserver[A]): Unit = {
+		override def subscribe(observer: FluxObserver[A], key: Key | Null = null): Unit = {
 			if error != null then observer.onError(error.asInstanceOf[Throwable])
 			else if completed then observer.onComplete()
 			else addEntry(observer)
@@ -1094,7 +1089,7 @@ class DoerSandbox2 {
 	}
 
 	private final class Flux_Zip[A, B, C](val left: Flux[A], val right: Flux[B], val f: (A, B, Int) => C) extends DefaultFlux[C] {
-		override def subscribe(observer: FluxObserver[C]): Unit = {
+		override def subscribe(observer: FluxObserver[C], key: Key | Null = null): Unit = {
 			new ZipObservation(left, right, f, observer).start()
 		}
 	}
@@ -1153,7 +1148,7 @@ class DoerSandbox2 {
 				if p(a, index, counter) then {
 					val currentCounter = counter
 					counter += 1
-					forwardNext(a, if flattenToCount then counter else index)
+					forwardNext(a, if flattenToCount then currentCounter else index)
 				} else {
 					active = false
 					forwardComplete()
@@ -1468,7 +1463,7 @@ class DoerSandbox2 {
 				if p(a, index, counter) then {
 					val currentCounter = counter
 					counter += 1
-					observer.onNext(a, if flattenToCount then counter else index)
+					observer.onNext(a, if flattenToCount then currentCounter else index)
 				} else {
 					active = false
 					observer.onComplete()
@@ -1618,7 +1613,7 @@ class DoerSandbox2 {
 
 		def flattenWith(f: (a: A, inner: Int, outer: Int, count: Int) => Int): Flux[A]
 
-		def flattenStatefully[B: ClassTag](flattener: TensorFlattener[A, B]): Flux[B]
+		def flattenStatefully[B: ClassTag](flattenerBuilder: () => TensorFlattener[A, B]): Flux[B]
 	}
 
 	trait TensorFlattener[-A, +B] {
@@ -1646,7 +1641,7 @@ class DoerSandbox2 {
 
 		override def flattenWith(f: (A, Int, Int, Int) => Int): Flux[A] = new Tensor_FlattenWith(this, f)
 
-		override def flattenStatefully[B: ClassTag](flattener: TensorFlattener[A, B]): Flux[B] = new Tensor_FlattenStatefully(this, flattener)
+		override def flattenStatefully[B: ClassTag](flattenerBuilder: () => TensorFlattener[A, B]): Flux[B] = new Tensor_FlattenStatefully(this, flattenerBuilder)
 	}
 
 	trait SingleSlotTensorOp[A, +B] extends DefaultFlux[B], TensorObserver[A] {
@@ -1654,7 +1649,7 @@ class DoerSandbox2 {
 
 		private var downChainObserverSlot: FluxObserver[B] @uncheckedVariance | Null = null
 
-		override def subscribe(observer: FluxObserver[B]): Unit = {
+		override def subscribe(observer: FluxObserver[B], key: Key | Null = null): Unit = {
 			if downChainObserverSlot != null then source.subscribe(createDelegate(observer))
 			else {
 				downChainObserverSlot = observer
@@ -1818,18 +1813,21 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Tensor_FlattenStatefully[A, B](source: Tensor[A], flattener: TensorFlattener[A, B]) extends DefaultFlux[B], TensorObserver[A] {
+	final class Tensor_FlattenStatefully[A, B](source: Tensor[A], flattenerBuilder: () => TensorFlattener[A, B]) extends DefaultFlux[B], TensorObserver[A] {
 		private var downChainObserverSlot: FluxObserver[B] | Null = null
+		private var flattenerSlot: TensorFlattener[A, B] | Null = null
 
 		override def subscribe(observer: FluxObserver[B]): Unit = {
-			if downChainObserverSlot != null then source.subscribe(createDelegate(observer))
+			val flattener = flattenerBuilder()
+			if downChainObserverSlot != null then source.subscribe(createDelegate(observer, flattener))
 			else {
 				downChainObserverSlot = observer
+				flattenerSlot = flattener
 				source.subscribe(this)
 			}
 		}
 
-		private def createDelegate(observer: FluxObserver[B]): TensorObserver[A] = new TensorObserver[A] {
+		private def createDelegate(observer: FluxObserver[B], flattener: TensorFlattener[A, B]): TensorObserver[A] = new TensorObserver[A] {
 			override def onNext(a: A, innerIndex: Int, outerIndex: Int): Unit = flattener.onNext(observer)(a, innerIndex, outerIndex)
 
 			override def onOuterComplete(): Unit = flattener.onOuterComplete(observer)
@@ -1843,30 +1841,138 @@ class DoerSandbox2 {
 
 		override def onNext(a: A, innerIndex: Int, outerIndex: Int): Unit = {
 			val dco = downChainObserverSlot
-			if dco != null then flattener.onNext(dco)(a, innerIndex, outerIndex)
+			if dco != null then flattenerSlot.onNext(dco)(a, innerIndex, outerIndex)
 		}
 
 		override def onOuterComplete(): Unit = {
 			val dco = downChainObserverSlot
-			if dco != null then flattener.onOuterComplete(dco)
+			if dco != null then flattenerSlot.onOuterComplete(dco)
 		}
 
 		override def onInnerComplete(outerIndex: Int): Unit = {
 			val dco = downChainObserverSlot
-			if dco != null then flattener.onInnerComplete(dco)(outerIndex)
+			if dco != null then flattenerSlot.onInnerComplete(dco)(outerIndex)
 		}
 
 		override def onError(ex: Throwable): Unit = {
 			val dco = downChainObserverSlot
 			downChainObserverSlot = null
-			if dco != null then flattener.onError(dco)(ex)
+			flattenerSlot = null
+			if dco != null then flattenerSlot.onError(dco)(ex)
 		}
 
 		override def onComplete(): Unit = {
 			val dco = downChainObserverSlot
 			downChainObserverSlot = null
-			if dco != null then flattener.onComplete(dco)
+			flattenerSlot = null
+			if dco != null then flattenerSlot.onComplete(dco)
 		}
 
+	}
+
+	// ===================================================================
+	// ==================== CHAIN SUPPORT PRIMITIVES =====================
+	// ===================================================================
+
+	/** A node in an asynchronous, promise-chained functional stream.
+	 *
+	 * @param value the element emitted in this node.
+	 * @param next  the lazy placeholder (`Chain`) for the remaining elements of the stream.
+	 */
+	case class ChainNode[+A](value: A, next: ChainOps.Chain[A])
+
+	object ChainOps {
+		opaque type Chain[+A] = Capturer[Maybe[ChainNode[A]]]
+
+		def apply[A](underlying: Capturer[Maybe[ChainNode[A]]]): Chain[A] = underlying
+
+		extension [A](chain: Chain[A]) {
+			inline def asCapturer: Capturer[Maybe[ChainNode[A]]] = chain
+		}
+	}
+
+	import ChainOps.Chain
+
+	/** A producer class for dynamically generating an asynchronous promise-chained functional stream.
+	 *
+	 * Example usage:
+	 * {{{
+	 * val emitter = new ChainEmitter[Int]()
+	 * val stream = emitter.chain
+	 *
+	 * // Consumer subscribes and maps over the stream recursively
+	 * stream.map(_ * 2).foreach { maybeNode =>
+	 *   maybeNode.fold {
+	 *     println("Stream finished")
+	 *   } { node =>
+	 *     println(s"Value: ${node.value}")
+	 *     // subscribe/recurse via node.next
+	 *   }
+	 * }
+	 *
+	 * // Producer emits elements dynamically
+	 * emitter.emit(1)
+	 * emitter.emit(2)
+	 * emitter.end()
+	 * }}}
+	 */
+	final class ChainEmitter[A] {
+		private var currentCaptor = new Captor[Maybe[ChainNode[A]]]()
+
+		def chain: Chain[A] = ChainOps(currentCaptor)
+
+		def emit(value: A): Unit = {
+			val nextCaptor = new Captor[Maybe[ChainNode[A]]]()
+			val oldCaptor = currentCaptor
+			currentCaptor = nextCaptor
+			oldCaptor.capture(Maybe(ChainNode(value, ChainOps(nextCaptor))))
+		}
+
+		def end(): Unit = {
+			currentCaptor.capture(Maybe.empty)
+		}
+	}
+
+	/** Monadic extension methods enabling lazy transformations over promise-chained functional streams. */
+	extension [A](chain: Chain[A]) {
+		def map[B](f: A => B): Chain[B] = {
+			ChainOps(chain.asCapturer.map { maybeNode =>
+				maybeNode.map(node => ChainNode(f(node.value), node.next.map(f)))
+			})
+		}
+
+		def filter(p: A => Boolean): Chain[A] = {
+			ChainOps(chain.asCapturer.flatMap { maybeNode =>
+				maybeNode.fold {
+					new Keeper(Maybe.empty)
+				} { node =>
+					if p(node.value) then {
+						new Keeper(Maybe(ChainNode(node.value, node.next.filter(p))))
+					} else {
+						node.next.filter(p).asCapturer
+					}
+				}
+			})
+		}
+
+		def concat(other: => Chain[A]): Chain[A] = {
+			ChainOps(chain.asCapturer.flatMap { maybeNode =>
+				maybeNode.fold {
+					other.asCapturer
+				} { node =>
+					new Keeper(Maybe(ChainNode(node.value, node.next.concat(other))))
+				}
+			})
+		}
+
+		def flatMap[B](f: A => Chain[B]): Chain[B] = {
+			ChainOps(chain.asCapturer.flatMap { maybeNode =>
+				maybeNode.fold {
+					new Keeper(Maybe.empty)
+				} { node =>
+					f(node.value).concat(node.next.flatMap(f)).asCapturer
+				}
+			})
+		}
 	}
 }
