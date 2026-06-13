@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.8.3"
+ThisBuild / scalaVersion := "3.8.4"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",

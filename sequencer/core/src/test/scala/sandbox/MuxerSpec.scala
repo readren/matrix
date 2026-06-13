@@ -10,87 +10,75 @@ import scala.collection.mutable
 class MuxerSpec extends ScalaCheckSuite {
 
 	val sandbox = new DoerSandbox2
-
 	import sandbox.*
 
-	type Observer[T] = List[T]
-
-	def Observer_from(int: Int): Observer[Int] = List(int)
-
-	class IntMuxer extends Muxer[Int, Observer]
-
-	def keyGen(universeSize: Int): Gen[String] = Gen.choose(0, universeSize - 1).map(offset => ('A' + offset).toChar.toString)
-
-	def samplesListGen(size: Int, keysUniverseSize: Int): Gen[List[(key: Key, observer: Observer[Int], isKeyed: Boolean)]] = {
-		for keys <- Gen.listOfN(size, keyGen(keysUniverseSize)) yield {
-			for (key, index) <- keys.zipWithIndex yield {
-				val observer = Observer_from(index)
-				(key, observer, key(0) % 2 == 0)
-			}
-		}
+	class MockTarget[-A](val id: Int) {
+		override def toString: String = s"Target($id)"
 	}
 
-	def Entry_fromSample[M <: Muxer[Int, Observer]](muxer: M)(sample: (key: Key, observer: Observer[Int], isKeyed: Boolean)): muxer.Entry =
-		if sample.isKeyed then (sample.key, sample.observer) else sample.observer: muxer.Entry
+	def Target_from(int: Int): MockTarget[Int] = new MockTarget[Int](int)
 
-	private def extractObserver(muxer: Muxer[Int, Observer])(entry: muxer.Entry): Observer[Int] = entry match {
-		case obs: Observer[Int] => obs
-		case (_, obs: Observer[Int]) => obs
+	class IntMuxer extends Muxer[Int, MockTarget] {
+		override def addTarget(target: this.Target): Unit = super.addTarget(target)
+
+		override def countAllMatching(target: this.Target): Int = super.countAllMatching(target)
+
+		override def removeAllMatching(target: this.Target): Int = super.removeAllMatching(target)
+
+		def foreachEntry(consumer: MockTarget[Int] => Unit): Unit = foreachTarget(consumer)
 	}
 
-	test("addEntry updates containment states and count properly") {
+	def samplesListGen(size: Int): Gen[List[MockTarget[Int]]] = {
+		Gen.listOfN(size, Gen.choose(0, 1000).map(Target_from))
+	}
+
+	test("addTarget updates containment states and count properly") {
 		val muxer = new IntMuxer()
-		val firstObs = Observer_from(1)
-		muxer.addEntry(firstObs)
-		assertEquals(muxer.countAllMatching(firstObs), 1)
+		val firstTarget = Target_from(1)
+		muxer.addTarget(firstTarget)
+		assertEquals(muxer.countAllMatching(firstTarget), 1)
 
-		val secondObs = Observer_from(2)
-		muxer.addEntry(("x", secondObs))
-		assertEquals(muxer.countAllMatching(secondObs), 0)
-		assertEquals(muxer.countAllMatching("x"), 1)
+		val secondTarget = Target_from(2)
+		muxer.addTarget(secondTarget)
+		assertEquals(muxer.countAllMatching(secondTarget), 1)
 
-		muxer.addEntry(firstObs)
-		assertEquals(muxer.countAllMatching(firstObs), 2)
+		muxer.addTarget(firstTarget)
+		assertEquals(muxer.countAllMatching(firstTarget), 2)
 
-		muxer.addEntry(("x", secondObs))
-		assertEquals(muxer.countAllMatching("x"), 2)
-		assertEquals(muxer.countAllMatching(secondObs), 0)
+		assertEquals(muxer.removeAllMatching(secondTarget), 1)
+		assertEquals(muxer.countAllMatching(secondTarget), 0)
 
-		assertEquals(muxer.removeAllMatching(secondObs), 0)
-		assertEquals(muxer.removeAllMatching("x"), 2)
-		assertEquals(muxer.countAllMatching("x"), 0)
-
-		assertEquals(muxer.countAllMatching(firstObs), 2)
-		assertEquals(muxer.removeAllMatching(firstObs), 2)
-		assertEquals(muxer.countAllMatching(firstObs), 0)
+		assertEquals(muxer.countAllMatching(firstTarget), 2)
+		assertEquals(muxer.removeAllMatching(firstTarget), 2)
+		assertEquals(muxer.countAllMatching(firstTarget), 0)
 	}
 
-	test("foreachEntry iterates strictly over populated elements, ignoring uninitialized padding") {
+	test("foreachTarget iterates strictly over populated elements, ignoring uninitialized padding") {
 		val muxer = new IntMuxer()
-		val items = List(Observer_from(1), Observer_from(2), Observer_from(3))
+		val items = List(Target_from(1), Target_from(2), Target_from(3))
 
-		items.foreach(muxer.addEntry)
+		items.foreach(muxer.addTarget)
 
-		var collected = List.empty[Observer[Int]]
-		muxer.foreachEntry(obs => collected = collected :+ obs)
+		var collected = List.empty[MockTarget[Int]]
+		muxer.foreachEntry(target => collected = collected :+ target)
 
 		assertEquals(collected, items)
 	}
 
 	test("removeAllMatching safely handles mutations without lingering or leaked references") {
 		val muxer = new IntMuxer()
-		val item1 = Observer_from(1)
-		val item2 = Observer_from(2)
-		val item3 = Observer_from(3)
+		val item1 = Target_from(1)
+		val item2 = Target_from(2)
+		val item3 = Target_from(3)
 
-		muxer.addEntry(item1)
-		muxer.addEntry(item2)
-		muxer.addEntry(item3)
+		muxer.addTarget(item1)
+		muxer.addTarget(item2)
+		muxer.addTarget(item3)
 
 		val removedCount = muxer.removeAllMatching(item1)
 
-		var remaining = List.empty[Observer[Int]]
-		muxer.foreachEntry(obs => remaining = remaining :+ obs)
+		var remaining = List.empty[MockTarget[Int]]
+		muxer.foreachEntry(target => remaining = remaining :+ target)
 
 		assertEquals(removedCount, 1)
 		assertEquals(muxer.countAllMatching(item1), 0)
@@ -98,66 +86,52 @@ class MuxerSpec extends ScalaCheckSuite {
 	}
 
 	property("Property-Based Invariant: Arbitrary registration sequences preserve exact tracking arrays") {
-		forAll(samplesListGen(17, 9)) { samples =>
+		forAll(samplesListGen(17)) { samples =>
 			val muxer = new IntMuxer()
 
-			val entries = samples.map(Entry_fromSample[muxer.type](muxer))
-			val expectedObservers = entries.map(extractObserver(muxer))
+			samples.foreach(muxer.addTarget)
 
-			entries.foreach(muxer.addEntry)
+			var iteratedTargets = List.empty[MockTarget[Int]]
+			muxer.foreachEntry(target => iteratedTargets = iteratedTargets :+ target)
 
-			var iteratedObservers = List.empty[Observer[Int]]
-			muxer.foreachEntry(obs => iteratedObservers = iteratedObservers :+ obs)
-
-			assertEquals(iteratedObservers, expectedObservers)
+			assertEquals(iteratedTargets, samples)
 		}
 	}
 
 	property("Property-Based Invariant: Execution order perfectly tracks subscription sequences through expansion (>8) and random multi-removals") {
-		// Using Gen.flatMap to generate perfectly sized test fixtures without cropping
 		val sampleDataGen = Gen.choose(15, 40).flatMap { size =>
-			samplesListGen(size, size / 2)
+			samplesListGen(size)
 		}
 
 		forAll(sampleDataGen, Gen.long) { (samples, seed) =>
-			scribe.info(s"Begin: samples=$samples")
 			val muxer = new IntMuxer()
-			// Construct unique entries based on the exact dynamic size bounds
-			val entries = samples.map(Entry_fromSample[muxer.type](muxer))
 
-			entries.foreach(muxer.addEntry)
+			samples.foreach(muxer.addTarget)
 
-			val expectedInitialObservers = entries.map(extractObserver(muxer))
-			var iteratedInitialObservers = List.empty[Observer[Int]]
-			muxer.foreachEntry(obs => iteratedInitialObservers = iteratedInitialObservers :+ obs)
+			var iteratedInitialTargets = List.empty[MockTarget[Int]]
+			muxer.foreachEntry(target => iteratedInitialTargets = iteratedInitialTargets :+ target)
 
-			assertEquals(iteratedInitialObservers, expectedInitialObservers)
+			assertEquals(iteratedInitialTargets, samples)
 
-			// Obtain all the distinct EntryId instances in the sample data.
-			val entriesIds = samples.map[muxer.EntryId] { sample =>
-				if sample.isKeyed then sample.key else sample.observer
-			}.distinct
+			val distinctTargets = samples.distinct
 
 			val random = new scala.util.Random(seed)
-			val entriesIdsShuffled = random.shuffle(entriesIds)
+			val targetsShuffled = random.shuffle(distinctTargets)
 
 			var totalRemovedCount = 0
-			// Perform random multi-removals
-			entriesIdsShuffled.foreach { targetEntryId =>
-
-				val matchingCount = muxer.countAllMatching(targetEntryId)
-				val removedCount = muxer.removeAllMatching(targetEntryId)
-				assertEquals(matchingCount, removedCount, s"Muxer matching count vs removed count mismatch for EntryId=$targetEntryId: matching=$matchingCount, removedCount=$removedCount")
+			targetsShuffled.foreach { targetObserver =>
+				val matchingCount = muxer.countAllMatching(targetObserver)
+				val removedCount = muxer.removeAllMatching(targetObserver)
+				assertEquals(matchingCount, removedCount)
 				totalRemovedCount += removedCount
 
 				var remainingCount = 0
-				val remainingBuffer = mutable.Buffer.empty[muxer.Entry]
-				muxer.foreachEntry { observer =>
-					remainingBuffer.addOne(observer)
+				val remainingBuffer = mutable.Buffer.empty[MockTarget[Int]]
+				muxer.foreachEntry { target =>
+					remainingBuffer.addOne(target)
 					remainingCount += 1
 				}
-				assertEquals(remainingCount, samples.size - totalRemovedCount, s"Muxer remaining count vs expected count mismatch for ID=$targetEntryId: remainingCount=$remainingCount, expectedCount=${samples.size - totalRemovedCount}")
-				scribe.info(s"After removing EntryId=$targetEntryId, the remaining observers are $remainingBuffer")
+				assertEquals(remainingCount, samples.size - totalRemovedCount)
 			}
 
 			var finalCount = 0
