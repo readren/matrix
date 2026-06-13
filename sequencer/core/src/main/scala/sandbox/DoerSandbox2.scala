@@ -1,6 +1,8 @@
 package readren.sequencer
 package sandbox
 
+import sandbox.DoerSandbox2.ExecutionSerial
+
 import readren.common.{Maybe, Trial, foreachWithIndex}
 
 import scala.annotation.targetName
@@ -9,12 +11,72 @@ import scala.compiletime.uninitialized
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 
-class DoerSandbox2 {
+object DoerSandbox2 {
+	type ExecutionSerial = Int
+	val assertionsEnabled = true
+}
+
+trait DoerSandbox2 { thisDoer =>
+
+	///////////////////////////////////
+	//// SERIAL EXECUTION BACKBONE ////
+	///////////////////////////////////
+
+	type Tag
+	val tag: Tag
+
+	def executeSequentially(runnable: Runnable): Unit
+
+	def currentExecutionSerial: ExecutionSerial
+
+	def currentlyRunningDoer: Maybe[DoerSandbox2]
+
+	inline def isInSequence: Boolean = currentlyRunningDoer.value eq thisDoer
+
+	inline def checkWithin(): Unit = {
+		if DoerSandbox2.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg())
+	}
+
+	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${currentlyRunningDoer.fold("unknown")(_.tag)}."
+
+	/**
+	 * Called by few [[Venture]] and most [[Commitment]] operations when an operand function terminates abruptly and the nature of the operation does not allow to propagate the failure to the result.
+	 * Examples of such operations are [[Venture.andThen]], [[Venture.triggerAndForgetHandlingErrors]], [[Venture_wait]], [[Venture_alien]], and [[Commitment.completeUnsafe]].
+	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSerEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Venture]].
+	 * The implementation should not throw non-fatal exceptions.
+	 * This method is called within the thread assigned to this [[Doer]].
+	 * */
+	def reportFailure(cause: Throwable): Unit
+
+	/**
+	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
+	 * If the call is executed by the $DoSerEx the [[Runnable]]'s execution will not start until the DoSerEx completes its current execution and gets free to start a new one.
+	 *
+	 * All the deferred actions preformed by the [[Task]]/[[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
+	 * This function only makes sense to call:
+	 *		- from an action that is not executed by this $DoSerEx (the callback of a [[Future]], for example);
+	 *		- or to avoid a stack overflow by continuing the recursion in a new execution.
+	 * @see [[submit]] and [[submitHardy]] if the result of the execution is relevant.
+	 * @note Is more efficient than the functionally equivalent: `Task_mine(() => procedure).triggerAndForget()`.
+	 */
+	inline def run(inline procedure: => Unit): Unit = executeSequentially(() => procedure) // TODO implement with a macro that includes source position.
+
+
+	// ================ PUSH BASED COMPUTATION PRIMITIVES =================
+
+	//////////////////////
+	//// Subscription ////
+	//////////////////////
+
 	trait Subscription {
 		def unsubscribe(): Unit
 	}
 
 	val Subscription_empty: Subscription = () => ()
+
+	//////////////////////////////////////////////////////////////
+	//// Mono: Single value computation primitives base trait ////
+	//////////////////////////////////////////////////////////////
 
 	trait MonoObserver[-A] {
 		def onSuccess(value: A): Unit
@@ -22,8 +84,8 @@ class DoerSandbox2 {
 		def onError(ex: Throwable): Unit
 	}
 
-	/** Root super trait of all asynchronous observables. */
-	trait Observable[+A] {
+	/** Root super trait of all single value push-driven asynchronous computation primitives. */
+	trait Mono[+A] {
 		def subscribe(monoObserver: MonoObserver[A]): Subscription
 
 		inline def subscribeCallbacks(inline success: A => Unit, inline error: Throwable => Unit = _ => ()): Subscription = {
@@ -39,99 +101,65 @@ class DoerSandbox2 {
 			subscribeCallbacks(consumer); ()
 		}
 
-		def map[B](f: A => B): Observable[B]
+		def map[B](f: A => B): Mono[B]
 
-		def flatMap[B](f: A => Observable[B]): Observable[B]
+		def flatMap[B](f: A => Mono[B]): Mono[B]
 	}
 
-	// ==================== DOABLE WORK HIERARCHY ====================
+	///////////////////////////////////////////////////////
+	//// Task: Single value lazy computation primitive ////
+	///////////////////////////////////////////////////////
 
 	/** An exception-unaware lazy computation that starts a fresh execution on subscribe.
 	 * Serves as the root of all doable work.
 	 */
-	trait Task[+A] extends Observable[A] { thisTask =>
-		override def map[B](f: A => B): Task[B] = {
-			(monoObserverB: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = monoObserverB.onSuccess(f(value))
+	trait Task[+A] extends Mono[A] { thisTask =>
 
-					override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
-				})
-			}
-		}
+		/** Equivalent to: ```scala
+		 * (monoObserverB: MonoObserver[B]) => thisTask.subscribe(new MonoObserver[A] {
+		 *   override def onSuccess(value: A): Unit = monoObserverB.onSuccess(f(value))
+		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
+		 * })
+		 * ```   */
+		override def map[B](f: A => B): Task[B] = new Task_Map(thisTask, f, isGuarded = false)
 
-		override def flatMap[B](f: A => Observable[B]): Task[B] = {
-			(monoObserverB: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = f(value).subscribe(monoObserverB)
+		/** Equivalent to: ```scala
+		 * (monoObserverB: MonoObserver[B]) => thisTask.subscribe(new MonoObserver[A] {
+		 * 	 override def onSuccess(value: A): Unit = f(value).subscribe(monoObserverB)
+		 * 	 override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
+		 * })
+		 * ```    */
+		override def flatMap[B](f: A => Mono[B]): Task[B] = new Task_FlatMap(thisTask, f, isGuarded = false)
 
-					override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
-				})
-			}
-		}
+		/** Equivalent to: ```scala
+		 * (monoObserverB: MonoObserver[B]) => thisTask.subscribe(new MonoObserver[A] {
+		 *   override def onSuccess(value: A): Unit = {
+		 *     val maybeB = try Maybe(f(value)) catch {
+		 *       case NonFatal(e) =>
+		 *         monoObserverB.onError(e)
+		 *         Maybe.empty
+		 *       }
+		 *     maybeB.foreach(monoObserverB.onSuccess)
+		 *   }
+		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
+		 * })
+		 * ```   */
+		def mapGuarded[B](f: A => B): Task[B] = new Task_Map(thisTask, f, isGuarded = true)
 
-		@targetName("flatMapTask")
-		def flatMap[B](f: A => Task[B]): Task[B] = {
-			(monoObserverB: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = f(value).subscribe(monoObserverB)
-
-					override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
-				})
-			}
-		}
-
-		def mapGuarded[B](f: A => B): Task[B] = {
-			(monoObserverB: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = {
-						val maybeB = try Maybe(f(value)) catch {
-							case NonFatal(e) =>
-								monoObserverB.onError(e)
-								Maybe.empty
-						}
-						maybeB.foreach(monoObserverB.onSuccess)
-					}
-
-					override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
-				})
-			}
-		}
-
-		def flatMapGuarded[B](f: A => Observable[B]): Task[B] = {
-			(monoObserverB: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = {
-						val maybeObs = try Maybe(f(value)) catch {
-							case NonFatal(e) =>
-								monoObserverB.onError(e)
-								Maybe.empty
-						}
-						maybeObs.foreach(_.subscribe(monoObserverB))
-					}
-
-					override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
-				})
-			}
-		}
-
-		@targetName("flatMapTaskGuarded")
-		def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
-			(monoObserver: MonoObserver[B]) => {
-				thisTask.subscribe(new MonoObserver[A] {
-					override def onSuccess(value: A): Unit = {
-						val maybeTask = try Maybe(f(value)) catch {
-							case NonFatal(e) =>
-								monoObserver.onError(e)
-								Maybe.empty
-						}
-						maybeTask.foreach(_.subscribe(monoObserver))
-					}
-
-					override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
-				})
-			}
-		}
+		/** Equivalent to: ```scala
+		 * (monoObserverB: MonoObserver[B]) => thisTask.subscribe(new MonoObserver[A] {
+		 *   override def onSuccess(value: A): Unit = {
+		 *     val maybeObs = try Maybe(f(value)) catch {
+		 *       case NonFatal(e) =>
+		 *         monoObserverB.onError(e)
+		 *         Maybe.empty
+		 *      }
+		 *      maybeObs.foreach(_.subscribe(monoObserverB))
+		 *   }
+		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
+		 * })
+		 * ```   */
+		def flatMapGuarded[B](f: A => Mono[B]): Task[B] = new Task_FlatMap(thisTask, f, isGuarded = true)
 
 		def guarded: Task[A] = new GuardedTask(thisTask)
 	}
@@ -141,18 +169,390 @@ class DoerSandbox2 {
 
 		override def map[B](f: A => B): Task[B] = underlying.mapGuarded(f)
 
-		override def flatMap[B](f: A => Observable[B]): Task[B] = underlying.flatMapGuarded(f)
-
-		@targetName("flatMapTask")
-		override def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
+		override def flatMap[B](f: A => Mono[B]): Task[B] = underlying.flatMapGuarded(f)
 	}
 
+	//////////////////////////////
+	//// Task factory methods ////
+	//////////////////////////////
 
-	// ==================== ASYNCHRONOUS RESULT HIERARCHY ====================
+	def Task_succeed[A](a: A): Task[A] = (monoObserver: MonoObserver[A]) => {
+		run(monoObserver.onSuccess(a))
+		Subscription_empty
+	}
+
+	def Task_fail(e: Throwable): Task[Nothing] = (monoObserver: MonoObserver[Nothing]) => {
+		run(monoObserver.onError(e))
+		Subscription_empty
+	}
+
+	def Task_apply[A](supplier: () => A, isGuarded: Boolean = false): Task[A] = (monoObserver: MonoObserver[A]) => {
+		class ApplySubscription extends Subscription {
+			@volatile private var active: Boolean = true
+
+			def start(): Subscription = {
+				run {
+					if active then {
+						if isGuarded then {
+							val maybeA = try Maybe(supplier()) catch {
+								case NonFatal(e) =>
+									monoObserver.onError(e)
+									Maybe.empty
+							}
+							if active then {
+								maybeA.foreach(monoObserver.onSuccess)
+							}
+						} else {
+							val a = supplier()
+							if active then {
+								monoObserver.onSuccess(a)
+							}
+						}
+					}
+				}
+				this
+			}
+
+			override def unsubscribe(): Unit = {
+				active = false
+			}
+		}
+		val sub = new ApplySubscription()
+		sub.start()
+	}
+
+	def Task_defer[A](factory: () => Task[A], isGuarded: Boolean = false): Task[A] = (monoObserver: MonoObserver[A]) => {
+		class DeferSubscription extends Subscription {
+			@volatile private var active: Boolean = true
+			@volatile private var innerSub: Subscription | Null = null
+
+			def start(): Subscription = {
+				run {
+					if active then {
+						if isGuarded then {
+							val maybeTaskA = try Maybe(factory()) catch {
+								case NonFatal(e) =>
+									monoObserver.onError(e)
+									Maybe.empty
+							}
+							if active then {
+								maybeTaskA.foreach { task =>
+									innerSub = task.subscribe(monoObserver)
+								}
+							}
+						} else {
+							val task = factory()
+							if active then {
+								innerSub = task.subscribe(monoObserver)
+							}
+						}
+					}
+				}
+				this
+			}
+
+			override def unsubscribe(): Unit = {
+				active = false
+				val sub = innerSub
+				innerSub = null
+				if sub != null then {
+					sub.unsubscribe()
+				}
+			}
+		}
+		val sub = new DeferSubscription()
+		sub.start()
+	}
+
+	//////////////////////////////////
+	//// Task operations' common ////
+	//////////////////////////////////
+
+	trait SpareSlotTaskOp[A, +B] extends Task[B] with MonoObserver[A] with Subscription {
+		protected val source: Task[A]
+
+		protected var downChainObserverSlot: MonoObserver[B] @uncheckedVariance = uninitialized
+		protected var upChainSubscriptionSlot: Subscription | Null = null
+
+		override def subscribe(downChainObserver: MonoObserver[B]): Subscription = {
+			if downChainObserverSlot eq null then {
+				downChainObserverSlot = downChainObserver
+				upChainSubscriptionSlot = source.subscribe(this)
+				this
+			} else {
+				subscribeDelegate(downChainObserver)
+			}
+		}
+
+		override def unsubscribe(): Unit = {
+			val upSub = upChainSubscriptionSlot
+			downChainObserverSlot = null
+			upChainSubscriptionSlot = null
+			if upSub != null then {
+				upSub.unsubscribe()
+			}
+		}
+
+		protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription
+	}
+
+	/////////////////////////
+	//// Task operations ////
+	/////////////////////////
+
+	final class Task_Map[A, B](override val source: Task[A], val f: A => B, isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
+		override def onSuccess(a: A): Unit = {
+			val obs = downChainObserverSlot
+			downChainObserverSlot = null
+			upChainSubscriptionSlot = null
+			if obs != null then {
+				if isGuarded then {
+					val maybeB = try Maybe(f(a)) catch {
+						case NonFatal(e) =>
+							obs.onError(e)
+							Maybe.empty
+					}
+					maybeB.foreach(obs.onSuccess)
+				} else {
+					obs.onSuccess(f(a))
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			val obs = downChainObserverSlot
+			downChainObserverSlot = null
+			upChainSubscriptionSlot = null
+			if obs != null then {
+				obs.onError(ex)
+			}
+		}
+
+		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = {
+			class MapDelegate extends MonoObserver[A] with Subscription {
+				private var active: Boolean = true
+				private var upstreamSub: Subscription | Null = null
+
+				def start(): Subscription = {
+					upstreamSub = source.subscribe(this)
+					this
+				}
+
+				override def onSuccess(a: A): Unit = {
+					upstreamSub = null
+					if active then {
+						active = false
+						if isGuarded then {
+							val maybeB = try Maybe(f(a)) catch {
+								case NonFatal(e) =>
+									downChainObserver.onError(e)
+									Maybe.empty
+							}
+							maybeB.foreach(downChainObserver.onSuccess)
+						} else {
+							downChainObserver.onSuccess(f(a))
+						}
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					upstreamSub = null
+					if active then {
+						active = false
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					active = false
+					val sub = upstreamSub
+					upstreamSub = null
+					if sub != null then {
+						sub.unsubscribe()
+					}
+				}
+			}
+			val delegate = new MapDelegate()
+			delegate.start()
+		}
+	}
+
+	final class Task_FlatMap[A, B](override val source: Task[A], val f: A => Mono[B], isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
+		private var innerSubscription: Subscription | Null = null
+
+		override def onSuccess(a: A): Unit = {
+			upChainSubscriptionSlot = null
+			val obs = downChainObserverSlot
+			if obs != null then {
+				if isGuarded then {
+					val maybeObs = try Maybe(f(a)) catch {
+						case NonFatal(e) =>
+							downChainObserverSlot = null
+							obs.onError(e)
+							Maybe.empty
+					}
+					maybeObs.fold {} { ob =>
+						innerSubscription = ob.subscribe(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = {
+								val obsDyn = downChainObserverSlot
+								downChainObserverSlot = null
+								innerSubscription = null
+								if obsDyn != null then {
+									obsDyn.onSuccess(b)
+								}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								val obsDyn = downChainObserverSlot
+								downChainObserverSlot = null
+								innerSubscription = null
+								if obsDyn != null then {
+									obsDyn.onError(ex)
+								}
+							}
+						})
+					}
+				} else {
+					val ob = f(a)
+					innerSubscription = ob.subscribe(new MonoObserver[B] {
+						override def onSuccess(b: B): Unit = {
+							val obsDyn = downChainObserverSlot
+							downChainObserverSlot = null
+							innerSubscription = null
+							if obsDyn != null then {
+								obsDyn.onSuccess(b)
+							}
+						}
+
+						override def onError(ex: Throwable): Unit = {
+							val obsDyn = downChainObserverSlot
+							downChainObserverSlot = null
+							innerSubscription = null
+							if obsDyn != null then {
+								obsDyn.onError(ex)
+							}
+						}
+					})
+				}
+			}
+		}
+
+		override def onError(ex: Throwable): Unit = {
+			val obs = downChainObserverSlot
+			downChainObserverSlot = null
+			upChainSubscriptionSlot = null
+			if obs != null then {
+				obs.onError(ex)
+			}
+		}
+
+		override def unsubscribe(): Unit = {
+			val inner = innerSubscription
+			innerSubscription = null
+			if inner != null then {
+				inner.unsubscribe()
+			}
+			super.unsubscribe()
+		}
+
+		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = {
+			val delegate = new FlatMapDelegate(downChainObserver)
+			delegate.start()
+		}
+
+		private class FlatMapDelegate(down: MonoObserver[B]) extends MonoObserver[A] with Subscription {
+			private var upSub: Subscription | Null = null
+			private var innerSub: Subscription | Null = null
+			private var active: Boolean = true
+
+			def start(): Subscription = {
+				upSub = source.subscribe(this)
+				this
+			}
+
+			override def onSuccess(a: A): Unit = {
+				upSub = null
+				if active then {
+					if isGuarded then {
+						val maybeObs = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								active = false
+								down.onError(e)
+								Maybe.empty
+						}
+						maybeObs.fold {} { ob =>
+							innerSub = ob.subscribe(new MonoObserver[B] {
+								override def onSuccess(b: B): Unit = {
+									innerSub = null
+									if active then {
+										active = false
+										down.onSuccess(b)
+									}
+								}
+
+								override def onError(ex: Throwable): Unit = {
+									innerSub = null
+									if active then {
+										active = false
+										down.onError(ex)
+									}
+								}
+							})
+						}
+					} else {
+						val ob = f(a)
+						innerSub = ob.subscribe(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = {
+								innerSub = null
+								if active then {
+									active = false
+									down.onSuccess(b)
+								}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								innerSub = null
+								if active then {
+									active = false
+									down.onError(ex)
+								}
+							}
+						})
+					}
+				}
+			}
+
+			override def onError(ex: Throwable): Unit = {
+				upSub = null
+				if active then {
+					active = false
+					down.onError(ex)
+				}
+			}
+
+			override def unsubscribe(): Unit = {
+				active = false
+				val up = upSub
+				val inner = innerSub
+				upSub = null
+				innerSub = null
+				if up != null then {
+					up.unsubscribe()
+				}
+				if inner != null then {
+					inner.unsubscribe()
+				}
+			}
+		}
+	}
+
+	///////////////////////////
+	//// Capturer hierarchy ////
+	///////////////////////////
 
 	/** Exception-unaware single result capturer. Ex LatchingTask
 	 * Does not inherit from Task, cleanly separating results from doable work. */
-	sealed trait Capturer[+A] extends Observable[A] { thisCapturer =>
+	sealed trait Capturer[+A] extends Mono[A] { thisCapturer =>
 		def trial: Trial[A]
 
 		def maybeValue: Maybe[A]
@@ -163,15 +563,21 @@ class DoerSandbox2 {
 
 		override def map[B](f: A => B): Capturer[B]
 
-		override def flatMap[B](f: A => Observable[B]): Observable[B]
+		override def flatMap[B](f: A => Mono[B]): Mono[B]
 		@targetName("flatMapCapturer")
 		def flatMap[B](f: A => Capturer[B]): Capturer[B]
 
+		@targetName("flatMapTask")
+		def flatMap[B](f: A => Task[B]): Task[B]
+
 		def mapGuarded[B](f: A => B): Capturer[B]
 
-		def flatMapGuarded[B](f: A => Observable[B]): Observable[B]
+		def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
 		@targetName("flatMapCapturerGuarded")
 		def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B]
+
+		@targetName("flatMapTaskGuarded")
+		def flatMapGuarded[B](f: A => Task[B]): Task[B]
 
 		def guarded: Capturer[A] = new GuardedCapturer(thisCapturer)
 	}
@@ -187,17 +593,23 @@ class DoerSandbox2 {
 
 		override def map[B](f: A => B): Capturer[B] = underlying.mapGuarded(f)
 
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = underlying.flatMapGuarded(f)
+		override def flatMap[B](f: A => Mono[B]): Mono[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
 
+		@targetName("flatMapTask")
+		override def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
+
 		override def mapGuarded[B](f: A => B): Capturer[B] = underlying.mapGuarded(f)
 
-		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = underlying.flatMapGuarded(f)
+		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapCapturerGuarded")
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
+
+		@targetName("flatMapTaskGuarded")
+		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
 	}
 
 	/** A [[Capturer]] that has already captured a successful value. Ex ReadyTask */
@@ -215,10 +627,13 @@ class DoerSandbox2 {
 
 		override def map[B](f: A => B): Capturer[B] = new Keeper(f(value))
 
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = f(value)
+		override def flatMap[B](f: A => Mono[B]): Mono[B] = f(value)
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = f(value)
+
+		@targetName("flatMapTask")
+		override def flatMap[B](f: A => Task[B]): Task[B] = f(value)
 
 		override def mapGuarded[B](f: A => B): Capturer[B] = {
 			try new Keeper(f(value)) catch {
@@ -226,7 +641,7 @@ class DoerSandbox2 {
 			}
 		}
 
-		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B] = {
 			try f(value) catch {
 				case NonFatal(e) => new Failed(e)
 			}
@@ -236,6 +651,19 @@ class DoerSandbox2 {
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
 			try f(value) catch {
 				case NonFatal(e) => new Failed(e)
+			}
+		}
+
+		@targetName("flatMapTaskGuarded")
+		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
+			try f(value) catch {
+				case NonFatal(e) =>
+					new Task[B] {
+						override def subscribe(observer: MonoObserver[B]): Subscription = {
+							observer.onError(e)
+							Subscription_empty
+						}
+					}
 			}
 		}
 	}
@@ -254,17 +682,37 @@ class DoerSandbox2 {
 
 		override def map[B](f: Nothing => B): Capturer[B] = this.asInstanceOf[Failed]
 
-		override def flatMap[B](f: Nothing => Observable[B]): Observable[B] = this.asInstanceOf[Failed]
+		override def flatMap[B](f: Nothing => Mono[B]): Mono[B] = this.asInstanceOf[Failed]
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
 
+		@targetName("flatMapTask")
+		override def flatMap[B](f: Nothing => Task[B]): Task[B] = {
+			new Task[B] {
+				override def subscribe(observer: MonoObserver[B]): Subscription = {
+					observer.onError(exception)
+					Subscription_empty
+				}
+			}
+		}
+
 		override def mapGuarded[B](f: Nothing => B): Capturer[B] = this.asInstanceOf[Failed]
 
-		override def flatMapGuarded[B](f: Nothing => Observable[B]): Observable[B] = this.asInstanceOf[Failed]
+		override def flatMapGuarded[B](f: Nothing => Mono[B]): Mono[B] = this.asInstanceOf[Failed]
 
 		@targetName("flatMapCapturerGuarded")
 		override def flatMapGuarded[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
+
+		@targetName("flatMapTaskGuarded")
+		override def flatMapGuarded[B](f: Nothing => Task[B]): Task[B] = {
+			new Task[B] {
+				override def subscribe(observer: MonoObserver[B]): Subscription = {
+					observer.onError(exception)
+					Subscription_empty
+				}
+			}
+		}
 	}
 
 	abstract class AbstractCaptor[A](initialState: Trial[A] = Trial.empty) extends Muxer[A, MonoObserver], Capturer[A], ObservingSubscription[A, MonoObserver] {
@@ -321,26 +769,42 @@ class DoerSandbox2 {
 
 		override def map[B](f: A => B): Capturer[B] = {
 			state.fold {
-				new Captor_Map(this, f, guarded = false)
+				new Captor_Map(this, f, isGuarded = false)
 			}(new Failed(_)) { a => new Keeper(f(a)) }
 		}
 
-		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
+		override def flatMap[B](f: A => Mono[B]): Mono[B] = {
 			state.fold {
-				new Captor_FlatMap(this, f, guarded = false)
+				new Captor_FlatMap(this, f, isGuarded = false)
 			}(new Failed(_)) { a => f(a) }
 		}
 
 		@targetName("flatMapCapturer")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
 			state.fold {
-				new Captor_FlatMapCapturer(this, f, guarded = false)
+				new Captor_FlatMapCapturer(this, f, isGuarded = false)
 			}(new Failed(_)) { a => f(a) }
+		}
+
+		@targetName("flatMapTask")
+		override def flatMap[B](f: A => Task[B]): Task[B] = {
+			state.fold {
+				new Captor_FlatMapTask(this, f, isGuarded = false)
+			} { ex =>
+				new Task[B] {
+					override def subscribe(observer: MonoObserver[B]): Subscription = {
+						observer.onError(ex)
+						Subscription_empty
+					}
+				}
+			} { a =>
+				f(a)
+			}
 		}
 
 		override def mapGuarded[B](f: A => B): Capturer[B] = {
 			state.fold {
-				new Captor_Map(this, f, guarded = true)
+				new Captor_Map(this, f, isGuarded = true)
 			}(new Failed(_)) { a =>
 				try new Keeper(f(a)) catch {
 					case NonFatal(e) => new Failed(e)
@@ -348,9 +812,9 @@ class DoerSandbox2 {
 			}
 		}
 
-		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B] = {
 			state.fold {
-				new Captor_FlatMap(this, f, guarded = true)
+				new Captor_FlatMap(this, f, isGuarded = true)
 			}(new Failed(_)) { a =>
 				try f(a) catch {
 					case NonFatal(e) => new Failed(e)
@@ -361,10 +825,36 @@ class DoerSandbox2 {
 		@targetName("flatMapCapturerGuarded")
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
 			state.fold {
-				new Captor_FlatMapCapturer(this, f, guarded = true)
+				new Captor_FlatMapCapturer(this, f, isGuarded = true)
 			}(new Failed(_)) { a =>
 				try f(a) catch {
 					case NonFatal(e) => new Failed(e)
+				}
+			}
+		}
+
+		@targetName("flatMapTaskGuarded")
+		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
+			state.fold {
+				new Captor_FlatMapTask(this, f, isGuarded = true)
+			} { ex =>
+				new Task[B] {
+					override def subscribe(observer: MonoObserver[B]): Subscription = {
+						observer.onError(ex)
+						Subscription_empty
+					}
+				}
+			} { a =>
+				try {
+					f(a)
+				} catch {
+					case NonFatal(e) =>
+						new Task[B] {
+							override def subscribe(observer: MonoObserver[B]): Subscription = {
+								observer.onError(e)
+								Subscription_empty
+							}
+						}
 				}
 			}
 		}
@@ -388,8 +878,98 @@ class DoerSandbox2 {
 		def fail(ex: Throwable): Unit = if trial.isEmpty then forwardError(ex)
 	}
 
-	trait SpareSlotCaptorOp[A, B] extends AbstractCaptor[B] with MonoObserver[A] {
-		protected val source: Capturer[A]
+	//////////////////////////////////
+	//// Capturer factory methods ////
+	//////////////////////////////////
+
+	def Capturer_succeed[A](a: A): Keeper[A] = Keeper(a)
+
+	def Capturer_fail(e: Throwable): Failed = Failed(e)
+
+	def Capturer_apply[A](supplier: () => A, isGuarded: Boolean = false): Capturer[A] = {
+		class CapturerApply extends AbstractCaptor[A] {
+			@volatile private var active: Boolean = true
+
+			run {
+				if active then {
+					if isGuarded then {
+						val maybeA = try Maybe(supplier()) catch {
+							case NonFatal(e) =>
+								forwardError(e)
+								Maybe.empty
+						}
+						if active then maybeA.foreach(forwardSuccess)
+					} else {
+						val a = supplier()
+						if active then forwardSuccess(a)
+					}
+				}
+			}
+
+			override def unsubscribe(): Unit = {
+				active = false
+				super.unsubscribe()
+			}
+		}
+		new CapturerApply()
+	}
+
+	def Capturer_defer[A](factory: () => Capturer[A], isGuarded: Boolean = false): Capturer[A] = {
+		class CapturerDefer extends AbstractCaptor[A] {
+			@volatile private var active: Boolean = true
+			@volatile private var innerSub: Subscription | Null = null
+
+			run {
+				if active then {
+					if isGuarded then {
+						val maybeCap = try Maybe(factory()) catch {
+							case NonFatal(e) =>
+								forwardError(e)
+								Maybe.empty
+						}
+						if active then {
+							maybeCap.foreach { cap =>
+								innerSub = cap.subscribeCallbacks(
+									a => if active then forwardSuccess(a),
+									e => if active then forwardError(e)
+								)
+							}
+						}
+					} else {
+						val cap = factory()
+						if active then {
+							innerSub = cap.subscribeCallbacks(
+								a => if active then forwardSuccess(a),
+								e => if active then forwardError(e)
+							)
+						}
+					}
+				}
+			}
+
+			override def unsubscribe(): Unit = {
+				active = false
+				val sub = innerSub
+				innerSub = null
+				if sub != null then {
+					sub.unsubscribe()
+				}
+				super.unsubscribe()
+			}
+
+			override protected def clear(): Unit = {
+				super.clear()
+				innerSub = null
+			}
+		}
+		new CapturerDefer()
+	}
+
+	////////////////////////////////////////////
+	//// Capturer operations' helper classes ////
+	////////////////////////////////////////////
+
+	abstract class SpareSlotCaptorOp[A, B](source: Capturer[A]) extends AbstractCaptor[B] with MonoObserver[A] {
 		private var upChainSubscriptionSlot: Subscription | Null = null
 
 		protected def startEagerly(): Unit = {
@@ -411,15 +991,11 @@ class DoerSandbox2 {
 		}
 	}
 
-	////////////////////////////////////////////
-	//// Capturer operations helper classes ////
-	////////////////////////////////////////////
-
-	final class Captor_Map[A, B](val source: Capturer[A], val f: A => B, guarded: Boolean) extends SpareSlotCaptorOp[A, B] {
+	final class Captor_Map[A, B](source: Capturer[A], f: A => B, isGuarded: Boolean) extends SpareSlotCaptorOp[A, B](source) {
 		startEagerly()
 
 		override def onSuccess(a: A): Unit = {
-			if guarded then {
+			if isGuarded then {
 				val maybeB = try Maybe(f(a)) catch {
 					case NonFatal(e) =>
 						forwardError(e)
@@ -434,7 +1010,7 @@ class DoerSandbox2 {
 		override def onError(ex: Throwable): Unit = forwardError(ex)
 	}
 
-	final class Captor_FlatMap[A, B](val source: Capturer[A], val f: A => Observable[B], guarded: Boolean) extends Observable[B] with MonoObserver[A] with Subscription { thisCaptor =>
+	final class Captor_FlatMap[A, B](source: Capturer[A], f: A => Mono[B], isGuarded: Boolean) extends Mono[B] with MonoObserver[A] with Subscription { thisCaptor =>
 		private var state: Trial[B] = Trial.empty
 		private var innerSubscription: Subscription | Null = null
 		private var downChainObserverSlot: MonoObserver[B] | Null = null
@@ -461,7 +1037,7 @@ class DoerSandbox2 {
 			}
 		}
 
-		override def map[C](g: B => C): Observable[C] = {
+		override def map[C](g: B => C): Mono[C] = {
 			val task: Task[C] = (monoObserverC: MonoObserver[C]) => {
 				this.subscribe(new MonoObserver[B] {
 					override def onSuccess(b: B): Unit = monoObserverC.onSuccess(g(b))
@@ -472,7 +1048,7 @@ class DoerSandbox2 {
 			task
 		}
 
-		override def flatMap[C](g: B => Observable[C]): Observable[C] = {
+		override def flatMap[C](g: B => Mono[C]): Mono[C] = {
 			val task: Task[C] = (monoObserverC: MonoObserver[C]) => {
 				this.subscribe(new MonoObserver[B] {
 					override def onSuccess(b: B): Unit = g(b).subscribe(monoObserverC)
@@ -484,7 +1060,7 @@ class DoerSandbox2 {
 		}
 
 		override def onSuccess(a: A): Unit = {
-			if guarded then {
+			if isGuarded then {
 				val maybeOb = try Maybe(f(a)) catch {
 					case NonFatal(e) =>
 						onError(e)
@@ -496,7 +1072,7 @@ class DoerSandbox2 {
 			}
 		}
 
-		private def subscribeInner(ob: Observable[B]): Unit = {
+		private def subscribeInner(ob: Mono[B]): Unit = {
 			innerSubscription = ob.subscribe(new MonoObserver[B] {
 				override def onSuccess(b: B): Unit = {
 					state = Trial.success(b)
@@ -531,13 +1107,13 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Captor_FlatMapCapturer[A, B](val source: Capturer[A], val f: A => Capturer[B], guarded: Boolean) extends SpareSlotCaptorOp[A, B] {
+	final class Captor_FlatMapCapturer[A, B](source: Capturer[A], f: A => Capturer[B], isGuarded: Boolean) extends SpareSlotCaptorOp[A, B](source) {
 		private var innerSubscription: Subscription | Null = null
 
 		startEagerly()
 
 		override def onSuccess(a: A): Unit = {
-			if guarded then {
+			if isGuarded then {
 				val maybeCap = try Maybe(f(a)) catch {
 					case NonFatal(e) =>
 						forwardError(e)
@@ -569,6 +1145,97 @@ class DoerSandbox2 {
 		override protected def clear(): Unit = {
 			super.clear()
 			innerSubscription = null
+		}
+	}
+
+	final class Captor_FlatMapTask[A, B](source: Capturer[A], f: A => Task[B], isGuarded: Boolean) extends Task[B] {
+		override def subscribe(downChainObserver: MonoObserver[B]): Subscription = {
+			class FlatMapTaskDelegate extends MonoObserver[A] with Subscription {
+				private var active: Boolean = true
+				private var upSub: Subscription | Null = null
+				private var innerSub: Subscription | Null = null
+
+				def start(): Subscription = {
+					upSub = source.subscribe(this)
+					this
+				}
+
+				override def onSuccess(a: A): Unit = {
+					upSub = null
+					if active then {
+						if isGuarded then {
+							val maybeTask = try Maybe(f(a)) catch {
+								case NonFatal(e) =>
+									active = false
+									downChainObserver.onError(e)
+									Maybe.empty
+							}
+							maybeTask.fold {} { task =>
+								innerSub = task.subscribe(new MonoObserver[B] {
+									override def onSuccess(b: B): Unit = {
+										innerSub = null
+										if active then {
+											active = false
+											downChainObserver.onSuccess(b)
+										}
+									}
+
+									override def onError(ex: Throwable): Unit = {
+										innerSub = null
+										if active then {
+											active = false
+											downChainObserver.onError(ex)
+										}
+									}
+								})
+							}
+						} else {
+							val task = f(a)
+							innerSub = task.subscribe(new MonoObserver[B] {
+								override def onSuccess(b: B): Unit = {
+									innerSub = null
+									if active then {
+										active = false
+										downChainObserver.onSuccess(b)
+									}
+								}
+
+								override def onError(ex: Throwable): Unit = {
+									innerSub = null
+									if active then {
+										active = false
+										downChainObserver.onError(ex)
+									}
+								}
+							})
+						}
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					upSub = null
+					if active then {
+						active = false
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					active = false
+					val up = upSub
+					val inner = innerSub
+					upSub = null
+					innerSub = null
+					if up != null then {
+						up.unsubscribe()
+					}
+					if inner != null then {
+						inner.unsubscribe()
+					}
+				}
+			}
+			val delegate = new FlatMapTaskDelegate()
+			delegate.start()
 		}
 	}
 
@@ -893,7 +1560,7 @@ class DoerSandbox2 {
 			}
 		}
 
-		def fromObservablesArray[A](array: IArray[Observable[A]]): Flux[A] = new DefaultFlux[A] {
+		def fromObservablesArray[A](array: IArray[Mono[A]]): Flux[A] = new DefaultFlux[A] {
 			override def subscribe(fluxObserver: FluxObserver[A]): Subscription = {
 				val subs = new Array[Subscription](array.length)
 				class AllElemsObserver extends MonoObserver[A] {
@@ -961,8 +1628,7 @@ class DoerSandbox2 {
 	}
 
 
-	trait SpareSlotFluxOp[A, +B] extends DefaultFlux[B] with FluxObserver[A] with Subscription {
-		protected val source: Flux[A]
+	abstract class SpareSlotFluxOp[A, +B](source: Flux[A]) extends DefaultFlux[B] with FluxObserver[A] with Subscription {
 
 		private var downChainObserverSlot: FluxObserver[B] @uncheckedVariance = uninitialized
 		private var upChainSubscriptionSlot: Subscription | Null = null
@@ -1068,7 +1734,7 @@ class DoerSandbox2 {
 	//// Concrete fluxes returned by Flux operations ////
 	/////////////////////////////////////////////////////
 
-	final class Flux_Map[A, B](val source: Flux[A], val f: A => B) extends SpareSlotFluxOp[A, B] {
+	final class Flux_Map[A, B](source: Flux[A], val f: A => B) extends SpareSlotFluxOp[A, B](source) {
 		override def onNext(a: A, index: Int): Unit = forwardNext(f(a), index)
 
 		override def onError(ex: Throwable): Unit = forwardError(ex)
@@ -1086,7 +1752,7 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Flux_MapWithIndex[A, B](val source: Flux[A], val f: (A, Int) => B) extends SpareSlotFluxOp[A, B] {
+	final class Flux_MapWithIndex[A, B](source: Flux[A], val f: (A, Int) => B) extends SpareSlotFluxOp[A, B](source) {
 		override def onNext(a: A, index: Int): Unit = forwardNext(f(a, index), index)
 
 		override def onError(ex: Throwable): Unit = forwardError(ex)
@@ -1104,7 +1770,7 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Flux_Scan[A, B](val source: Flux[A], val initial: B, val f: (B, A, Int) => B) extends SpareSlotFluxOp[A, B] {
+	final class Flux_Scan[A, B](source: Flux[A], val initial: B, val f: (B, A, Int) => B) extends SpareSlotFluxOp[A, B](source) {
 
 		private var state = initial
 
@@ -1133,7 +1799,7 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Flux_Buffer[A, T >: A : ClassTag](val source: Flux[A], val size: Int) extends SpareSlotFluxOp[A, IArray[T]] {
+	final class Flux_Buffer[A, T >: A : ClassTag](source: Flux[A], val size: Int) extends SpareSlotFluxOp[A, IArray[T]](source) {
 
 		private var buffer = new Array[T](size)
 		private var count = 0
@@ -1220,7 +1886,7 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Flux_Take[A](val source: Flux[A], val n: Int) extends SpareSlotFluxOp[A, A] {
+	final class Flux_Take[A](source: Flux[A], val n: Int) extends SpareSlotFluxOp[A, A](source) {
 		private var count = 0
 		private var active = true
 
@@ -1291,7 +1957,7 @@ class DoerSandbox2 {
 		}
 	}
 
-	final class Flux_TakeWhile[A](val source: Flux[A], val p: (a: A, index: Int, count: Int) => Boolean, flattenToCount: Boolean = true) extends SpareSlotFluxOp[A, A] {
+	final class Flux_TakeWhile[A](source: Flux[A], val p: (a: A, index: Int, count: Int) => Boolean, flattenToCount: Boolean = true) extends SpareSlotFluxOp[A, A](source) {
 		private var active = true
 		private var counter = 0
 

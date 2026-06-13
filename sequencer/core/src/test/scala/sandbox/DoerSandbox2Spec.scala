@@ -1,17 +1,31 @@
 package readren.sequencer
 package sandbox
 
+import sandbox.DoerSandbox2.ExecutionSerial
+
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop
+import readren.common.Maybe
 
 import scala.reflect.ClassTag
 
-object TestDoerSandbox2 extends DoerSandbox2
-
 class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
-	import TestDoerSandbox2.*
+	val sandbox = new DoerSandbox2 {
+		override type Tag = String
+		override val tag: Tag = "Sandbox"
 
+		override def executeSequentially(runnable: Runnable): Unit = runnable.run()
+
+		override def currentExecutionSerial: ExecutionSerial = 0
+
+		override def currentlyRunningDoer: Maybe[DoerSandbox2] = Maybe.empty
+
+		override def reportFailure(cause: Throwable): Unit = throw cause
+	}
+
+	import sandbox.*
+	
 	private def makeTask[A](value: A): Task[A] = new Task[A] {
 		override def subscribe(observer: MonoObserver[A]): Subscription = {
 			observer.onSuccess(value)
@@ -498,7 +512,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// 2. Captor.flatMap
 		val captor = new Captor[Int]()
-		val flatMapped = captor.flatMap[Int](_ => throw new RuntimeException("nonguarded-flat-err"))
+		val flatMapped = captor.flatMap[Int]((_: Int) => (throw new RuntimeException("nonguarded-flat-err")): Mono[Int])
 		flatMapped.subscribe(new MonoObserver[Int] {
 			override def onSuccess(v: Int): Unit = ()
 
@@ -512,4 +526,332 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			case ex: RuntimeException if ex.getMessage == "nonguarded-flat-err" => // ok
 		}
 	}
+
+	test("Task operators - spare slot reuse and delegate fallback") {
+		var upstreamSubscribed = 0
+		var upstreamUnsubscribed = 0
+		val customTask = new Task[Int] {
+			override def subscribe(observer: MonoObserver[Int]): Subscription = {
+				upstreamSubscribed += 1
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						upstreamUnsubscribed += 1
+					}
+				}
+			}
+		}
+
+		val mapped = customTask.map(_ * 2)
+
+		// 1. First subscription uses primary slot
+		val obs1 = new MonoObserver[Int] {
+			override def onSuccess(v: Int): Unit = ()
+
+			override def onError(ex: Throwable): Unit = ()
+		}
+		val sub1 = mapped.subscribe(obs1)
+		assertEquals(upstreamSubscribed, 1)
+		assert(sub1 eq mapped, "First subscription should return the operator itself")
+
+		// 2. Second concurrent subscription falls back to delegate
+		val obs2 = new MonoObserver[Int] {
+			override def onSuccess(v: Int): Unit = ()
+
+			override def onError(ex: Throwable): Unit = ()
+		}
+		val sub2 = mapped.subscribe(obs2)
+		assertEquals(upstreamSubscribed, 2)
+		assert(sub2 ne mapped, "Second subscription should return a delegate subscription")
+
+		// 3. Early unsubscription propagates correctly
+		sub1.unsubscribe()
+		assertEquals(upstreamUnsubscribed, 1)
+
+		sub2.unsubscribe()
+		assertEquals(upstreamUnsubscribed, 2)
+	}
+
+	test("Task_FlatMap - spare slot reuse, delegate fallback and inner subscription unsubscription") {
+		var upstreamSubscribed = 0
+		var upstreamUnsubscribed = 0
+		val customTask = new Task[Int] {
+			override def subscribe(observer: MonoObserver[Int]): Subscription = {
+				upstreamSubscribed += 1
+				// Trigger onSuccess immediately to go into flatMap inner subscription
+				observer.onSuccess(10)
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						upstreamUnsubscribed += 1
+					}
+				}
+			}
+		}
+
+		var innerSubscribed = 0
+		var innerUnsubscribed = 0
+		val innerTask = new Task[String] {
+			override def subscribe(observer: MonoObserver[String]): Subscription = {
+				innerSubscribed += 1
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						innerUnsubscribed += 1
+					}
+				}
+			}
+		}
+
+		val flatMapped = customTask.flatMap(_ => innerTask)
+
+		// 1. First subscription
+		val obs1 = new MonoObserver[String] {
+			override def onSuccess(v: String): Unit = ()
+
+			override def onError(ex: Throwable): Unit = ()
+		}
+		val sub1 = flatMapped.subscribe(obs1)
+		assertEquals(upstreamSubscribed, 1)
+		assertEquals(innerSubscribed, 1)
+		assert(sub1 eq flatMapped, "First subscription should return the operator itself")
+
+		// Unsubscribing flatMapped should unsubscribe from the inner subscription
+		sub1.unsubscribe()
+		assertEquals(innerUnsubscribed, 1)
+	}
+
+	test("Capturer.flatMap(Task) - static type verification and chaining") {
+		val captor = new Captor[Int]()
+
+		// This should compile because flatMap(A => Task[B]) returns Task[B]
+		// and mapGuarded/guarded are available on Task[B]
+		val mappedTask: Task[String] = captor
+			.flatMap(v => makeTask(s"value: $v"))
+			.mapGuarded(s => s + "!")
+			.guarded
+
+		var result = ""
+		mappedTask.subscribeCallbacks(v => result = v)
+
+		// Complete the captor to trigger the pipeline
+		captor.capture(100)
+		assertEquals(result, "value: 100!")
+	}
+
+	test("Task and Capturer factories - Task_apply and Task_defer") {
+		// 1. Task_apply success (guarded & non-guarded)
+		var t1Called = 0
+		val t1 = Task_apply(() => {
+			t1Called += 1
+			100
+		}, isGuarded = false)
+		var t1Res = 0
+		t1.subscribeCallbacks(v => t1Res = v)
+		assertEquals(t1Called, 1)
+		assertEquals(t1Res, 100)
+
+		var t2Called = 0
+		val t2 = Task_apply(() => {
+			t2Called += 1
+			200
+		}, isGuarded = true)
+		var t2Res = 0
+		t2.subscribeCallbacks(v => t2Res = v)
+		assertEquals(t2Called, 1)
+		assertEquals(t2Res, 200)
+
+		// 2. Task_apply error (guarded)
+		val err = new RuntimeException("apply-guarded-err")
+		val t3 = Task_apply[Int](() => {
+			throw err
+		}, isGuarded = true)
+		var t3Err: Throwable | Null = null
+		t3.subscribeCallbacks(_ => (), ex => t3Err = ex)
+		assertEquals(t3Err, err)
+
+		// 3. Task_defer success (guarded & non-guarded)
+		var t4Called = 0
+		val t4 = Task_defer(() => {
+			t4Called += 1
+			makeTask(300)
+		}, isGuarded = false)
+		var t4Res = 0
+		t4.subscribeCallbacks(v => t4Res = v)
+		assertEquals(t4Called, 1)
+		assertEquals(t4Res, 300)
+
+		var t5Called = 0
+		val t5 = Task_defer(() => {
+			t5Called += 1
+			makeTask(400)
+		}, isGuarded = true)
+		var t5Res = 0
+		t5.subscribeCallbacks(v => t5Res = v)
+		assertEquals(t5Called, 1)
+		assertEquals(t5Res, 400)
+
+		// 4. Task_defer error (guarded)
+		val deferErr = new RuntimeException("defer-guarded-err")
+		val t6 = Task_defer[Int](() => {
+			throw deferErr
+		}, isGuarded = true)
+		var t6Err: Throwable | Null = null
+		t6.subscribeCallbacks(_ => (), ex => t6Err = ex)
+		assertEquals(t6Err, deferErr)
+	}
+
+	test("Task and Capturer factories - Capturer_apply and Capturer_defer") {
+		// 1. Capturer_apply success (guarded & non-guarded)
+		var c1Called = 0
+		val c1 = Capturer_apply(() => {
+			c1Called += 1
+			10
+		}, isGuarded = false)
+		var c1Res = 0
+		c1.subscribeCallbacks(v => c1Res = v)
+		assertEquals(c1Called, 1)
+		assertEquals(c1Res, 10)
+
+		var c2Called = 0
+		val c2 = Capturer_apply(() => {
+			c2Called += 1
+			20
+		}, isGuarded = true)
+		var c2Res = 0
+		c2.subscribeCallbacks(v => c2Res = v)
+		assertEquals(c2Called, 1)
+		assertEquals(c2Res, 20)
+
+		// 2. Capturer_apply error (guarded)
+		val err = new RuntimeException("capturer-apply-guarded-err")
+		val c3 = Capturer_apply[Int](() => {
+			throw err
+		}, isGuarded = true)
+		var c3Err: Throwable | Null = null
+		c3.subscribeCallbacks(_ => (), ex => c3Err = ex)
+		assertEquals(c3Err, err)
+
+		// 3. Capturer_defer success (guarded & non-guarded)
+		var c4Called = 0
+		val c4 = Capturer_defer(() => {
+			c4Called += 1
+			new Keeper(30)
+		}, isGuarded = false)
+		var c4Res = 0
+		c4.subscribeCallbacks(v => c4Res = v)
+		assertEquals(c4Called, 1)
+		assertEquals(c4Res, 30)
+
+		var c5Called = 0
+		val c5 = Capturer_defer(() => {
+			c5Called += 1
+			new Keeper(40)
+		}, isGuarded = true)
+		var c5Res = 0
+		c5.subscribeCallbacks(v => c5Res = v)
+		assertEquals(c5Called, 1)
+		assertEquals(c5Res, 40)
+
+		// 4. Capturer_defer error (guarded)
+		val deferErr = new RuntimeException("capturer-defer-guarded-err")
+		val c6 = Capturer_defer[Int](() => {
+			throw deferErr
+		}, isGuarded = true)
+		var c6Err: Throwable | Null = null
+		c6.subscribeCallbacks(_ => (), ex => c6Err = ex)
+		assertEquals(c6Err, deferErr)
+	}
+
+	test("Task and Capturer factories - asynchronous cancellation verification") {
+		// Use a custom DoerSandbox2 instance that executes sequentially with queuing (asynchronous behavior)
+		class AsyncSandbox extends DoerSandbox2 {
+			override type Tag = String
+			override val tag: Tag = "AsyncSandbox"
+			var queue = List[Runnable]()
+
+			override def executeSequentially(runnable: Runnable): Unit = {
+				queue = queue :+ runnable
+			}
+
+			override def currentExecutionSerial: ExecutionSerial = 0
+
+			override def currentlyRunningDoer: Maybe[DoerSandbox2] = Maybe.empty
+
+			override def reportFailure(cause: Throwable): Unit = throw cause
+
+			def runPending(): Unit = {
+				val q = queue
+				queue = Nil
+				q.foreach(_.run())
+			}
+		}
+		val asyncSandbox = new AsyncSandbox
+
+		// 1. Task_apply cancellation
+		var taskApplyCalled = 0
+		val tApply = asyncSandbox.Task_apply(() => {
+			taskApplyCalled += 1
+			999
+		}, isGuarded = false)
+		var tApplyRes = 0
+		val subApply = tApply.subscribeCallbacks(v => tApplyRes = v)
+
+		// Before running, unsubscribe
+		subApply.unsubscribe()
+		asyncSandbox.runPending()
+
+		assertEquals(taskApplyCalled, 0)
+		assertEquals(tApplyRes, 0)
+
+		// 2. Task_defer cancellation
+		var taskDeferCalled = 0
+		val tDefer = asyncSandbox.Task_defer(() => {
+			taskDeferCalled += 1
+			asyncSandbox.Task_succeed(888)
+		}, isGuarded = false)
+		var tDeferRes = 0
+		val subDefer = tDefer.subscribeCallbacks(v => tDeferRes = v)
+
+		subDefer.unsubscribe()
+		asyncSandbox.runPending()
+
+		assertEquals(taskDeferCalled, 0)
+		assertEquals(tDeferRes, 0)
+
+		// 3. Capturer_apply cancellation
+		var capApplyCalled = 0
+		val cApply = asyncSandbox.Capturer_apply(() => {
+			capApplyCalled += 1
+			777
+		}, isGuarded = false)
+		var cApplyRes = 0
+
+		// Subscribe to register a target observer
+		val subCapApply = cApply.subscribeCallbacks(v => cApplyRes = v)
+		// Since first subscription returns the capturer itself:
+		assertEquals(subCapApply eq cApply, true)
+
+		// Unsubscribe before executeSequentially runs
+		subCapApply.unsubscribe()
+		asyncSandbox.runPending()
+
+		assertEquals(capApplyCalled, 0)
+		assertEquals(cApplyRes, 0)
+
+		// 4. Capturer_defer cancellation
+		var capDeferCalled = 0
+		val cDefer = asyncSandbox.Capturer_defer(() => {
+			capDeferCalled += 1
+			new asyncSandbox.Keeper(666)
+		}, isGuarded = false)
+		var cDeferRes = 0
+
+		val subCapDefer = cDefer.subscribeCallbacks(v => cDeferRes = v)
+		assertEquals(subCapDefer eq cDefer, true)
+
+		subCapDefer.unsubscribe()
+		asyncSandbox.runPending()
+
+		assertEquals(capDeferCalled, 0)
+		assertEquals(cDeferRes, 0)
+	}
 }
+

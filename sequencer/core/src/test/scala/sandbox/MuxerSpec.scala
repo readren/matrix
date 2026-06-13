@@ -1,15 +1,29 @@
 package readren.sequencer
 package sandbox
 
+import sandbox.DoerSandbox2.ExecutionSerial
+
 import munit.ScalaCheckSuite
 import org.scalacheck.Gen
 import org.scalacheck.Prop.forAll
+import readren.common.Maybe
 
 import scala.collection.mutable
 
 class MuxerSpec extends ScalaCheckSuite {
 
-	val sandbox = new DoerSandbox2
+	val sandbox = new DoerSandbox2 {
+		override type Tag = String
+		override val tag: Tag = "sandbox"
+
+		override def executeSequentially(runnable: Runnable): Unit = runnable.run()
+
+		override def currentExecutionSerial: ExecutionSerial = 0
+
+		override def currentlyRunningDoer: Maybe[DoerSandbox2] = Maybe.empty
+
+		override def reportFailure(cause: Throwable): Unit = throw cause
+	}
 	import sandbox.*
 
 	class MockTarget[-A](val id: Int) {
