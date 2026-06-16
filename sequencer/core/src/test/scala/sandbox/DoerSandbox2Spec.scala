@@ -7,6 +7,7 @@ import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop
 import readren.common.Maybe
 
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 class DoerSandbox2Spec extends ScalaCheckEffectSuite {
@@ -27,7 +28,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 	import sandbox.*
 	
 	private def makeTask[A](value: A): Task[A] = new Task[A] {
-		override def subscribe(observer: MonoObserver[A]): Subscription = {
+		override def subscribeSync(observer: MonoObserver[A]): Subscription = {
 			observer.onSuccess(value)
 			Subscription_empty
 		}
@@ -36,11 +37,11 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 	test("Task operations - map, flatMap, mapGuarded, flatMapGuarded, guarded") {
 		val t = makeTask(10)
 		var mapResult = 0
-		t.map(_ * 2).subscribeCallbacks(v => mapResult = v)
+		t.map(_ * 2).subscribeSyncCallbacks(v => mapResult = v)
 		assertEquals(mapResult, 20)
 
 		var flatMapResult = ""
-		t.flatMap(v => makeTask(s"value: $v")).subscribeCallbacks(v => flatMapResult = v)
+		t.flatMap(v => makeTask(s"value: $v")).subscribeSyncCallbacks(v => flatMapResult = v)
 		assertEquals(flatMapResult, "value: 10")
 
 		val tGuarded = makeTask(10)
@@ -50,7 +51,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 				throw new Exception("guarded-err")
 			}
 			v
-		}.subscribeCallbacks(v => (), err => errorResult = err)
+		}.subscribeSyncCallbacks(v => (), err => errorResult = err)
 		assert(errorResult ne null)
 		assertEquals(errorResult.nn.getMessage, "guarded-err")
 	}
@@ -59,20 +60,20 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		// Keeper (ready success path)
 		val keeper = new Keeper(5)
 		var keeperMap = 0
-		keeper.map(_ * 2).subscribeCallbacks(v => keeperMap = v)
+		keeper.map(_ * 2).subscribeSyncCallbacks(v => keeperMap = v)
 		assertEquals(keeperMap, 10)
 
 		// Failed (ready failure path)
 		val ex = new Exception("fail")
 		val failed = new Failed(ex)
 		var failedErr: Throwable | Null = null
-		failed.subscribeCallbacks(_ => (), err => failedErr = err)
+		failed.subscribeSyncCallbacks(_ => (), err => failedErr = err)
 		assertEquals(failedErr, ex)
 
 		// Captor lifecycle (pending, subscription, capturing, unsubscription)
 		val captor = new Captor[Int]()
 		var captorResult = 0
-		val sub = captor.subscribeCallbacks(v => captorResult = v)
+		val sub = captor.subscribeSyncCallbacks(v => captorResult = v)
 		assertEquals(captor.isCompleted, false)
 		assertEquals(captor.isPending, true)
 		captor.capture(100)
@@ -82,7 +83,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		// Unsubscription before capture
 		val captor2 = new Captor[Int]()
 		var captorResult2 = 0
-		val sub2 = captor2.subscribeCallbacks(v => captorResult2 = v)
+		val sub2 = captor2.subscribeSyncCallbacks(v => captorResult2 = v)
 		sub2.unsubscribe()
 		captor2.capture(200)
 		assertEquals(captorResult2, 0)
@@ -92,7 +93,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val captor = new Captor[Int]()
 		val mapped = captor.map(_ * 2)
 		var result = 0
-		val sub = mapped.subscribeCallbacks(v => result = v)
+		val sub = mapped.subscribeSyncCallbacks(v => result = v)
 		sub.unsubscribe()
 		captor.capture(50)
 		assertEquals(result, 0)
@@ -101,7 +102,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 	test("Flux factories - empty, apply, fromIterable, generate, generateStatefully") {
 		// Flux.empty
 		var completed = false
-		Flux.empty[Int].subscribe(new FluxObserver[Int] {
+		Flux_empty.subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = ()
 
 			override def onError(ex: Throwable): Unit = ()
@@ -112,7 +113,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// Flux.apply
 		var list = List[Int]()
-		Flux(1, 2, 3).subscribe(new FluxObserver[Int] {
+		Flux_apply(1, 2, 3).subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = list = list :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -124,7 +125,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		// Flux.generateStatefully
 		var genList = List[Int]()
 		var genError = false
-		val fluxGen = Flux.generateStatefully[Int] { () =>
+		val fluxGen = Flux_generateStatefully[Int] { () =>
 			var state = 0
 			index => {
 				if index >= 3 then {
@@ -135,7 +136,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 				v
 			}
 		}
-		fluxGen.subscribe(new FluxObserver[Int] {
+		fluxGen.subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = genList = genList :+ v
 
 			override def onError(ex: Throwable): Unit = genError = true
@@ -149,7 +150,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 	test("Flux operations - map, mapWithIndex, flatMap, scan, buffer, zip, take, takeWhile") {
 		// map / mapWithIndex
 		var mappedList = List[Int]()
-		Flux(1, 2).map(_ * 10).subscribe(new FluxObserver[Int] {
+		Flux_apply(1, 2).map(_ * 10).subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = mappedList = mappedList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -160,7 +161,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// scan
 		var scannedList = List[Int]()
-		Flux(1, 2, 3).scan(0)((state, el, idx) => state + el).subscribe(new FluxObserver[Int] {
+		Flux_apply(1, 2, 3).scan(0)((state, el, idx) => state + el).subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = scannedList = scannedList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -171,7 +172,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// buffer
 		var bufferedList = List[IArray[Int]]()
-		Flux(1, 2, 3, 4).buffer(2).subscribe(new FluxObserver[IArray[Int]] {
+		Flux_apply(1, 2, 3, 4).buffer(2).subscribeSync(new FluxObserver[IArray[Int]] {
 			override def onNext(v: IArray[Int], index: Int): Unit = bufferedList = bufferedList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -182,7 +183,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// take / takeWhile
 		var takenList = List[Int]()
-		Flux(1, 2, 3, 4).take(2).subscribe(new FluxObserver[Int] {
+		Flux_apply(1, 2, 3, 4).take(2).subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = takenList = takenList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -193,7 +194,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// zip
 		var zippedList = List[Int]()
-		Flux(1, 2).zip(Flux(10, 20))((left, right, idx) => left + right).subscribe(new FluxObserver[Int] {
+		Flux_apply(1, 2).zip(Flux_apply(10, 20))((left, right, idx) => left + right).subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = zippedList = zippedList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -211,14 +212,14 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val tensor = outerEmitter.flatMap {
 			case 1 => innerEmitter1
 			case 2 => innerEmitter2
-			case _ => Flux.empty[String]
+			case _ => Flux_empty
 		}
 
 		var innerList = List[String]()
 		var outerList = List[String]()
 		var seqList = List[String]()
 
-		tensor.flattenInner.subscribe(new FluxObserver[String] {
+		tensor.flattenInner.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = innerList = innerList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -226,7 +227,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onComplete(): Unit = ()
 		})
 
-		tensor.flattenOuter.subscribe(new FluxObserver[String] {
+		tensor.flattenOuter.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = outerList = outerList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -234,7 +235,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onComplete(): Unit = ()
 		})
 
-		tensor.flattenSequential.subscribe(new FluxObserver[String] {
+		tensor.flattenSequential.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = seqList = seqList :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -258,10 +259,10 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val outerEmitter = new StreamEmitter[Int]()
 		val innerEmitters = Array.fill(12)(new StreamEmitter[String]())
 
-		val tensor = outerEmitter.flatMap(idx => if idx < innerEmitters.length then innerEmitters(idx) else Flux.empty[String])
+		val tensor = outerEmitter.flatMap(idx => if idx < innerEmitters.length then innerEmitters(idx) else Flux_empty)
 		var collected = List[String]()
 
-		tensor.flattenSequential.subscribe(new FluxObserver[String] {
+		tensor.flattenSequential.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = collected = collected :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -284,15 +285,15 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		Prop.forAll { (n: Int) =>
 			val keeper = new Keeper(n)
 			var mapVal = 0
-			keeper.map(identity).subscribeCallbacks(v => mapVal = v)
+			keeper.map(identity).subscribeSyncCallbacks(v => mapVal = v)
 
 			val f = (x: Int) => x + 5
 			val g = (x: Int) => x * 2
 			var composedVal = 0
-			keeper.map(f).map(g).subscribeCallbacks(v => composedVal = v)
+			keeper.map(f).map(g).subscribeSyncCallbacks(v => composedVal = v)
 
 			var directComposedVal = 0
-			keeper.map(x => g(f(x))).subscribeCallbacks(v => directComposedVal = v)
+			keeper.map(x => g(f(x))).subscribeSyncCallbacks(v => directComposedVal = v)
 
 			mapVal == n && composedVal == directComposedVal
 		}
@@ -310,8 +311,8 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onComplete(): Unit = ()
 		}
 
-		val sub1 = emitter.subscribe(obs)
-		val sub2 = emitter.subscribe(obs)
+		val sub1 = emitter.subscribeSync(obs)
+		val sub2 = emitter.subscribeSync(obs)
 
 		// Both are active, should get double events
 		emitter.emit(10)
@@ -336,8 +337,8 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onError(ex: Throwable): Unit = ()
 		}
 
-		val capSub1 = captor.subscribe(monoObs)
-		val capSub2 = captor.subscribe(monoObs)
+		val capSub1 = captor.subscribeSync(monoObs)
+		val capSub2 = captor.subscribeSync(monoObs)
 
 		// Unsubscribe first slot subscription (capSub1)
 		capSub1.unsubscribe()
@@ -356,8 +357,8 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onError(ex: Throwable): Unit = ()
 		}
 
-		val mapSub1 = mapped.subscribe(mappedObs)
-		val mapSub2 = mapped.subscribe(mappedObs)
+		val mapSub1 = mapped.subscribeSync(mappedObs)
+		val mapSub2 = mapped.subscribeSync(mappedObs)
 
 		// Unsubscribe second slot subscription (mapSub2)
 		mapSub2.unsubscribe()
@@ -373,7 +374,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val takeFlux = emitter.take(3)
 
 		var list1 = List[Int]()
-		val sub1 = takeFlux.subscribe(new FluxObserver[Int] {
+		val sub1 = takeFlux.subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = list1 = list1 :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -390,7 +391,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// Resubscribe to the same takeFlux
 		var list2 = List[(Int, Int)]()
-		val sub2 = takeFlux.subscribe(new FluxObserver[Int] {
+		val sub2 = takeFlux.subscribeSync(new FluxObserver[Int] {
 			override def onNext(v: Int, index: Int): Unit = list2 = list2 :+ (v, index)
 
 			override def onError(ex: Throwable): Unit = ()
@@ -414,13 +415,13 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val tensor = outerEmitter.flatMap {
 			case 1 => innerEmitter1
 			case 2 => innerEmitter2
-			case _ => Flux.empty[String]
+			case _ => Flux_empty
 		}
 
 		val flatSeq = tensor.flattenSequential
 		var listSeq1 = List[String]()
 
-		val seqSub1 = flatSeq.subscribe(new FluxObserver[String] {
+		val seqSub1 = flatSeq.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = listSeq1 = listSeq1 :+ v
 
 			override def onError(ex: Throwable): Unit = ()
@@ -438,7 +439,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		// Resubscribe to flatSeq
 		var listSeq2 = List[(String, Int)]()
-		val seqSub2 = flatSeq.subscribe(new FluxObserver[String] {
+		val seqSub2 = flatSeq.subscribeSync(new FluxObserver[String] {
 			override def onNext(v: String, index: Int): Unit = listSeq2 = listSeq2 :+ (v, index)
 
 			override def onError(ex: Throwable): Unit = ()
@@ -471,7 +472,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		assert(failedMapped.isInstanceOf[Failed], s"Expected Failed, obtained ${failedMapped.getClass.getName}")
 
 		var successVal = 0
-		mapped2.subscribeCallbacks(v => successVal = v)
+		mapped2.subscribeSyncCallbacks(v => successVal = v)
 		assertEquals(successVal, 20)
 	}
 
@@ -486,7 +487,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			override def onError(ex: Throwable): Unit = errorObserved = true
 		}
 
-		mapped.subscribe(throwingObs)
+		mapped.subscribeSync(throwingObs)
 
 		// Complete upstream captor. This triggers onSuccess on throwingObs.
 		// Since throwingObs throws a RuntimeException in onSuccess, it should NOT trigger its own onError.
@@ -504,7 +505,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		val t = makeTask(10)
 		val mappedTask = t.map(_ => throw new RuntimeException("nonguarded-err"))
 		try {
-			mappedTask.subscribeCallbacks(_ => ())
+			mappedTask.subscribeSyncCallbacks(_ => ())
 			fail("Expected RuntimeException")
 		} catch {
 			case ex: RuntimeException if ex.getMessage == "nonguarded-err" => // ok
@@ -513,7 +514,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		// 2. Captor.flatMap
 		val captor = new Captor[Int]()
 		val flatMapped = captor.flatMap[Int]((_: Int) => (throw new RuntimeException("nonguarded-flat-err")): Mono[Int])
-		flatMapped.subscribe(new MonoObserver[Int] {
+		flatMapped.subscribeSync(new MonoObserver[Int] {
 			override def onSuccess(v: Int): Unit = ()
 
 			override def onError(ex: Throwable): Unit = fail("Should not have caught the exception")
@@ -531,7 +532,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		var upstreamSubscribed = 0
 		var upstreamUnsubscribed = 0
 		val customTask = new Task[Int] {
-			override def subscribe(observer: MonoObserver[Int]): Subscription = {
+			override def subscribeSync(observer: MonoObserver[Int]): Subscription = {
 				upstreamSubscribed += 1
 				new Subscription {
 					override def unsubscribe(): Unit = {
@@ -549,7 +550,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 			override def onError(ex: Throwable): Unit = ()
 		}
-		val sub1 = mapped.subscribe(obs1)
+		val sub1 = mapped.subscribeSync(obs1)
 		assertEquals(upstreamSubscribed, 1)
 		assert(sub1 eq mapped, "First subscription should return the operator itself")
 
@@ -559,7 +560,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 			override def onError(ex: Throwable): Unit = ()
 		}
-		val sub2 = mapped.subscribe(obs2)
+		val sub2 = mapped.subscribeSync(obs2)
 		assertEquals(upstreamSubscribed, 2)
 		assert(sub2 ne mapped, "Second subscription should return a delegate subscription")
 
@@ -575,7 +576,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		var upstreamSubscribed = 0
 		var upstreamUnsubscribed = 0
 		val customTask = new Task[Int] {
-			override def subscribe(observer: MonoObserver[Int]): Subscription = {
+			override def subscribeSync(observer: MonoObserver[Int]): Subscription = {
 				upstreamSubscribed += 1
 				// Trigger onSuccess immediately to go into flatMap inner subscription
 				observer.onSuccess(10)
@@ -590,7 +591,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		var innerSubscribed = 0
 		var innerUnsubscribed = 0
 		val innerTask = new Task[String] {
-			override def subscribe(observer: MonoObserver[String]): Subscription = {
+			override def subscribeSync(observer: MonoObserver[String]): Subscription = {
 				innerSubscribed += 1
 				new Subscription {
 					override def unsubscribe(): Unit = {
@@ -608,7 +609,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 			override def onError(ex: Throwable): Unit = ()
 		}
-		val sub1 = flatMapped.subscribe(obs1)
+		val sub1 = flatMapped.subscribeSync(obs1)
 		assertEquals(upstreamSubscribed, 1)
 		assertEquals(innerSubscribed, 1)
 		assert(sub1 eq flatMapped, "First subscription should return the operator itself")
@@ -629,7 +630,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			.guarded
 
 		var result = ""
-		mappedTask.subscribeCallbacks(v => result = v)
+		mappedTask.subscribeSyncCallbacks(v => result = v)
 
 		// Complete the captor to trigger the pipeline
 		captor.capture(100)
@@ -644,7 +645,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			100
 		}, isGuarded = false)
 		var t1Res = 0
-		t1.subscribeCallbacks(v => t1Res = v)
+		t1.subscribeSyncCallbacks(v => t1Res = v)
 		assertEquals(t1Called, 1)
 		assertEquals(t1Res, 100)
 
@@ -654,7 +655,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			200
 		}, isGuarded = true)
 		var t2Res = 0
-		t2.subscribeCallbacks(v => t2Res = v)
+		t2.subscribeSyncCallbacks(v => t2Res = v)
 		assertEquals(t2Called, 1)
 		assertEquals(t2Res, 200)
 
@@ -664,7 +665,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			throw err
 		}, isGuarded = true)
 		var t3Err: Throwable | Null = null
-		t3.subscribeCallbacks(_ => (), ex => t3Err = ex)
+		t3.subscribeSyncCallbacks(_ => (), ex => t3Err = ex)
 		assertEquals(t3Err, err)
 
 		// 3. Task_defer success (guarded & non-guarded)
@@ -674,7 +675,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			makeTask(300)
 		}, isGuarded = false)
 		var t4Res = 0
-		t4.subscribeCallbacks(v => t4Res = v)
+		t4.subscribeSyncCallbacks(v => t4Res = v)
 		assertEquals(t4Called, 1)
 		assertEquals(t4Res, 300)
 
@@ -684,7 +685,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			makeTask(400)
 		}, isGuarded = true)
 		var t5Res = 0
-		t5.subscribeCallbacks(v => t5Res = v)
+		t5.subscribeSyncCallbacks(v => t5Res = v)
 		assertEquals(t5Called, 1)
 		assertEquals(t5Res, 400)
 
@@ -694,7 +695,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			throw deferErr
 		}, isGuarded = true)
 		var t6Err: Throwable | Null = null
-		t6.subscribeCallbacks(_ => (), ex => t6Err = ex)
+		t6.subscribeSyncCallbacks(_ => (), ex => t6Err = ex)
 		assertEquals(t6Err, deferErr)
 	}
 
@@ -706,7 +707,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			10
 		}, isGuarded = false)
 		var c1Res = 0
-		c1.subscribeCallbacks(v => c1Res = v)
+		c1.subscribeSyncCallbacks(v => c1Res = v)
 		assertEquals(c1Called, 1)
 		assertEquals(c1Res, 10)
 
@@ -716,7 +717,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			20
 		}, isGuarded = true)
 		var c2Res = 0
-		c2.subscribeCallbacks(v => c2Res = v)
+		c2.subscribeSyncCallbacks(v => c2Res = v)
 		assertEquals(c2Called, 1)
 		assertEquals(c2Res, 20)
 
@@ -726,7 +727,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			throw err
 		}, isGuarded = true)
 		var c3Err: Throwable | Null = null
-		c3.subscribeCallbacks(_ => (), ex => c3Err = ex)
+		c3.subscribeSyncCallbacks(_ => (), ex => c3Err = ex)
 		assertEquals(c3Err, err)
 
 		// 3. Capturer_defer success (guarded & non-guarded)
@@ -736,7 +737,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			new Keeper(30)
 		}, isGuarded = false)
 		var c4Res = 0
-		c4.subscribeCallbacks(v => c4Res = v)
+		c4.subscribeSyncCallbacks(v => c4Res = v)
 		assertEquals(c4Called, 1)
 		assertEquals(c4Res, 30)
 
@@ -746,7 +747,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			new Keeper(40)
 		}, isGuarded = true)
 		var c5Res = 0
-		c5.subscribeCallbacks(v => c5Res = v)
+		c5.subscribeSyncCallbacks(v => c5Res = v)
 		assertEquals(c5Called, 1)
 		assertEquals(c5Res, 40)
 
@@ -756,7 +757,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			throw deferErr
 		}, isGuarded = true)
 		var c6Err: Throwable | Null = null
-		c6.subscribeCallbacks(_ => (), ex => c6Err = ex)
+		c6.subscribeSyncCallbacks(_ => (), ex => c6Err = ex)
 		assertEquals(c6Err, deferErr)
 	}
 
@@ -765,7 +766,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		class AsyncSandbox extends DoerSandbox2 {
 			override type Tag = String
 			override val tag: Tag = "AsyncSandbox"
-			var queue = List[Runnable]()
+			private var queue = List[Runnable]()
 
 			override def executeSequentially(runnable: Runnable): Unit = {
 				queue = queue :+ runnable
@@ -785,37 +786,45 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		}
 		val asyncSandbox = new AsyncSandbox
 
+		val failIfExecuted: Any => Unit = _ => fail("Part of a canceled subscription was executed")
 		// 1. Task_apply cancellation
-		var taskApplyCalled = 0
-		val tApply = asyncSandbox.Task_apply(() => {
-			taskApplyCalled += 1
-			999
-		}, isGuarded = false)
-		var tApplyRes = 0
-		val subApply = tApply.subscribeCallbacks(v => tApplyRes = v)
-
-		// Before running, unsubscribe
-		subApply.unsubscribe()
-		asyncSandbox.runPending()
-
-		assertEquals(taskApplyCalled, 0)
-		assertEquals(tApplyRes, 0)
+		{
+			var executionsCounter = 0
+			val task = asyncSandbox.Task_apply(() => {
+				executionsCounter += 1
+				999
+			})
+			val subscription = task.subscribeSyncCallbacks(v => assertEquals(v, 999))
+			subscription.unsubscribe()
+			asyncSandbox.runPending()
+			assertEquals(executionsCounter, 1)
+		}
 
 		// 2. Task_defer cancellation
-		var taskDeferCalled = 0
-		val tDefer = asyncSandbox.Task_defer(() => {
-			taskDeferCalled += 1
-			asyncSandbox.Task_succeed(888)
-		}, isGuarded = false)
-		var tDeferRes = 0
-		val subDefer = tDefer.subscribeCallbacks(v => tDeferRes = v)
-
-		subDefer.unsubscribe()
-		asyncSandbox.runPending()
-
-		assertEquals(taskDeferCalled, 0)
-		assertEquals(tDeferRes, 0)
-
+		{
+			var factoryExecutionsCounter = 0
+			val captor = new asyncSandbox.Captor[Int]()
+			val task = asyncSandbox.Task_defer(() => {
+				factoryExecutionsCounter += 1
+				captor
+			})
+			val subscription1 = task.subscribeSyncCallbacks(failIfExecuted)
+			var completionsCounter = 0
+			val subscription2 = task.subscribeSyncCallbacks(v => {
+				assertEquals(v, 888)
+				completionsCounter += 1
+			})
+			val subscription3 = task.subscribeSyncCallbacks(v => {
+				assertEquals(v, 888)
+				completionsCounter += 1
+			})
+			subscription1.unsubscribe()
+			captor.capture(888)
+			subscription3.unsubscribe()
+			asyncSandbox.runPending()
+			assertEquals(factoryExecutionsCounter, 3)
+			assertEquals(completionsCounter, 2)
+		}
 		// 3. Capturer_apply cancellation
 		var capApplyCalled = 0
 		val cApply = asyncSandbox.Capturer_apply(() => {
@@ -825,7 +834,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		var cApplyRes = 0
 
 		// Subscribe to register a target observer
-		val subCapApply = cApply.subscribeCallbacks(v => cApplyRes = v)
+		val subCapApply = cApply.subscribeSyncCallbacks(v => cApplyRes = v)
 		// Since first subscription returns the capturer itself:
 		assertEquals(subCapApply eq cApply, true)
 
@@ -844,7 +853,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		}, isGuarded = false)
 		var cDeferRes = 0
 
-		val subCapDefer = cDefer.subscribeCallbacks(v => cDeferRes = v)
+		val subCapDefer = cDefer.subscribeSyncCallbacks(v => cDeferRes = v)
 		assertEquals(subCapDefer eq cDefer, true)
 
 		subCapDefer.unsubscribe()
@@ -852,6 +861,191 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
 		assertEquals(capDeferCalled, 0)
 		assertEquals(cDeferRes, 0)
+	}
+
+	test("Task and Capturer factories - un-guarded error propagation") {
+		// Non-guarded Task_apply should propagate exception synchronously on subscribe
+		val t = Task_apply[Int](() => throw new RuntimeException("unguarded-panic"), isGuarded = false)
+		try {
+			t.subscribeSyncCallbacks(_ => ())
+			fail("Expected RuntimeException to propagate synchronously")
+		} catch {
+			case ex: RuntimeException if ex.getMessage == "unguarded-panic" => // ok
+		}
+
+		// Non-guarded Capturer_apply should propagate exception synchronously during construction
+		try {
+			Capturer_apply[Int](() => throw new RuntimeException("unguarded-panic"), isGuarded = false)
+			fail("Expected RuntimeException to propagate synchronously during construction")
+		} catch {
+			case ex: RuntimeException if ex.getMessage == "unguarded-panic" => // ok
+		}
+	}
+	test("Task factories - laziness and reusability") {
+		var evaluations = 0
+		val t = Task_apply(() => {
+			evaluations += 1
+			evaluations
+		})
+
+		var res1 = 0
+		var res2 = 0
+		t.subscribeSyncCallbacks(v => res1 = v)
+		t.subscribeSyncCallbacks(v => res2 = v)
+
+		assertEquals(evaluations, 2)
+		assertEquals(res1, 1)
+		assertEquals(res2, 2)
+	}
+	test("Task factories - succeed and fail") {
+		var successVal = 0
+		Task_succeed(42).subscribeSyncCallbacks(v => successVal = v)
+		assertEquals(successVal, 42)
+		val err = new RuntimeException("failed-task")
+		var caughtErr: Throwable | Null = null
+		Task_fail(err).subscribeSyncCallbacks(_ => (), ex => caughtErr = ex)
+		assertEquals(caughtErr, err)
+	}
+
+	test("Flux_fromMonosSequentially - success, out-of-order, error, and cancellation") {
+		// 1. Success case with normal completion
+		val m1 = makeTask(10)
+		val m2 = makeTask(20)
+		val flux = Flux_fromMonosSequentially(IArray(m1, m2))
+		val list = mutable.ListBuffer[(Int, Int)]()
+		var completed = false
+		flux.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = list.append((v, index))
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed = true
+		})
+		assertEquals(list.toList, List((10, 0), (20, 1)))
+		assertEquals(completed, true)
+
+		// 2. Out-of-order completion
+		val captor1 = new Captor[Int]()
+		val captor2 = new Captor[Int]()
+		val fluxOO = Flux_fromMonosSequentially(IArray(captor1, captor2))
+		val listOO = mutable.ListBuffer[(Int, Int)]()
+		fluxOO.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = listOO.append((v, index))
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		})
+		// Complete captor2 first
+		captor2.capture(200)
+		// Then complete captor1
+		captor1.capture(100)
+		assertEquals(listOO.toList, List((200, 0), (100, 1)))
+
+		// 3. Error case and cancellation of remaining monos
+		var cancelled = false
+		val subTask = new Task[Int] {
+			override def subscribeSync(observer: MonoObserver[Int]): Subscription = {
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						cancelled = true
+					}
+				}
+			}
+		}
+		val failedMono = Task_fail(new RuntimeException("failed-mono"))
+		val fluxErr = Flux_fromMonosSequentially(IArray(subTask, failedMono))
+		var gotError = false
+		fluxErr.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = ()
+
+			override def onError(ex: Throwable): Unit = {
+				gotError = true
+			}
+
+			override def onComplete(): Unit = ()
+		})
+		assertEquals(gotError, true)
+		assertEquals(cancelled, true)
+	}
+
+	test("Flux_fromMonos - success, out-of-order, error, and concurrent subscriber isolation") {
+		// 1. Success case
+		val m1 = makeTask(10)
+		val m2 = makeTask(20)
+		val flux = Flux_fromMonos(IArray(m1, m2))
+		val list = mutable.ListBuffer[(Int, Int)]()
+		var completed = false
+		flux.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = list.append((v, index))
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = completed = true
+		})
+		assertEquals(list.toList, List((10, 0), (20, 1)))
+		assertEquals(completed, true)
+
+		// 2. Out-of-order completion
+		val captor1 = new Captor[Int]()
+		val captor2 = new Captor[Int]()
+		val fluxOO = Flux_fromMonos(IArray(captor1, captor2))
+		val listOO = mutable.ListBuffer[(Int, Int)]()
+		fluxOO.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = listOO.append((v, index))
+
+			override def onError(ex: Throwable): Unit = ()
+
+			override def onComplete(): Unit = ()
+		})
+		// Complete captor2 first
+		captor2.capture(200)
+		// Then complete captor1
+		captor1.capture(100)
+		assertEquals(listOO.toList, List((200, 1), (100, 0))) // original indices preserved
+
+		// 3. Error case and cancellation of remaining monos
+		var cancelled = false
+		val subTask = new Task[Int] {
+			override def subscribeSync(observer: MonoObserver[Int]): Subscription = {
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						cancelled = true
+					}
+				}
+			}
+		}
+		val failedMono = Task_fail(new RuntimeException("failed-mono"))
+		val fluxErr = Flux_fromMonos(IArray(subTask, failedMono))
+		var gotError = false
+		fluxErr.subscribeSync(new FluxObserver[Int] {
+			override def onNext(v: Int, index: Int): Unit = ()
+
+			override def onError(ex: Throwable): Unit = {
+				gotError = true
+			}
+
+			override def onComplete(): Unit = ()
+		})
+		assertEquals(gotError, true)
+		assertEquals(cancelled, true)
+
+		// 4. Concurrent subscriber isolation
+		val captor = new Captor[Int]()
+		val fluxIso = Flux_fromMonos(IArray(captor))
+
+		var res1 = 0
+		var res2 = 0
+		val sub1 = fluxIso.subscribeSyncCallbacks((v, _) => res1 = v)
+		val sub2 = fluxIso.subscribeSyncCallbacks((v, _) => res2 = v)
+
+		// Unsubscribe sub1
+		sub1.unsubscribe()
+
+		// Complete the captor: only sub2 should get the value
+		captor.capture(500)
+		assertEquals(res1, 0)
+		assertEquals(res2, 500)
 	}
 }
 

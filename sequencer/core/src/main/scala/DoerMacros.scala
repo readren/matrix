@@ -42,7 +42,7 @@ object DoerMacros {
 
 
 	/** This is a hacky version of triggerImpl that bypasses the path-dependent type checking.
-	 * It is used by the [[Doer.trigger]] macro to avoid the path-dependent type checking.
+	 * Intended to be used by the [[Doer.trigger]] macro to avoid the path-dependent type checking.
 	 * @note Not currently in use, but retained to demonstrate how to bypass path-dependent type checking. This serves as a template to replace [[triggerImpl]] if the compiler eventually disallows type projections on abstract types.
 	 */
 	def triggerImpl_hacked[A: Type](isWithinDoSerExExpr: Expr[Boolean], doerExpr: Expr[Doer], taskExpr: Expr[Any], onCompleteExpr: Expr[A => Unit])(using quotes: Quotes): Expr[Unit] = {
