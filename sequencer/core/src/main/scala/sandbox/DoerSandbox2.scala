@@ -117,8 +117,8 @@ trait DoerSandbox2 { thisDoer =>
 
 		final def subscribe(observer: MonoObserver[A]): Subscription = {
 			new Subscription {
-				@volatile private var isActive = true
-				@volatile private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
+				private var isActive = true
+				private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
 
 				{
 					thisDoer.run {
@@ -131,6 +131,7 @@ trait DoerSandbox2 { thisDoer =>
 				}
 
 				override def unsubscribe(): Unit = {
+					checkWithin()
 					isActive = false
 					maybeTargetSubscription.foreach(_.unsubscribe())
 				}
@@ -277,7 +278,7 @@ trait DoerSandbox2 { thisDoer =>
 				case fc: foreignDoer.Capturer[A] @unchecked => Task_from(fc.asInstanceOf[Capturer[A]])
 			}
 		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription {
-			@volatile private var isActive = true
+			private var isActive = true
 			{
 				foreignMono.subscribe(new foreignDoer.MonoObserver[A] {
 					override def onSuccess(a: A): Unit = if isActive then thisDoer.run(if isActive then thisDoerMonoObserver.onSuccess(a))
@@ -286,14 +287,17 @@ trait DoerSandbox2 { thisDoer =>
 				})
 			}
 
-			override def unsubscribe(): Unit = isActive = false
+			override def unsubscribe(): Unit = {
+				checkWithin()
+				isActive = false
+			}
 		}
 	}
 
 	def Task_from[A](futureFactory: () => Future[A], isGuarded: Boolean = false): Task[A] = {
 		(monoObserver: MonoObserver[A]) =>
 			new Subscription {
-				@volatile private var isActive = true
+				private var isActive = true
 
 				{
 					val maybeFuture: Maybe[Future[A]] =
@@ -313,7 +317,10 @@ trait DoerSandbox2 { thisDoer =>
 					}(using sequentialExecutionContext))
 				}
 
-				override def unsubscribe(): Unit = isActive = false
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					isActive = false
+				}
 			}
 	}
 
@@ -941,7 +948,7 @@ trait DoerSandbox2 { thisDoer =>
 
 	def Capturer_apply[A](supplier: () => A, isGuarded: Boolean = false): Capturer[A] = {
 		new AbstractCaptor[A] {
-			@volatile private var active: Boolean = true
+			private var active: Boolean = true
 
 			run {
 				if active then {
@@ -960,6 +967,7 @@ trait DoerSandbox2 { thisDoer =>
 			}
 
 			override def unsubscribe(): Unit = {
+				checkWithin()
 				active = false
 				super.unsubscribe()
 			}
@@ -968,8 +976,8 @@ trait DoerSandbox2 { thisDoer =>
 
 	def Capturer_defer[A](factory: () => Mono[A], isGuarded: Boolean = false): Capturer[A] = {
 		new AbstractCaptor[A] {
-			@volatile private var active: Boolean = true
-			@volatile private var innerSub: Subscription | Null = null
+			private var active: Boolean = true
+			private var innerSub: Subscription | Null = null
 
 			run {
 				if active then {
@@ -1000,6 +1008,7 @@ trait DoerSandbox2 { thisDoer =>
 			}
 
 			override def unsubscribe(): Unit = {
+				checkWithin()
 				active = false
 				val sub = innerSub
 				innerSub = null
@@ -1453,8 +1462,8 @@ trait DoerSandbox2 { thisDoer =>
 
 		final def subscribe(observer: FluxObserver[A]): Subscription = {
 			new Subscription {
-				@volatile private var isActive = true
-				@volatile private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
+				private var isActive = true
+				private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
 
 				{
 					thisDoer.run {
@@ -1467,6 +1476,7 @@ trait DoerSandbox2 { thisDoer =>
 				}
 
 				override def unsubscribe(): Unit = {
+					checkWithin()
 					isActive = false
 					maybeTargetSubscription.foreach(_.unsubscribe())
 				}

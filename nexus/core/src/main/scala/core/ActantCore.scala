@@ -188,6 +188,10 @@ abstract class ActantCore[U, D <: Doer](
 		if stopWasStarted then Maybe.empty
 		else {
 			object observer extends AbstractFunction1[Unit, Unit], WatchSubscription {
+				// Holds the subscription handle returned when subscribing to the watched actant's stop task.
+				// This allows us to cancel the subscription directly rather than using the deprecated callback-based unsubscribe.
+				var sub: watchedActant.doer.Subscription | Null = null
+
 				private def work(): Unit = {
 					// ignore the notification if a stop of this actant is in progress or the subscription is not active.
 					if !stopWasStarted && activeWatchSubscriptions.getOrDefault(watchedActant, Nil).contains(observer) then {
@@ -208,9 +212,12 @@ abstract class ActantCore[U, D <: Doer](
 					doer.checkWithin()
 					// first remove the observer from the active subscription maintained locally in order to ignore the notification it could catch until the subscription is undone.   
 					activeWatchSubscriptions.computeIfPresent(watchedActant, (_, list) => list.filterNot(_ eq observer))
-					// then undo the subscription, which may be asynchronous. 
-					if watchedActant.doer eq thisActant.doer then watchedActant.stopTask.unsubscribe(observer)
-					else watchedActant.doer.run(watchedActant.stopTask.unsubscribe(observer))
+					// then undo the subscription using the stored subscription handle, which may be asynchronous. 
+					val s = sub
+					if s != null then {
+						if watchedActant.doer eq thisActant.doer then s.unsubscribe()
+						else watchedActant.doer.run(s.unsubscribe())
+					}
 				}
 			}
 			// first, add the observer to the active subscriptions record.
@@ -223,12 +230,12 @@ abstract class ActantCore[U, D <: Doer](
 						List(observer)
 					} else observer :: list
 			)
-			// and then, make the subscription
+			// and then, make the subscription and store the returned Subscription handle.
 			if watchedActant.doer eq thisActant.doer then {
-				watchedActant.stopTask.subscribe(observer)
+				observer.sub = watchedActant.stopTask.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), true))
 			} else watchedActant.doer.run {
-				watchedActant.stopTask.subscribe(observer)
+				observer.sub = watchedActant.stopTask.subscribe(observer)
 				subscriptionCompleted.foreach(_.fulfill((), false))
 			}
 			Maybe(observer)

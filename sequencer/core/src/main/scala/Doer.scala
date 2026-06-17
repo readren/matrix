@@ -267,8 +267,19 @@ trait Doer { thisDoer =>
 		}
 	}
 
+	/** Modernized subscription handle returned upon subscribing to an asynchronous primitive.
+	 * Added as part of the bi-convergent convergence plan to support safe cancellation.
+	 * @note CAUTION: Must be called within the single-thread Execution Context of the owning Doer (DoSerEx). */
+	trait Subscription {
+		def unsubscribe(): Unit
+	}
+
+	/** An empty subscription that performs no action upon unsubscription. */
+	@threadUnsafe lazy val Subscription_empty: Subscription = () => ()
+
 	trait Observable[+A] {
-		def subscribe(consumer: A => Unit): Unit
+		/** Subscribes to notifications and returns a [[Subscription]] that can be used to cancel. */
+		def subscribe(consumer: A => Unit): Subscription
 	}
 
 	/////////////// TASK ///////////////
@@ -304,7 +315,7 @@ trait Doer { thisDoer =>
 		 * This method is the sole primitive operation of this trait; all other methods are derived from it.\
 		 * @param onComplete The callback that must be invoked upon the completion of this [[Task]]. The implementation should call this callback within the $DoSerEx.\
 		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		override def subscribe(onComplete: A => Unit): Unit
+		override def subscribe(onComplete: A => Unit): Subscription
 
 		// override def subscribe(consumer: A => Unit): Unit = subscribe(consumer)
 
@@ -569,7 +580,8 @@ trait Doer { thisDoer =>
 	private inline def Task_FromVenture(trap: Nothing): Any = trap
 
 	final class Task_FromVenture[A, B >: A](ventureA: Venture[A], exceptionHandler: Throwable => B) extends AbstractTask[B] {
-		override def subscribe(onComplete: B => Unit): Unit = {
+		override def subscribe(onComplete: B => Unit): Subscription = {
+			// Propagates subscription and maps Success/Failure for B completion
 			ventureA.subscribe { tryA =>
 				val b = tryA match {
 					case Success(a) => a
@@ -586,8 +598,10 @@ trait Doer { thisDoer =>
 	private inline def Task_Map(trap: Nothing): Any = trap
 
 	final class Task_Map[A, B](cA: Task[A], f: A => B) extends AbstractTask[B] {
-		override def subscribe(onComplete: B => Unit): Unit =
+		override def subscribe(onComplete: B => Unit): Subscription = {
+			// Propagates the subscription upstream while mapping success values
 			cA.subscribe { a => onComplete(f(a)) }
+		}
 
 		override def toString: String = deriveToString[Task_Map[A, B]](this)
 	}
@@ -596,7 +610,27 @@ trait Doer { thisDoer =>
 	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
 	final class Task_FlatMap[A, B](cA: Task[A], f: A => Task[B]) extends AbstractTask[B] {
-		override def subscribe(onComplete: B => Unit): Unit = cA.subscribe { a => f(a).subscribe(onComplete) }
+		override def subscribe(onComplete: B => Unit): Subscription = {
+			// Returns a delegating subscription to propagate cancel to active stage
+			new Subscription {
+				private var active = true
+				private var currentSub: Subscription = Subscription_empty
+
+				{
+					currentSub = cA.subscribe { a =>
+						if active then {
+							currentSub = f(a).subscribe(onComplete)
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+					currentSub.unsubscribe()
+				}
+			}
+		}
 
 		override def toString: String = deriveToString[Task_FlatMap[A, B]](this)
 	}
@@ -605,11 +639,13 @@ trait Doer { thisDoer =>
 	private inline def Task_AndThen(trap: Nothing): Any = trap
 
 	final class Task_AndThen[A](taskA: Task[A], sideEffect: A => Unit) extends AbstractTask[A] {
-		override def subscribe(onComplete: A => Unit): Unit =
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Propagates the subscription upstream and performs the side effect on success
 			taskA.subscribe { a =>
 				sideEffect(a)
 				onComplete(a)
 			}
+		}
 
 		override def toString: String = deriveToString[Task_AndThen[A]](this)
 	}
@@ -618,7 +654,10 @@ trait Doer { thisDoer =>
 	private inline def Task_NotEver(trap: Nothing): Any = trap
 
 	class Task_NotEver extends AbstractTask[Nothing] {
-		override def subscribe(onComplete: Nothing => Unit): Unit = ()
+		override def subscribe(onComplete: Nothing => Unit): Subscription = {
+			// Nothing is ever emitted, so returns empty subscription
+			Subscription_empty
+		}
 
 		override def toString: String = deriveToString[Task_NotEver](this)
 	}
@@ -627,7 +666,11 @@ trait Doer { thisDoer =>
 	private inline def Task_Ready(trap: Nothing): Any = trap
 
 	final class Task_Ready[A](a: A) extends AbstractTask[A] {
-		override def subscribe(onComplete: A => Unit): Unit = onComplete(a)
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Completes immediately, so returns empty subscription
+			onComplete(a)
+			Subscription_empty
+		}
 
 		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
 
@@ -638,7 +681,11 @@ trait Doer { thisDoer =>
 	private inline def Task_Mine(trap: Nothing): Any = trap
 
 	final class Task_Mine[A](supplier: () => A) extends AbstractTask[A] {
-		override def subscribe(onComplete: A => Unit): Unit = onComplete(supplier())
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Completes immediately, so returns empty subscription
+			onComplete(supplier())
+			Subscription_empty
+		}
 
 		override def toString: String = deriveToString[Task_Mine[A]](this)
 	}
@@ -647,7 +694,10 @@ trait Doer { thisDoer =>
 	private inline def Task_MineFlat(trap: Nothing): Any = trap
 
 	final class Task_MineFlat[A](supplier: () => Task[A]) extends AbstractTask[A] {
-		override def subscribe(onComplete: A => Unit): Unit = supplier().subscribe(onComplete)
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Propagates the inner subscription directly
+			supplier().subscribe(onComplete)
+		}
 
 		override def toString: String = deriveToString[Task_MineFlat[A]](this)
 	}
@@ -656,7 +706,20 @@ trait Doer { thisDoer =>
 	private inline def Task_Foreign(trap: Nothing): Any = trap
 
 	final class Task_Foreign[A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
-		override def subscribe(onComplete: A => Unit): Unit = foreignTask.trigger()(a => thisDoer.run(onComplete(a)))
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Subscribes across Doer boundaries and supports cancellation via active flag
+			new Subscription {
+				private var active = true
+				{
+					foreignTask.trigger()(a => if active then thisDoer.run(if active then onComplete(a)))
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
+		}
 
 		override def toString: String = deriveToString[Task_Foreign[A]](this)
 	}
@@ -665,25 +728,33 @@ trait Doer { thisDoer =>
 	private inline def Task_Combined(trap: Nothing): Any = trap
 
 	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C) extends AbstractTask[C] {
-		override def subscribe(onComplete: C => Unit): Unit = {
+		override def subscribe(onComplete: C => Unit): Subscription = {
 			object vars {
 				var aIsCompleted: Boolean = false
 				var bIsCompleted: Boolean = false
 				var maybeA: AnyRef | Null = null
 				var maybeB: AnyRef | Null = null
 			}
-			taskA.subscribe { a =>
+			// Propagates unsubscription to both combined tasks
+			val subA = taskA.subscribe { a =>
 				if vars.bIsCompleted then onComplete(f(a, vars.maybeB.asInstanceOf[B]))
 				else {
 					vars.aIsCompleted = true
 					vars.maybeA = a.asInstanceOf[AnyRef]
 				}
 			}
-			taskB.subscribe { b =>
+			val subB = taskB.subscribe { b =>
 				if vars.aIsCompleted then onComplete(f(vars.maybeA.asInstanceOf[A], b))
 				else {
 					vars.bIsCompleted = true
 					vars.maybeB = b.asInstanceOf[AnyRef]
+				}
+			}
+			new Subscription {
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					subA.unsubscribe()
+					subB.unsubscribe()
 				}
 			}
 		}
@@ -696,23 +767,38 @@ trait Doer { thisDoer =>
 
 	/** @see [[Task_sequenceToArray]] */
 	final class Task_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]) extends AbstractTask[Array[A]] {
-		override def subscribe(onComplete: Array[A] => Unit): Unit = {
+		override def subscribe(onComplete: Array[A] => Unit): Subscription = {
 			val size = duties.size
 			val array = Array.ofDim[A](size)
-			if size == 0 then onComplete(array)
-			else {
+			if size == 0 then {
+				onComplete(array)
+				Subscription_empty
+			} else {
 				val taskIterator = duties.iterator
 				var completedCounter: Int = 0
 				var index = 0
+				val subs = new Array[Subscription](size)
 				while index < size do {
 					val task = taskIterator.next()
 					val taskIndex = index
-					task.subscribe { a =>
+					subs(index) = task.subscribe { a =>
 						array(taskIndex) = a
 						completedCounter += 1
 						if completedCounter == size then onComplete(array)
 					}
 					index += 1
+				}
+				// Cancels all sub-subscriptions in the sequence
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						var i = 0
+						while i < size do {
+							val s = subs(i)
+							if s != null then s.unsubscribe()
+							i += 1
+						}
+					}
 				}
 			}
 		}
@@ -815,8 +901,11 @@ trait Doer { thisDoer =>
 	/** A [[LatchingTask]] that is fulfilled since its inception. */
 	final class ReadyTask[+A](val value: A) extends LatchingTask[A] {
 
-		override def subscribe(onComplete: A => Unit): Unit =
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Returns empty subscription since it completes synchronously
 			onComplete(value)
+			Subscription_empty
+		}
 
 		override def succeed: ReadyVenture[A] =
 			ReadyVenture(Success(value))
@@ -868,8 +957,21 @@ trait Doer { thisDoer =>
 
 		def this() = this(Maybe.empty)
 
-		override def subscribe(onComplete: A => Unit): Unit =
-			oResult.fold(attach(onComplete))(onComplete)
+		override def subscribe(onComplete: A => Unit): Subscription = {
+			// Attaches onComplete observer and returns a Subscription to detach it
+			oResult.fold {
+				attach(onComplete)
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						detach(onComplete)
+					}
+				}
+			} { a =>
+				onComplete(a)
+				Subscription_empty
+			}
+		}
 
 		override def succeed: LatchingVenture[A] = {
 			oResult.fold {
@@ -1472,9 +1574,12 @@ trait Doer { thisDoer =>
 	private inline def Venture_Never(trap: Nothing): Any = trap
 
 	/** A [[Venture]] that never completes.\
-	 * $onCompleteExecutedByDoSerEx */
+	 * $onCompleteExecutedBy */
 	final class Venture_Never extends AbstractVenture[Nothing] {
-		override def subscribe(onComplete: Try[Nothing] => Unit): Unit = ()
+		override def subscribe(onComplete: Try[Nothing] => Unit): Subscription = {
+			// Never completes, returns empty subscription
+			Subscription_empty
+		}
 
 		override def toString: String = deriveToString[Venture_Never](this)
 	}
@@ -1483,7 +1588,10 @@ trait Doer { thisDoer =>
 	private inline def Venture_fromTask(trap: Nothing): Any = trap
 
 	final class Venture_fromTask[A](cA: Task[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = cA.subscribe(onComplete.compose(Success.apply))
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Propagates underlying task subscription while mapping completion
+			cA.subscribe(onComplete.compose(Success.apply))
+		}
 
 		override def toString: String = deriveToString[Venture_fromTask[A]](this)
 	}
@@ -1492,7 +1600,11 @@ trait Doer { thisDoer =>
 	private inline def Venture_Ready(trap: Nothing): Any = trap
 
 	final class Venture_Ready[A](tryA: Try[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = onComplete(tryA)
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Completes immediately, returns empty subscription
+			onComplete(tryA)
+			Subscription_empty
+		}
 
 		override def toString: String = deriveToString[Venture_Ready[A]](this)
 	}
@@ -1501,13 +1613,15 @@ trait Doer { thisDoer =>
 	private inline def Venture_Own(trap: Nothing): Any = trap
 
 	final class Venture_Own[+A](supplier: () => Try[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Evaluates immediately, returns empty subscription
 			val result =
 				try supplier()
 				catch {
 					case NonFatal(e) => Failure(e)
 				}
 			onComplete(result)
+			Subscription_empty
 		}
 
 		override def toString: String = deriveToString[Venture_Own[A]](this)
@@ -1517,13 +1631,29 @@ trait Doer { thisDoer =>
 	private inline def TVenture_OwnFlat(trap: Nothing): Any = trap
 
 	final class Venture_OwnFlat[+A](supplier: () => Venture[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
-			val venturesA =
-				try supplier()
-				catch {
-					case NonFatal(e) => Venture_failed(e)
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Returns delegating subscription to cancel flatMap chain stages
+			new Subscription {
+				private var active = true
+				private var currentSub: Subscription = Subscription_empty
+
+				{
+					val venturesA =
+						try supplier()
+						catch {
+							case NonFatal(e) => Venture_failed(e)
+						}
+					if active then {
+						currentSub = venturesA.subscribe(onComplete)
+					}
 				}
-			venturesA.subscribe(onComplete)
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+					currentSub.unsubscribe()
+				}
+			}
 		}
 
 		override def toString: String = deriveToString[Venture_OwnFlat[A]](this)
@@ -1533,11 +1663,21 @@ trait Doer { thisDoer =>
 	private inline def Venture_Wait(trap: Nothing): Any = trap
 
 	final class Venture_Wait[+A](future: Future[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `subscribe` should not be caught".
-			future.onComplete { tryA =>
-				thisDoer.run(onComplete(tryA))
-			}(using ownSingleThreadExecutionContext)
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Returns subscription that allows ignoring the future outcome on cancellation
+			new Subscription {
+				private var active = true
+				{
+					future.onComplete { tryA =>
+						if active then thisDoer.run(if active then onComplete(tryA))
+					}(using ownSingleThreadExecutionContext)
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
 		}
 
 		override def toString: String = deriveToString[Venture_Wait[A]](this)
@@ -1547,16 +1687,26 @@ trait Doer { thisDoer =>
 	private inline def Venture_Alien(trap: Nothing): Any = trap
 
 	final class Venture_Alien[+A](builder: () => Future[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
-			val future =
-				try builder()
-				catch {
-					case NonFatal(e) => Future.failed(e)
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Returns subscription that ignores the future outcome on cancellation
+			new Subscription {
+				private var active = true
+				{
+					val future =
+						try builder()
+						catch {
+							case NonFatal(e) => Future.failed(e)
+						}
+					future.onComplete { tryA =>
+						if active then thisDoer.run(if active then onComplete(tryA))
+					}(using ownSingleThreadExecutionContext)
 				}
-			// Note that passing the `onComplete` operand directly to the `future.onComplete` method would break the error management contract: "exceptions thrown by the `onComplete` operand passed to `subscribe` should not be caught".
-			future.onComplete { tryA =>
-				thisDoer.run(onComplete(tryA))
-			}(using ownSingleThreadExecutionContext)
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
 		}
 
 		override def toString: String = deriveToString[Venture_Alien[A]](this)
@@ -1566,8 +1716,20 @@ trait Doer { thisDoer =>
 	private inline def Venture_Foreign(trap: Nothing): Any = trap
 
 	final class Venture_Foreign[+A](foreignDoer: Doer, foreignVenture: foreignDoer.Venture[A]) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit =
-			foreignVenture.trigger(false) { tryA => run(onComplete(tryA)) }
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Subscribes across Doers, checking active status
+			new Subscription {
+				private var active = true
+				{
+					foreignVenture.trigger(false) { tryA => if active then run(if active then onComplete(tryA)) }
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
+		}
 
 		override def toString: String = deriveToString[Venture_Foreign[A]](this)
 	}
@@ -1576,7 +1738,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_Consume(trap: Nothing): Any = trap
 
 	final class Venture_Consume[A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[Unit] {
-		override def subscribe(onComplete: Try[Unit] => Unit): Unit = {
+		override def subscribe(onComplete: Try[Unit] => Unit): Subscription = {
+			// Propagates underlying subscription and processes result with consumer
 			ventureA.subscribe { tryA =>
 				val tryConsumerResult =
 					try {
@@ -1597,7 +1760,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_WithFilter(trap: Nothing): Any = trap
 
 	final class Venture_WithFilter[A](ventureA: Venture[A], predicate: A => Boolean) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Propagates underlying subscription and applies predicate logic
 			ventureA.subscribe {
 				case sa@Success(a) =>
 					val predicateResult =
@@ -1618,13 +1782,14 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Venture_WithFilter[A]](this)
 	}
 
-
 	/** $suppressSyntheticCompanionObject */
 	private inline def Venture_Transform(trap: Nothing): Any = trap
 
 	final class Venture_Transform[+A, +B](originalVenture: Venture[A], f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribe(onComplete: Try[B] => Unit): Unit =
+		override def subscribe(onComplete: Try[B] => Unit): Subscription = {
+			// Propagates underlying subscription and transforms result
 			originalVenture.subscribe { tryA => onComplete(tryA.reifyBack(f)) }
+		}
 
 		override def toString: String = deriveToString[Venture_Transform[A, B]](this)
 	}
@@ -1633,47 +1798,87 @@ trait Doer { thisDoer =>
 	private inline def Venture_Map(trap: Nothing): Any = trap
 
 	final class Venture_Map[+A, +B](originalVenture: Venture[A], f: A => B) extends AbstractVenture[B] {
-		override def subscribe(onComplete: Try[B] => Unit): Unit =
+		override def subscribe(onComplete: Try[B] => Unit): Subscription = {
+			// Propagates underlying subscription and maps success values
 			originalVenture.subscribe { tryA => onComplete(tryA.mapFast(f)) }
+		}
 
 		override def toString: String = deriveToString[Venture_Map[A, B]](this)
 	}
-
 
 	/** $suppressSyntheticCompanionObject */
 	private inline def Venture_FlatMap(trap: Nothing): Any = trap
 
 	final class Venture_FlatMap[+A, +B](ventureA: Venture[A], f: A => Venture[B]) extends AbstractVenture[B] {
-		override def subscribe(onComplete: Try[B] => Unit): Unit = {
-			ventureA.subscribe {
-				case Success(a) =>
-					val maybeVentureB = try Maybe(f(a)) catch {
-						case NonFatal(e) =>
-							onComplete(Failure(e))
-							Maybe.empty
+		override def subscribe(onComplete: Try[B] => Unit): Subscription = {
+			// Returns delegating subscription to cancel flatMap stages
+			new Subscription {
+				private var active = true
+				private var currentSub: Subscription = Subscription_empty
+
+				{
+					currentSub = ventureA.subscribe {
+						case Success(a) =>
+							if active then {
+								val maybeVentureB = try Maybe(f(a)) catch {
+									case NonFatal(e) =>
+										onComplete(Failure(e))
+										Maybe.empty
+								}
+								if active then {
+									maybeVentureB.fold {
+										currentSub = Subscription_empty
+									} { ventureB =>
+										currentSub = ventureB.subscribe(onComplete)
+									}
+								}
+							}
+						case failure: Failure[A] =>
+							if active then {
+								onComplete(failure.castTo[B])
+							}
 					}
-					maybeVentureB.foreach(_.subscribe(onComplete))
-				case failure: Failure[A] =>
-					onComplete(failure.castTo[B])
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+					currentSub.unsubscribe()
+				}
 			}
 		}
 
 		override def toString: String = deriveToString[Venture_FlatMap[A, B]](this)
 	}
 
-
 	/** $suppressSyntheticCompanionObject */
 	private inline def Venture_TransformWith(trap: Nothing): Any = trap
 
 	final class Venture_TransformWith[+A, +B](ventureA: Venture[A], f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribe(onComplete: Try[B] => Unit): Unit = {
-			ventureA.subscribe(tryA =>
-				tryA.reify(e =>
-					onComplete(Failure(e))
-				)(tryA =>
-					f(tryA).subscribe(onComplete)
-				)
-			)
+		override def subscribe(onComplete: Try[B] => Unit): Subscription = {
+			// Returns delegating subscription to cancel transform stages
+			new Subscription {
+				private var active = true
+				private var currentSub: Subscription = Subscription_empty
+
+				{
+					currentSub = ventureA.subscribe { tryA =>
+						if active then {
+							tryA.reify { e =>
+								onComplete(Failure(e))
+							} { tryA =>
+								currentSub = f(tryA).subscribe(onComplete)
+							}
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+					currentSub.unsubscribe()
+				}
+			}
 		}
 
 		override def toString: String = deriveToString[Venture_TransformWith[A, B]](this)
@@ -1683,7 +1888,8 @@ trait Doer { thisDoer =>
 	private inline def Venture_AndThen(trap: Nothing): Any = trap
 
 	final class Venture_AndThen[+A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[A] {
-		override def subscribe(onComplete: Try[A] => Unit): Unit = {
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Propagates underlying subscription and runs side effect on completion
 			ventureA.subscribe { tryA =>
 				try consumer(tryA)
 				catch {
@@ -1696,15 +1902,15 @@ trait Doer { thisDoer =>
 		override def toString: String = deriveToString[Venture_AndThen[A]](this)
 	}
 
-
 	/** $suppressSyntheticCompanionObject */
 	private inline def Venture_Combined(trap: Nothing): Any = trap
 
 	final class Venture_Combined[+A, +B, +C](ventureA: Venture[A], ventureB: Venture[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractVenture[C] {
-		override def subscribe(onComplete: Try[C] => Unit): Unit = {
+		override def subscribe(onComplete: Try[C] => Unit): Subscription = {
 			var ota: Maybe[Try[A]] = Maybe.empty
 			var otb: Maybe[Try[B]] = Maybe.empty
-			ventureA.subscribe { tryA =>
+			// Propagates unsubscription to both combined ventures
+			val subA = ventureA.subscribe { tryA =>
 				otb.fold {
 					ota = Maybe(tryA)
 				} { tryB =>
@@ -1716,7 +1922,7 @@ trait Doer { thisDoer =>
 					onComplete(tryC)
 				}
 			}
-			ventureB.subscribe { tryB =>
+			val subB = ventureB.subscribe { tryB =>
 				ota.fold {
 					otb = Maybe(tryB)
 				} { tryA =>
@@ -1728,6 +1934,12 @@ trait Doer { thisDoer =>
 					onComplete(tryC)
 				}
 			}
+			new Subscription {
+				override def unsubscribe(): Unit = {
+					subA.unsubscribe()
+					subB.unsubscribe()
+				}
+			}
 		}
 
 		override def toString: String = deriveToString[Venture_Combined[A, B, C]](this)
@@ -1737,18 +1949,21 @@ trait Doer { thisDoer =>
 	private inline def Venture_Sequence(trap: Nothing): Any = trap
 
 	final class Venture_Sequence[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractVenture[Array[A]] {
-		override def subscribe(onComplete: Try[Array[A]] => Unit): Unit = {
+		override def subscribe(onComplete: Try[Array[A]] => Unit): Subscription = {
 			val size = ventures.size
 			val array = Array.ofDim[A](size)
-			if size == 0 then onComplete(Success(array))
-			else {
+			if size == 0 then {
+				onComplete(Success(array))
+				Subscription_empty
+			} else {
 				val venturesIterator = ventures.iterator
 				var completedCounter: Int = 0
 				var index = 0
+				val subs = new Array[Subscription](size)
 				while index < size do {
 					val venture = venturesIterator.next()
 					val ventureIndex = index
-					venture.subscribe {
+					subs(index) = venture.subscribe {
 						case Success(a) =>
 							array(ventureIndex) = a
 							completedCounter += 1
@@ -1759,6 +1974,17 @@ trait Doer { thisDoer =>
 					}
 					index += 1
 				}
+				// Cancels all sub-subscriptions in the sequence
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						var i = 0
+						while i < size do {
+							val s = subs(i)
+							if s != null then s.unsubscribe()
+							i += 1
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1767,23 +1993,37 @@ trait Doer { thisDoer =>
 	private inline def Task_SequenceHardy(trap: Nothing): Any = trap
 
 	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractTask[Array[Try[A]]] {
-		override def subscribe(onComplete: Array[Try[A]] => Unit): Unit = {
+		override def subscribe(onComplete: Array[Try[A]] => Unit): Subscription = {
 			val size = ventures.size
 			val array = Array.ofDim[Try[A]](size)
-			if size == 0 then onComplete(array)
-			else {
+			if size == 0 then {
+				onComplete(array)
+				Subscription_empty
+			} else {
 				val venturesIterator = ventures.iterator
 				var completedCounter: Int = 0
 				var index = 0
+				val subs = new Array[Subscription](size)
 				while index < size do {
 					val venture = venturesIterator.next()
 					val ventureIndex = index
-					venture.subscribe { tryA =>
+					subs(index) = venture.subscribe { tryA =>
 						array(ventureIndex) = tryA
 						completedCounter += 1
 						if completedCounter == size then onComplete(array)
 					}
 					index += 1
+				}
+				// Cancels all sub-subscriptions in the sequence
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						var i = 0
+						while i < size do {
+							val s = subs(i)
+							if s != null then s.unsubscribe()
+							i += 1
+						}
+					}
 				}
 			}
 		}
@@ -1922,8 +2162,11 @@ trait Doer { thisDoer =>
 	/** A [[LatchingVenture]] that is fulfilled since its inception. */
 	final class ReadyVenture[+A](val value: Try[A]) extends LatchingVenture[A] { thisReadyVenture =>
 
-		override def subscribe(onComplete: Try[A] => Unit): Unit =
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Returns empty subscription since it completes synchronously
 			onComplete(value)
+			Subscription_empty
+		}
 
 		override def maybeResult: Maybe[Try[A]] =
 			Maybe(value)
@@ -1989,8 +2232,21 @@ trait Doer { thisDoer =>
 		 * @return this [[Commitment]] as a [[LatchingVenture]] */
 		inline def asLatchingVenture: LatchingVenture[A] = thisCommitment
 
-		override def subscribe(onComplete: Try[A] => Unit): Unit =
-			oResult.fold(attach(onComplete))(onComplete)
+		override def subscribe(onComplete: Try[A] => Unit): Subscription = {
+			// Attaches onComplete observer and returns a Subscription to detach it
+			oResult.fold {
+				attach(onComplete)
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						detach(onComplete)
+					}
+				}
+			} { tryA =>
+				onComplete(tryA)
+				Subscription_empty
+			}
+		}
 
 		override def maybeResult: Maybe[Try[A]] = {
 			checkWithin()
@@ -2266,10 +2522,11 @@ trait Doer { thisDoer =>
 		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).\
 		 * @note CAUTION: This method does not prevent duplicate subscriptions.
 		 * @note CAUTION: Must be called within the $DoSerEx */
-		override def subscribe(consumer: A => Unit): Unit
+		override def subscribe(consumer: A => Unit): Subscription
 
 		/** Removes a subscription done with [[subscribe]].\
 		 * @note CAUTION: Must be called within the $DoSerEx */
+		@deprecated("Use Subscription.unsubscribe() returned from subscribe instead", "since bi-convergent alignment")
 		def unsubscribe(onComplete: A => Unit): Unit
 
 		/** @return `true` if the provided consumer is currently subscribed.
