@@ -47,7 +47,7 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 
 			def supersedeWith(chosenWinner: doer.LatchingTask[R], finalResult: doer.Covenant[R]): Unit = {
 				incumbent = chosenWinner
-				chosenWinner.subscribe { result =>
+				chosenWinner.subscribeSync { result =>
 					if chosenWinner eq incumbent then {
 						incumbent = null
 						maybeFinalResult = Maybe.empty
@@ -68,7 +68,7 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 			}
 		} else {
 			val joiningCovenant = doer.Covenant[R]()
-			doer.run(contend(arbitrator, true).subscribe(r => joiningCovenant.fulfillUnsafe(r)))
+			doer.run(contend(arbitrator, true).subscribeSync(r => joiningCovenant.fulfillUnsafe(r)))
 			joiningCovenant
 		}
 	}

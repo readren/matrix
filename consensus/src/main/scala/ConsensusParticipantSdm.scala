@@ -1636,7 +1636,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				decoupledCommandsApplierCompletion = completionCovenant
 
 				def applyBehind(primaryState1: Accessible): Unit = {
-					applyCommittedCommands(primaryState1, Long.MaxValue, 0).subscribe { _ =>
+					applyCommittedCommands(primaryState1, Long.MaxValue, 0).subscribeSync { _ =>
 						// If log compaction is needed, compact it in a decoupled way.
 						if highestAppliedCommandIndex - primaryState1.logBufferOffset > logCompactionThreshold && currentRole.isInstanceOf[StatefulRole] then startLogCompaction()
 						completionCovenant.fulfillUnsafe(())
@@ -2359,7 +2359,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.step("Starting.onEnter") {
 					notifyListeners(_.onStarting(previous.ordinal, indexOfTheIncludingConfigChange))
 
-					storage.load.subscribe {
+					storage.load.subscribeSync {
 						case Success(loadedWorkspace) =>
 							val indexOfLatestConfigChange = loadedWorkspace.indexOfLatestConfigChange
 							val primaryState = new Accessible(loadedWorkspace)
@@ -3788,7 +3788,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							val records = potentiallyUnappendedRecords.drop((indexOfNextRecordToSend - indexOfFirstPotentiallyUnappendedRecord).toInt)
 							id.appendRecords(currentTerm0, previousRecordIndex, previousRecordTerm, records, configChangeIndex, configChangeTerm)
 						}
-					inquire.trigger(true) { response =>
+					inquire.subscribeSync { response =>
 						// if the driver wasn't removed...
 						for driver <- retirementDriverByParticipantId.get(id) do {
 							// if the driver instance was replaced with a newer one, ignore the response. Else:
@@ -4107,14 +4107,14 @@ trait ConsensusParticipantSdm { thisModule =>
 						if currentRole.isInstanceOf[StatefulRole] then new Accessible(workspace)
 						// Release the workspace if the current role changed to a stateless one during the save.
 						else {
-							workspace.releases.triggerAndForget()
+							workspace.releases.subscribeAndForget()
 							Inaccessible
 						}
 
 					case failure: Failure[Unit] =>
 						Trace.error(s"$boundParticipantId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will quiesce.", failure.exception)
 						become(Quiesced(failure.castTo[String]))
-						workspace.releases.triggerAndForget() // just in case storage.save does not do it.
+						workspace.releases.subscribeAndForget() // just in case storage.save does not do it.
 						Inaccessible
 				}
 			}

@@ -73,7 +73,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 				competition.incumbent = chosenWinner
 
 				// Subscribe to the chosen winner's completion
-				chosenWinner.subscribe { result =>
+				chosenWinner.subscribeSync { result =>
 					// The Incumbency Guard: A winner only fulfills the final result if it has not been displaced by a newer contender's arbitrator logic in the meantime.
 					if chosenWinner eq competition.incumbent then {
 						competition.finalResult.fulfillUnsafe(result)

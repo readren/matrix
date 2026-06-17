@@ -92,7 +92,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 						contender
 					}
 				}
-				resultTask.subscribe { result =>
+				resultTask.subscribeSync { result =>
 					if result == expectedResult then promise.trySuccess(())
 					else promise.tryFailure(new AssertionError(s"Expected 42, got $result"))
 				}
@@ -134,7 +134,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 					}
 				}
 
-				secondResultTask.subscribe { result =>
+				secondResultTask.subscribeSync { result =>
 					if result == expectedResult2 then promise.trySuccess(())
 					else break(s"Expected $expectedResult2, got $result")
 				}
@@ -179,7 +179,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 					}
 				}
 
-				secondResultTask.subscribe { result =>
+				secondResultTask.subscribeSync { result =>
 					if result == expectedResult1 then promise.trySuccess(())
 					else break(s"Expected $expectedResult1, got $result")
 				}
@@ -214,7 +214,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 
 				val firstResultTask = mc.contend { _ => firstContender }
 
-				firstResultTask.subscribe { _ =>
+				firstResultTask.subscribeSync { _ =>
 					doer.run {
 						val newResultTask = mc.contend { maybeIncumbent =>
 							maybeIncumbent.fold {
@@ -225,7 +225,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 							}
 						}
 
-						newResultTask.subscribe { result =>
+						newResultTask.subscribeSync { result =>
 							if result == expectedResult2 then promise.trySuccess(())
 							else break(s"Expected $expectedResult2, got $result")
 						}

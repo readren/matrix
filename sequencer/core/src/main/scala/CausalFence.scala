@@ -116,7 +116,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 		} else {
 			val thisStepCovenant = doer.Covenant[A]()
 			lastEnqueuedCovenant = thisStepCovenant
-			lec.subscribe(a => thisStepCovenant.fulfillUnsafe(a, stateConsumer))
+			lec.subscribeSync(a => thisStepCovenant.fulfillUnsafe(a, stateConsumer))
 			thisStepCovenant
 		}
 	}
@@ -176,7 +176,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 		val thisStepCovenant = doer.Covenant[A | B]()
 		lastEnqueuedCovenant = thisStepCovenant
 
-		previousStepCovenant.subscribe { previousState =>
+		previousStepCovenant.subscribeSync { previousState =>
 			val rba: RollbackAccessor[B] =
 				if isSpeculative then (isWithinDoSerEx: Boolean, onCompleted: (A | B, RollbackApplication) => Unit) => thisStepCovenant.fulfill(previousState, isWithinDoSerEx, onCompleted)
 				else null.asInstanceOf[RollbackAccessor[B]]
@@ -185,7 +185,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 					lastCommittedCovenant = thisStepCovenant
 					thisStepCovenant.fulfillUnsafe(previousState)
 				} { newStateProviderTask =>
-					newStateProviderTask.subscribe { newState =>
+					newStateProviderTask.subscribeSync { newState =>
 						lastCommittedCovenant = thisStepCovenant
 						thisStepCovenant.fulfillUnsafe(newState)
 					}
@@ -216,7 +216,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 		val thisStepCovenant = doer.Covenant[A | B]()
 		lastEnqueuedCovenant = thisStepCovenant
 
-		previousStepCovenant.subscribe { previousState =>
+		previousStepCovenant.subscribeSync { previousState =>
 			primaryStateUpdater(previousState)
 				.fold {
 					lastCommittedCovenant = thisStepCovenant

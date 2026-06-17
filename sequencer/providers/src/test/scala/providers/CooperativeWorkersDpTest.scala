@@ -137,7 +137,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 			println("completed")
 		}
 
-		task.triggerAndForget(false)
+		task.subscribeAndForget(false)
 		promise.future.map(identity)(using scala.concurrent.ExecutionContext.global)
 	}
 

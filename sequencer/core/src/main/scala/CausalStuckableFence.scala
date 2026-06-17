@@ -32,7 +32,7 @@ import scala.util.{Failure, Success, Try}
  *
  * **Invariants inherited from [[Commitment]]:**
  * - Sequential consumer invariant: The [[LatchingTask]] returned by [[advanceIf]] and [[causalAnchor]] is a [[Commitment]] and therefore the subscribed consumers are invoked in registration order. The synchronous part of each consumer runs to completion before the next begins.\
- * @param initialState the initial state, already visible and committed (may be stuck if it is a stuckable state). */
+ * @param initialState the initial state, already visible and committed (maybe stuck if it is a stuckable state). */
 class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 	private var lastCommittedCommitment: doer.Commitment[A] = doer.Commitment(Maybe(initialState))
 	private var lastEnqueuedCommitment: doer.Commitment[A] = lastCommittedCommitment
@@ -96,7 +96,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 		} else {
 			val thisStepCommitment = doer.Commitment[A]()
 			lastEnqueuedCommitment = thisStepCommitment
-			lec.subscribe(a => thisStepCommitment.completeUnsafe(a, stateConsumer))
+			lec.subscribeSync(a => thisStepCommitment.completeUnsafe(a, stateConsumer))
 			thisStepCommitment
 		}
 	}
@@ -164,7 +164,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 		val thisStepCommitment = doer.Commitment[A]()
 		lastEnqueuedCommitment = thisStepCommitment
 
-		previousStepCommitment.subscribe {
+		previousStepCommitment.subscribeSync {
 			case success@Success(previousState) =>
 				val rba: RollbackAccessor[B] =
 					if isSpeculative then (isWithinDoSerEx: Boolean, onCompleted: (Try[A | B], RollbackApplication) => Unit) => thisStepCommitment.fulfill(previousState, isWithinDoSerEx, onCompleted)
@@ -174,7 +174,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 						lastCommittedCommitment = thisStepCommitment
 						thisStepCommitment.completeUnsafe(success)
 					} {
-						_.subscribe { thisStepResult =>
+						_.subscribeSync { thisStepResult =>
 							lastCommittedCommitment = thisStepCommitment
 							thisStepCommitment.completeUnsafe(thisStepResult)
 						}

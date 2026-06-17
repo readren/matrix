@@ -43,7 +43,7 @@ object PruebaChecked {
 				println(s"Recovering from $m")
 				Continue
 			}
-		}.trigger() { parent =>
+		}.subscribeUncancellable() { parent =>
 			val parentReceptor = parent.receptorProvider.local
 			val outReceptor = nexus.buildReceptorFor[Response] { response =>
 				if response.text eq null then manager.shutdown()

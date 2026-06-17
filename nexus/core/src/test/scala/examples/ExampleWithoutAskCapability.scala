@@ -47,7 +47,7 @@ object ExampleWithoutAskCapability {
 
 			}
 			.flatMap { user => user.stopTask.onBehalfOf(nexus.doer) }
-			.trigger() { _ =>
+			.subscribeUncancellable() { _ =>
 				manager.shutdown()
 			}
 

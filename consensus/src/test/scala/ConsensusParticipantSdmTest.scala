@@ -287,7 +287,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			def dispatchNext(): Unit = {
 				assert(netSequencer.isInSequence)
 				numberOfTravelingMessages -= 1
-				queue.dequeue().triggerAndForget(true)
+				queue.dequeue().subscribeAndForget(true)
 			}
 
 			def markAsFailing(durationSqrt: Int): Unit = {
@@ -559,7 +559,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							val node = this.getNode(nodeIndex)
 							if tcc.newParticipants.contains(node.myId) && !tcc.oldParticipants.contains(node.myId) then {
 								val participantsInTheTcc = ListSet.newBuilder.addAll(tcc.oldParticipants).addAll(tcc.newParticipants).result()
-								node.startsIfNotRunning(changeIndex, participantsInTheTcc).triggerAndForget(false)
+								node.startsIfNotRunning(changeIndex, participantsInTheTcc).subscribeAndForget(false)
 							}
 						}
 					case _ => // Do nothing.
@@ -574,7 +574,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
 				if activeConfigChangeAtLastSettle.isActive(node.myId) then {
 					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChangeAtLastSettle.oldParticipants).addAll(activeConfigChangeAtLastSettle.newParticipants).result()
-					node.startsIfNotRunning(indexOfActiveConfigChangeAtLastSettle, participantsInActiveConfigChange).triggerAndForget(false)
+					node.startsIfNotRunning(indexOfActiveConfigChangeAtLastSettle, participantsInActiveConfigChange).subscribeAndForget(false)
 				}
 			}
 		}

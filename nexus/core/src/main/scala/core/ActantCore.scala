@@ -198,7 +198,7 @@ abstract class ActantCore[U, D <: Doer](
 						mapHrToDecision(currentBehavior.handle(stoppedSignal)) match {
 							case ToContinue => ()
 							case ToStop => selfStop()
-							case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+							case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).subscribeAndForget(true)
 						}
 					}
 				}
@@ -232,10 +232,10 @@ abstract class ActantCore[U, D <: Doer](
 			)
 			// and then, make the subscription and store the returned Subscription handle.
 			if watchedActant.doer eq thisActant.doer then {
-				observer.sub = watchedActant.stopTask.subscribe(observer)
+				observer.sub = watchedActant.stopTask.subscribeSync(observer)
 				subscriptionCompleted.foreach(_.fulfill((), true))
 			} else watchedActant.doer.run {
-				observer.sub = watchedActant.stopTask.subscribe(observer)
+				observer.sub = watchedActant.stopTask.subscribeSync(observer)
 				subscriptionCompleted.foreach(_.fulfill((), false))
 			}
 			Maybe(observer)
@@ -278,7 +278,7 @@ abstract class ActantCore[U, D <: Doer](
 			isReadyToProcessMsg = false
 			activeWatchSubscriptions.forEach { (k, v) => v.foreach(_.unsubscribe()) }
 			oSpawner.fold(stopMe()) { spawner =>
-				spawner.stopsChildren().trigger(true)(_ => stopMe())
+				spawner.stopsChildren().subscribeSync(_ => stopMe())
 			}
 		}
 		stopCovenant.asLatchingTask
@@ -375,7 +375,7 @@ abstract class ActantCore[U, D <: Doer](
 		finalDecision match {
 			case ToContinue => beReadyToProcess()
 			case ToStop => selfStop()
-			case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
+			case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).subscribeAndForget(true)
 		}
 	}
 

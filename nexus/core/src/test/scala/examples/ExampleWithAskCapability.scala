@@ -41,7 +41,7 @@ object ExampleWithAskCapability {
 					behaviors.inquisitiveNest(user)(new Behavior[Started.type] {
 						override def handle(message: Started.type): HandleResult[Started.type] =
 							calculatorReceptor.ask(questionId => Sum(3, 7, userReceptor, questionId))
-								.trigger(true) { answer =>
+								.subscribeSync { answer =>
 									println(s"3 + 7 = ${answer.result}")
 									user.stop()
 								}
@@ -51,7 +51,7 @@ object ExampleWithAskCapability {
 
 			}
 			.flatMap { user => user.stopTask.onBehalfOf(nexus.doer) }
-			.trigger() { _ =>
+			.subscribeUncancellable() { _ =>
 				manager.shutdown()
 			}
 	}

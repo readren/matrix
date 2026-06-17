@@ -34,8 +34,8 @@ trait ActorExtension { thisActorExtension: Doer =>
 		 * @param isWithinDoSerEx tells if the call is within the doer's serial executor.
 		 * @param errorHandler called if the execution of this task completed with failure.
 		 */
-		def triggerAndSend(destination: ActorRef[A], isWithinDoSerEx: Boolean = isInSequence)(errorHandler: Throwable => Unit): Unit = {
-			venture.trigger(isWithinDoSerEx) {
+		inline def subscribeAndSend(destination: ActorRef[A], inline isWithinDoSerEx: Boolean = isInSequence)(inline errorHandler: Throwable => Unit): Unit = {
+			venture.subscribe(isWithinDoSerEx) {
 				case Success(r) => destination ! r;
 				case Failure(e) => errorHandler(e)
 			}
