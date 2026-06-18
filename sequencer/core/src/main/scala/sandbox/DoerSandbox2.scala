@@ -763,11 +763,9 @@ trait DoerSandbox2 { thisDoer =>
 		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
 			try f(value) catch {
 				case NonFatal(e) =>
-					new Task[B] {
-						override def subscribeSync(observer: MonoObserver[B]): Subscription = {
-							observer.onError(e)
-							Subscription_empty
-						}
+					(observer: MonoObserver[B]) => {
+						observer.onError(e)
+						Subscription_empty
 					}
 			}
 		}
@@ -794,11 +792,9 @@ trait DoerSandbox2 { thisDoer =>
 
 		@targetName("flatMapTask")
 		override def flatMap[B](f: Nothing => Task[B]): Task[B] = {
-			new Task[B] {
-				override def subscribeSync(observer: MonoObserver[B]): Subscription = {
-					observer.onError(exception)
-					Subscription_empty
-				}
+			(observer: MonoObserver[B]) => {
+				observer.onError(exception)
+				Subscription_empty
 			}
 		}
 
@@ -811,18 +807,16 @@ trait DoerSandbox2 { thisDoer =>
 
 		@targetName("flatMapTaskGuarded")
 		override def flatMapGuarded[B](f: Nothing => Task[B]): Task[B] = {
-			new Task[B] {
-				override def subscribeSync(observer: MonoObserver[B]): Subscription = {
-					observer.onError(exception)
-					Subscription_empty
-				}
+			(observer: MonoObserver[B]) => {
+				observer.onError(exception)
+				Subscription_empty
 			}
 		}
 	}
 
 	abstract class AbstractCaptor[A](initialState: Trial[A] = Trial.empty) extends Muxer[A, MonoObserver], Capturer[A], ObservingSubscription[A, MonoObserver] {
 
-		private var state: Trial[A] = initialState
+		protected var state: Trial[A] = initialState
 		private var downChainObserverSlot: MonoObserver[A] | Null = null
 
 		override def trial: Trial[A] = state
@@ -950,9 +944,7 @@ trait DoerSandbox2 { thisDoer =>
 					}
 				}
 			} { a =>
-				try {
-					f(a)
-				} catch {
+				try f(a) catch {
 					case NonFatal(e) =>
 						new Task[B] {
 							override def subscribeSync(observer: MonoObserver[B]): Subscription = {
@@ -979,65 +971,32 @@ trait DoerSandbox2 { thisDoer =>
 
 	final class Captor[A](initialState: Trial[A] = Trial.empty) extends AbstractCaptor[A](initialState) {
 		def captureSync(result: A, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
-			checkWithin()
-			if trial.isEmpty then {
+			state.fold {
 				forwardSuccess(result)
-				try {
-					onCompleted.onSuccess(result, THE_PROVIDED)
-				} catch {
-					case NonFatal(e) => reportFailure(e)
-				}
-			} else {
-				trial.fold {
-					// Impossible since trial.isEmpty was false
-				} { ex =>
-					try {
-						onCompleted.onError(ex, ANOTHER_BEFORE)
-					} catch {
-						case NonFatal(e) => reportFailure(e)
-					}
-				} { a =>
-					try {
-						onCompleted.onSuccess(a, ANOTHER_BEFORE)
-					} catch {
-						case NonFatal(e) => reportFailure(e)
-					}
-				}
+				onCompleted.onSuccess(result, THE_PROVIDED)
+			} { ex =>
+				onCompleted.onError(ex, ANOTHER_BEFORE)
+			} { a =>
+				onCompleted.onSuccess(a, ANOTHER_BEFORE)
 			}
 			this
 		}
 
 		def failSync(ex: Throwable, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
-			checkWithin()
-			if trial.isEmpty then {
+			state.fold {
 				forwardError(ex)
-				try {
-					onCompleted.onError(ex, THE_PROVIDED)
-				} catch {
-					case NonFatal(e) => reportFailure(e)
-				}
-			} else {
-				trial.fold {
-					// Impossible since trial.isEmpty was false
-				} { prevEx =>
-					try {
-						onCompleted.onError(prevEx, ANOTHER_BEFORE)
-					} catch {
-						case NonFatal(e) => reportFailure(e)
-					}
-				} { a =>
-					try {
-						onCompleted.onSuccess(a, ANOTHER_BEFORE)
-					} catch {
-						case NonFatal(e) => reportFailure(e)
-					}
-				}
+				onCompleted.onError(ex, THE_PROVIDED)
+			} { prevEx =>
+				onCompleted.onError(prevEx, ANOTHER_BEFORE)
+			} { a =>
+				onCompleted.onSuccess(a, ANOTHER_BEFORE)
 			}
 			this
 		}
 
 		inline def capture(result: A, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
 			if isWithinDoSerEx then {
+				checkWithin()
 				captureSync(result, onCompleted)
 			} else {
 				run(captureSync(result, onCompleted))
@@ -1047,6 +1006,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		inline def fail(ex: Throwable, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
 			if isWithinDoSerEx then {
+				checkWithin()
 				failSync(ex, onCompleted)
 			} else {
 				run(failSync(ex, onCompleted))
@@ -1054,58 +1014,55 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
-		def completeSync(result: Try[A], onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
-			result.fold(
-				ex => failSync(ex, onCompleted),
-				a => captureSync(a, onCompleted)
-			)
+		inline def completeSync(inline result: Try[A], inline onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			result match {
+				case Success(a) => captureSync(a, onCompleted)
+				case Failure(ex) => failSync(ex, onCompleted)
+			}
 		}
 
-		inline def complete(result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
-			if isWithinDoSerEx then {
-				completeSync(result, onCompleted)
-			} else {
+		inline def complete(inline result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, inline onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			if isWithinDoSerEx then completeSync(result, onCompleted)
+			else {
 				run(completeSync(result, onCompleted))
 				this
 			}
 		}
 
 		def captureWith(completingMono: Mono[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
-			if completingMono eq this then {
-				throw IllegalArgumentException("A Captor can't be completed with itself.")
-			}
-			if isWithinDoSerEx then {
+			if completingMono eq this then throw IllegalArgumentException("A Captor can't be completed with itself.")
+			else if isWithinDoSerEx then {
 				checkWithin()
-				trial.fold {
+				state.fold {
 					completingMono.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							captureSync(a, onCompleted)
+						override def onSuccess(a2: A): Unit = {
+							state.fold {
+								forwardSuccess(a2)
+								onCompleted.onSuccess(a2, THE_PROVIDED)
+							} { e1 =>
+								onCompleted.onError(e1, ANOTHER_AFTER)
+							} { a1 =>
+								onCompleted.onSuccess(a1, ANOTHER_AFTER)
+							}
 						}
 
-						override def onError(ex: Throwable): Unit = {
-							failSync(ex, onCompleted)
+						override def onError(e2: Throwable): Unit = {
+							state.fold {
+								forwardError(e2)
+								onCompleted.onError(e2, THE_PROVIDED)
+							} { e1 =>
+								onCompleted.onError(e1, ANOTHER_AFTER)
+							} { a1 =>
+								onCompleted.onSuccess(a1, ANOTHER_AFTER)
+							}
 						}
 					})
-				} { _ =>
-					trial.fold {
-						// Impossible since trial.fold was called on a non-empty state
-					} { prevEx =>
-						try {
-							onCompleted.onError(prevEx, ANOTHER_BEFORE)
-						} catch {
-							case NonFatal(e) => reportFailure(e)
-						}
-					} { a =>
-						try {
-							onCompleted.onSuccess(a, ANOTHER_BEFORE)
-						} catch {
-							case NonFatal(e) => reportFailure(e)
-						}
-					}
+				} { e0 =>
+					onCompleted.onError(e0, ANOTHER_BEFORE)
+				} { a0 =>
+					onCompleted.onSuccess(a0, ANOTHER_BEFORE)
 				}
-			} else {
-				run(captureWith(completingMono, true, onCompleted))
-			}
+			} else run(captureWith(completingMono, true, onCompleted))
 			this
 		}
 	}

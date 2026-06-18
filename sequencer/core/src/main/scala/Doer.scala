@@ -1167,10 +1167,7 @@ trait Doer { thisDoer =>
 				// Second, run the consumers in subscriptions order
 				this.capture(result)
 				// Finally. call the provided call-back.
-				try onCompleted(result, THE_PROVIDED)
-				catch {
-					case NonFatal(e) => reportPanicException(e)
-				}
+				onCompleted(result, THE_PROVIDED)
 			}(previousResult => onCompleted(previousResult, ANOTHER_BEFORE))
 			this
 		}
@@ -1193,12 +1190,17 @@ trait Doer { thisDoer =>
 			if fulfillingTask eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
 			if isWithinDoSerEx then {
 				oResult.fold {
-					fulfillingTask.subscribeSync(result => fulfillUnsafe(result, onCompleted))
-				} { result =>
-					try onCompleted(result, ANOTHER_BEFORE)
-					catch {
-						case NonFatal(e) => reportPanicException(e)
+					fulfillingTask.subscribeSync { result =>
+						oResult.fold {
+							this.oResult = Maybe(result)
+							this.capture(result)
+							onCompleted(result, THE_PROVIDED)
+						} { a1 =>
+							onCompleted(a1, ANOTHER_AFTER)
+						}
 					}
+				} { result =>
+					onCompleted(result, ANOTHER_BEFORE)
 				}
 			}
 			else run(fulfillWith(fulfillingTask, true, onCompleted))
@@ -2520,9 +2522,23 @@ trait Doer { thisDoer =>
 			if completingVenture eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
 			if isWithinDoSerEx then {
 				oResult.fold {
-					completingVenture.subscribeSync(result => completeUnsafe(result, onCompleted))
-				} { tryA =>
-					try onCompleted(tryA, ANOTHER_BEFORE)
+					completingVenture.subscribeSync { tryA2 =>
+						oResult.fold {
+							this.oResult = Maybe(tryA2)
+							this.capture(tryA2)
+							try onCompleted(tryA2, THE_PROVIDED)
+							catch {
+								case NonFatal(e) => reportPanicException(e)
+							}
+						} { tryA1 =>
+							try onCompleted(tryA1, ANOTHER_AFTER)
+							catch {
+								case NonFatal(cause) => reportPanicException(cause)
+							}
+						}
+					}
+				} { tryA0 =>
+					try onCompleted(tryA0, ANOTHER_BEFORE)
 					catch {
 						case NonFatal(e) => reportPanicException(e)
 					}

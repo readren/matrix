@@ -1,7 +1,7 @@
 package readren.sequencer
 package sandbox
 
-import sandbox.DoerSandbox2.ExecutionSerial
+import sandbox.DoerSandbox2.{ANOTHER_AFTER, ExecutionSerial, ResultOrigin}
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Prop
@@ -12,7 +12,7 @@ import scala.reflect.ClassTag
 
 class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 
-	var forceSandboxInSequence = false
+	private var forceSandboxInSequence = false
 
 	def runInSequence[T](thunk: => T): T = {
 		val prev = forceSandboxInSequence
@@ -24,7 +24,7 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		}
 	}
 
-	val sandbox = new DoerSandbox2 {
+	private val sandbox = new DoerSandbox2 {
 		override type Tag = String
 		override val tag: Tag = "Sandbox"
 
@@ -688,6 +688,61 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 			// Complete the captor to trigger the pipeline
 			captor.capture(100)
 			assertEquals(result, "value: 100!")
+		}
+	}
+
+	test("Captor - captureWith completion path, failure propagation, and ANOTHER_AFTER") {
+		runInSequence {
+			// 1. Success propagation
+			val source1 = new Captor[Int]()
+			val target1 = new Captor[Int]()
+			target1.captureWith(source1)
+			assertEquals(target1.isCompleted, false)
+
+			source1.capture(99)
+			assertEquals(target1.isCompleted, true)
+
+			var successResult = 0
+			target1.subscribeSyncCallbacks(v => successResult = v)
+			assertEquals(successResult, 99)
+
+			// 2. Failure propagation
+			val source2 = new Captor[Int]()
+			val target2 = new Captor[Int]()
+			target2.captureWith(source2)
+
+			val exception = new RuntimeException("source-err")
+			source2.fail(exception)
+			assertEquals(target2.isCompleted, true)
+
+			var caughtErr: Throwable | Null = null
+			target2.subscribeSyncCallbacks(_ => (), ex => caughtErr = ex)
+			assertEquals(caughtErr, exception)
+
+			// 3. ANOTHER_AFTER propagation
+			val source3 = new Captor[Int]()
+			val target3 = new Captor[Int]()
+			var completedVal = 0
+			var completedOrigin = -1
+			target3.captureWith(source3, onCompleted = new CompletionObserver[Int] {
+				override def onSuccess(v: Int, origin: ResultOrigin): Unit = {
+					completedVal = v
+					completedOrigin = origin
+				}
+
+				override def onError(ex: Throwable, origin: ResultOrigin): Unit = ()
+			})
+
+			// Complete the target first, before the source completes
+			target3.capture(55)
+
+			// Now complete the source (triggers the async callback)
+			source3.capture(99)
+
+			// The target's onSuccess should have been called with the target's original completed value (55)
+			// and the origin should be ANOTHER_AFTER
+			assertEquals(completedVal, 55)
+			assertEquals(completedOrigin, ANOTHER_AFTER)
 		}
 	}
 
