@@ -1,7 +1,7 @@
 package readren.sequencer
 package sandbox
 
-import sandbox.DoerSandbox2.{ExecutionSerial, PanicException}
+import sandbox.DoerSandbox2.{ExecutionSerial, ResultOrigin, THE_PROVIDED, ANOTHER_BEFORE, ANOTHER_AFTER, PanicException}
 
 import readren.common.{Maybe, Trial, foreachWithIndex, mapWithIndex}
 
@@ -17,6 +17,11 @@ object DoerSandbox2 {
 	type ExecutionSerial = Int
 	val assertionsEnabled = true
 
+	type ResultOrigin = Int
+	inline val ANOTHER_AFTER = 0
+	type ImmediateResultOrigin = ResultOrigin
+	final inline val ANOTHER_BEFORE = 1
+	final inline val THE_PROVIDED = 2
 	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
 }
 
@@ -102,49 +107,89 @@ trait DoerSandbox2 { thisDoer =>
 		override def onError(ex: Throwable): Unit = ()
 	}
 
+	trait CompletionObserver[-A] {
+		def onSuccess(value: A, origin: ResultOrigin): Unit
+
+		def onError(ex: Throwable, origin: ResultOrigin): Unit
+	}
+
+	@threadUnsafe lazy val CompletionObserver_ignore: CompletionObserver[Any] = new CompletionObserver[Any] {
+		override def onSuccess(value: Any, origin: ResultOrigin): Unit = ()
+
+		override def onError(ex: Throwable, origin: ResultOrigin): Unit = ()
+	}
+
 	/** Root super trait of all single value push-driven asynchronous computation primitives. */
 	trait Mono[+A] { thisMono =>
 		def subscribeSync(monoObserver: MonoObserver[A]): Subscription
 
 		inline def subscribeSyncCallbacks(inline success: A => Unit, inline error: Throwable => Unit = _ => ()): Subscription = {
-			subscribeSync(new MonoObserver {
+			class LocalObserver extends MonoObserver[A] {
 				override def onSuccess(a: A): Unit = success(a)
 
 				override def onError(e: Throwable): Unit = error(e)
 
-			})
+			}
+			subscribeSync(new LocalObserver)
 		}
 
-		final def subscribe(observer: MonoObserver[A]): Subscription = {
-			new Subscription {
-				private var isActive = true
-				private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
+		final inline def subscribe(inline isWithinDoSerEx: Boolean = isInSequence)(observer: MonoObserver[A]): Subscription = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				subscribeSync(observer)
+			} else {
+				class LocalSubscription extends Subscription {
+					private var isActive = true
+					private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
 
-				{
-					thisDoer.run {
-						if isActive then {
-							val targetSubscription = subscribeSync(observer)
-							if isActive then maybeTargetSubscription = Maybe(targetSubscription)
-							else targetSubscription.unsubscribe()
+					{
+						thisDoer.run {
+							if isActive then {
+								val targetSubscription = subscribeSync(observer)
+								if isActive then maybeTargetSubscription = Maybe(targetSubscription)
+								else targetSubscription.unsubscribe()
+							}
 						}
 					}
-				}
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					isActive = false
-					maybeTargetSubscription.foreach(_.unsubscribe())
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						isActive = false
+						maybeTargetSubscription.foreach(_.unsubscribe())
+					}
 				}
+				new LocalSubscription
 			}
 		}
 
-		final def subscribeUncancellable(observer: MonoObserver[A]): Unit = thisDoer.run(subscribeSync(observer))
+		inline def subscribeAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithinDoSerEx)(MonoObserver_ignore)
 
-		final def subscribeAndForget(): Unit = thisDoer.run(subscribeSync(MonoObserver_ignore))
+		/** Like [[subscribeSync]] but does not return a [[Subscription]].
+		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation. */
+		def triggerSync(observer: MonoObserver[A]): Unit = subscribeSync(observer) // TODO implement in subclasses that benefit from this.
+
+		final inline def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(observer: MonoObserver[A]): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(observer)
+			} else thisDoer.run(triggerSync(observer))
+		}
+
+		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(MonoObserver_ignore)
+			} else thisDoer.run(triggerSync(MonoObserver_ignore))
+		}
 
 		inline def foreach(inline consumer: A => Unit): Unit = {
-			subscribeSyncCallbacks(consumer);
-			()
+			checkWithin()
+			class ForeachObserver extends MonoObserver[A] {
+				override def onSuccess(value: A): Unit = consumer(value)
+
+				override def onError(ex: Throwable): Unit = ()
+			}
+			triggerSync(new ForeachObserver)
 		}
 
 		def map[B](f: A => B): Mono[B]
@@ -280,7 +325,7 @@ trait DoerSandbox2 { thisDoer =>
 		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription {
 			private var isActive = true
 			{
-				foreignMono.subscribe(new foreignDoer.MonoObserver[A] {
+				foreignMono.subscribe(false)(new foreignDoer.MonoObserver[A] {
 					override def onSuccess(a: A): Unit = if isActive then thisDoer.run(if isActive then thisDoerMonoObserver.onSuccess(a))
 
 					override def onError(ex: Throwable): Unit = if isActive then thisDoer.run(if isActive then thisDoerMonoObserver.onError(ex))
@@ -933,9 +978,136 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	final class Captor[A](initialState: Trial[A] = Trial.empty) extends AbstractCaptor[A](initialState) {
-		def capture(result: A): Unit = if trial.isEmpty then forwardSuccess(result)
+		def captureSync(result: A, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			checkWithin()
+			if trial.isEmpty then {
+				forwardSuccess(result)
+				try {
+					onCompleted.onSuccess(result, THE_PROVIDED)
+				} catch {
+					case NonFatal(e) => reportFailure(e)
+				}
+			} else {
+				trial.fold {
+					// Impossible since trial.isEmpty was false
+				} { ex =>
+					try {
+						onCompleted.onError(ex, ANOTHER_BEFORE)
+					} catch {
+						case NonFatal(e) => reportFailure(e)
+					}
+				} { a =>
+					try {
+						onCompleted.onSuccess(a, ANOTHER_BEFORE)
+					} catch {
+						case NonFatal(e) => reportFailure(e)
+					}
+				}
+			}
+			this
+		}
 
-		def fail(ex: Throwable): Unit = if trial.isEmpty then forwardError(ex)
+		def failSync(ex: Throwable, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			checkWithin()
+			if trial.isEmpty then {
+				forwardError(ex)
+				try {
+					onCompleted.onError(ex, THE_PROVIDED)
+				} catch {
+					case NonFatal(e) => reportFailure(e)
+				}
+			} else {
+				trial.fold {
+					// Impossible since trial.isEmpty was false
+				} { prevEx =>
+					try {
+						onCompleted.onError(prevEx, ANOTHER_BEFORE)
+					} catch {
+						case NonFatal(e) => reportFailure(e)
+					}
+				} { a =>
+					try {
+						onCompleted.onSuccess(a, ANOTHER_BEFORE)
+					} catch {
+						case NonFatal(e) => reportFailure(e)
+					}
+				}
+			}
+			this
+		}
+
+		inline def capture(result: A, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			if isWithinDoSerEx then {
+				captureSync(result, onCompleted)
+			} else {
+				run(captureSync(result, onCompleted))
+				this
+			}
+		}
+
+		inline def fail(ex: Throwable, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			if isWithinDoSerEx then {
+				failSync(ex, onCompleted)
+			} else {
+				run(failSync(ex, onCompleted))
+				this
+			}
+		}
+
+		def completeSync(result: Try[A], onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			result.fold(
+				ex => failSync(ex, onCompleted),
+				a => captureSync(a, onCompleted)
+			)
+		}
+
+		inline def complete(result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			if isWithinDoSerEx then {
+				completeSync(result, onCompleted)
+			} else {
+				run(completeSync(result, onCompleted))
+				this
+			}
+		}
+
+		def captureWith(completingMono: Mono[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
+			if completingMono eq this then {
+				throw IllegalArgumentException("A Captor can't be completed with itself.")
+			}
+			if isWithinDoSerEx then {
+				checkWithin()
+				trial.fold {
+					completingMono.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							captureSync(a, onCompleted)
+						}
+
+						override def onError(ex: Throwable): Unit = {
+							failSync(ex, onCompleted)
+						}
+					})
+				} { _ =>
+					trial.fold {
+						// Impossible since trial.fold was called on a non-empty state
+					} { prevEx =>
+						try {
+							onCompleted.onError(prevEx, ANOTHER_BEFORE)
+						} catch {
+							case NonFatal(e) => reportFailure(e)
+						}
+					} { a =>
+						try {
+							onCompleted.onSuccess(a, ANOTHER_BEFORE)
+						} catch {
+							case NonFatal(e) => reportFailure(e)
+						}
+					}
+				}
+			} else {
+				run(captureWith(completingMono, true, onCompleted))
+			}
+			this
+		}
 	}
 
 	//////////////////////////////////
@@ -1449,52 +1621,92 @@ trait DoerSandbox2 { thisDoer =>
 		def subscribeSync(observer: FluxObserver[A]): Subscription
 
 		inline def subscribeSyncCallbacks(inline next: (A, Int) => Unit, inline error: Throwable => Unit = _ => (), inline complete: () => Unit = () => ()): Subscription = {
-			subscribeSync(
-				new FluxObserver[A] {
-					override def onNext(value: A, index: Int): Unit = next(value, index)
+			class LocalObserver extends FluxObserver[A] {
+				override def onNext(value: A, index: Int): Unit = next(value, index)
 
-					override def onError(ex: Throwable): Unit = error(ex)
+				override def onError(ex: Throwable): Unit = error(ex)
 
-					override def onComplete(): Unit = complete()
-				}
-			)
+				override def onComplete(): Unit = complete()
+			}
+			subscribeSync(new LocalObserver)
 		}
 
-		final def subscribe(observer: FluxObserver[A]): Subscription = {
-			new Subscription {
-				private var isActive = true
-				private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
+		final inline def subscribe(inline isWithinDoSerEx: Boolean = isInSequence)(observer: FluxObserver[A]): Subscription = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				subscribeSync(observer)
+			} else {
+				class LocalSubscription extends Subscription {
+					private var isActive = true
+					private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
 
-				{
-					thisDoer.run {
-						if isActive then {
-							val targetSubscription = subscribeSync(observer)
-							if isActive then maybeTargetSubscription = Maybe(targetSubscription)
-							else targetSubscription.unsubscribe()
+					{
+						thisDoer.run {
+							if isActive then {
+								val targetSubscription = subscribeSync(observer)
+								if isActive then maybeTargetSubscription = Maybe(targetSubscription)
+								else targetSubscription.unsubscribe()
+							}
 						}
 					}
-				}
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					isActive = false
-					maybeTargetSubscription.foreach(_.unsubscribe())
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						isActive = false
+						maybeTargetSubscription.foreach(_.unsubscribe())
+					}
 				}
+				new LocalSubscription
 			}
 		}
 
-		final def subscribeUncancellable(observer: FluxObserver[A]): Unit = thisDoer.run(subscribeSync(observer))
+		inline def subscribeAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithinDoSerEx)(FluxObserver_ignore)
 
-		final def subscribeAndForget(): Unit = thisDoer.run(subscribeSync(FluxObserver_ignore))
+		/** Like [[subscribeSync]] but does not return a [[Subscription]].
+		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation. */
+		def triggerSync(observer: FluxObserver[A]): Unit = subscribeSync(observer)
+
+		final inline def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(observer: FluxObserver[A]): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(observer)
+			} else thisDoer.run(triggerSync(observer))
+		}
+
+		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(FluxObserver_ignore)
+			} else thisDoer.run(triggerSync(FluxObserver_ignore))
+		}
 
 		inline def foreach(inline consumer: A => Unit): Unit = {
-			subscribeSyncCallbacks(next = (a, _) => consumer(a));
-			()
+			checkWithin()
+			class ForeachObserver extends FluxObserver[A] {
+				override def onNext(value: A, index: Int): Unit = {
+					consumer(value)
+				}
+
+				override def onError(ex: Throwable): Unit = ()
+
+				override def onComplete(): Unit = ()
+			}
+			triggerSync(new ForeachObserver)
 		}
 
 		inline def foreachWithCoords(inline consumer: (A, Int) => Unit): Unit = {
-			subscribeSyncCallbacks(consumer);
-			()
+			checkWithin()
+			class ForeachWIObserver extends FluxObserver[A] {
+				override def onNext(value: A, index: Int): Unit = {
+					consumer(value, index)
+				}
+
+				override def onError(ex: Throwable): Unit = ()
+
+				override def onComplete(): Unit = ()
+			}
+
+			triggerSync(new ForeachWIObserver)
 		}
 
 		def map[B: ClassTag](f: A => B): Flux[B]
@@ -2602,7 +2814,7 @@ trait DoerSandbox2 { thisDoer =>
 		def subscribe(observer: TensorObserver[A]): Subscription
 
 		inline def subscribeCallbacks(inline next: (a: A, inner: Int, outer: Int) => Unit, inline error: Throwable => Unit = _ => (), inline outerComplete: () => Unit = () => (), inline innerComplete: Int => Unit = _ => (), inline complete: () => Unit = () => ()): Subscription = {
-			subscribe(new TensorObserver[A] {
+			class LocalObserver extends TensorObserver[A] {
 				override def onNext(value: A, inner: Int, outer: Int): Unit = next(value, inner, outer)
 
 				override def onOuterComplete(): Unit = outerComplete()
@@ -2612,7 +2824,8 @@ trait DoerSandbox2 { thisDoer =>
 				override def onError(ex: Throwable): Unit = error(ex)
 
 				override def onComplete(): Unit = complete()
-			})
+			}
+			subscribe(new LocalObserver)
 		}
 
 		def flattenInner: Flux[A]

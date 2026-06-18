@@ -198,7 +198,7 @@ abstract class ActantCore[U, D <: Doer](
 						mapHrToDecision(currentBehavior.handle(stoppedSignal)) match {
 							case ToContinue => ()
 							case ToStop => selfStop()
-							case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).subscribeAndForget(true)
+							case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 						}
 					}
 				}
@@ -375,7 +375,7 @@ abstract class ActantCore[U, D <: Doer](
 		finalDecision match {
 			case ToContinue => beReadyToProcess()
 			case ToStop => selfStop()
-			case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).subscribeAndForget(true)
+			case tr: ToRestart => selfRestarts(tr.stopChildren, tr.restartBehaviorBuilder).triggerAndForget(true)
 		}
 	}
 

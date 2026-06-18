@@ -1,6 +1,6 @@
 package readren.sequencer
 
-import Doer.{CausalAnchorArrival, RollbackApplication}
+import CausalFence.{ARRIVED_BEFORE, ARRIVED_AFTER, CausalAnchorArrival, RollbackApplication}
 
 import readren.common.Maybe
 
@@ -91,7 +91,7 @@ class CausalStuckableFence[A, D <: Doer](val doer: D)(initialState: Try[A]) {
 		val lec = lastEnqueuedCommitment
 		val lcc = lastCommittedCommitment
 		if lec eq lcc then {
-			stateConsumer(lcc.maybeResult.get, Doer.ARRIVED_BEFORE)
+			stateConsumer(lcc.maybeResult.get, ARRIVED_BEFORE)
 			lec
 		} else {
 			val thisStepCommitment = doer.Commitment[A]()

@@ -66,8 +66,8 @@ object PruebaScheduling {
 							Continue
 						}
 				}
-			}.subscribeUncancellable() { parent =>
-				parent.stopTask.subscribeUncancellable() { _ =>
+			}.trigger() { parent =>
+				parent.stopTask.trigger() { _ =>
 					println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")
 
 					manager.shutdown()

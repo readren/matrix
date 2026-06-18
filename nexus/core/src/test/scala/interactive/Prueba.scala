@@ -291,7 +291,7 @@ object Prueba {
 										if numberOfMessagesAlreadySentToConsumer < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
 											consumerReceptor.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfAckReceptor))
 												.andThen(_ => loop(numberOfMessagesAlreadySentToConsumer + 1))
-												.subscribeAndForget(true)
+												.triggerAndForget(true)
 										} else {
 											consumerReceptor.tell(Consumable(producerIndex, -1))
 											completedConsumersCounter += 1
@@ -342,7 +342,7 @@ object Prueba {
 						Stop
 					}
 			}
-		}.subscribeUncancellable() { parent =>
+		}.trigger() { parent =>
 			nexus.doer.checkWithin()
 			// println("Parent created")
 
@@ -363,7 +363,7 @@ object Prueba {
 				}
 			}
 
-			parent.stopTask.subscribeUncancellable() { _ =>
+			parent.stopTask.trigger() { _ =>
 				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")

@@ -4107,14 +4107,14 @@ trait ConsensusParticipantSdm { thisModule =>
 						if currentRole.isInstanceOf[StatefulRole] then new Accessible(workspace)
 						// Release the workspace if the current role changed to a stateless one during the save.
 						else {
-							workspace.releases.subscribeAndForget()
+							workspace.releases.triggerAndForget()
 							Inaccessible
 						}
 
 					case failure: Failure[Unit] =>
 						Trace.error(s"$boundParticipantId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will quiesce.", failure.exception)
 						become(Quiesced(failure.castTo[String]))
-						workspace.releases.subscribeAndForget() // just in case storage.save does not do it.
+						workspace.releases.triggerAndForget() // just in case storage.save does not do it.
 						Inaccessible
 				}
 			}

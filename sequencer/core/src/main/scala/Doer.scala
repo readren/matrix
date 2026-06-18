@@ -39,21 +39,6 @@ object Doer {
 	/** Completed by the [[Doer.Covenant]]/[[Doer.Commitment]] completion method to which the `onCompleted` call-back that received this constant was provided. */
 	final inline val THE_PROVIDED = 2
 
-	/** Information about the application of a rollback.
-	 *		- [[ROLLBACK_APPLIED]] if the rollback was applied.
-	 *		- [[ROLLBACK_IGNORED]] if the rollback was ignored because it was attempted to late. */
-	type RollbackApplication = Int
-	final inline val ROLLBACK_APPLIED = THE_PROVIDED
-	final inline val ROLLBACK_IGNORED = ANOTHER_BEFORE
-
-	/** Informs about the timing of the arrival to an anchored link of a causal chain:
-	 *		- [[ARRIVED_BEFORE]] the transition corresponding to the link completed before the anchoring.
-	 *		- [[ARRIVED_AFTER]] the transition corresponding to the link completed after the anchoring.
-	 * */
-	type CausalAnchorArrival = Int
-	final inline val ARRIVED_BEFORE = ANOTHER_BEFORE
-	final inline val ARRIVED_AFTER = ANOTHER_AFTER
-
 	//// Convenient constants ////
 
 	val successUnit: Success[Unit] = Success(())
@@ -284,11 +269,11 @@ trait Doer { thisDoer =>
 	@threadUnsafe lazy val Subscription_empty: Subscription = () => ()
 
 	trait Observable[+A] { thisObservable =>
-		/** Subscribes to the result of this [[Observable]] and returns a [[Subscription]] that can be used to cancel.
+		/** Subscribes an [[Observer]] to the result of this [[Observable]] and returns a [[Subscription]] that can be used to cancel.
 		 * This method is the sole primitive operation of this trait; all other methods are derived from it.\
 		 * @param onComplete The callback that must be invoked upon the completion of this [[Observable]]. The implementation should call this callback within the $DoSerEx.\
 		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def subscribeSync(onComplete: A => Unit): Subscription
+		def subscribeSync(onComplete: Observer[A]): Subscription
 
 		/** Initiates an execution of this [[Observable]] and subscribes the provided call-back as a consumer of the execution result.
 		 * Each invocation of this method triggers a new execution.
@@ -328,28 +313,36 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		/** Enqueues an execution of this [[Observable]] ignoring the result.
-		 *
-		 * $threadSafe
-		 *
-		 * @param isWithinDoSerEx $isWithinDoSerEx */
-		inline final def subscribeAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
-			if isWithinDoSerEx then {
-				checkWithin()
-				subscribeSync(Observer_ignore)
-			} else thisDoer.run(subscribeSync(Observer_ignore))
-		}
+		inline def subscribeAndForget(inline isWithingDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithingDoSerEx)(Observer_ignore)
+
+		/** Like [[subscribeSync]] but does not return a [[Subscription]].
+		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation.
+		 * @param onComplete The callback that must be invoked upon the completion of this [[Observable]]. The implementation should call this callback within the $DoSerEx.\
+		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
+		def triggerSync(onComplete: A => Unit): Unit = subscribeSync(onComplete) // TODO implement in subclasses that benefit from this.
 
 		/** Enqueues an uncancelable execution of this [[Observable]] ignoring the result .
 		 *
 		 * $threadSafe
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx */
-		inline final def subscribeUncancellable(inline isWithinDoSerEx: Boolean = isInSequence)(observer: A => Unit): Unit = {
+		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(observer: A => Unit): Unit = {
 			if isWithinDoSerEx then {
 				checkWithin()
-				subscribeSync(observer)
-			} else thisDoer.run(subscribeSync(observer))
+				triggerSync(observer)
+			} else thisDoer.run(triggerSync(observer))
+		}
+
+		/** Enqueues an execution of this [[Observable]] ignoring the result.
+		 *
+		 * $threadSafe
+		 *
+		 * @param isWithinDoSerEx $isWithinDoSerEx */
+		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(Observer_ignore)
+			} else thisDoer.run(triggerSync(Observer_ignore))
 		}
 
 		/** Enqueues an execution of this [[Task]] and then invokes the provided consumer passing the result.
@@ -364,7 +357,7 @@ trait Doer { thisDoer =>
 		 * $notGuarded */
 		def foreach(consumer: A => Unit): Unit = {
 			checkWithin()
-			subscribeSync(consumer)
+			triggerSync(consumer)
 		}
 
 		/**

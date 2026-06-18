@@ -1,8 +1,27 @@
 package readren.sequencer
 
-import Doer.{CausalAnchorArrival, RollbackApplication}
+import CausalFence.{ARRIVED_BEFORE, ARRIVED_AFTER, CausalAnchorArrival, RollbackApplication}
+import Doer.{ANOTHER_AFTER, ANOTHER_BEFORE, THE_PROVIDED}
 
 import readren.common.Maybe
+
+
+object CausalFence {
+	/** Information about the application of a rollback.
+	 *		- [[ROLLBACK_APPLIED]] if the rollback was applied.
+	 *		- [[ROLLBACK_IGNORED]] if the rollback was ignored because it was attempted to late. */
+	type RollbackApplication = Int
+	final inline val ROLLBACK_APPLIED = THE_PROVIDED
+	final inline val ROLLBACK_IGNORED = ANOTHER_BEFORE
+
+	/** Informs about the timing of the arrival to an anchored link of a causal chain:
+	 *		- [[ARRIVED_BEFORE]] the transition corresponding to the link completed before the anchoring.
+	 *		- [[ARRIVED_AFTER]] the transition corresponding to the link completed after the anchoring.
+	 * */
+	type CausalAnchorArrival = Int
+	final inline val ARRIVED_BEFORE = ANOTHER_BEFORE
+	final inline val ARRIVED_AFTER = THE_PROVIDED
+}
 
 /** A fence that serializes non-failing state transitions with causal fulfillment semantics.
  * It enforces causal ordering; lineage continues indefinitely.
@@ -111,7 +130,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 		val lec = lastEnqueuedCovenant
 		val lcc = lastCommittedCovenant
 		if lec eq lcc then {
-			stateConsumer(lcc.maybeResult.get, Doer.ARRIVED_BEFORE)
+			stateConsumer(lcc.maybeResult.get, ARRIVED_BEFORE)
 			lec
 		} else {
 			val thisStepCovenant = doer.Covenant[A]()

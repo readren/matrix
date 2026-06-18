@@ -1,9 +1,9 @@
 package readren.sequencer
 
+import CausalFence.ROLLBACK_IGNORED
 import GeneratorsForDoerTests.{*, given}
 
 import munit.ScalaCheckEffectSuite
-import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
@@ -165,7 +165,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		// Verify supplier is called multiple times with delay between completions
 		// Verify each result is yielded
 		val generators = getGenerators
-		import generators.*
 
 		true
 	}
@@ -252,7 +251,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val swarm: Seq[Task[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.Task_mineFlat(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
-			checks.subscribeAndForget()
+			checks.triggerAndForget()
 
 			gate
 		}
@@ -325,7 +324,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val swarm: Seq[Task[PrimaryState]] = Seq.tabulate(swarmSize) { n => Task_mineFlat(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
-			checks.subscribeAndForget()
+			checks.triggerAndForget()
 			gate
 		}
 	}
@@ -381,7 +380,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			println("completed")
 		}
 
-		task.subscribeAndForget(false)
+		task.triggerAndForget(false)
 		gate
 	}
 
@@ -535,7 +534,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			observingUnhandledAndReportedExceptionsDo { () =>
 				// Submit a venture that uses Venture.andThen which will cause a failure report
 				val venture = mainDoer.Venture_successful(0).andThen(_ => throw throwable)
-				venture.subscribeUncancellable() { _ =>
+				venture.trigger() { _ =>
 					if NonFatal(throwable) then break(s"The failure report should be done before the venture that produced it completes.")
 					else break("The operation completed despite the operand thew a fatal exception")
 				}
@@ -804,7 +803,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				given Promise[Unit] = promise
 
 				observingUnhandledAndReportedExceptionsDo { () =>
-					operatedTask.subscribeUncancellable() { r =>
+					operatedTask.trigger() { r =>
 						// scribe.debug(s"#$observingSession: about to throw the exception --- $isInSequence")
 						Thread.sleep(1)
 						throw exception
@@ -968,7 +967,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 				observingUnhandledAndReportedExceptionsDo { () =>
 					// Apply the operation to the random venture.
-					operatedVenture.subscribeUncancellable() { operationResult =>
+					operatedVenture.trigger() { operationResult =>
 						// If the venture completed then the result should be a Failure containing the exception, and the exception should be non-fatal.
 						if !NonFatal(exception) then break(s"$opName: Completed despite a fatal exception was thrown")
 						else if operationResult.fold(e => (e ne exception) && (e.getCause ne exception), _ => true) then break(s"$opName: Completed with an unexpected result: $operationResult")
@@ -1039,7 +1038,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 				observingUnhandledAndReportedExceptionsDo { () =>
 					// Trigger the execution passing a faulty on-complete callback.
-					operatedVenture.subscribeUncancellable()(tryR => throw exception)
+					operatedVenture.trigger()(tryR => throw exception)
 
 					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
 
@@ -1148,7 +1147,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			else if rFlatMap != f2Result then break("the chained flatMap yielded a different value than the expected one")
 			else promise.trySuccess(())
 		}
-		checks.subscribeAndForget()
+		checks.triggerAndForget()
 	}
 
 	//// COMMITMENT ////
@@ -1257,7 +1256,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 		}
-		checks.subscribeUncancellable() { r =>
+		checks.trigger() { r =>
 			if r.isFailure then break(s"The test is wrong. This should not happen: `checks` yielded $r")
 		}
 		if nat == 1 then {
@@ -1326,7 +1325,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 							rba.rollback(
 								true,
 								(v, rollbackApplication) =>
-									if rollbackApplication == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
+									if rollbackApplication == ROLLBACK_IGNORED then break("Rollback was too late")
 									else if v != initial then break("Rollback did not restore initial state")
 							)
 						})
@@ -1362,7 +1361,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 								.andThen { x =>
 									doer.run {
 										rba.rollback(true, (v, rollbackApplication) =>
-											if rollbackApplication == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
+											if rollbackApplication == ROLLBACK_IGNORED then promise.trySuccess(())
 											else break("Rollback should have been rejected")
 										)
 									}
@@ -1506,7 +1505,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 								rba.rollback(
 									true,
 									(v, wasTooLate) =>
-										if wasTooLate == Doer.ROLLBACK_IGNORED then break("Rollback was too late")
+										if wasTooLate == ROLLBACK_IGNORED then break("Rollback was too late")
 										else if !(v ==== Success(initial)) then break("Rollback did not restore initial state")
 								)
 							}
@@ -1548,7 +1547,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 									doer.run {
 										println(s"about to rollback")
 										rba.rollback(true, (actualResult, wasTooLate) =>
-											if wasTooLate == Doer.ROLLBACK_IGNORED then promise.trySuccess(())
+											if wasTooLate == ROLLBACK_IGNORED then promise.trySuccess(())
 											else break("Rollback should have been ignored")
 										)
 									}
@@ -1640,7 +1639,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 						promise.tryFailure(new AssertionError("The supplier was execute despite the schedule was canceled in the previous supplier's execution."))
 					} else counter += 1
 				}
-			task.subscribeAndForget()
+			task.triggerAndForget()
 			promise.future.map { supplyResult =>
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * repetitions + initialDelay
@@ -1699,7 +1698,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					doer.cancel(schedule)
 				} else counter += 1
 			}
-			check.subscribeAndForget()
+			check.triggerAndForget()
 			commitment.toFuture()
 		}
 	}
@@ -1719,7 +1718,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			var wasCanceled = false
 			var hasCompleted = false
-			scheduledTask.subscribeUncancellable() { _ =>
+			scheduledTask.trigger() { _ =>
 				hasCompleted = true
 				if wasCanceled then {
 					break(s"The task completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
@@ -1737,7 +1736,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- doer.Venture_sleeps(delay)
 
 			} yield () // println("cancelsAndWaits completed successfully")
-			cancelsAndWaits.subscribeUncancellable()(promise.tryComplete(_))
+			cancelsAndWaits.trigger()(promise.tryComplete(_))
 			gate
 		}
 	}
@@ -1755,7 +1754,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			doer.cancel(schedule)
-			scheduledTask.subscribeUncancellable() { _ =>
+			scheduledTask.trigger() { _ =>
 				break(s"The task completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
 			}
 			if !doer.isCanceled(schedule) then break("The schedule says it is not canceled despite it was.")
@@ -1922,7 +1921,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					else latch.countDown()
 				}
 			}
-			task.subscribeAndForget()
+			task.triggerAndForget()
 			if latch.await(expectedDelay * 2 + 5, TimeUnit.MILLISECONDS) then break("The routine was executed more than one time")
 			else promise.trySuccess(())
 			gate
@@ -1963,7 +1962,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 				executionsCounter += 1
 			}
-			task.subscribeAndForget()
+			task.triggerAndForget()
 			if latch.await(expectedInitialDelay + expectedPeriod * REPETITIONS + EXECUTION_DELAY_MARGIN_MILLIS, TimeUnit.MILLISECONDS) then promise.trySuccess(())
 			else break(s"The number of executions within the provided time is less than the expected")
 			doer.cancel(schedule)
