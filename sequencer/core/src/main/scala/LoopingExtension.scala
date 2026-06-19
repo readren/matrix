@@ -189,7 +189,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * The loop ends when this function returns a [[Maybe.some]]. Its content will be the final result of this task.
 	 */
 	final class Task_RepeatUntilSome[+A, +B](taskA: Task[A], condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a volatile flag
 			// and unsubscribing from the active task cycle.
 			new Subscription {
@@ -198,17 +198,23 @@ trait LoopingExtension { thisDoer: Doer =>
 
 				def loop(completedCycles: Int, recursionDepth: Int): Unit = {
 					if active then {
-						currentSub = taskA.subscribeSync { a =>
-							if active then {
-								condition(completedCycles, a).fold {
-									if recursionDepth < maxRecursionDepthPerExecutor then {
-										loop(completedCycles + 1, recursionDepth + 1)
-									} else {
-										run(loop(completedCycles + 1, 0))
-									}
-								}(onComplete)
+						currentSub = taskA.subscribeSync(new MonoObserver[A] {
+							override def onSuccess(a: A): Unit = {
+								if active then {
+									condition(completedCycles, a).fold {
+										if recursionDepth < maxRecursionDepthPerExecutor then {
+											loop(completedCycles + 1, recursionDepth + 1)
+										} else {
+											run(loop(completedCycles + 1, 0))
+										}
+									}(monoObserver.onSuccess)
+								}
 							}
-						}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onError(ex)
+							}
+						})
 					}
 				}
 
@@ -240,7 +246,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_RepeatWhileEmpty[+A, +B](taskA: Task[A], a0: A, condition: (Int, A) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a volatile flag
 			// and unsubscribing from the active task cycle.
 			new Subscription {
@@ -250,13 +256,19 @@ trait LoopingExtension { thisDoer: Doer =>
 				def loop(completedCycles: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
 					if active then {
 						condition(completedCycles, lastTaskResult).fold {
-							currentSub = taskA.subscribeSync { newA =>
-								if active then {
-									if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-									else run(loop(completedCycles + 1, newA, 0))
+							currentSub = taskA.subscribeSync(new MonoObserver[A] {
+								override def onSuccess(newA: A): Unit = {
+									if active then {
+										if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
+										else run(loop(completedCycles + 1, newA, 0))
+									}
 								}
-							}
-						}(onComplete)
+
+								override def onError(ex: Throwable): Unit = {
+									if active then monoObserver.onError(ex)
+								}
+							})
+						}(monoObserver.onSuccess)
 					}
 				}
 
@@ -286,7 +298,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_WhileRightRepeat[+A, +B](a0: A, checkAndBuild: (Int, A) => Either[B, Task[A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a volatile flag
 			// and unsubscribing from the active task cycle.
 			new Subscription {
@@ -296,14 +308,20 @@ trait LoopingExtension { thisDoer: Doer =>
 				def loop(completedCycles: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
 					if active then {
 						checkAndBuild(completedCycles, lastTaskResult) match {
-							case Left(b) => onComplete(b)
+							case Left(b) => monoObserver.onSuccess(b)
 							case Right(taskA) =>
-								currentSub = taskA.subscribeSync { newA =>
-									if active then {
-										if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
-										else run(loop(completedCycles + 1, newA, 0))
+								currentSub = taskA.subscribeSync(new MonoObserver[A] {
+									override def onSuccess(newA: A): Unit = {
+										if active then {
+											if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newA, recursionDepth + 1)
+											else run(loop(completedCycles + 1, newA, 0))
+										}
 									}
-								}
+
+									override def onError(ex: Throwable): Unit = {
+										if active then monoObserver.onError(ex)
+									}
+								})
 						}
 					}
 				}
@@ -334,7 +352,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_RepeatUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Task[Either[B, A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a volatile flag
 			// and unsubscribing from the active task cycle.
 			new Subscription {
@@ -344,15 +362,21 @@ trait LoopingExtension { thisDoer: Doer =>
 				def loop(executionsCounter: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
 					if active then {
 						val task = buildAndCheck(executionsCounter, lastTaskResult)
-						currentSub = task.subscribeSync {
-							case Left(b) =>
-								if active then onComplete(b)
-							case Right(a) =>
-								if active then {
-									if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
-									else run(loop(executionsCounter + 1, a, 0))
-								}
-						}
+						currentSub = task.subscribeSync(new MonoObserver[Either[B, A]] {
+							override def onSuccess(res: Either[B, A]): Unit = res match {
+								case Left(b) =>
+									if active then monoObserver.onSuccess(b)
+								case Right(a) =>
+									if active then {
+										if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
+										else run(loop(executionsCounter + 1, a, 0))
+									}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onError(ex)
+							}
+						})
 					}
 				}
 
@@ -382,7 +406,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
 	 */
 	final class Task_RetryUntilRight[+A, +B](maxRetries: Int, taskBuilder: Int => Task[Either[A, B]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[Either[A, B]] {
-		override def subscribeSync(onComplete: Either[A, B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Either[A, B]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a volatile flag
 			// and unsubscribing from the active task cycle.
 			new Subscription {
@@ -392,20 +416,26 @@ trait LoopingExtension { thisDoer: Doer =>
 				def loop(attemptsAlreadyMade: Int, recursionDepth: Int): Unit = {
 					if active then {
 						val task: Task[Either[A, B]] = taskBuilder(attemptsAlreadyMade)
-						currentSub = task.subscribeSync {
-							case rb@(_: Right[A, B]) =>
-								if active then onComplete(rb)
-							case la@Left(a) =>
-								if active then {
-									if attemptsAlreadyMade >= maxRetries then {
-										onComplete(la)
-									} else if recursionDepth < maxRecursionDepthPerExecutor then {
-										loop(attemptsAlreadyMade + 1, recursionDepth + 1)
-									} else {
-										run(loop(attemptsAlreadyMade + 1, 0))
+						currentSub = task.subscribeSync(new MonoObserver[Either[A, B]] {
+							override def onSuccess(res: Either[A, B]): Unit = res match {
+								case rb@(_: Right[A, B]) =>
+									if active then monoObserver.onSuccess(rb)
+								case la@Left(a) =>
+									if active then {
+										if attemptsAlreadyMade >= maxRetries then {
+											monoObserver.onSuccess(la)
+										} else if recursionDepth < maxRecursionDepthPerExecutor then {
+											loop(attemptsAlreadyMade + 1, recursionDepth + 1)
+										} else {
+											run(loop(attemptsAlreadyMade + 1, 0))
+										}
 									}
-								}
-						}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onError(ex)
+							}
+						})
 					}
 				}
 
@@ -710,7 +740,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * */
 	final class Venture_ReiterateHardyUntilSome[+A, +B](ventureA: Venture[A], condition: (Int, Try[A]) => Maybe[Try[B]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
 
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a flag
 			// and unsubscribing from the active venture cycle.
 			new Subscription {
@@ -719,22 +749,28 @@ trait LoopingExtension { thisDoer: Doer =>
 
 				def loop(completedCycles: Int, recursionDepth: Int): Unit = {
 					if active then {
-						currentSub = ventureA.subscribeSync { tryA =>
-							if active then {
-								val conditionResult: Maybe[Try[B]] =
-									try condition(completedCycles, tryA)
-									catch {
-										case NonFatal(cause) => Maybe(Failure(cause))
-									}
-								conditionResult.fold {
-									if recursionDepth < maxRecursionDepthPerExecutor then {
-										loop(completedCycles + 1, recursionDepth + 1)
-									} else {
-										run(loop(completedCycles + 1, 0))
-									}
-								}(onComplete)
+						currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+							override def onSuccess(tryA: Try[A]): Unit = {
+								if active then {
+									val conditionResult: Maybe[Try[B]] =
+										try condition(completedCycles, tryA)
+										catch {
+											case NonFatal(cause) => Maybe(Failure(cause))
+										}
+									conditionResult.fold {
+										if recursionDepth < maxRecursionDepthPerExecutor then {
+											loop(completedCycles + 1, recursionDepth + 1)
+										} else {
+											run(loop(completedCycles + 1, 0))
+										}
+									}(monoObserver.onSuccess)
+								}
 							}
-						}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onSuccess(Failure(ex))
+							}
+						})
 					}
 				}
 
@@ -771,7 +807,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @tparam B the type of the result of this task.
 	 */
 	final class Venture_ReiterateHardyWhileEmpty[+A, +B](ventureA: Venture[A], ta0: Try[A], condition: (Int, Try[A]) => Maybe[B], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a flag
 			// and unsubscribing from the active venture cycle.
 			new Subscription {
@@ -790,13 +826,19 @@ trait LoopingExtension { thisDoer: Doer =>
 							}
 
 						conditionResult.fold {
-							currentSub = ventureA.subscribeSync { newTryA =>
-								if active then {
-									if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
-									else run(loop(completedCycles + 1, newTryA, 0))
+							currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+								override def onSuccess(newTryA: Try[A]): Unit = {
+									if active then {
+										if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
+										else run(loop(completedCycles + 1, newTryA, 0))
+									}
 								}
-							}
-						}(onComplete)
+
+								override def onError(ex: Throwable): Unit = {
+									if active then monoObserver.onSuccess(Failure(ex))
+								}
+							})
+						}(monoObserver.onSuccess)
 					}
 				}
 
@@ -827,7 +869,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Venture_WhileRightReiterateHardy[+A, +B](tryA0: Try[A], checkAndBuild: (Int, Try[A]) => Either[Try[B], Venture[A]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a flag
 			// and unsubscribing from the active venture cycle.
 			new Subscription {
@@ -843,14 +885,20 @@ trait LoopingExtension { thisDoer: Doer =>
 							}
 						tryBOrVentureA match {
 							case Left(tryB) =>
-								if active then onComplete(tryB);
+								if active then monoObserver.onSuccess(tryB);
 							case Right(ventureA) =>
-								currentSub = ventureA.subscribeSync { newTryA =>
-									if active then {
-										if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
-										else run(loop(completedCycles + 1, newTryA, 0));
+								currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+									override def onSuccess(newTryA: Try[A]): Unit = {
+										if active then {
+											if recursionDepth < maxRecursionDepthPerExecutor then loop(completedCycles + 1, newTryA, recursionDepth + 1)
+											else run(loop(completedCycles + 1, newTryA, 0));
+										}
 									}
-								}
+
+									override def onError(ex: Throwable): Unit = {
+										if active then monoObserver.onSuccess(Failure(ex))
+									}
+								})
 						}
 					}
 				}
@@ -885,7 +933,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Venture_ReiterateUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Venture[Either[Try[B], A]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a flag
 			// and unsubscribing from the active venture cycle.
 			new Subscription {
@@ -899,17 +947,29 @@ trait LoopingExtension { thisDoer: Doer =>
 							catch {
 								case NonFatal(e) => Venture_successful(Left(Failure(e)))
 							}
-						currentSub = venture.subscribeSync {
-							case Success(Right(a)) =>
+						currentSub = venture.subscribeSync(new MonoObserver[Try[Either[Try[B], A]]] {
+							override def onSuccess(tryResult: Try[Either[Try[B], A]]): Unit = {
 								if active then {
-									if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
-									else run(loop(executionsCounter + 1, a, 0));
+									tryResult match {
+										case Success(Right(a)) => {
+											if recursionDepth < maxRecursionDepthPerExecutor then {
+												loop(executionsCounter + 1, a, recursionDepth + 1)
+											} else {
+												run(loop(executionsCounter + 1, a, 0))
+											}
+										}
+										case Success(Left(tryB)) =>
+											monoObserver.onSuccess(tryB)
+										case Failure(e) =>
+											monoObserver.onSuccess(Failure(e))
+									}
 								}
-							case Success(Left(tryB)) =>
-								if active then onComplete(tryB)
-							case Failure(e) =>
-								if active then onComplete(Failure(e))
-						}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onSuccess(Failure(ex))
+							}
+						})
 					}
 				}
 
@@ -939,7 +999,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
 	 */
 	final class Venture_AttemptUntilRight[+A, +B](maxRetries: Int, ventureBuilder: Int => Venture[Either[A, B]], maxRecursionDepthPerExecutor: Int) extends AbstractVenture[Either[A, B]] {
-		override def subscribeSync(onComplete: Try[Either[A, B]] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[Either[A, B]]]): Subscription = {
 			// Returns a Subscription that supports cancellation by setting a flag
 			// and unsubscribing from the active venture cycle.
 			new Subscription {
@@ -953,25 +1013,34 @@ trait LoopingExtension { thisDoer: Doer =>
 							catch {
 								case NonFatal(cause) => Venture_failed(cause)
 							}
-						currentSub = venture.subscribeSync {
-							case success@Success(aOrB) =>
+						currentSub = venture.subscribeSync(new MonoObserver[Try[Either[A, B]]] {
+							override def onSuccess(tryResult: Try[Either[A, B]]): Unit = {
 								if active then {
-									aOrB match {
-										case _: Right[A, B] =>
-											onComplete(success)
-										case Left(a) =>
-											if attemptsAlreadyMade >= maxRetries then {
-												onComplete(success)
-											} else if recursionDepth < maxRecursionDepthPerExecutor then {
-												loop(attemptsAlreadyMade + 1, recursionDepth + 1)
-											} else {
-												run(loop(attemptsAlreadyMade + 1, 0))
+									tryResult match {
+										case success@Success(aOrB) =>
+											aOrB match {
+												case _: Right[A, B] =>
+													monoObserver.onSuccess(success)
+												case Left(a) => {
+													if attemptsAlreadyMade >= maxRetries then {
+														monoObserver.onSuccess(success)
+													} else if recursionDepth < maxRecursionDepthPerExecutor then {
+														loop(attemptsAlreadyMade + 1, recursionDepth + 1)
+													} else {
+														run(loop(attemptsAlreadyMade + 1, 0))
+													}
+												}
 											}
+										case failure: Failure[Either[A, B]] =>
+											monoObserver.onSuccess(failure)
 									}
 								}
-							case failure: Failure[Either[A, B]] =>
-								if active then onComplete(failure);
-						}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								if active then monoObserver.onSuccess(Failure(ex))
+							}
+						})
 					}
 				}
 

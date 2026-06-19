@@ -278,7 +278,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledTask[A](task: Task[A], aSchedule: Schedule) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Returns subscription that guards schedule trigger and inner task completion
 			new Subscription {
 				private var active = true
@@ -287,7 +287,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				{
 					schedule(aSchedule) { _ =>
 						if active then {
-							innerSub = task.subscribeSync(onComplete)
+							innerSub = task.subscribeSync(monoObserver)
 						}
 					}
 				}
@@ -303,20 +303,26 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledMap[A, B](task: Task[A], aSchedule: Schedule, f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns subscription that propagates unsubscription to underlying task
 			new Subscription {
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = task.subscribeSync { a =>
-						if active then {
-							schedule(aSchedule) { _ =>
-								if active then onComplete(f(a))
+					innerSub = task.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if active then {
+								schedule(aSchedule) { _ =>
+									if active then monoObserver.onSuccess(f(a))
+								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then monoObserver.onError(ex)
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -330,22 +336,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledFlatMap[A, B](task: Task[A], aSchedule: Schedule, f: A => Task[B]) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns subscription that handles unsubscription from both outer and inner task
 			new Subscription {
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = task.subscribeSync { a =>
-						if active then {
-							schedule(aSchedule) { _ =>
-								if active then {
-									innerSub = f(a).subscribeSync(onComplete)
+					innerSub = task.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if active then {
+								schedule(aSchedule) { _ =>
+									if active then {
+										innerSub = f(a).subscribeSync(monoObserver)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then monoObserver.onError(ex)
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -358,7 +370,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedTask[A](task: Task[A], delay: MilliDuration) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Returns subscription that cancels schedule callback or inner task subscription
 			new Subscription {
 				private var active = true
@@ -367,7 +379,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				{
 					schedule(newDelaySchedule(delay)) { _ =>
 						if active then {
-							innerSub = task.subscribeSync(onComplete)
+							innerSub = task.subscribeSync(monoObserver)
 						}
 					}
 				}
@@ -382,20 +394,26 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedMap[A, B](task: Task[A], delay: MilliDuration, f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns subscription that cancels schedule or propagates upstream
 			new Subscription {
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = task.subscribeSync { a =>
-						if active then {
-							schedule(newDelaySchedule(delay)) { _ =>
-								if active then onComplete(f(a))
+					innerSub = task.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if active then {
+								schedule(newDelaySchedule(delay)) { _ =>
+									if active then monoObserver.onSuccess(f(a))
+								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then monoObserver.onError(ex)
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -408,22 +426,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedFlatMap[A, B](task: Task[A], delay: MilliDuration, f: A => Task[B]) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns subscription that propagates cancel to both delayed outer and inner task
 			new Subscription {
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = task.subscribeSync { a =>
-						if active then {
-							schedule(newDelaySchedule(delay)) { _ =>
-								if active then {
-									innerSub = f(a).subscribeSync(onComplete)
+					innerSub = task.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if active then {
+								schedule(newDelaySchedule(delay)) { _ =>
+									if active then {
+										innerSub = f(a).subscribeSync(monoObserver)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then monoObserver.onError(ex)
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -439,7 +463,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Caution: This [[Task]] is reusable only when limit2 is null.
 	 */
 	final class TimeLimitedTask[A](task: (A => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractTask[Maybe[A]] {
-		override def subscribeSync(onComplete: Maybe[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Maybe[A]]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			var hasElapsed = false
 			var hasCompleted = false
@@ -453,7 +477,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 							cancel(timer)
 							if !hasCompleted then {
 								hasElapsed = true
-								onComplete(Maybe.empty)
+								monoObserver.onSuccess(Maybe.empty)
 							}
 						}
 					}
@@ -461,7 +485,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 						if active && !hasElapsed then {
 							cancel(timer)
 							hasCompleted = true
-							onComplete(Maybe(a))
+							monoObserver.onSuccess(Maybe(a))
 						}
 					}
 				}
@@ -479,13 +503,13 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Caution: This [[Task]] is reusable only when limit2 is null.
 	 */
 	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => A) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			// Returns subscription that ignores supplier callback and cancels timer
 			new Subscription {
 				private var active = true
 				{
-					schedule(timer)(_ => if active then onComplete(supplier(timer)))
+					schedule(timer)(_ => if active then monoObserver.onSuccess(supplier(timer)))
 				}
 
 				override def unsubscribe(): Unit = {
@@ -501,14 +525,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Caution: This [[Task]] is reusable only when limit2 is null.
 	 */
 	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			// Returns subscription that propagates unsubscription to inner task
 			new Subscription {
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 				{
-					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(onComplete))
+					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(monoObserver))
 				}
 
 				override def unsubscribe(): Unit = {
@@ -714,7 +738,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledVenture[A](venture: Venture[A], aSchedule: Schedule) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// The returned subscription cancels the scheduled task and handles inner subscription cancellation.
 			new Subscription {
@@ -724,7 +748,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				{
 					schedule(aSchedule) { _ =>
 						if active then {
-							innerSub = venture.subscribeSync(onComplete)
+							innerSub = venture.subscribeSync(monoObserver)
 						}
 					}
 				}
@@ -740,7 +764,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledTransform[A, B](venture: Venture[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// Propagates the unsubscribe call back to the underlying upstream venture.
 			new Subscription {
@@ -748,20 +772,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = venture.subscribeSync { tryA =>
-						if active then {
-							schedule(aSchedule) { _ =>
-								if active then {
-									val tryB =
-										try f(tryA)
-										catch {
-											case NonFatal(e) => Failure(e)
-										}
-									onComplete(tryB)
+					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = {
+							if active then {
+								schedule(aSchedule) { _ =>
+									if active then {
+										val tryB =
+											try f(tryA)
+											catch {
+												case NonFatal(e) => Failure(e)
+											}
+										monoObserver.onSuccess(tryB)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then {
+								monoObserver.onSuccess(Failure(ex))
+							}
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -775,7 +807,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	/** $notReusableTask */
 	final class ScheduledTransformWith[A, B](ventureA: Venture[A], aSchedule: Schedule, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// Propagates cancellation to both the outer (upstream) venture and the inner venture.
 			new Subscription {
@@ -783,20 +815,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = ventureA.subscribeSync { tryA =>
-						if active then {
-							schedule(aSchedule) { _ =>
-								if active then {
-									val ventureB =
-										try f(tryA)
-										catch {
-											case NonFatal(e) => Venture_failed(e)
-										}
-									innerSub = ventureB.subscribeSync(onComplete)
+					innerSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = {
+							if active then {
+								schedule(aSchedule) { _ =>
+									if active then {
+										val ventureB =
+											try f(tryA)
+											catch {
+												case NonFatal(e) => Venture_failed(e)
+											}
+										innerSub = ventureB.subscribeSync(monoObserver)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then {
+								monoObserver.onSuccess(Failure(ex))
+							}
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -809,7 +849,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedVenture[A](venture: Venture[A], delay: MilliDuration) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// It guards the delay timer and propagates cancellation down to the inner venture.
 			new Subscription {
@@ -819,7 +859,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				{
 					schedule(newDelaySchedule(delay)) { _ =>
 						if active then {
-							innerSub = venture.subscribeSync(onComplete)
+							innerSub = venture.subscribeSync(monoObserver)
 						}
 					}
 				}
@@ -834,7 +874,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedTransform[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// Propagates cancellation upstream to the source venture and guards scheduled callback execution.
 			new Subscription {
@@ -842,20 +882,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = venture.subscribeSync { tryA =>
-						if active then {
-							schedule(newDelaySchedule(delay)) { _ =>
-								if active then {
-									val tryB =
-										try f(tryA)
-										catch {
-											case NonFatal(e) => Failure(e)
-										}
-									onComplete(tryB)
+					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = {
+							if active then {
+								schedule(newDelaySchedule(delay)) { _ =>
+									if active then {
+										val tryB =
+											try f(tryA)
+											catch {
+												case NonFatal(e) => Failure(e)
+											}
+										monoObserver.onSuccess(tryB)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then {
+								monoObserver.onSuccess(Failure(ex))
+							}
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -868,7 +916,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	final class DelayedTransformWith[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// Propagates cancellation to both upstream and inner ventures during delay.
 			new Subscription {
@@ -876,20 +924,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				private var innerSub: Subscription = Subscription_empty
 
 				{
-					innerSub = venture.subscribeSync { tryA =>
-						if active then {
-							schedule(newDelaySchedule(delay)) { _ =>
-								if active then {
-									val ventureB =
-										try f(tryA)
-										catch {
-											case NonFatal(e) => Venture_failed(e)
-										}
-									innerSub = ventureB.subscribeSync(onComplete)
+					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = {
+							if active then {
+								schedule(newDelaySchedule(delay)) { _ =>
+									if active then {
+										val ventureB =
+											try f(tryA)
+											catch {
+												case NonFatal(e) => Venture_failed(e)
+											}
+										innerSub = ventureB.subscribeSync(monoObserver)
+									}
 								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then {
+								monoObserver.onSuccess(Failure(ex))
+							}
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -905,7 +961,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * This [[Venture]] is reusable only when limit2 is null.
 	 */
 	final class TimeLimitedVenture[A](upChain: (Try[A] => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractVenture[Maybe[A]] {
-		override def subscribeSync(onComplete: Try[Maybe[A]] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[Maybe[A]]]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			var hasElapsed = false
 			var hasCompleted = false
@@ -920,7 +976,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 							cancel(timer)
 							if !hasCompleted then {
 								hasElapsed = true
-								onComplete(Success(Maybe.empty))
+								monoObserver.onSuccess(Success(Maybe.empty))
 							}
 						}
 					}
@@ -929,8 +985,8 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 							cancel(timer)
 							hasCompleted = true
 							tryA match {
-								case Success(a) => onComplete(Success(Maybe(a)))
-								case f: Failure[A] => onComplete(f.castTo[Maybe[A]])
+								case Success(a) => monoObserver.onSuccess(Success(Maybe(a)))
+								case f: Failure[A] => monoObserver.onSuccess(f.castTo[Maybe[A]])
 							}
 						}
 					}
@@ -949,14 +1005,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Caution: This [[Venture]] is reusable only when limit2 is null.
 	 */
 	final class DelayedSupplierVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// The returned subscription cancels the scheduler timer and ignores the supplier callback if inactive.
 			new Subscription {
 				private var active = true
 				{
-					schedule(timer)(_ => if active then onComplete(supplier(timer)))
+					schedule(timer)(_ => if active then monoObserver.onSuccess(supplier(timer)))
 				}
 
 				override def unsubscribe(): Unit = {
@@ -972,7 +1028,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Caution: This [[Venture]] is reusable only when limit2 is null.
 	 */
 	final class DelayedSupplierFlatVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
 			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
 			// The returned subscription cancels the scheduler timer and propagates cancellation to the inner venture.
@@ -980,7 +1036,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				private var active = true
 				private var innerSub: Subscription = Subscription_empty
 				{
-					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(onComplete))
+					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(monoObserver))
 				}
 
 				override def unsubscribe(): Unit = {

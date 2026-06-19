@@ -261,9 +261,29 @@ trait Doer { thisDoer =>
 		def unsubscribe(): Unit
 	}
 
-	type Observer[-A] = A => Unit
+	/** Observer of single result computations. */
+	trait MonoObserver[-A] {
+		/** The implementation should never throw a non-fatal exception. It may either terminate normally or fatally though. */
+		def onSuccess(value: A): Unit
 
-	@threadUnsafe lazy val Observer_ignore: Observer[Any] = _ => {}
+		/** The implementation should never throw a non-fatal exception. It may either terminate normally or fatally though. */
+		def onError(ex: Throwable): Unit
+	}
+
+	/** TODO delete after migration */
+	class CallbackMonoObserver[-A](val callback: A => Unit) extends MonoObserver[A] {
+		override def onSuccess(value: A): Unit = {
+			callback(value)
+		}
+
+		override def onError(ex: Throwable): Unit = ()
+	}
+
+	@threadUnsafe lazy val MonoObserver_ignore: MonoObserver[Any] = new MonoObserver[Any] {
+		override def onSuccess(value: Any): Unit = ()
+
+		override def onError(ex: Throwable): Unit = ()
+	}
 
 	/** An empty subscription that performs no action upon unsubscription. */
 	@threadUnsafe lazy val Subscription_empty: Subscription = () => ()
@@ -271,9 +291,14 @@ trait Doer { thisDoer =>
 	trait Observable[+A] { thisObservable =>
 		/** Subscribes an [[Observer]] to the result of this [[Observable]] and returns a [[Subscription]] that can be used to cancel.
 		 * This method is the sole primitive operation of this trait; all other methods are derived from it.\
-		 * @param onComplete The callback that must be invoked upon the completion of this [[Observable]]. The implementation should call this callback within the $DoSerEx.\
+		 * @param monoObserver The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
 		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def subscribeSync(onComplete: Observer[A]): Subscription
+		def subscribeSync(monoObserver: MonoObserver[A]): Subscription
+
+		@targetName("subscribeSyncCallback")
+		inline def subscribeSync(inline consumer: A => Unit): Subscription = {
+			subscribeSync(new CallbackMonoObserver[A](consumer))
+		}
 
 		/** Initiates an execution of this [[Observable]] and subscribes the provided call-back as a consumer of the execution result.
 		 * Each invocation of this method triggers a new execution.
@@ -313,24 +338,49 @@ trait Doer { thisDoer =>
 			}
 		}
 
-		inline def subscribeAndForget(inline isWithingDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithingDoSerEx)(Observer_ignore)
+		inline def subscribeAndForget(inline isWithingDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithingDoSerEx)(_ => ()) // TODO provisory: update after migration
 
 		/** Like [[subscribeSync]] but does not return a [[Subscription]].
 		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation.
-		 * @param onComplete The callback that must be invoked upon the completion of this [[Observable]]. The implementation should call this callback within the $DoSerEx.\
-		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def triggerSync(onComplete: A => Unit): Unit = subscribeSync(onComplete) // TODO implement in subclasses that benefit from this.
+		 * @param monoObserver The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
+		 * The implementation may assume that the [[MonoObserver]] methods either terminate normally or fatally, but will not throw non-fatal exceptions. */
+		def triggerSync(monoObserver: MonoObserver[A]): Unit = subscribeSync(monoObserver)
+
+		/** TODO provisory: delete after migration */
+		@targetName("triggerSyncCallback")
+		inline def triggerSync(inline consumer: A => Unit): Unit = {
+			triggerSync(new MonoObserver[A] {
+				override def onSuccess(value: A): Unit = consumer(value)
+
+				override def onError(ex: Throwable): Unit = ()
+			})
+		}
 
 		/** Enqueues an uncancelable execution of this [[Observable]] ignoring the result .
 		 *
 		 * $threadSafe
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx */
-		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(observer: A => Unit): Unit = {
+		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(monoObserver: MonoObserver[A]): Unit = {
 			if isWithinDoSerEx then {
 				checkWithin()
-				triggerSync(observer)
-			} else thisDoer.run(triggerSync(observer))
+				triggerSync(monoObserver)
+			} else thisDoer.run(triggerSync(monoObserver))
+		}
+
+		/** TODO provisory: delete after migration */
+		@targetName("triggerCallback")
+		inline final def trigger(inline isWithinDoSerEx: Boolean)(inline consumer: A => Unit): Unit = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				triggerSync(consumer)
+			} else thisDoer.run(triggerSync(consumer))
+		}
+
+		/** TODO provisory: delete after migration */
+		@targetName("triggerCallbackDefault")
+		inline final def trigger(inline consumer: A => Unit): Unit = {
+			trigger(isInSequence)(consumer)
 		}
 
 		/** Enqueues an execution of this [[Observable]] ignoring the result.
@@ -341,8 +391,8 @@ trait Doer { thisDoer =>
 		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
 			if isWithinDoSerEx then {
 				checkWithin()
-				triggerSync(Observer_ignore)
-			} else thisDoer.run(triggerSync(Observer_ignore))
+				triggerSync(MonoObserver_ignore)
+			} else thisDoer.run(triggerSync(MonoObserver_ignore))
 		}
 
 		/** Enqueues an execution of this [[Task]] and then invokes the provided consumer passing the result.
@@ -675,15 +725,21 @@ trait Doer { thisDoer =>
 	private inline def Task_FromVenture(trap: Nothing): Any = trap
 
 	final class Task_FromVenture[A, B >: A](ventureA: Venture[A], exceptionHandler: Throwable => B) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Propagates subscription and maps Success/Failure for B completion
-			ventureA.subscribeSync { tryA =>
-				val b = tryA match {
-					case Success(a) => a
-					case Failure(exception) => exceptionHandler(exception)
+			ventureA.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = {
+					val b = tryA match {
+						case Success(a) => a
+						case Failure(exception) => exceptionHandler(exception)
+					}
+					monoObserver.onSuccess(b)
 				}
-				onComplete(b)
-			}
+
+				override def onError(ex: Throwable): Unit = {
+					monoObserver.onError(ex)
+				}
+			})
 		}
 
 		override def toString: String = deriveToString[Task_FromVenture[A, B]](this)
@@ -693,9 +749,13 @@ trait Doer { thisDoer =>
 	private inline def Task_Map(trap: Nothing): Any = trap
 
 	final class Task_Map[A, B](cA: Task[A], f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Propagates the subscription upstream while mapping success values
-			cA.subscribeSync { a => onComplete(f(a)) }
+			cA.subscribeSync(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = monoObserver.onSuccess(f(a))
+
+				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
+			})
 		}
 
 		override def toString: String = deriveToString[Task_Map[A, B]](this)
@@ -706,18 +766,26 @@ trait Doer { thisDoer =>
 	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
 	final class Task_FlatMap[A, B](cA: Task[A], f: A => Observable[B]) extends AbstractTask[B] {
-		override def subscribeSync(onComplete: B => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			// Returns a delegating subscription to propagate cancel to active stage
 			new Subscription {
 				private var active = true
 				private var currentSub: Subscription = Subscription_empty
 
 				{
-					currentSub = cA.subscribeSync { a =>
-						if active then {
-							currentSub = f(a).subscribeSync(onComplete)
+					currentSub = cA.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if active then {
+								currentSub = f(a).subscribeSync(monoObserver)
+							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = {
+							if active then {
+								monoObserver.onError(ex)
+							}
+						}
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -735,12 +803,18 @@ trait Doer { thisDoer =>
 	private inline def Task_AndThen(trap: Nothing): Any = trap
 
 	final class Task_AndThen[A](taskA: Task[A], sideEffect: A => Unit) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Propagates the subscription upstream and performs the side effect on success
-			taskA.subscribeSync { a =>
-				sideEffect(a)
-				onComplete(a)
-			}
+			taskA.subscribeSync(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = {
+					sideEffect(a)
+					monoObserver.onSuccess(a)
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					monoObserver.onError(ex)
+				}
+			})
 		}
 
 		override def toString: String = deriveToString[Task_AndThen[A]](this)
@@ -750,7 +824,7 @@ trait Doer { thisDoer =>
 	private inline def Task_NotEver(trap: Nothing): Any = trap
 
 	class Task_NotEver extends AbstractTask[Nothing] {
-		override def subscribeSync(onComplete: Nothing => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Nothing]): Subscription = {
 			// Nothing is ever emitted, so returns empty subscription
 			Subscription_empty
 		}
@@ -762,9 +836,9 @@ trait Doer { thisDoer =>
 	private inline def Task_Ready(trap: Nothing): Any = trap
 
 	final class Task_Ready[A](a: A) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Completes immediately, so returns empty subscription
-			onComplete(a)
+			monoObserver.onSuccess(a)
 			Subscription_empty
 		}
 
@@ -777,9 +851,9 @@ trait Doer { thisDoer =>
 	private inline def Task_Mine(trap: Nothing): Any = trap
 
 	final class Task_Mine[A](supplier: () => A) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Completes immediately, so returns empty subscription
-			onComplete(supplier())
+			monoObserver.onSuccess(supplier())
 			Subscription_empty
 		}
 
@@ -790,9 +864,9 @@ trait Doer { thisDoer =>
 	private inline def Task_MineFlat(trap: Nothing): Any = trap
 
 	final class Task_MineFlat[A](supplier: () => Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Propagates the inner subscription directly
-			supplier().subscribeSync(onComplete)
+			supplier().subscribeSync(monoObserver)
 		}
 
 		override def toString: String = deriveToString[Task_MineFlat[A]](this)
@@ -802,17 +876,33 @@ trait Doer { thisDoer =>
 	private inline def Task_Foreign(trap: Nothing): Any = trap
 
 	final class Task_Foreign[A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Subscribes across Doer boundaries and supports cancellation via active flag
 			new Subscription {
-				private var active = true
+				@volatile private var active = true
+				@volatile private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
 				{
-					foreignTask.subscribe()(a => if active then thisDoer.run(if active then onComplete(a)))
+					foreignDoer.executeSequentially { () =>
+						if active then {
+							val foreignSubscription = foreignTask.subscribeSync(new foreignDoer.MonoObserver[A] {
+								override def onSuccess(a: A): Unit = if active then thisDoer.run(if active then monoObserver.onSuccess(a))
+
+								override def onError(ex: Throwable): Unit = if active then thisDoer.run(if active then monoObserver.onError(ex))
+							})
+							if active then maybeForeignSubscription = Maybe(foreignSubscription)
+							else foreignSubscription.unsubscribe()
+						}
+					}
 				}
 
 				override def unsubscribe(): Unit = {
 					checkWithin()
-					active = false
+					if active then {
+						active = false
+						maybeForeignSubscription.foreach { s =>
+							foreignDoer.executeSequentially(() => s.unsubscribe())
+						}
+					}
 				}
 			}
 		}
@@ -824,7 +914,7 @@ trait Doer { thisDoer =>
 	private inline def Task_Combined(trap: Nothing): Any = trap
 
 	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C) extends AbstractTask[C] {
-		override def subscribeSync(onComplete: C => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[C]): Subscription = {
 			object vars {
 				var aIsCompleted: Boolean = false
 				var bIsCompleted: Boolean = false
@@ -832,26 +922,32 @@ trait Doer { thisDoer =>
 				var maybeB: AnyRef | Null = null
 			}
 			// Propagates unsubscription to both combined tasks
-			val subA = taskA.subscribeSync { a =>
-				if vars.bIsCompleted then onComplete(f(a, vars.maybeB.asInstanceOf[B]))
-				else {
-					vars.aIsCompleted = true
-					vars.maybeA = a.asInstanceOf[AnyRef]
+			val subA = taskA.subscribeSync(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = {
+					if vars.bIsCompleted then monoObserver.onSuccess(f(a, vars.maybeB.asInstanceOf[B]))
+					else {
+						vars.aIsCompleted = true
+						vars.maybeA = a.asInstanceOf[AnyRef]
+					}
 				}
-			}
-			val subB = taskB.subscribeSync { b =>
-				if vars.aIsCompleted then onComplete(f(vars.maybeA.asInstanceOf[A], b))
-				else {
-					vars.bIsCompleted = true
-					vars.maybeB = b.asInstanceOf[AnyRef]
+
+				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
+			})
+			val subB = taskB.subscribeSync(new MonoObserver[B] {
+				override def onSuccess(b: B): Unit = {
+					if vars.aIsCompleted then monoObserver.onSuccess(f(vars.maybeA.asInstanceOf[A], b))
+					else {
+						vars.bIsCompleted = true
+						vars.maybeB = b.asInstanceOf[AnyRef]
+					}
 				}
-			}
-			new Subscription {
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					subA.unsubscribe()
-					subB.unsubscribe()
-				}
+
+				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
+			})
+			() => {
+				checkWithin()
+				subA.unsubscribe()
+				subB.unsubscribe()
 			}
 		}
 
@@ -863,11 +959,11 @@ trait Doer { thisDoer =>
 
 	/** @see [[Task_sequenceToArray]] */
 	final class Task_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]) extends AbstractTask[Array[A]] {
-		override def subscribeSync(onComplete: Array[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Array[A]]): Subscription = {
 			val size = duties.size
 			val array = Array.ofDim[A](size)
 			if size == 0 then {
-				onComplete(array)
+				monoObserver.onSuccess(array)
 				Subscription_empty
 			} else {
 				val taskIterator = duties.iterator
@@ -877,23 +973,25 @@ trait Doer { thisDoer =>
 				while index < size do {
 					val task = taskIterator.next()
 					val taskIndex = index
-					subs(index) = task.subscribeSync { a =>
-						array(taskIndex) = a
-						completedCounter += 1
-						if completedCounter == size then onComplete(array)
-					}
+					subs(index) = task.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							array(taskIndex) = a
+							completedCounter += 1
+							if completedCounter == size then monoObserver.onSuccess(array)
+						}
+
+						override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
+					})
 					index += 1
 				}
 				// Cancels all sub-subscriptions in the sequence
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						checkWithin()
-						var i = 0
-						while i < size do {
-							val s = subs(i)
-							if s != null then s.unsubscribe()
-							i += 1
-						}
+				() => {
+					checkWithin()
+					var i = 0
+					while i < size do {
+						val s = subs(i)
+						if s != null then s.unsubscribe()
+						i += 1
 					}
 				}
 			}
@@ -997,9 +1095,9 @@ trait Doer { thisDoer =>
 	/** A [[LatchingTask]] that is fulfilled since its inception. */
 	final class ReadyTask[+A](val value: A) extends LatchingTask[A] {
 
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
 			// Returns empty subscription since it completes synchronously
-			onComplete(value)
+			monoObserver.onSuccess(value)
 			Subscription_empty
 		}
 
@@ -1009,11 +1107,13 @@ trait Doer { thisDoer =>
 		override val maybeResult: Maybe[A] =
 			Maybe(value)
 
-		override def unsubscribe(onComplete: A => Unit): Unit =
-			()
+		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = ()
 
-		override def isSubscribed(onComplete: A => Unit): Boolean =
-			false
+		override def unsubscribe(onComplete: A => Unit): Unit = ()
+
+		override def isSubscribed(monoObserver: MonoObserver[A]): Boolean = false
+
+		override def isSubscribed(onComplete: A => Unit): Boolean = false
 
 		override def foreach(consumer: A => Unit): Unit = {
 			checkWithin()
@@ -1053,18 +1153,18 @@ trait Doer { thisDoer =>
 
 		def this() = this(Maybe.empty)
 
-		override def subscribeSync(onComplete: A => Unit): Subscription = {
-			// Attaches onComplete observer and returns a Subscription to detach it
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
+			// Attaches MonoObserver and returns a Subscription to detach it
 			oResult.fold {
-				attach(onComplete)
+				attach(monoObserver)
 				new Subscription {
 					override def unsubscribe(): Unit = {
 						checkWithin()
-						detach(onComplete)
+						detach(monoObserver)
 					}
 				}
 			} { a =>
-				onComplete(a)
+				monoObserver.onSuccess(a)
 				Subscription_empty
 			}
 		}
@@ -1072,7 +1172,11 @@ trait Doer { thisDoer =>
 		override def succeed: LatchingVenture[A] = {
 			oResult.fold {
 				val commitment = new Commitment[A]
-				subscribeSync(a => commitment.completeUnsafe(Success(a)))
+				subscribeSync(new MonoObserver[A] {
+					override def onSuccess(a: A): Unit = commitment.completeUnsafe(Success(a))
+
+					override def onError(ex: Throwable): Unit = ()
+				})
 				commitment
 			} { a =>
 				ReadyVenture(Success(a))
@@ -1084,13 +1188,19 @@ trait Doer { thisDoer =>
 			oResult
 		}
 
-		override def unsubscribe(consumer: A => Unit): Unit = {
+		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = {
 			checkWithin()
-			detach(consumer)
+			detach(monoObserver)
 		}
 
-		override def isSubscribed(onComplete: A => Unit): Boolean =
-			isAttached(onComplete)
+		override def unsubscribe(onComplete: A => Unit): Unit = {
+			checkWithin()
+			detachCallback(onComplete)
+		}
+
+		override def isSubscribed(monoObserver: MonoObserver[A]): Boolean = isAttached(monoObserver)
+
+		override def isSubscribed(onComplete: A => Unit): Boolean = isAttachedCallback(onComplete)
 
 		override def foreach(consumer: A => Unit): Unit = {
 			checkWithin()
@@ -1101,7 +1211,11 @@ trait Doer { thisDoer =>
 			checkWithin()
 			oResult.fold {
 				val covenant = Covenant[B]()
-				this.subscribeSync(a => covenant.fulfillUnsafe(f(a)))
+				this.subscribeSync(new MonoObserver[A] {
+					override def onSuccess(a: A): Unit = covenant.fulfillUnsafe(f(a))
+
+					override def onError(ex: Throwable): Unit = ()
+				})
 				covenant
 			} { a =>
 				new ReadyTask[B](f(a))
@@ -1112,7 +1226,17 @@ trait Doer { thisDoer =>
 			checkWithin()
 			oResult.fold {
 				val covenant = Covenant[B]()
-				this.subscribeSync(a => f(a).subscribeSync(b => covenant.fulfillUnsafe(b)))
+				this.subscribeSync(new MonoObserver[A] {
+					override def onSuccess(a: A): Unit = {
+						f(a).subscribeSync(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = covenant.fulfillUnsafe(b)
+
+							override def onError(ex: Throwable): Unit = ()
+						})
+					}
+
+					override def onError(ex: Throwable): Unit = ()
+				})
 				covenant
 			}(f)
 		}
@@ -1190,15 +1314,19 @@ trait Doer { thisDoer =>
 			if fulfillingTask eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
 			if isWithinDoSerEx then {
 				oResult.fold {
-					fulfillingTask.subscribeSync { result =>
-						oResult.fold {
-							this.oResult = Maybe(result)
-							this.capture(result)
-							onCompleted(result, THE_PROVIDED)
-						} { a1 =>
-							onCompleted(a1, ANOTHER_AFTER)
+					fulfillingTask.subscribeSync(new MonoObserver[A] {
+						override def onSuccess(result: A): Unit = {
+							oResult.fold {
+								oResult = Maybe(result)
+								capture(result)
+								onCompleted(result, THE_PROVIDED)
+							} { a1 =>
+								onCompleted(a1, ANOTHER_AFTER)
+							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = ()
+					})
 				} { result =>
 					onCompleted(result, ANOTHER_BEFORE)
 				}
@@ -1234,7 +1362,11 @@ trait Doer { thisDoer =>
 	def Covenant_mineFlat[A](supplier: () => LatchingTask[A]): Covenant[A] = {
 		val covenant = new Covenant[A]
 		run {
-			supplier().subscribeSync(a => covenant.fulfillUnsafe(a))
+			supplier().subscribeSync(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = covenant.fulfillUnsafe(a)
+
+				override def onError(ex: Throwable): Unit = ()
+			})
 		}
 		covenant
 	}
@@ -1510,8 +1642,7 @@ trait Doer { thisDoer =>
 	inline final def Venture_failed[A](throwable: Throwable): Venture[A] = Venture_ready(Failure(throwable))
 
 	/** Transforms a [[Task]] to a [[Venture]] */
-	def Venture_fromTask[A](task: Task[Try[A]]): Venture[A] =
-		(onComplete: Try[A] => Unit) => task.subscribeSync(onComplete)
+	def Venture_fromTask[A](task: Task[Try[A]]): Venture[A] = (monoObserver: MonoObserver[Try[A]]) => task.subscribeSync(monoObserver)
 
 	/** Creates a [[Venture]] whose result is the result of the provided supplier.\
 	 * **Detailed behavior:**
@@ -1674,7 +1805,7 @@ trait Doer { thisDoer =>
 	/** A [[Venture]] that never completes.\
 	 * $onCompleteExecutedBy */
 	final class Venture_Never extends AbstractVenture[Nothing] {
-		override def subscribeSync(onComplete: Try[Nothing] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[Nothing]]): Subscription = {
 			// Never completes, returns empty subscription
 			Subscription_empty
 		}
@@ -1686,9 +1817,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_fromTask(trap: Nothing): Any = trap
 
 	final class Venture_fromTask[A](cA: Task[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Propagates underlying task subscription while mapping completion
-			cA.subscribeSync(onComplete.compose(Success.apply))
+			cA.subscribeSync(new MonoObserver[A] {
+				override def onSuccess(value: A): Unit = monoObserver.onSuccess(Success(value))
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_fromTask[A]](this)
@@ -1698,9 +1833,9 @@ trait Doer { thisDoer =>
 	private inline def Venture_Ready(trap: Nothing): Any = trap
 
 	final class Venture_Ready[A](tryA: Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Completes immediately, returns empty subscription
-			onComplete(tryA)
+			monoObserver.onSuccess(tryA)
 			Subscription_empty
 		}
 
@@ -1711,14 +1846,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_Own(trap: Nothing): Any = trap
 
 	final class Venture_Own[+A](supplier: () => Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Evaluates immediately, returns empty subscription
 			val result =
-				try supplier()
-				catch {
+				try supplier() catch {
 					case NonFatal(e) => Failure(e)
 				}
-			onComplete(result)
+			monoObserver.onSuccess(result)
 			Subscription_empty
 		}
 
@@ -1729,7 +1863,7 @@ trait Doer { thisDoer =>
 	private inline def TVenture_OwnFlat(trap: Nothing): Any = trap
 
 	final class Venture_OwnFlat[+A](supplier: () => Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Returns delegating subscription to cancel flatMap chain stages
 			new Subscription {
 				private var active = true
@@ -1737,13 +1871,10 @@ trait Doer { thisDoer =>
 
 				{
 					val venturesA =
-						try supplier()
-						catch {
+						try supplier() catch {
 							case NonFatal(e) => Venture_failed(e)
 						}
-					if active then {
-						currentSub = venturesA.subscribeSync(onComplete)
-					}
+					if active then currentSub = venturesA.subscribeSync(monoObserver)
 				}
 
 				override def unsubscribe(): Unit = {
@@ -1761,13 +1892,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_Wait(trap: Nothing): Any = trap
 
 	final class Venture_Wait[+A](future: Future[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Returns subscription that allows ignoring the future outcome on cancellation
 			new Subscription {
 				private var active = true
 				{
 					future.onComplete { tryA =>
-						if active then thisDoer.run(if active then onComplete(tryA))
+						if active then thisDoer.run(if active then monoObserver.onSuccess(tryA))
 					}(using ownSingleThreadExecutionContext)
 				}
 
@@ -1785,7 +1916,7 @@ trait Doer { thisDoer =>
 	private inline def Venture_Alien(trap: Nothing): Any = trap
 
 	final class Venture_Alien[+A](builder: () => Future[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Returns subscription that ignores the future outcome on cancellation
 			new Subscription {
 				private var active = true
@@ -1796,7 +1927,7 @@ trait Doer { thisDoer =>
 							case NonFatal(e) => Future.failed(e)
 						}
 					future.onComplete { tryA =>
-						if active then thisDoer.run(if active then onComplete(tryA))
+						if active then thisDoer.run(if active then monoObserver.onSuccess(tryA))
 					}(using ownSingleThreadExecutionContext)
 				}
 
@@ -1814,12 +1945,14 @@ trait Doer { thisDoer =>
 	private inline def Venture_Foreign(trap: Nothing): Any = trap
 
 	final class Venture_Foreign[+A](foreignDoer: Doer, foreignVenture: foreignDoer.Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Subscribes across Doers, checking active status
 			new Subscription {
 				private var active = true
 				{
-					foreignVenture.subscribe(false) { tryA => if active then run(if active then onComplete(tryA)) }
+					foreignVenture.subscribe(false) { tryA =>
+						if active then run(if active then monoObserver.onSuccess(tryA))
+					}
 				}
 
 				override def unsubscribe(): Unit = {
@@ -1836,19 +1969,22 @@ trait Doer { thisDoer =>
 	private inline def Venture_Consume(trap: Nothing): Any = trap
 
 	final class Venture_Consume[A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[Unit] {
-		override def subscribeSync(onComplete: Try[Unit] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[Unit]]): Subscription = {
 			// Propagates underlying subscription and processes result with consumer
-			ventureA.subscribeSync { tryA =>
-				val tryConsumerResult =
-					try {
-						consumer(tryA)
-						successUnit
-					}
-					catch {
-						case NonFatal(cause) => Failure(cause)
-					}
-				onComplete(tryConsumerResult)
-			}
+			ventureA.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = {
+					val tryConsumerResult =
+						try {
+							consumer(tryA)
+							successUnit
+						} catch {
+							case NonFatal(cause) => Failure(cause)
+						}
+					monoObserver.onSuccess(tryConsumerResult)
+				}
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_Consume[A]](this)
@@ -1858,23 +1994,25 @@ trait Doer { thisDoer =>
 	private inline def Venture_WithFilter(trap: Nothing): Any = trap
 
 	final class Venture_WithFilter[A](ventureA: Venture[A], predicate: A => Boolean) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Propagates underlying subscription and applies predicate logic
-			ventureA.subscribeSync {
-				case sa@Success(a) =>
-					val predicateResult =
-						try {
-							if predicate(a) then sa
-							else Failure(new NoSuchElementException(s"Venture filter predicate is not satisfied for $a"))
-						} catch {
-							case NonFatal(cause) =>
-								Failure(cause)
-						}
-					onComplete(predicateResult)
+			ventureA.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryResult: Try[A]): Unit = tryResult match {
+					case sa@Success(a) =>
+						val predicateResult =
+							try {
+								if predicate(a) then sa
+								else Failure(new NoSuchElementException(s"Venture filter predicate is not satisfied for $a"))
+							} catch {
+								case NonFatal(cause) => Failure(cause)
+							}
+						monoObserver.onSuccess(predicateResult)
 
-				case f@Failure(_) =>
-					onComplete(f)
-			}
+					case f@Failure(_) => monoObserver.onSuccess(f)
+				}
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_WithFilter[A]](this)
@@ -1884,9 +2022,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_Transform(trap: Nothing): Any = trap
 
 	final class Venture_Transform[+A, +B](originalVenture: Venture[A], f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Propagates underlying subscription and transforms result
-			originalVenture.subscribeSync { tryA => onComplete(tryA.reifyBack(f)) }
+			originalVenture.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = monoObserver.onSuccess(tryA.reifyBack(f))
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_Transform[A, B]](this)
@@ -1896,9 +2038,13 @@ trait Doer { thisDoer =>
 	private inline def Venture_Map(trap: Nothing): Any = trap
 
 	final class Venture_Map[+A, +B](originalVenture: Venture[A], f: A => B) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Propagates underlying subscription and maps success values
-			originalVenture.subscribeSync { tryA => onComplete(tryA.mapFast(f)) }
+			originalVenture.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = monoObserver.onSuccess(tryA.mapFast(f))
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_Map[A, B]](this)
@@ -1908,34 +2054,35 @@ trait Doer { thisDoer =>
 	private inline def Venture_FlatMap(trap: Nothing): Any = trap
 
 	final class Venture_FlatMap[+A, +B](ventureA: Venture[A], f: A => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns delegating subscription to cancel flatMap stages
 			new Subscription {
 				private var active = true
 				private var currentSub: Subscription = Subscription_empty
 
 				{
-					currentSub = ventureA.subscribeSync {
-						case Success(a) =>
-							if active then {
-								val maybeVentureB = try Maybe(f(a)) catch {
-									case NonFatal(e) =>
-										onComplete(Failure(e))
-										Maybe.empty
-								}
+					currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = tryA match {
+							case Success(a) =>
 								if active then {
-									maybeVentureB.fold {
-										currentSub = Subscription_empty
-									} { ventureB =>
-										currentSub = ventureB.subscribeSync(onComplete)
+									val maybeVentureB = try Maybe(f(a)) catch {
+										case NonFatal(e) =>
+											monoObserver.onSuccess(Failure(e))
+											Maybe.empty
+									}
+									if active then {
+										maybeVentureB.fold {
+											currentSub = Subscription_empty
+										} { ventureB =>
+											currentSub = ventureB.subscribeSync(monoObserver)
+										}
 									}
 								}
-							}
-						case failure: Failure[A] =>
-							if active then {
-								onComplete(failure.castTo[B])
-							}
-					}
+							case failure: Failure[A] => if active then monoObserver.onSuccess(failure.castTo[B])
+						}
+
+						override def onError(ex: Throwable): Unit = if active then monoObserver.onSuccess(Failure(ex))
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -1953,22 +2100,26 @@ trait Doer { thisDoer =>
 	private inline def Venture_TransformWith(trap: Nothing): Any = trap
 
 	final class Venture_TransformWith[+A, +B](ventureA: Venture[A], f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(onComplete: Try[B] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
 			// Returns delegating subscription to cancel transform stages
 			new Subscription {
 				private var active = true
 				private var currentSub: Subscription = Subscription_empty
 
 				{
-					currentSub = ventureA.subscribeSync { tryA =>
-						if active then {
-							tryA.reify { e =>
-								onComplete(Failure(e))
-							} { tryA =>
-								currentSub = f(tryA).subscribeSync(onComplete)
+					currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = {
+							if active then {
+								tryA.reify { e =>
+									monoObserver.onSuccess(Failure(e))
+								} { tryA =>
+									currentSub = f(tryA).subscribeSync(monoObserver)
+								}
 							}
 						}
-					}
+
+						override def onError(ex: Throwable): Unit = if active then monoObserver.onSuccess(Failure(ex))
+					})
 				}
 
 				override def unsubscribe(): Unit = {
@@ -1986,15 +2137,18 @@ trait Doer { thisDoer =>
 	private inline def Venture_AndThen(trap: Nothing): Any = trap
 
 	final class Venture_AndThen[+A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[A] {
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Propagates underlying subscription and runs side effect on completion
-			ventureA.subscribeSync { tryA =>
-				try consumer(tryA)
-				catch {
-					case NonFatal(e) => reportPanicException(e)
+			ventureA.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = {
+					try consumer(tryA) catch {
+						case NonFatal(e) => reportPanicException(e)
+					}
+					monoObserver.onSuccess(tryA)
 				}
-				onComplete(tryA)
-			}
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 		}
 
 		override def toString: String = deriveToString[Venture_AndThen[A]](this)
@@ -2004,34 +2158,38 @@ trait Doer { thisDoer =>
 	private inline def Venture_Combined(trap: Nothing): Any = trap
 
 	final class Venture_Combined[+A, +B, +C](ventureA: Venture[A], ventureB: Venture[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractVenture[C] {
-		override def subscribeSync(onComplete: Try[C] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[C]]): Subscription = {
 			var ota: Maybe[Try[A]] = Maybe.empty
 			var otb: Maybe[Try[B]] = Maybe.empty
 			// Propagates unsubscription to both combined ventures
-			val subA = ventureA.subscribeSync { tryA =>
-				otb.fold {
-					ota = Maybe(tryA)
-				} { tryB =>
-					val tryC =
-						try f(tryA, tryB)
-						catch {
+			val subA = ventureA.subscribeSync(new MonoObserver[Try[A]] {
+				override def onSuccess(tryA: Try[A]): Unit = {
+					otb.fold {
+						ota = Maybe(tryA)
+					} { tryB =>
+						val tryC = try f(tryA, tryB) catch {
 							case NonFatal(e) => Failure(e)
 						}
-					onComplete(tryC)
+						monoObserver.onSuccess(tryC)
+					}
 				}
-			}
-			val subB = ventureB.subscribeSync { tryB =>
-				ota.fold {
-					otb = Maybe(tryB)
-				} { tryA =>
-					val tryC =
-						try f(tryA, tryB)
-						catch {
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
+			val subB = ventureB.subscribeSync(new MonoObserver[Try[B]] {
+				override def onSuccess(tryB: Try[B]): Unit = {
+					ota.fold {
+						otb = Maybe(tryB)
+					} { tryA =>
+						val tryC = try f(tryA, tryB) catch {
 							case NonFatal(e) => Failure(e)
 						}
-					onComplete(tryC)
+						monoObserver.onSuccess(tryC)
+					}
 				}
-			}
+
+				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+			})
 			new Subscription {
 				override def unsubscribe(): Unit = {
 					subA.unsubscribe()
@@ -2047,11 +2205,11 @@ trait Doer { thisDoer =>
 	private inline def Venture_Sequence(trap: Nothing): Any = trap
 
 	final class Venture_Sequence[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractVenture[Array[A]] {
-		override def subscribeSync(onComplete: Try[Array[A]] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[Array[A]]]): Subscription = {
 			val size = ventures.size
 			val array = Array.ofDim[A](size)
 			if size == 0 then {
-				onComplete(Success(array))
+				monoObserver.onSuccess(Success(array))
 				Subscription_empty
 			} else {
 				val venturesIterator = ventures.iterator
@@ -2061,26 +2219,27 @@ trait Doer { thisDoer =>
 				while index < size do {
 					val venture = venturesIterator.next()
 					val ventureIndex = index
-					subs(index) = venture.subscribeSync {
-						case Success(a) =>
-							array(ventureIndex) = a
-							completedCounter += 1
-							if completedCounter == size then onComplete(Success(array))
+					subs(index) = venture.subscribeSync(new MonoObserver[Try[A]] {
+						override def onSuccess(tryA: Try[A]): Unit = tryA match {
+							case Success(a) =>
+								array(ventureIndex) = a
+								completedCounter += 1
+								if completedCounter == size then monoObserver.onSuccess(Success(array))
 
-						case failure: Failure[A] =>
-							onComplete(failure.asInstanceOf[Failure[Array[A]]])
-					}
+							case failure: Failure[A] => monoObserver.onSuccess(failure.asInstanceOf[Failure[Array[A]]])
+						}
+
+						override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
+					})
 					index += 1
 				}
 				// Cancels all sub-subscriptions in the sequence
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						var i = 0
-						while i < size do {
-							val s = subs(i)
-							if s != null then s.unsubscribe()
-							i += 1
-						}
+				() => {
+					var i = 0
+					while i < size do {
+						val s = subs(i)
+						if s != null then s.unsubscribe()
+						i += 1
 					}
 				}
 			}
@@ -2091,36 +2250,46 @@ trait Doer { thisDoer =>
 	private inline def Task_SequenceHardy(trap: Nothing): Any = trap
 
 	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractTask[Array[Try[A]]] {
-		override def subscribeSync(onComplete: Array[Try[A]] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Array[Try[A]]]): Subscription = {
 			val size = ventures.size
 			val array = Array.ofDim[Try[A]](size)
 			if size == 0 then {
-				onComplete(array)
+				monoObserver.onSuccess(array)
 				Subscription_empty
-			} else {
-				val venturesIterator = ventures.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				val subs = new Array[Subscription](size)
-				while index < size do {
-					val venture = venturesIterator.next()
-					val ventureIndex = index
-					subs(index) = venture.subscribeSync { tryA =>
-						array(ventureIndex) = tryA
-						completedCounter += 1
-						if completedCounter == size then onComplete(array)
+			} else new Subscription {
+				private val venturesSubscriptions = new Array[Subscription](size)
+				private var completedCounter: Int = 0
+				private var index: Int = 0
+
+				{ // constructor
+					val venturesIterator = ventures.iterator
+					while index < size do {
+						val venture = venturesIterator.next()
+						val ventureIndex = index
+
+						venturesSubscriptions(index) = venture.subscribeSync(new MonoObserver[Try[A]] {
+							override def onSuccess(tryA: Try[A]): Unit = {
+								array(ventureIndex) = tryA
+								completedCounter += 1
+								if completedCounter == size then monoObserver.onSuccess(array)
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								array(ventureIndex) = Failure(ex)
+								completedCounter += 1
+								if completedCounter == size then monoObserver.onSuccess(array)
+							}
+						})
+						index += 1
 					}
-					index += 1
 				}
-				// Cancels all sub-subscriptions in the sequence
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						var i = 0
-						while i < size do {
-							val s = subs(i)
-							if s != null then s.unsubscribe()
-							i += 1
-						}
+
+				override def unsubscribe(): Unit = {
+					var i = 0
+					while i < size do {
+						val s = venturesSubscriptions(i)
+						if s != null then s.unsubscribe()
+						i += 1
 					}
 				}
 			}
@@ -2260,20 +2429,22 @@ trait Doer { thisDoer =>
 	/** A [[LatchingVenture]] that is fulfilled since its inception. */
 	final class ReadyVenture[+A](val value: Try[A]) extends LatchingVenture[A] { thisReadyVenture =>
 
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
 			// Returns empty subscription since it completes synchronously
-			onComplete(value)
+			monoObserver.onSuccess(value)
 			Subscription_empty
 		}
 
 		override def maybeResult: Maybe[Try[A]] =
 			Maybe(value)
 
-		override def unsubscribe(onComplete: Try[A] => Unit): Unit =
-			()
+		override def unsubscribe(monoObserver: MonoObserver[Try[A]]): Unit = ()
 
-		override def isSubscribed(onComplete: Try[A] => Unit): Boolean =
-			false
+		override def unsubscribe(onComplete: Try[A] => Unit): Unit = ()
+
+		override def isSubscribed(monoObserver: MonoObserver[Try[A]]): Boolean = false
+
+		override def isSubscribed(onComplete: Try[A] => Unit): Boolean = false
 
 		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[Try[A]] =
 			Future.successful(value)
@@ -2330,18 +2501,18 @@ trait Doer { thisDoer =>
 		 * @return this [[Commitment]] as a [[LatchingVenture]] */
 		inline def asLatchingVenture: LatchingVenture[A] = thisCommitment
 
-		override def subscribeSync(onComplete: Try[A] => Unit): Subscription = {
-			// Attaches onComplete observer and returns a Subscription to detach it
+		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
+			// Attaches monoObserver and returns a Subscription to detach it
 			oResult.fold {
-				attach(onComplete)
+				attach(monoObserver)
 				new Subscription {
 					override def unsubscribe(): Unit = {
 						checkWithin()
-						detach(onComplete)
+						detach(monoObserver)
 					}
 				}
 			} { tryA =>
-				onComplete(tryA)
+				monoObserver.onSuccess(tryA)
 				Subscription_empty
 			}
 		}
@@ -2351,14 +2522,24 @@ trait Doer { thisDoer =>
 			oResult
 		}
 
+		override def unsubscribe(monoObserver: MonoObserver[Try[A]]): Unit = {
+			checkWithin()
+			detach(monoObserver)
+		}
+
 		override def unsubscribe(onComplete: Try[A] => Unit): Unit = {
 			checkWithin()
-			detach(onComplete)
+			detachCallback(onComplete)
+		}
+
+		override def isSubscribed(monoObserver: MonoObserver[Try[A]]): Boolean = {
+			checkWithin()
+			isAttached(monoObserver)
 		}
 
 		override def isSubscribed(onComplete: Try[A] => Unit): Boolean = {
 			checkWithin()
-			isAttached(onComplete)
+			isAttachedCallback(onComplete)
 		}
 
 		override def withFilter(predicate: A => Boolean): LatchingVenture[A] = {
@@ -2634,42 +2815,75 @@ trait Doer { thisDoer =>
 		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).\
 		 * @note CAUTION: This method does not prevent duplicate subscriptions.
 		 * @note CAUTION: Must be called within the $DoSerEx */
-		override def subscribeSync(consumer: A => Unit): Subscription
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription
 
 		/** Removes a subscription done with [[subscribe]].\
 		 * @note CAUTION: Must be called within the $DoSerEx */
+		@deprecated("Use Subscription.unsubscribe() returned from subscribe instead", "since bi-convergent alignment")
+		def unsubscribe(monoObserver: MonoObserver[A]): Unit
+
 		@deprecated("Use Subscription.unsubscribe() returned from subscribe instead", "since bi-convergent alignment")
 		def unsubscribe(onComplete: A => Unit): Unit
 
 		/** @return `true` if the provided consumer is currently subscribed.
 		 * @note CAUTION: Must be called within the $DoSerEx */
+		def isSubscribed(monoObserver: MonoObserver[A]): Boolean
+
+		/** TODO delete when migration completes */
 		def isSubscribed(onComplete: A => Unit): Boolean
 	}
 
 	/** A mixin trait that maintains a list of observers subscribed to a future result.\
 	 * @tparam A The type of the result obtained when the associated process completes. */
 	trait SubscriptionHub[A] {
-		protected var firstOnCompleteObserver: (A => Unit) | Null = null
-		protected var onCompletedObservers: List[A => Unit] = Nil // TODO Change the collection to one with a efficient iterator from first to last appended.
+		protected var firstOnCompleteObserver: MonoObserver[A] | Null = null
+		protected var onCompletedObservers: List[MonoObserver[A]] = Nil // TODO Change the collection to one with a efficient iterator from first to last appended.
 
-		protected def attach(consumer: A => Unit): Unit = {
-			if firstOnCompleteObserver eq null then firstOnCompleteObserver = consumer
-			else onCompletedObservers = consumer :: onCompletedObservers
+		protected def attach(monoObserver: MonoObserver[A]): Unit = {
+			if firstOnCompleteObserver eq null then firstOnCompleteObserver = monoObserver
+			else onCompletedObservers = monoObserver :: onCompletedObservers
 		}
 
-		protected def detach(onComplete: A => Unit): Unit = {
-			if firstOnCompleteObserver eq onComplete then {
+		protected def detach(monoObserver: MonoObserver[A]): Unit = {
+			if firstOnCompleteObserver eq monoObserver then {
 				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
 				else {
 					firstOnCompleteObserver = onCompletedObservers.head
 					onCompletedObservers = onCompletedObservers.tail
 				}
-			} else onCompletedObservers = onCompletedObservers.filterNot(_ ne onComplete)
+			} else onCompletedObservers = onCompletedObservers.filterNot(_ ne monoObserver)
 		}
 
+		protected def isAttached(monoObserver: MonoObserver[A]): Boolean = {
+			(firstOnCompleteObserver eq monoObserver) || onCompletedObservers.exists(_ eq monoObserver)
+		}
 
-		protected def isAttached(onComplete: A => Unit): Boolean = {
-			(firstOnCompleteObserver eq onComplete) || onCompletedObservers.exists(_ eq onComplete)
+		/** TODO delete after migration */
+		protected def detachCallback(consumer: A => Unit): Unit = {
+			def matches(obs: MonoObserver[A] | Null): Boolean = obs match {
+				case null => false
+				case c: CallbackMonoObserver[A] => c.callback eq consumer
+				case _ => false
+			}
+
+			if matches(firstOnCompleteObserver) then {
+				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
+				else {
+					firstOnCompleteObserver = onCompletedObservers.head
+					onCompletedObservers = onCompletedObservers.tail
+				}
+			} else onCompletedObservers = onCompletedObservers.filterNot(obs => matches(obs))
+		}
+
+		/** TODO delete after migration */
+		protected def isAttachedCallback(consumer: A => Unit): Boolean = {
+			def matches(obs: MonoObserver[A] | Null): Boolean = obs match {
+				case null => false
+				case c: CallbackMonoObserver[A] => c.callback eq consumer
+				case _ => false
+			}
+
+			matches(firstOnCompleteObserver) || onCompletedObservers.exists(matches)
 		}
 
 		/** Apply the provided value to each consumers in subscriptions order and then clear all the subscriptions.\
@@ -2677,12 +2891,12 @@ trait Doer { thisDoer =>
 		protected def capture(a: A): Unit = {
 			if firstOnCompleteObserver ne null then {
 				try {
-					firstOnCompleteObserver.nn(a)
+					firstOnCompleteObserver.nn.onSuccess(a)
 					if onCompletedObservers.nonEmpty then {
 						// TODO change this implementation to one that does not cause StackOverflow when onCompleteObserver is big..
-						def loop(head: A => Unit, tail: List[A => Unit]): Unit = {
+						def loop(head: MonoObserver[A], tail: List[MonoObserver[A]]): Unit = {
 							if tail.nonEmpty then loop(tail.head, tail.tail)
-							head(a)
+							head.onSuccess(a)
 						}
 
 						loop(onCompletedObservers.head, onCompletedObservers.tail)

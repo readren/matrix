@@ -342,7 +342,7 @@ object Prueba {
 						Stop
 					}
 			}
-		}.trigger() { parent =>
+		}.trigger { parent =>
 			nexus.doer.checkWithin()
 			// println("Parent created")
 
@@ -363,7 +363,7 @@ object Prueba {
 				}
 			}
 
-			parent.stopTask.trigger() { _ =>
+			parent.stopTask.trigger { _ =>
 				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")

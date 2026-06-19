@@ -927,8 +927,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	 * This service algorithm enables multiple participants (typically hosted on different nodes) to reach agreement on values.
 	 * Once consensus is reached on a value, that decision becomes final and irreversible.
 	 *
-	 * Like Raft, this consensus algorithm relies on strong leadership and makes progress when a majority of participants
-	 * are available. The algorithm is based on the following core principles:
+	 * Like Raft, this consensus algorithm relies on strong leadership and makes progress when a majority of participants are available. The algorithm is based on the following core principles:
 	 *
 	 * - Each participant has a unique identifier.
 	 * - Each participant operates in one of several behavioral states depending on his role: starting, isolated, candidate, follower, leader, or quiesced.

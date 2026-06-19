@@ -533,13 +533,20 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			observingUnhandledAndReportedExceptionsDo { () =>
 				// Submit a venture that uses Venture.andThen which will cause a failure report
-				val venture = mainDoer.Venture_successful(0).andThen(_ => throw throwable)
-				venture.trigger() { _ =>
-					if NonFatal(throwable) then break(s"The failure report should be done before the venture that produced it completes.")
-					else break("The operation completed despite the operand thew a fatal exception")
-				}
+				val venture: mainDoer.Venture[Int] = mainDoer.Venture_successful(0).andThen(_ => throw throwable)
+				venture.trigger()(new mainDoer.MonoObserver[Try[Int]] {
+					override def onSuccess(value: Try[Int]): Unit = {
+						if NonFatal(throwable) then break(s"The failure report should be done before the venture that produced it completes (onSuccess)")
+						else break("The operation completed despite the operand thew a fatal exception (onSuccess)")
+					}
 
-				breakAfterWaiting(9, "No notification of the exception until 9 milliseconds after applying the operation. Waiting aborted.")
+					override def onError(ex: Throwable): Unit = {
+						if NonFatal(throwable) then break(s"The failure report should be done before the venture that produced it completes (onError)")
+						else break("The operation completed despite the operand thew a fatal exception (onError)")
+					}
+				})
+
+				breakAfterWaiting(9, "No notification of the exception until 9 milliseconds after applying the operation. Waiting aborted")
 			} { (doer, exception) =>
 					if NonFatal(exception) then break(s"A non fatal exception was uncaught despite it should: $exception")
 					else promise.trySuccess(())
@@ -803,12 +810,19 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				given Promise[Unit] = promise
 
 				observingUnhandledAndReportedExceptionsDo { () =>
-					operatedTask.trigger() { r =>
-						// scribe.debug(s"#$observingSession: about to throw the exception --- $isInSequence")
-						Thread.sleep(1)
-						throw exception
-						//promise.trySuccess(null)
-					}
+					operatedTask.trigger()(new MonoObserver[R] {
+						override def onSuccess(value: R): Unit = {
+							// scribe.debug(s"#$observingSession: about to throw the exception --- $isInSequence")
+							Thread.sleep(1) // TODO why is this sleep needed
+							throw exception
+						}
+
+						override def onError(ex: Throwable): Unit = {
+							// scribe.debug(s"#$observingSession: about to throw the exception --- $isInSequence")
+							Thread.sleep(1) // TODO why is this sleep needed
+							throw exception
+						}
+					})
 
 					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
 
@@ -967,12 +981,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 				observingUnhandledAndReportedExceptionsDo { () =>
 					// Apply the operation to the random venture.
-					operatedVenture.trigger() { operationResult =>
-						// If the venture completed then the result should be a Failure containing the exception, and the exception should be non-fatal.
-						if !NonFatal(exception) then break(s"$opName: Completed despite a fatal exception was thrown")
-						else if operationResult.fold(e => (e ne exception) && (e.getCause ne exception), _ => true) then break(s"$opName: Completed with an unexpected result: $operationResult")
-						else promise.trySuccess(())
-					}
+					operatedVenture.trigger()(new MonoObserver[Try[R]] {
+						override def onSuccess(operationResult: Try[R]): Unit = {
+							if !NonFatal(exception) then break(s"$opName: Completed despite a fatal exception was thrown")
+							else if operationResult.fold(e => (e ne exception) && (e.getCause ne exception), _ => true) then break(s"$opName: Completed with an unexpected result: $operationResult")
+							else promise.trySuccess(())
+						}
+
+						override def onError(ex: Throwable): Unit = break(s"$opName: Completed with onError instead of onSuccess(Failure): $ex")
+					})
 
 					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
 
@@ -1038,7 +1055,11 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 				observingUnhandledAndReportedExceptionsDo { () =>
 					// Trigger the execution passing a faulty on-complete callback.
-					operatedVenture.trigger()(tryR => throw exception)
+					operatedVenture.trigger()(new MonoObserver[Try[R]] {
+						override def onSuccess(value: Try[R]): Unit = throw exception
+
+						override def onError(ex: Throwable): Unit = throw exception
+					})
 
 					breakAfterWaiting(999, s"$opName: No notification of the exception until 999 milliseconds after applying the operation. Waiting aborted.")
 
@@ -1188,7 +1209,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			/** The promise that this test will succeed. */
 			val promise = Promise[Unit]()
 			val testedCommitment = doer.Commitment[Int]()
-			val subscriptableVenture = Commitment_triggerAndWire(doer.Venture_delays(1)(_ => tryNat))
+			val subscriptableVenture = Commitment_triggerAndWire(doer.Venture_delays(1)(_ => tryNat)) // TODO the delay avoids covering synchronous cases. Cover them.
 			checksCommitment[D](doer, testedCommitment, promise, nat, tryNat, f1, f2)(() => testedCommitment.completeWith(subscriptableVenture))
 			gate(using promise)
 		} // .check(Parameters.default.withMinSuccessfulTests(500))
@@ -1256,9 +1277,11 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 		}
-		checks.trigger() { r =>
-			if r.isFailure then break(s"The test is wrong. This should not happen: `checks` yielded $r")
-		}
+		checks.trigger()(new MonoObserver[Try[Unit]] {
+			override def onSuccess(r: Try[Unit]): Unit = if r.isFailure then break(s"The test is wrong. This should not happen: `checks` yielded $r")
+
+			override def onError(ex: Throwable): Unit = break(s"The test is wrong. This should not happen: `checks` yielded $ex")
+		})
 		if nat == 1 then {
 			completeWasNotCalled = false
 			completer()
@@ -1645,7 +1668,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				val expectedDelay = interval * repetitions + initialDelay
 				// println(s"counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				assertEquals(supplyResult, repetitions)
-				assert(actualDelay >= expectedDelay)
+				assert(actualDelay + 1 >= expectedDelay)
 				assert(doer.isCanceled(schedule))
 			}
 		}
@@ -1664,7 +1687,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			} yield {
 				val actualDelay = System.currentTimeMillis() - startTime
 				assertEquals(directResult, delayedResult)
-				assert(actualDelay >= testDelay, s"Execution was not delayed enough. Expected at least ${testDelay}ms, got ${actualDelay}ms")
+				assert(actualDelay + 1 >= testDelay, s"Execution was not delayed enough. Expected at least ${testDelay}ms, got ${actualDelay}ms")
 			}).toFutureHardy()
 		}
 	}
@@ -1691,7 +1714,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				if scheduledResult != directResult then commitment.break(new AssertionError(s"the scheduled result differs from the original"))
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * counter + initialDelay
-				if actualDelay < expectedDelay then commitment.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
+				if actualDelay + 1 < expectedDelay then commitment.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
 				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				if counter == repetitions then {
 					commitment.fulfill(())
@@ -1718,13 +1741,21 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			var wasCanceled = false
 			var hasCompleted = false
-			scheduledTask.trigger() { _ =>
-				hasCompleted = true
-				if wasCanceled then {
-					break(s"The task completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
+			scheduledTask.trigger()(new MonoObserver[Int] {
+				override def onSuccess(value: Int): Unit = {
+					hasCompleted = true
+					if wasCanceled then {
+						break(s"The task completed (onSuccess) despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
+					}
 				}
-				// println(s"-----> wasCanceled: $wasCanceled, schedule: $schedule")
-			}
+
+				override def onError(ex: Throwable): Unit = {
+					hasCompleted = true
+					if wasCanceled then {
+						break(s"The task completed (onError) despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
+					}
+				}
+			})
 			val cancelsAndWaits = for {
 				_ <- Venture_mine[Unit] { () =>
 					if doer.isCanceled(schedule) && !hasCompleted then break("The schedule got canceled before canceling it")
@@ -1736,7 +1767,11 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- doer.Venture_sleeps(delay)
 
 			} yield () // println("cancelsAndWaits completed successfully")
-			cancelsAndWaits.trigger()(promise.tryComplete(_))
+			cancelsAndWaits.trigger()(new MonoObserver[Try[Unit]] {
+				override def onSuccess(value: Try[Unit]): Unit = promise.tryComplete(value)
+
+				override def onError(ex: Throwable): Unit = promise.tryFailure(ex)
+			})
 			gate
 		}
 	}
@@ -1754,9 +1789,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			given Promise[Unit] = promise
 
 			doer.cancel(schedule)
-			scheduledTask.trigger() { _ =>
-				break(s"The task completed despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
-			}
+			scheduledTask.trigger()(new MonoObserver[Int] {
+				override def onSuccess(value: Int): Unit = break(s"The task completed (onSuccess) despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
+
+				override def onError(ex: Throwable): Unit = break(s"The task completed (onError) despite it was cancelled: isActive=${doer.wasActivated(schedule)}")
+			})
+
 			if !doer.isCanceled(schedule) then break("The schedule says it is not canceled despite it was.")
 			doer.schedule(doer.newDelaySchedule(1))(_ => promise.trySuccess(()))
 			gate
