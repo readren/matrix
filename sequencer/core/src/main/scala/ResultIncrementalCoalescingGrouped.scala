@@ -25,20 +25,21 @@ import readren.common.Maybe
 final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 
 	/**
-	 * Represents the internal state of an ongoing convergence process.
+	 * The stable [[doer.LatchingTask]] returned by all the calls to [[contend]] that participate in this [[Competition]].
+	 * Manages the internal state of an ongoing convergence process.
 	 *
-	 * @param finalResult The stable [[doer.Covenant]] returned by all the calls to [[contend]] that participate in this [[Competition]].
-	 * @param incumbent   The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
+	 * The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
 	 */
-	private final class Competition(
-		val finalResult: doer.Covenant[R],
-		var incumbent: doer.LatchingTask[R] | Null
-	)
+	private final class Competition extends doer.DefaultCaptor[R] {
+		/** The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]]. */
+		var incumbent: doer.LatchingTask[R] | Null = null
+		/** The [[Subscription]] to the [[incumbent]]. */
+		var maybeIncumbentSubscription: Maybe[doer.Subscription] = Maybe.empty
+	}
 
 	private val activeCompetitions: java.util.HashMap[P, Competition] = new java.util.HashMap()
 
-	private val createCompetition: java.util.function.Function[P, Competition] =
-		_ => new Competition(doer.Covenant[R](), null)
+	private val createCompetition: java.util.function.Function[P, Competition] = _ => new Competition()
 
 	/**
 	 * Enters a new execution into the ongoing competition for a specific parameter.
@@ -67,27 +68,65 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 			// The arbitrator function determines the winner of this contention
 			val chosenWinner = arbitrator(parameter, maybeIncumbent)
 
-			// Check for a change in incumbency (Monotonic transition)
-			if maybeIncumbent.fold(true)(_ ne chosenWinner) then {
-				// Unseat the previous incumbent
+
+			val isNewIncumbent = maybeIncumbent.fold(true) { currentIncumbent =>
+				if chosenWinner eq currentIncumbent then false
+				else {
+					// Unsubscribe the unseated contender.
+					val mis = competition.maybeIncumbentSubscription
+					competition.maybeIncumbentSubscription = Maybe.empty
+					mis.foreach(_.unsubscribe())
+					true
+				}
+			}
+
+			// If the competition is brand new or its current incumbent must be unseated
+			if isNewIncumbent then {
+				// Set the chosen winner as the incumbent
 				competition.incumbent = chosenWinner
 
 				// Subscribe to the chosen winner's completion
-				chosenWinner.subscribeSync { result =>
-					// The Incumbency Guard: A winner only fulfills the final result if it has not been displaced by a newer contender's arbitrator logic in the meantime.
-					if chosenWinner eq competition.incumbent then {
-						competition.finalResult.fulfillUnsafe(result)
-						// Cleanup: The convergence for this parameter is complete
-						activeCompetitions.remove(parameter)
+				val subscription = chosenWinner.subscribeSync(new doer.MonoObserver[R] { // TODO optimize
+					override def onSuccess(result: R): Unit = {
+						// The Incumbency Guard: A winner only fulfills the final result if it has not been displaced by a newer contender's arbitrator logic in the meantime.
+						if chosenWinner eq competition.incumbent then {
+							// Cleanup: The convergence for this parameter is complete
+							competition.incumbent = null
+							competition.maybeIncumbentSubscription = Maybe.empty
+							activeCompetitions.remove(parameter)
+
+							competition.fulfillSync(result)
+						}
 					}
-				}
+
+					override def onError(e: Throwable): Unit = {
+						// The Incumbency Guard: A winner only fulfills the final result if it has not been displaced by a newer contender's arbitrator logic in the meantime.
+						if chosenWinner eq competition.incumbent then {
+							// Cleanup: The convergence for this parameter is complete
+							competition.incumbent = null
+							competition.maybeIncumbentSubscription = Maybe.empty
+							activeCompetitions.remove(parameter)
+
+							competition.breakSync(e)
+						}
+					}
+				})
+				if competition.incumbent eq chosenWinner then competition.maybeIncumbentSubscription = Maybe(subscription)
+
 			}
-			competition.finalResult
+			competition
 		} else {
 			// If called from outside the doer, marshal the request into the sequence
-			val joiningCovenant = doer.Covenant[R]()
-			doer.run(joiningCovenant.fulfillWith(contend(parameter, arbitrator, true)))
-			joiningCovenant
+			new doer.DefaultCaptor[R] with doer.MonoObserver[R] with Runnable {
+				doer.run(this)
+
+				override def run(): Unit = contend(parameter, arbitrator, true).triggerSync(this)
+
+				override def onSuccess(a: R): Unit = fulfillSync(a)
+
+				override def onError(e: Throwable): Unit = breakSync(e)
+
+			}
 		}
 	}
 }

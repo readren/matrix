@@ -30,4 +30,5 @@ Once inside the shell, use this command to run a test:
 - **Exit**: Type `exit` or use `Ctrl+D` to leave the shell.
 
 ## Examples
-- `testOnly *MyTestSuite -- z "*All invariants special case"` (Runs the test named "All invariants special case" in test suite classes whose name ends with "MyTestSuite").
+
+- `testOnly *MyTestSuite -- -z "*All invariants special case"` (Runs the test named "All invariants special case" in test suite classes whose name ends with "MyTestSuite").

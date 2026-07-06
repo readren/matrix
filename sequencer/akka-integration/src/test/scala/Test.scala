@@ -23,7 +23,7 @@ object Test {
 				Behaviors.setup { actorContext =>
 					ActorBasedDoer.setup(actorContext) { doer =>
 						Behaviors.receiveMessage { pregunta =>
-							doer.Venture_successful(Respuesta(actorContext.self, "Hola")).subscribeAndSend(pregunta.replyTo, true)(ex => scribe.error(ex))
+							doer.Task_ready(Respuesta(actorContext.self, "Hola")).subscribeAndSend(pregunta.replyTo, true)(ex => scribe.error(ex))
 
 							Behaviors.same
 						}

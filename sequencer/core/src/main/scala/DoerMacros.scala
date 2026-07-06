@@ -14,9 +14,9 @@ object DoerMacros {
 		import quotes.reflect.*
 		val pos: Position = onCompleteExpr.asTerm.pos
 		Expr(s".subscribe(${Printer.TreeShortCode.show(onCompleteExpr.asTerm)}) } @ ${pos.sourceFile.name}:${pos.startLine + 1}")
-	}	
+	}
 
-	def executeSequentiallyImpl(doerExpr: Expr[Doer], procedureExpr: Expr[Unit])(using quotes: Quotes): Expr[Unit] = {
+	def runImpl(doerExpr: Expr[Doer], procedureExpr: Expr[Unit])(using quotes: Quotes): Expr[Unit] = {
 		import quotes.reflect.*
 
 		// Capture the source code location
@@ -36,15 +36,5 @@ object DoerMacros {
 		'{ $doerExpr.executeSequentially($runnable) }
 	}
 
-	def reportPanicExceptionImpl(doerExpr: Expr[Doer], panicExceptionExpr: Expr[Throwable])(using quotes: Quotes): Expr[Unit] = {
-		import quotes.reflect.*
-		// Capture the source code location.
-		val pos = Position.ofMacroExpansion
-		// Get the source code snippet from the source file at the specific line.
-		val snippet = pos.sourceCode.getOrElse("Source code not available")
-		// Build exception message.
-		val message = Expr(s"Reported at ${pos.sourceFile.name}:${pos.startLine + 1} => $snippet")
 
-		'{ $doerExpr.reportFailurePortal(new Doer.PanicException($message, $panicExceptionExpr)) }
-	}
 }

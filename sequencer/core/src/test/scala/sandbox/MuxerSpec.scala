@@ -21,8 +21,6 @@ class MuxerSpec extends ScalaCheckSuite {
 		override def currentExecutionSerial: ExecutionSerial = 0
 
 		override def currentlyRunningDoer: Maybe[DoerSandbox2] = Maybe.empty
-
-		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 	import sandbox.*
 

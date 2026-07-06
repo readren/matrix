@@ -17,8 +17,7 @@ object CooperativeWorkersTieredDp {
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersTieredDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		override type Tag = String
@@ -27,9 +26,6 @@ object CooperativeWorkersTieredDp {
 
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 
 }

@@ -16,8 +16,6 @@ class StandardSchedulingDpTest extends SchedulingDoerProviderTest[StandardSchedu
 		override def tagFromText(text: String): Tag = text
 
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
-
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = thisSuite.onFailureReported(doer, failure)
 	}
 
 	/** The implementation should release the specified [[DoerProvider]].

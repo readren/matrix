@@ -76,3 +76,8 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - cluster communication/state transitions: inspect `nexus/cluster/src/main/scala/cluster/service/ParticipantService.scala`.
   - consensus role/configuration transitions: inspect `consensus/src/main/scala/ConsensusParticipantSdm.scala`.
 - Tests are MUnit/ScalaCheck-based and distributed per module under `src/test/scala`.
+
+## OKF Maintenance
+
+- On every interaction that involves architectural analysis, codebase changes, design decisions, or research, you must trigger the `okf-maintenance` skill to inspect, update, or create the Open Knowledge Format (OKF) bundle in the `okf/`
+  directory.

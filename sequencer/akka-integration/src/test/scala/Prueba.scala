@@ -119,7 +119,7 @@ object Prueba {
 							case Pregunta(replyTo2, "¿Qué tal?") <- replyTo1.queries[Pregunta](ref => Respuesta(ref, "Hola también"))
 							_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
 						} yield ()
-						venture.subscribeSync { x => ctx.log.info(s"resultado final: $x") }
+						venture.foreach { x => ctx.log.info(s"resultado final: $x") }
 						Behaviors.same
 					case _ => assert(false)
 				}
@@ -132,7 +132,7 @@ object Prueba {
 			ActorBasedDoer.setup[Pregunta](ctx) { doer =>
 				import doer.*
 
-				val flow = Flow_wrap[ActorRef[Respuesta], Try[Unit]] { replyTo1 =>
+				val flow = Flow_wrap[ActorRef[Respuesta], Unit] { replyTo1 =>
 					for {
 						case Pregunta(replyTo2, "¿Qué tal?") <- replyTo1.queries[Pregunta](ref => Respuesta(ref, "Hola también"))
 						_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
@@ -140,7 +140,10 @@ object Prueba {
 				}
 				Behaviors.receiveMessage {
 					case Pregunta(replyTo1, "Hola") =>
-						flow.apply(replyTo1, true) { x => ctx.log.info(s"resultado final: $x") }
+						flow.apply(replyTo1, true)(
+							x => ctx.log.info(s"resultado final: $x"),
+							e => ctx.log.info(s"resultado final: $e")
+						)
 						Behaviors.same
 					case _ => assert(false)
 				}
@@ -156,10 +159,10 @@ object Prueba {
 				val paso2 = Behaviors.receiveMessage[Pregunta] {
 					case Pregunta(replyTo2, "¿Qué tal?") =>
 						val venture = for {
-							_ <- Venture_mine(() => ctx.log.info("sigue funcionando"))
+							_ <- Task_apply(() => ctx.log.info("sigue funcionando"))
 							_ <- replyTo2.says(Respuesta(null, "Muy bien, ¿y vos?"))
 						} yield ()
-						venture.subscribeSync(rf => ctx.log.info(s"resultado final: $rf"))
+						venture.subscribe(true)(rf => ctx.log.info(s"resultado final: $rf"))
 						Behaviors.same
 						
 					case x => println(s"unhandled message: $x")

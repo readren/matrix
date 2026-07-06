@@ -6,7 +6,7 @@ import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
 import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultPollingSchedulingDpd}
-import readren.sequencer.providers.CooperativeWorkersDp
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithPollingSchedulerDp}
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -25,7 +25,7 @@ object PruebaScheduling {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 		println(s"Nexus created")
 
-		val schedulingDoer = nexus.provideDoer(DefaultPollingSchedulingDpd, "scheduling-doer")
+		val schedulingDoer: CooperativeWorkersWithPollingSchedulerDp.SchedulingDoerFacade = nexus.provideDoer(DefaultPollingSchedulingDpd, "scheduling-doer")
 
 		if false then {
 			@volatile var inside = false
@@ -43,7 +43,7 @@ object PruebaScheduling {
 		} else {
 			val diagnosticScheduler = new Scheduler
 
-			nexus.createsActant[Tick, schedulingDoer.type](RegularAf, schedulingDoer) { actant =>
+			nexus.createActant[Tick, schedulingDoer.type](RegularAf, schedulingDoer) { actant =>
 				val tickSelfReceptor = actant.receptorProvider.local[Tick]
 				tickSelfReceptor.tell(Tick(List.empty))
 				val interval = FiniteDuration(1, TimeUnit.SECONDS)
@@ -59,42 +59,51 @@ object PruebaScheduling {
 							val schedule: schedulingDoer.Schedule = schedulingDoer.newFixedRateSchedule(counter % 10, 10)
 							var repetitions = 0
 							schedulingDoer.schedule(schedule) { _ =>
-								println(f"counter=$counter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().getId}%3d, numOfPendingRunnables=${schedulingDoer.numOfPendingRunnables}%3d, incitingId=$incitingId")
+								println(f"counter=$counter%4d, repetitions=$repetitions%2d, thread=${Thread.currentThread().threadId}%3d, numOfPendingRunnables=${schedulingDoer.numOfPendingRunnables}%3d, incitingId=$incitingId")
 								tickSelfReceptor.tell(Tick(counter :: incitingId))
 								repetitions += 1
 							}
 							Continue
 						}
 				}
-			}.trigger { parent =>
-				parent.stopTask.trigger { _ =>
-					println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")
+			}.triggerCallbacks(false)(
+				parent => {
+					nexus.doer.checkWithin()
+					parent.stopCapturer.triggerCallbacks(false)(
+						_ => {
+							parent.doer.checkWithin()
+							println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")
 
-					manager.shutdown()
-					println("shutdown executed")
+							manager.shutdown()
+							println("shutdown executed")
 
-					diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
+							diagnosticScheduler.fixedRate(0, 4000, TimeUnit.MILLISECONDS) { () =>
 
-						try {
-							val sb = new StringBuilder
-							sb.append("\n<<< Inspector <<<\n")
-							sb.append(
-								s"""Parent's diagnostic: ${parent.staleDiagnose}
-								   |SchedulingDoer's diagnostic: ${manager.diagnose(sb)}
-								   |""".stripMargin
+								parent.diagnose.foreach { parentDiagnostic =>
+									try {
+										val sb = new StringBuilder
+										sb.append("\n<<< Inspector <<<\n")
+										sb.append(
+											s"""Parent's diagnostic: $parentDiagnostic
+											   |SchedulingDoer's diagnostic: ${manager.diagnose(sb)}
+											   |""".stripMargin
 
-							)
-							sb.append("\n>>> Inspector >>>\n")
-							println(sb)
-						} catch {
-							case e: Throwable =>
-								e.printStackTrace()
-								throw e
-						}
-					}
-
-				}
-			}
+										)
+										sb.append("\n>>> Inspector >>>\n")
+										println(sb)
+									} catch {
+										case e: Throwable =>
+											e.printStackTrace()
+											throw e
+									}
+								}
+							}
+						},
+						error => throw new Exception(error)
+					)
+				},
+				error => throw new Exception(error)
+			)
 		}
 	}
 }

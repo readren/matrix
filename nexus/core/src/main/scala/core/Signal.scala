@@ -1,7 +1,7 @@
 package readren.nexus
 package core
 
-/** Type of the signal sent to the [[Behavior.handleSignal]] method. */
+/** A special and standardized type of message produced by an [[Actant]] for the [[Behavior]] hosting it. Signals inform about lifecycle events of the hosted [[Actant]]. */
 sealed trait Signal {
 	def isInitialization: Boolean
 

@@ -16,18 +16,14 @@ object StandardSchedulingDp {
 	}
 
 	final class Impl(
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 	) extends StandardSchedulingDp {
 		override type Tag = String
 
-		override def tagFromText(text: String): String = text
+		override def tagFromText(text: String): Tag = text
 
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 }
 
@@ -89,8 +85,6 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 
 		override def currentlyRunningDoer: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
 
-		override def reportFailure(failure: Throwable): Unit = onFailureReported(thisDoer, failure)
-
 		//// SCHEDULING EXTENSION
 
 		sealed abstract class TSchedule {
@@ -117,6 +111,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		private val activatedSchedules: java.util.concurrent.ConcurrentLinkedQueue[TSchedule] = new java.util.concurrent.ConcurrentLinkedQueue()
 
 		override type Schedule = TSchedule
+		override type Delay = TDelaySchedule
 
 		override def newDelaySchedule(delay: MilliDuration): TDelaySchedule = TDelaySchedule(delay)
 
@@ -148,25 +143,29 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 
 						case frs: TFixedRateSchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+								currentDoerThreadLocal.set(thisDoer)
 								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)
 										throw cause
+								} finally {
+									currentDoerThreadLocal.remove()
 								}
-
 							}
 							doSerEx.scheduleAtFixedRate(wrapper, frs.initialDelay, frs.interval, TimeUnit.MILLISECONDS)
 
 						case fds: TFixedDelaySchedule =>
 							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+								currentDoerThreadLocal.set(thisDoer)
 								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)
 										throw cause
+								} finally {
+									currentDoerThreadLocal.remove()
 								}
-
 							}
 							doSerEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
 					}

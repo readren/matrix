@@ -120,7 +120,7 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 				val schedule = priorityQueue(index).asInstanceOf[P]
 				if schedule.owner eq doer then {
 					schedule.isCanceled = true
-					priorityQueue.remove(schedule)
+					if priorityQueue.remove(schedule) && index < priorityQueue.size then index += 1
 				}
 			}
 

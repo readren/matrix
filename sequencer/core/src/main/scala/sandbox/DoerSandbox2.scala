@@ -1,7 +1,7 @@
 package readren.sequencer
 package sandbox
 
-import sandbox.DoerSandbox2.{ExecutionSerial, ResultOrigin, THE_PROVIDED, ANOTHER_BEFORE, ANOTHER_AFTER, PanicException}
+import sandbox.DoerSandbox2.{ExecutionSerial, ResultOrigin, THE_PROVIDED, ANOTHER_BEFORE, ANOTHER_AFTER}
 
 import readren.common.{Maybe, Trial, foreachWithIndex, mapWithIndex}
 
@@ -22,7 +22,7 @@ object DoerSandbox2 {
 	type ImmediateResultOrigin = ResultOrigin
 	final inline val ANOTHER_BEFORE = 1
 	final inline val THE_PROVIDED = 2
-	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
+
 }
 
 trait DoerSandbox2 { thisDoer =>
@@ -48,14 +48,6 @@ trait DoerSandbox2 { thisDoer =>
 
 	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${currentlyRunningDoer.fold("unknown")(_.tag)}."
 
-	/**
-	 * Called by few [[Venture]] and most [[Commitment]] operations when an operand function terminates abruptly and the nature of the operation does not allow to propagate the failure to the result.
-	 * Examples of such operations are [[Venture.andThen]], [[Venture.triggerAndForgetHandlingErrors]], [[Venture_wait]], [[Venture_alien]], and [[Commitment.completeUnsafe]].
-	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSerEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Venture]].
-	 * The implementation should not throw non-fatal exceptions.
-	 * This method is called within the thread assigned to this [[Doer]].
-	 * */
-	def reportFailure(cause: Throwable): Unit
 
 	/**
 	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
@@ -76,7 +68,7 @@ trait DoerSandbox2 { thisDoer =>
 	@threadUnsafe lazy val sequentialExecutionContext: ExecutionContext = new ExecutionContext {
 		def execute(runnable: Runnable): Unit = executeSequentially(runnable)
 
-		def reportFailure(cause: Throwable): Unit = run(thisDoer.reportFailure(new PanicException(s"Thrower tag=$tag", cause)))
+		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 
 	// ================ PUSH BASED COMPUTATION PRIMITIVES =================
@@ -313,7 +305,10 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	def Task_from[A](mono: Mono[A]): Task[A] = {
-		(monoObserver: MonoObserver[A]) => mono.subscribeSync(monoObserver)
+		mono match {
+			case task: Task[A] @unchecked => task
+			case _ => (monoObserver: MonoObserver[A]) => mono.subscribeSync(monoObserver)
+		}
 	}
 
 	def Task_from[A](foreignDoer: DoerSandbox2)(foreignMono: foreignDoer.Mono[A]): Task[A] = {
@@ -322,19 +317,50 @@ trait DoerSandbox2 { thisDoer =>
 				case ft: foreignDoer.Task[A] @unchecked => ft.asInstanceOf[Task[A]]
 				case fc: foreignDoer.Capturer[A] @unchecked => Task_from(fc.asInstanceOf[Capturer[A]])
 			}
-		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription {
-			private var isActive = true
-			{
-				foreignMono.subscribe(false)(new foreignDoer.MonoObserver[A] {
-					override def onSuccess(a: A): Unit = if isActive then thisDoer.run(if isActive then thisDoerMonoObserver.onSuccess(a))
+		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription with Runnable {
+			@volatile private var isActive = true
+			@volatile private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
 
-					override def onError(ex: Throwable): Unit = if isActive then thisDoer.run(if isActive then thisDoerMonoObserver.onError(ex))
-				})
+			{ // Constructor
+				foreignDoer.executeSequentially(this)
+			}
+
+			override def run(): Unit = {
+				if isActive then {
+					val foreignSubscription = foreignMono.subscribeSync(new foreignDoer.MonoObserver[A] {
+						override def onSuccess(a: A): Unit = {
+							if isActive then thisDoer.run {
+								if isActive then {
+									isActive = false
+									maybeForeignSubscription = Maybe.empty
+									thisDoerMonoObserver.onSuccess(a)
+								}
+							}
+						}
+
+						override def onError(ex: Throwable): Unit = {
+							if isActive then thisDoer.run {
+								if isActive then {
+									isActive = false
+									maybeForeignSubscription = Maybe.empty
+									thisDoerMonoObserver.onError(ex)
+								}
+							}
+						}
+					})
+					// Note: Unlike single-threaded tasks (such as [[Task_FlatMap]]), we do not perform defensive checks to guarantee the clearing of maybeForeignSubscription because a failure to clear the reference is very rare and only results in a transient, minor memory leak (which is reclaimed once the delegating subscription is garbage collected), the performance and complexity cost of such optimization is not justified here.
+					maybeForeignSubscription = Maybe(foreignSubscription)
+				}
 			}
 
 			override def unsubscribe(): Unit = {
 				checkWithin()
-				isActive = false
+				if isActive then {
+					isActive = false
+					maybeForeignSubscription.foreach { s =>
+						foreignDoer.run(s.unsubscribe())
+					}
+				}
 			}
 		}
 	}
@@ -373,6 +399,8 @@ trait DoerSandbox2 { thisDoer =>
 	//// Task operations' common ////
 	//////////////////////////////////
 
+	/** Base trait for [[Task]] operations that use the spare-slot pattern: saves the allocation of the Subscription for the first subscriber by implementing [[Subscription]] and returning itself.\
+	 * Contract: Subclasses must clear [[upChainSubscriptionSlot]] inside both their [[onSuccess]] and [[onError]] methods. */
 	trait SpareSlotTaskOp[A, +B] extends Task[B] with MonoObserver[A] with Subscription {
 		protected val source: Task[A]
 
@@ -380,22 +408,24 @@ trait DoerSandbox2 { thisDoer =>
 		protected var upChainSubscriptionSlot: Subscription | Null = null
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
-			if downChainObserverSlot eq null then {
+			if downChainObserverSlot ne null then subscribeDelegate(downChainObserver)
+			else {
 				downChainObserverSlot = downChainObserver
-				upChainSubscriptionSlot = source.subscribeSync(this)
+				upChainSubscriptionSlot = this // Note: 'this' is used as a sentinel to detect synchronous completion. If `source.subscribeSync(this)` completes `source` synchronously, it invokes `onSuccess`/`onError` which clears `upChainSubscriptionSlot` (see contract). In that case, we must discard the up-chain subscription.
+				val ucs = source.subscribeSync(this)
+				if upChainSubscriptionSlot eq this then {
+					upChainSubscriptionSlot = ucs
+				}
 				this
-			} else {
-				subscribeDelegate(downChainObserver)
 			}
 		}
 
 		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
+			val ucs = upChainSubscriptionSlot
 			downChainObserverSlot = null
 			upChainSubscriptionSlot = null
-			if upSub != null then {
-				upSub.unsubscribe()
-			}
+			// Only unsubscribe if the subscription is not the 'this' sentinel to prevent infinite recursion.
+			if ucs != null && (ucs ne this) then ucs.unsubscribe()
 		}
 
 		protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription
@@ -406,6 +436,7 @@ trait DoerSandbox2 { thisDoer =>
 	/////////////////////////
 
 	final class Task_Map[A, B](override val source: Task[A], val f: A => B, isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
+
 		override def onSuccess(a: A): Unit = {
 			val obs = downChainObserverSlot
 			downChainObserverSlot = null
@@ -434,19 +465,19 @@ trait DoerSandbox2 { thisDoer =>
 		}
 
 		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = {
-			class MapDelegate extends MonoObserver[A] with Subscription {
-				private var active: Boolean = true
-				private var upstreamSub: Subscription | Null = null
+			new MonoObserver[A] with Subscription {
+				private var isActive: Boolean = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
-				def start(): Subscription = {
-					upstreamSub = source.subscribeSync(this)
-					this
+				{ // Constructor
+					val upChainSubscription = source.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
 				}
 
 				override def onSuccess(a: A): Unit = {
-					upstreamSub = null
-					if active then {
-						active = false
+					if isActive then {
+						isActive = false
+						maybeUpChainSubscription = Maybe.empty
 						if isGuarded then {
 							val maybeB = try Maybe(f(a)) catch {
 								case NonFatal(e) =>
@@ -454,76 +485,42 @@ trait DoerSandbox2 { thisDoer =>
 									Maybe.empty
 							}
 							maybeB.foreach(downChainObserver.onSuccess)
-						} else {
-							downChainObserver.onSuccess(f(a))
-						}
+						} else downChainObserver.onSuccess(f(a))
 					}
 				}
 
 				override def onError(ex: Throwable): Unit = {
-					upstreamSub = null
-					if active then {
-						active = false
+					if isActive then {
+						isActive = false
+						maybeUpChainSubscription = Maybe.empty
 						downChainObserver.onError(ex)
 					}
 				}
 
 				override def unsubscribe(): Unit = {
-					active = false
-					val sub = upstreamSub
-					upstreamSub = null
-					if sub != null then {
-						sub.unsubscribe()
-					}
+					isActive = false
+					val sub = maybeUpChainSubscription
+					maybeUpChainSubscription = Maybe.empty
+					sub.foreach(_.unsubscribe())
 				}
 			}
-			val delegate = new MapDelegate()
-			delegate.start()
 		}
 	}
 
 	final class Task_FlatMap[A, B](override val source: Task[A], val f: A => Mono[B], isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
-		private var innerSubscription: Subscription | Null = null
+		private var innerSubscriptionSlot: Subscription | Null = null
 
 		override def onSuccess(a: A): Unit = {
 			upChainSubscriptionSlot = null
-			val obs = downChainObserverSlot
-			if obs != null then {
-				if isGuarded then {
-					val maybeObs = try Maybe(f(a)) catch {
-						case NonFatal(e) =>
-							downChainObserverSlot = null
-							obs.onError(e)
-							Maybe.empty
-					}
-					maybeObs.fold {} { ob =>
-						innerSubscription = ob.subscribeSync(new MonoObserver[B] {
-							override def onSuccess(b: B): Unit = {
-								val obsDyn = downChainObserverSlot
-								downChainObserverSlot = null
-								innerSubscription = null
-								if obsDyn != null then {
-									obsDyn.onSuccess(b)
-								}
-							}
+			val dos = downChainObserverSlot
+			if dos != null then {
 
-							override def onError(ex: Throwable): Unit = {
-								val obsDyn = downChainObserverSlot
-								downChainObserverSlot = null
-								innerSubscription = null
-								if obsDyn != null then {
-									obsDyn.onError(ex)
-								}
-							}
-						})
-					}
-				} else {
-					val ob = f(a)
-					innerSubscription = ob.subscribeSync(new MonoObserver[B] {
+				def subscribeInner(monoB: Mono[B]): Unit = {
+					innerSubscriptionSlot = monoB.subscribeSync(new MonoObserver[B] {
 						override def onSuccess(b: B): Unit = {
 							val obsDyn = downChainObserverSlot
 							downChainObserverSlot = null
-							innerSubscription = null
+							innerSubscriptionSlot = null
 							if obsDyn != null then {
 								obsDyn.onSuccess(b)
 							}
@@ -532,13 +529,23 @@ trait DoerSandbox2 { thisDoer =>
 						override def onError(ex: Throwable): Unit = {
 							val obsDyn = downChainObserverSlot
 							downChainObserverSlot = null
-							innerSubscription = null
+							innerSubscriptionSlot = null
 							if obsDyn != null then {
 								obsDyn.onError(ex)
 							}
 						}
 					})
 				}
+
+				if isGuarded then {
+					val maybeObs = try Maybe(f(a)) catch {
+						case NonFatal(e) =>
+							downChainObserverSlot = null
+							dos.onError(e)
+							Maybe.empty
+					}
+					maybeObs.foreach(subscribeInner)
+				} else subscribeInner(f(a))
 			}
 		}
 
@@ -552,101 +559,78 @@ trait DoerSandbox2 { thisDoer =>
 		}
 
 		override def unsubscribe(): Unit = {
-			val inner = innerSubscription
-			innerSubscription = null
+			val inner = innerSubscriptionSlot
+			innerSubscriptionSlot = null
 			if inner != null then {
 				inner.unsubscribe()
 			}
 			super.unsubscribe()
 		}
 
-		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = {
-			val delegate = new FlatMapDelegate(downChainObserver)
-			delegate.start()
-		}
+		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = new FlatMapDelegate(downChainObserver)
 
 		private class FlatMapDelegate(down: MonoObserver[B]) extends MonoObserver[A] with Subscription {
-			private var upSub: Subscription | Null = null
-			private var innerSub: Subscription | Null = null
-			private var active: Boolean = true
+			private var upChainSubscription: Subscription | Null = null
+			private var innerSubscription: Subscription | Null = null
+			private var isActive: Boolean = true
 
-			def start(): Subscription = {
-				upSub = source.subscribeSync(this)
-				this
+			{ // Constructor
+				val ucs = source.subscribeSync(this)
+				if isActive then upChainSubscription = ucs
 			}
 
 			override def onSuccess(a: A): Unit = {
-				upSub = null
-				if active then {
-					if isGuarded then {
-						val maybeObs = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								active = false
-								down.onError(e)
-								Maybe.empty
-						}
-						maybeObs.fold {} { ob =>
-							innerSub = ob.subscribeSync(new MonoObserver[B] {
-								override def onSuccess(b: B): Unit = {
-									innerSub = null
-									if active then {
-										active = false
-										down.onSuccess(b)
-									}
-								}
+				upChainSubscription = null
+				if isActive then {
 
-								override def onError(ex: Throwable): Unit = {
-									innerSub = null
-									if active then {
-										active = false
-										down.onError(ex)
-									}
-								}
-							})
-						}
-					} else {
-						val ob = f(a)
-						innerSub = ob.subscribeSync(new MonoObserver[B] {
+					def applyInner(monoB: Mono[B]): Unit = {
+						innerSubscription = monoB.subscribeSync(new MonoObserver[B] {
 							override def onSuccess(b: B): Unit = {
-								innerSub = null
-								if active then {
-									active = false
+								innerSubscription = null
+								if isActive then {
+									isActive = false
 									down.onSuccess(b)
 								}
 							}
 
 							override def onError(ex: Throwable): Unit = {
-								innerSub = null
-								if active then {
-									active = false
+								innerSubscription = null
+								if isActive then {
+									isActive = false
 									down.onError(ex)
 								}
 							}
 						})
 					}
+
+					if isGuarded then {
+						val maybeMonoB = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								isActive = false
+								down.onError(e)
+								Maybe.empty
+						}
+						maybeMonoB.foreach(applyInner)
+					} else applyInner(f(a))
 				}
 			}
 
 			override def onError(ex: Throwable): Unit = {
-				upSub = null
-				if active then {
-					active = false
+				upChainSubscription = null
+				if isActive then {
+					isActive = false
 					down.onError(ex)
 				}
 			}
 
 			override def unsubscribe(): Unit = {
-				active = false
-				val up = upSub
-				val inner = innerSub
-				upSub = null
-				innerSub = null
-				if up != null then {
-					up.unsubscribe()
-				}
-				if inner != null then {
-					inner.unsubscribe()
-				}
+				isActive = false
+				val up = upChainSubscription
+				val inner = innerSubscription
+				upChainSubscription = null
+				innerSubscription = null
+				if up != null then up.unsubscribe()
+				if inner != null then inner.unsubscribe()
 			}
 		}
 	}
@@ -659,8 +643,6 @@ trait DoerSandbox2 { thisDoer =>
 	 * Does not inherit from Task, cleanly separating results from doable work. */
 	sealed trait Capturer[+A] extends Mono[A] { thisCapturer =>
 		def trial: Trial[A]
-
-		def maybeValue: Maybe[A]
 
 		def isCompleted: Boolean
 
@@ -690,8 +672,6 @@ trait DoerSandbox2 { thisDoer =>
 	final class GuardedCapturer[+A](underlying: Capturer[A]) extends Capturer[A] {
 		override def trial: Trial[A] = underlying.trial
 
-		override def maybeValue: Maybe[A] = underlying.maybeValue
-
 		override def isCompleted: Boolean = underlying.isCompleted
 
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = underlying.subscribeSync(monoObserver)
@@ -719,8 +699,6 @@ trait DoerSandbox2 { thisDoer =>
 
 	/** A [[Capturer]] that has already captured a successful value. Ex ReadyTask */
 	final class Keeper[+A](val value: A) extends Capturer[A] {
-		override def maybeValue: Maybe[A] = Maybe(value)
-
 		override def isCompleted: Boolean = true
 
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
@@ -772,8 +750,6 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	final class Failed(val exception: Throwable) extends Capturer[Nothing] {
-		override def maybeValue: Maybe[Nothing] = Maybe.empty
-
 		override def isCompleted: Boolean = true
 
 		override def subscribeSync(monoObserver: MonoObserver[Nothing]): Subscription = {
@@ -820,7 +796,6 @@ trait DoerSandbox2 { thisDoer =>
 		private var downChainObserverSlot: MonoObserver[A] | Null = null
 
 		override def trial: Trial[A] = state
-		override def maybeValue: Maybe[A] = state.toMaybe
 		override def isCompleted: Boolean = state.isDefined
 
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
@@ -830,10 +805,10 @@ trait DoerSandbox2 { thisDoer =>
 					addTarget(this)
 					this
 				} else {
-					val nest = new ObservingSubscription[A, MonoObserver] {
+					val nest = new ObservingSubscription[A, MonoObserver] { thisNest =>
 						override def target: MonoObserver[A] = monoObserver
 
-						override def unsubscribe(): Unit = removeAllMatching(this)
+						override def unsubscribe(): Unit = removeAllMatching(thisNest)
 					}
 					addTarget(nest)
 					nest
@@ -861,8 +836,8 @@ trait DoerSandbox2 { thisDoer =>
 			obs
 		}
 
-		override protected def clear(): Unit = {
-			super.clear()
+		override protected def clearRegistry(): Unit = {
+			super.clearRegistry()
 			downChainObserverSlot = null
 		}
 
@@ -959,13 +934,13 @@ trait DoerSandbox2 { thisDoer =>
 		protected def forwardSuccess(value: A): Unit = {
 			state = Trial.success(value)
 			foreachTarget(_.onSuccess(value))
-			clear()
+			clearRegistry()
 		}
 
 		protected def forwardError(ex: Throwable): Unit = {
 			state = Trial.failure(ex)
 			foreachTarget(_.onError(ex))
-			clear()
+			clearRegistry()
 		}
 	}
 
@@ -1117,8 +1092,8 @@ trait DoerSandbox2 { thisDoer =>
 								Maybe.empty
 						}
 						if active then {
-							maybeMono.foreach { cap =>
-								innerSub = cap.subscribeSyncCallbacks(
+							maybeMono.foreach { monoA =>
+								innerSub = monoA.subscribeSyncCallbacks(
 									a => if active then forwardSuccess(a),
 									e => if active then forwardError(e)
 								)
@@ -1147,8 +1122,8 @@ trait DoerSandbox2 { thisDoer =>
 				super.unsubscribe()
 			}
 
-			override protected def clear(): Unit = {
-				super.clear()
+			override protected def clearRegistry(): Unit = {
+				super.clearRegistry()
 				innerSub = null
 			}
 		}
@@ -1162,7 +1137,8 @@ trait DoerSandbox2 { thisDoer =>
 		private var upChainSubscriptionSlot: Subscription | Null = null
 
 		protected def startEagerly(): Unit = {
-			upChainSubscriptionSlot = source.subscribeSync(this)
+			val ucs = source.subscribeSync(this)
+			if state.isEmpty then upChainSubscriptionSlot = ucs
 		}
 
 		override def unsubscribe(): Unit = {
@@ -1174,8 +1150,8 @@ trait DoerSandbox2 { thisDoer =>
 			super.unsubscribe()
 		}
 
-		override protected def clear(): Unit = {
-			super.clear()
+		override protected def clearRegistry(): Unit = {
+			super.clearRegistry()
 			upChainSubscriptionSlot = null
 		}
 	}
@@ -1199,23 +1175,35 @@ trait DoerSandbox2 { thisDoer =>
 		override def onError(ex: Throwable): Unit = forwardError(ex)
 	}
 
-	final class Captor_FlatMap[A, B](source: Capturer[A], f: A => Mono[B], isGuarded: Boolean) extends Mono[B] with MonoObserver[A] with Subscription { thisCaptor =>
+	final class Captor_FlatMap[A, B](source: Capturer[A], f: A => Mono[B], isGuarded: Boolean) extends Muxer[B, MonoObserver], ObservingSubscription[B, MonoObserver], Mono[B], MonoObserver[A] { thisCaptor =>
+
 		private var state: Trial[B] = Trial.empty
 		private var innerSubscription: Subscription | Null = null
 		private var downChainObserverSlot: MonoObserver[B] | Null = null
-		private var upstreamSubscription: Subscription | Null = source.subscribeSync(this)
+		private var upChainSubscription: Subscription | Null = null
 
+		{ // Constructor
+			val ucs = source.subscribeSync(thisCaptor)
+			if state.isEmpty && (innerSubscription eq null) then upChainSubscription = ucs
+		}
+
+		//// Mono methods ////
 		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
 			state.fold {
 				if downChainObserverSlot eq null then {
 					downChainObserverSlot = monoObserver
+					addTarget(this)
 					this
 				} else {
-					new Subscription {
+					val nest = new ObservingSubscription[B, MonoObserver] {
+						override def target: MonoObserver[B] = monoObserver
 						override def unsubscribe(): Unit = {
-							if downChainObserverSlot eq monoObserver then downChainObserverSlot = null
+							removeAllMatching(this)
+							thisCaptor.checkCancel()
 						}
 					}
+					addTarget(nest)
+					nest
 				}
 			} { ex =>
 				monoObserver.onError(ex)
@@ -1226,27 +1214,53 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
+		/** Map the result of this flat-mapped primitive./
+		 * This implementation leverages the monadic composition invariant: {{{ source.flatMap(f).map(g) }}} is equivalent to {{{ source.flatMap(a => f(a).map(g)) }}}\
+		 * Even though f may return a [[Mono]] or [[Task]] which are not Monads (since they do not guarantee referential transparency or stable results across multiple runs), the equation holds here because `source` (a [[Capturer]]) is hot, eager, and completes at most once with a single stable result. Thus, the function `f` is evaluated exactly once, producing exactly one [[Mono]] instance which is subscribed to exactly once. Because there is only a single execution path, the lack of referential transparency across multiple runs is irrelevant, and the execution topologies remain identical. */
 		override def map[C](g: B => C): Mono[C] = {
-			val task: Task[C] = (monoObserverC: MonoObserver[C]) => {
-				this.subscribeSync(new MonoObserver[B] {
-					override def onSuccess(b: B): Unit = monoObserverC.onSuccess(g(b))
-
-					override def onError(ex: Throwable): Unit = monoObserverC.onError(ex)
-				})
-			}
-			task
+			state.fold {
+				new Captor_FlatMap[A, C](source, a => f(a).map(g), isGuarded)
+			}(Failed(_))(b => Keeper(g(b)))
 		}
 
+		/** Flat-map the result of this flat-mapped primitive.\
+		 * This implementation leverages the monadic composition invariant: {{{ source.flatMap(f).flatMap(g) }}} is equivalent to {{{ source.flatMap(a => f(a).flatMap(g)) }}}\
+		 * Even though f may return a [[Mono]] or [[Task]] which are not Monads (since they do not guarantee referential transparency or stable results across multiple runs), the equation holds here because `source` (a [[Capturer]]) is hot, eager, and completes at most once with a single stable result. Thus, the function `f` is evaluated exactly once, producing exactly one [[Mono]] instance which is subscribed to exactly once. Because there is only a single execution path, the lack of referential transparency across multiple runs is irrelevant, and the execution topologies remain identical. */
 		override def flatMap[C](g: B => Mono[C]): Mono[C] = {
-			val task: Task[C] = (monoObserverC: MonoObserver[C]) => {
-				this.subscribeSync(new MonoObserver[B] {
-					override def onSuccess(b: B): Unit = g(b).subscribeSync(monoObserverC)
-
-					override def onError(ex: Throwable): Unit = monoObserverC.onError(ex)
-				})
-			}
-			task
+			state.fold {
+				new Captor_FlatMap[A, C](source, a => f(a).flatMap(g), isGuarded)
+			}(Failed(_))(b => g(b))
 		}
+
+		//// ObservingSubscription methods ////
+
+		override def target: MonoObserver[B] = {
+			val obs = downChainObserverSlot
+			if obs eq null then throw new IllegalStateException("No observer registered")
+			obs
+		}
+
+		override def unsubscribe(): Unit = {
+			val obs = downChainObserverSlot
+			if obs != null then {
+				downChainObserverSlot = null
+				removeAllMatching(this)
+				checkCancel()
+			}
+		}
+
+		private def checkCancel(): Unit = {
+			if isRegistryEmpty then {
+				val up = upChainSubscription
+				val inner = innerSubscription
+				upChainSubscription = null
+				innerSubscription = null
+				if up != null then up.unsubscribe()
+				if inner != null then inner.unsubscribe()
+			}
+		}
+
+		//// MonoObserver methods ////
 
 		override def onSuccess(a: A): Unit = {
 			if isGuarded then {
@@ -1261,15 +1275,14 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
-		private def subscribeInner(ob: Mono[B]): Unit = {
-			innerSubscription = ob.subscribeSync(new MonoObserver[B] {
+		private def subscribeInner(monoB: Mono[B]): Unit = {
+			innerSubscription = monoB.subscribeSync(new MonoObserver[B] {
 				override def onSuccess(b: B): Unit = {
 					state = Trial.success(b)
-					val obs = downChainObserverSlot
-					downChainObserverSlot = null
-					upstreamSubscription = null
+					upChainSubscription = null
 					innerSubscription = null
-					if obs != null then obs.onSuccess(b)
+					foreachTarget(_.onSuccess(b))
+					clearRegistry()
 				}
 
 				override def onError(ex: Throwable): Unit = thisCaptor.onError(ex)
@@ -1278,21 +1291,10 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def onError(ex: Throwable): Unit = {
 			state = Trial.failure(ex)
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upstreamSubscription = null
+			upChainSubscription = null
 			innerSubscription = null
-			if obs != null then obs.onError(ex)
-		}
-
-		override def unsubscribe(): Unit = {
-			val up = upstreamSubscription
-			val inner = innerSubscription
-			downChainObserverSlot = null
-			upstreamSubscription = null
-			innerSubscription = null
-			if up != null then up.unsubscribe()
-			if inner != null then inner.unsubscribe()
+			foreachTarget(_.onError(ex))
+			clearRegistry()
 		}
 	}
 
@@ -1331,100 +1333,77 @@ trait DoerSandbox2 { thisDoer =>
 			if inner != null then inner.unsubscribe()
 		}
 
-		override protected def clear(): Unit = {
-			super.clear()
+		override protected def clearRegistry(): Unit = {
+			super.clearRegistry()
 			innerSubscription = null
 		}
 	}
 
 	final class Captor_FlatMapTask[A, B](source: Capturer[A], f: A => Task[B], isGuarded: Boolean) extends Task[B] {
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
-			class FlatMapTaskDelegate extends MonoObserver[A] with Subscription {
-				private var active: Boolean = true
-				private var upSub: Subscription | Null = null
-				private var innerSub: Subscription | Null = null
+			new MonoObserver[A] with Subscription {
+				private var isActive: Boolean = true
+				private var innerSubscription: Subscription | Null = null
+				private var upChainSubscription: Subscription | Null = null
 
-				def start(): Subscription = {
-					upSub = source.subscribeSync(this)
-					this
+				{ // Constructor
+					val ucs = source.subscribeSync(this)
+					if isActive then upChainSubscription = ucs
 				}
 
 				override def onSuccess(a: A): Unit = {
-					upSub = null
-					if active then {
-						if isGuarded then {
-							val maybeTask = try Maybe(f(a)) catch {
-								case NonFatal(e) =>
-									active = false
-									downChainObserver.onError(e)
-									Maybe.empty
-							}
-							maybeTask.fold {} { task =>
-								innerSub = task.subscribeSync(new MonoObserver[B] {
-									override def onSuccess(b: B): Unit = {
-										innerSub = null
-										if active then {
-											active = false
-											downChainObserver.onSuccess(b)
-										}
-									}
-
-									override def onError(ex: Throwable): Unit = {
-										innerSub = null
-										if active then {
-											active = false
-											downChainObserver.onError(ex)
-										}
-									}
-								})
-							}
-						} else {
-							val task = f(a)
-							innerSub = task.subscribeSync(new MonoObserver[B] {
+					upChainSubscription = null
+					if isActive then {
+						def subscribeInner(taskB: Task[B]): Unit = {
+							innerSubscription = taskB.subscribeSync(new MonoObserver[B] {
 								override def onSuccess(b: B): Unit = {
-									innerSub = null
-									if active then {
-										active = false
+									innerSubscription = null
+									if isActive then {
+										isActive = false
 										downChainObserver.onSuccess(b)
 									}
 								}
 
 								override def onError(ex: Throwable): Unit = {
-									innerSub = null
-									if active then {
-										active = false
+									innerSubscription = null
+									if isActive then {
+										isActive = false
 										downChainObserver.onError(ex)
 									}
 								}
 							})
 						}
+
+						if isGuarded then {
+							val maybeTaskB = try Maybe(f(a)) catch {
+								case NonFatal(e) =>
+									isActive = false
+									downChainObserver.onError(e)
+									Maybe.empty
+							}
+							maybeTaskB.foreach(subscribeInner)
+						} else subscribeInner(f(a))
 					}
 				}
 
 				override def onError(ex: Throwable): Unit = {
-					upSub = null
-					if active then {
-						active = false
+					upChainSubscription = null
+					if isActive then {
+						isActive = false
 						downChainObserver.onError(ex)
 					}
 				}
 
 				override def unsubscribe(): Unit = {
-					active = false
-					val up = upSub
-					val inner = innerSub
-					upSub = null
-					innerSub = null
-					if up != null then {
-						up.unsubscribe()
-					}
-					if inner != null then {
-						inner.unsubscribe()
-					}
+					isActive = false
+					val up = upChainSubscription
+					val inner = innerSubscription
+					upChainSubscription = null
+					innerSubscription = null
+					if up != null then up.unsubscribe()
+					if inner != null then inner.unsubscribe()
 				}
 			}
-			val delegate = new FlatMapTaskDelegate()
-			delegate.start()
 		}
 	}
 
@@ -1447,103 +1426,147 @@ trait DoerSandbox2 { thisDoer =>
 		private var maybeFirstTarget: Maybe[Target] = Maybe.empty
 		private var maybeFollowingTargets: Maybe[Array[Target]] = Maybe.empty
 		private var followingTargetsSize: Int = 0
+		private var recursionDepth: Int = 0
 
 		protected def addTarget(target: Target): Unit = {
-			maybeFirstTarget.fold {
+			if maybeFirstTarget.isEmpty && followingTargetsSize == 0 then {
 				maybeFirstTarget = Maybe(target)
-			} { _ =>
+			} else {
 				maybeFollowingTargets.fold {
 					val followingTargets = new Array[Target](8)
 					followingTargets(0) = target
 					followingTargetsSize = 1
 					maybeFollowingTargets = Maybe(followingTargets)
 				} { followingTargets =>
-					val fs = followingTargetsSize
+					val fts = followingTargetsSize
 					val newFollowingTargets =
-						if fs < followingTargets.length then followingTargets
+						if fts < followingTargets.length then followingTargets
 						else {
-							val expanded = new Array[Target](fs * 2)
-							System.arraycopy(followingTargets, 0, expanded, 0, fs)
+							val expanded = new Array[Target](fts * 2)
+							System.arraycopy(followingTargets, 0, expanded, 0, fts)
 							maybeFollowingTargets = Maybe(expanded)
 							expanded
 						}
-					newFollowingTargets(fs) = target
-					followingTargetsSize = fs + 1
+					newFollowingTargets(fts) = target
+					followingTargetsSize = fts + 1
 				}
 			}
 		}
 
 		protected def removeAllMatching(target: Target): Int = {
 			var removedCount = 0
-			maybeFirstTarget.foreach { firstOb =>
-				maybeFollowingTargets.foreach { followingTargets =>
-					var index = followingTargetsSize
-					while index > 0 do {
-						index -= 1
-						if followingTargets(index) eq target then {
-							val shiftedChunkLength = followingTargetsSize - index - 1
-							if shiftedChunkLength > 0 then System.arraycopy(followingTargets, index + 1, followingTargets, index, shiftedChunkLength)
-							removedCount += 1
-							followingTargetsSize -= 1
-							followingTargets(followingTargetsSize) = null.asInstanceOf[Target] // Clear leaked reference
-						}
-					}
-				}
-				if firstOb eq target then {
-					maybeFirstTarget = maybeFollowingTargets.flatMap { followingTargets =>
-						if followingTargetsSize == 0 then Maybe.empty
-						else {
-							val firstFollowingTarget = followingTargets(0)
-							// Shift following targets left by 1
-							followingTargetsSize -= 1
-							System.arraycopy(followingTargets, 1, followingTargets, 0, followingTargetsSize)
-							followingTargets(followingTargetsSize) = null.asInstanceOf[Target] // Clear leaked reference
-							Maybe(firstFollowingTarget)
-						}
-					}
+			maybeFirstTarget = maybeFirstTarget.flatMap { firstTarget =>
+				if firstTarget ne target then Maybe(firstTarget)
+				else {
 					removedCount += 1
+					Maybe.empty
 				}
 			}
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					if followingTargets(index) eq target then {
+						removedCount += 1
+						followingTargets(index) = null
+					}
+				}
+			}
+			if recursionDepth == 0 then removeHoles()
+
 			removedCount
+		}
+
+		private def removeHoles(): Maybe[Array[Target]] = {
+
+			if maybeFirstTarget.isEmpty then {
+				maybeFirstTarget = maybeFollowingTargets.flatMap { followingTargets =>
+					// Search for the first non-null and not matching entry in the array.
+					var index = 0
+					var targetAtIndex: Target | Null = null
+					while index < followingTargetsSize && {
+						targetAtIndex = followingTargets(index)
+						(targetAtIndex eq null)
+					} do index += 1
+					// If none found then the registry is empty
+					if index == followingTargetsSize then Maybe.empty
+					// else, remove it from the array and make it be the first target
+					else {
+						followingTargets(index) = null
+						Maybe(targetAtIndex)
+					}
+				}
+			}
+
+			maybeFollowingTargets.flatMap { followingTargets =>
+				val initialSize = followingTargetsSize
+				var insertIndex = 0
+				var readIndex = 0
+				while readIndex < initialSize do {
+					val element = followingTargets(readIndex)
+					if element ne null then {
+						if insertIndex != readIndex then {
+							followingTargets(insertIndex) = element
+							followingTargets(readIndex) = null
+						}
+						insertIndex += 1
+					}
+					readIndex += 1
+				}
+				followingTargetsSize = insertIndex
+				if insertIndex == 0 then Maybe.empty else Maybe(followingTargets)
+			}
 		}
 
 		protected def countAllMatching(target: Target): Int = {
 			var counter = 0
-			maybeFirstTarget.foreach { firstOb =>
-				if firstOb eq target then counter += 1
-				maybeFollowingTargets.fold(false) { followingTargets =>
-					var index = followingTargetsSize
-					while index > 0 do {
-						index -= 1
-						if followingTargets(index) eq target then counter += 1
-					}
+			maybeFirstTarget.foreach { firstTarget =>
+				if firstTarget eq target then counter += 1
+			}
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					if followingTargets(index) eq target then counter += 1
 				}
 			}
 			counter
 		}
 
 		protected inline def foreachTarget(inline consumer: T[A] => Unit): Unit = {
-			maybeFirstTarget.foreach { firstTarget =>
-				firstTarget match {
-					case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
-					case direct: T[A] @unchecked => consumer(direct)
-				}
-				// CRITICAL: The cast is necessary to bypass an invalid Scala 3 compiler optimization during the inline expansion. Because Entry is a Union Type, its runtime allocation is a raw JVM Object array (Object[]). However, if an Observer implementation happens to extend a trait like java.io.Serializable, the Scala 3 compiler will try to optimize this inline closure by implicitly downcasting the entire array container to a Serializable[] array. Since an Object[] cannot be downcast to a Serializable[], the JVM explodes with a ClassCastException. Forcing an AnyRef array view strips away this aggressive optimization and keeps it as a safe, generic pointer array.
-				maybeFollowingTargets.asInstanceOf[Maybe[IArray[AnyRef]]].foreach { followingTargets =>
-					var i = 0
-					val size = followingTargetsSize
-					while i < size do {
-						followingTargets(i) match {
-							case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
-							case direct: T[A] @unchecked => consumer(direct)
-						}
-						i += 1
+			recursionDepth += 1
+			maybeFirstTarget.foreach {
+				case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
+				case direct: T[A] @unchecked => consumer(direct)
+			}
+			// CRITICAL: The cast is necessary to bypass an invalid Scala 3 compiler optimization during the inline expansion. Because Entry is a Union Type, its runtime allocation is a raw JVM Object array (Object[]). However, if an Observer implementation happens to extend a trait like java.io.Serializable, the Scala 3 compiler will try to optimize this inline closure by implicitly downcasting the entire array container to a Serializable[] array. Since an Object[] cannot be downcast to a Serializable[], the JVM explodes with a ClassCastException. Forcing an AnyRef array view strips away this aggressive optimization and keeps it as a safe, generic pointer array.
+			maybeFollowingTargets.asInstanceOf[Maybe[IArray[AnyRef]]].foreach { followingTargets =>
+				var i = 0
+				val size = followingTargetsSize
+				while i < size do {
+					followingTargets(i) match {
+						case null => // do nothing
+						case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
+						case direct: T[A] @unchecked => consumer(direct)
 					}
+					i += 1
 				}
 			}
+
+			recursionDepth -= 1
+			if recursionDepth == 0 then removeHoles()
 		}
 
-		protected def clear(): Unit = {
+		protected def isRegistryEmpty: Boolean = maybeFirstTarget.isEmpty
+
+		protected def clearRegistry(): Unit = {
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					followingTargets(index) = null
+				}
+			}
 			maybeFirstTarget = Maybe.empty
 			maybeFollowingTargets = Maybe.empty
 			followingTargetsSize = 0
@@ -1566,7 +1589,7 @@ trait DoerSandbox2 { thisDoer =>
 		def onComplete(): Unit
 	}
 
-	@threadUnsafe lazy val FluxObserver_ignore = new FluxObserver[Any] {
+	@threadUnsafe lazy val FluxObserver_ignore: FluxObserver[Any] = new FluxObserver[Any] {
 		override def onNext(a: Any, index: ExecutionSerial): Unit = ()
 
 		override def onError(ex: Throwable): Unit = ()
@@ -1881,7 +1904,7 @@ trait DoerSandbox2 { thisDoer =>
 
 				{
 					val monoSubscriptions: IArray[Subscription] = monos.mapWithIndex { (mono, index) =>
-						if isActive then mono.subscribeSyncCallbacks(
+						if isActive then mono.subscribeSyncCallbacks( // TODO this allocation could be avoided if the MonoObserver propagated the subscription id/index.
 							a => if isActive then {
 								val sc = successesCounter + 1
 								successesCounter = sc
@@ -2025,7 +2048,7 @@ trait DoerSandbox2 { thisDoer =>
 			if !completed && (error eq null) then {
 				error = ex
 				foreachTarget(_.onError(ex))
-				clear()
+				clearRegistry()
 			}
 		}
 
@@ -2033,7 +2056,7 @@ trait DoerSandbox2 { thisDoer =>
 			if !completed && (error eq null) then {
 				completed = true
 				foreachTarget(_.onComplete())
-				clear()
+				clearRegistry()
 			}
 		}
 	}

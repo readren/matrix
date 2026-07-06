@@ -16,6 +16,8 @@ import scala.reflect.ClassTag
 import scala.runtime.IntRef
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
+import readren.sequencer.CompletionObserver
+import readren.sequencer.OriginId
 
 object ConsensusParticipantSdm {
 	/** The type of the index for the logs where [[Record]]s are stored.
@@ -683,7 +685,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onActiveConfigChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
 			 * @param desiredParticipantsSet the identifiers of the participants that are going to seek consensus from now on.
 			 * @param priorAnswer should contain the response to the last request done by the inquirer to this or any other participant, if any.
-			 * @return a [[sequencer.Task]] that yields:
+			 * @return a [[sequencer.LatchingTask]] that yields:
 			 *         [[SUCCESSFULLY_CHANGED]] if the requested change was successfully completed.
 			 *         [[ALREADY_CHANGED]] if the requested change is already done or in progress.
 			 *         [[ALREADY_IN_PROGRESS]] if the participant is currently transitioning to the requested configuration 
@@ -712,7 +714,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param inquirerInfo The term of the participant that is asking.
 			 * @return A [[sequencer.Venture]] that yields the state information of the destination participant.
 			 */
-			def howAreYou(inquirerInfo: StateInfo): sequencer.Venture[StateInfo] // TODO consider returning a LatchingTask instead
+			def howAreYou(inquirerInfo: StateInfo): sequencer.LatchingTask[StateInfo]
 
 			/**
 			 * Request the destination participant to choose a leader.
@@ -722,7 +724,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param inquirerInfo Information about the state of the participant that is asking.
 			 * @return A [[sequencer.Venture]] that yields a [[Vote]] indicating the candidate chosen by the destination participant.
 			 */
-			def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Venture[Vote[ParticipantId]] // TODO consider returning a LatchingTask instead
+			def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingTask[Vote[ParticipantId]]
 
 			/**
 			 * Request the destination participant to append records.
@@ -736,7 +738,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
 			 * @return A [[sequencer.Venture]] that yields the result of the append operation.
 			 */
-			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Venture[AppendResult] // TODO consider returning a LatchingTask instead
+			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingTask[AppendResult]
 
 			/**
 			 * Sends a snapshot to the destination participant, replacing its log and state machine state. Only leaders call this method.
@@ -746,7 +748,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param snapshot the snapshot data including state machine state and metadata.
 			 * @return A [[sequencer.Venture]] that yields the result of the installation operation.
 			 */
-			def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Venture[AppendResult] // TODO consider returning a LatchingTask instead
+			def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingTask[AppendResult]
 
 
 			/**
@@ -761,7 +763,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param indexOfGrantedStableConfigChange The index of the [[StableConfigChange]] record for which the authorization is granted, which is the one that excludes the destination participant.
 			 * @return A [[sequencer.Venture]] that completes successfully if either: the permission was successfully delivered, or the participant is already in a post-retirement state ([[QUIESCED]], released, or no longer exists).
 			 */
-			def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Venture[Unit] // TODO consider returning a LatchingTask instead
+			def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.LatchingTask[Unit]
 		}
 	}
 
@@ -831,19 +833,19 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** @return the [[SnapshotData]] produced by the last call to [[truncateLogUpTo]]. */
 		def latestSnapshot: Maybe[SnapshotData[ParticipantId]]
 
-		/** The [[ConsensusParticipant]] triggers the returned [[Task]] to inform that it will not reference this instance anymore and this [[Workspace]] may be purged. */
-		def releases: sequencer.Task[Unit]
+		/** Called by the [[ConsensusParticipant]] to inform that it will not reference this [[Workspace]] instance anymore and may be purged. */
+		def release(): sequencer.LatchingTask[Unit]
 	}
 
 	/** Defines what a [[ConsensusParticipant]] requires from a persistence service to load and save its [[Workspace]].
 	 * Implementations may assume that all methods of this trait are invoked within the [[sequencer]] thread, enabling optimizations such as avoiding unnecessary creation of new task objects. */
 	trait Storage {
-		def load: sequencer.LatchingTask[Try[WS]]
+		def load: sequencer.LatchingTask[WS]
 
 		/** Saves the workspace to the persistence storage.
 		 * Design Note: A failure to save the workspace should restart the [[ConsensusParticipant]] as if it had crashed and lost all non-persistent variables.
 		 */
-		def save(workspace: WS): sequencer.LatchingTask[Try[Unit]]
+		def save(workspace: WS): sequencer.LatchingTask[Unit]
 	}
 
 	//// NOTIFICATIONS
@@ -914,7 +916,7 @@ trait ConsensusParticipantSdm { thisModule =>
 	}
 
 	inline def checkWithin(): Unit = {
-		if ConsensusParticipantSdm.assertionsEnabled && !isInSequence then throw new AssertionError(sequencer.checkWithinMsg())
+		if ConsensusParticipantSdm.assertionsEnabled && !isInSequence then throw new AssertionError(Doer.checkWithinMsg(sequencer))
 	}
 
 
@@ -974,7 +976,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		import cluster.*
 
 		/** The [[sequencer.Venture]] returned by a call to [[ClusterParticipant.appendRecords]]. */
-		private type AppendRequest = sequencer.Venture[AppendResult]
+		private type AppendRequest = sequencer.LatchingTask[AppendResult]
 
 		private type AppendOutcome = Int
 		private inline val AO_IS_LAGGING_MASK = 16
@@ -1069,7 +1071,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		private val updateRoleCoalescing = new ResultIncrementalCoalescing[Unit, sequencer.type](sequencer)
 
 		private val coalescedHowAreYou = CoalescedQuery[(otherParticipantId: ParticipantId, stateInfo: StateInfo), StateInfo, sequencer.type](sequencer)(params =>
-			sequencer.Commitment_triggerAndWire(params.otherParticipantId.howAreYou(params.stateInfo))
+			params.otherParticipantId.howAreYou(params.stateInfo)
 		)
 
 		{
@@ -1084,21 +1086,24 @@ trait ConsensusParticipantSdm { thisModule =>
 		def getRoleOrdinal: RoleOrdinal = currentRole.ordinal
 
 		/** @return a [[sequencer.Task]] that quiesces this [[ConsensusParticipant]] instance. */
-		def quiesces: sequencer.Task[Unit] = {
+		def quiesce(): sequencer.LatchingTask[Unit] = {
 			Trace.init(() => s"$boundParticipantId: quiesces") {
-				sequencer.Task_mineFlat { () =>
+				sequencer.LatchingTask_defer { () =>
 					val quiesced = Quiesced(Success("This ConsensusParticipant instance was forcefully quiesced."))
 					become(quiesced).asInstanceOf[Quiesced].completed
 				}
 			}
 		}
 
-		/** @return a [[sequencer.Task]] that quiesces and disposes this [[ConsensusParticipant]] instance. */
-		def disposes: sequencer.Task[Unit] = {
-			quiesces.andThen { _ =>
-				notificationListeners.clear()
-				cluster.removeBound()
-			}
+		/** @return quiesces and disposes this [[ConsensusParticipant]] instance. */
+		def dispose(): sequencer.LatchingTask[Unit] = {
+			quiesce().andThen(
+				{ _ =>
+					notificationListeners.clear()
+					cluster.removeBound()
+				},
+				error => throw new Exception(error) // TODO analyze what to do here
+			)
 		}
 
 		/** Synchronously transitions this [[ConsensusParticipant]]'s [[Role]] to the provided one if defined. */
@@ -1237,7 +1242,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			override final def getCommittedPrimaryState: PrimaryState =
-				primaryStateFence.committedState
+				primaryStateFence.committedState.getOrElse(Inaccessible)
 
 			// TODO consider adding a parameter with the activeConfigChangeIndex.
 			override final def syncLocalStateInfo(primaryState: PrimaryState)(using Trace.Context): StateInfo = Trace.step("syncLocalStateInfo") {
@@ -1548,7 +1553,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param fusionReport     A bitmask of outcome flags (e.g., [[FR_RECORD_FUSED]], [[FR_TERM_UPDATED]], [[FR_SNAPSHOT_UPDATED]]) describing what happened during the primary state update.
 			 * @return A [[sequencer.LatchingTask]] yielding the [[AppendResult]] to be sent back to the leader. */
 			private def handleAppendOutcome(primaryState1: PrimaryState, inquirerId: ParticipantId, inquirerTerm: Term, maybeSnapshot: Maybe[SnapshotData[ParticipantId]], prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term, fusionReport: Int)(using Trace.Context): sequencer.LatchingTask[AppendResult] = {
-				assert(primaryState1 eq primaryStateFence.committedState)
+				assert(primaryStateFence.committedState.is(primaryState1))
 				primaryState1 match {
 					case Inaccessible =>
 						illegalStateQuiesce()
@@ -1635,11 +1640,18 @@ trait ConsensusParticipantSdm { thisModule =>
 				decoupledCommandsApplierCompletion = completionCovenant
 
 				def applyBehind(primaryState1: Accessible): Unit = {
-					applyCommittedCommands(primaryState1, Long.MaxValue, 0).subscribeSync { _ =>
-						// If log compaction is needed, compact it in a decoupled way.
-						if highestAppliedCommandIndex - primaryState1.logBufferOffset > logCompactionThreshold && currentRole.isInstanceOf[StatefulRole] then startLogCompaction()
-						completionCovenant.fulfillUnsafe(())
-					}
+					applyCommittedCommands(primaryState1, Long.MaxValue, 0).triggerSync(new sequencer.MonoObserver[Unit] {
+						override def onSuccess(dummy: Unit): Unit = {
+							// If log compaction is needed, compact it in a decoupled way.
+							if highestAppliedCommandIndex - primaryState1.logBufferOffset > logCompactionThreshold && currentRole.isInstanceOf[StatefulRole] then startLogCompaction()
+							completionCovenant.fulfillSync(())
+						}
+
+						override def onError(e: Throwable): Unit = {
+							Trace.error(s"$boundParticipantId: The state machine failed with:", e) // TODO create a test that covers this fatal case
+							become(Quiesced(Failure(e)))
+						}
+					})
 				}
 
 				/** Resets the [[StateMachine]]' state from the latest snapshot in the log, and updates the [[highestAppliedCommandIndex]] accordingly.\
@@ -1654,7 +1666,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					} do primaryState1 match {
 						case Inaccessible =>
 							Trace.debug("The committed commands applier stopped after installing a snapshot because the primary state is inaccessible.")
-							completionCovenant.fulfillUnsafe(())
+							completionCovenant.fulfillSync(())
 						case accessible1: Accessible =>
 							accessible1.informAppliedCommandIndex(snapshotData.lastIncludedRecordIndex)
 							applyBehind(accessible1)
@@ -1675,7 +1687,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				} do primaryState1 match {
 					case Inaccessible =>
 						Trace.debug(s"The commited commands applier stopped during recovery because the primary state is inaccessible.")
-						completionCovenant.fulfillUnsafe(())
+						completionCovenant.fulfillSync(())
 					case accessible1: Accessible =>
 						// If the state machine knows the index of the last applied command, then start applying the commands after it.
 						if index > 0 then {
@@ -1713,7 +1725,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 										if sequencer.currentExecutionSerial != previousExecutionSerial then applyCommittedCommands(primaryState, upTo, 0)
 										else if recursionDepth < MAX_RECURSION_DEPTH then applyCommittedCommands(primaryState, upTo, recursionDepth + 1)
-										else sequencer.Covenant_mineFlat(() => applyCommittedCommands(primaryState, upTo, 0))
+										else sequencer.Covenant_defer(() => applyCommittedCommands(primaryState, upTo, 0))
 									} else sequencer.LatchingTask_unit
 								}
 							} yield ()
@@ -2015,7 +2027,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								}
 							}
 					}
-					updateCovenant.andThen(_ => Trace.trace(s"Execution #$serial ended"))
+					updateCovenant.andThen(_ => Trace.trace(s"Execution #$serial ended"), error => throw new Exception(error)) // TODO analyze what to do here)
 				}
 			}
 
@@ -2064,7 +2076,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param currentPrimaryState the current [[PrimaryState]].
 			 * @return a [[Configuration]] derived from the provided [[Accessible]]. */
 			def deriveConfigurationFrom(currentPrimaryState: Accessible)(using Context): Configuration = {
-				assert(currentPrimaryState eq primaryStateFence.committedState) // Fails if the primaryStateFence was touched after yielding the PrimaryState instance received as parameter.
+				assert(primaryStateFence.committedState.is(currentPrimaryState)) // Fails if the primaryStateFence was touched after yielding the PrimaryState instance received as parameter.
 
 				val indexOfLatestConfigChange = currentPrimaryState.indexOfLatestConfigChange
 				if indexOfLatestConfigChange == 0 then latestDerivedConfig.get
@@ -2358,8 +2370,8 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.step("Starting.onEnter") {
 					notifyListeners(_.onStarting(previous.ordinal, indexOfTheIncludingConfigChange))
 
-					storage.load.subscribeSync {
-						case Success(loadedWorkspace) =>
+					storage.load.triggerSync(new sequencer.MonoObserver[WS] {
+						override def onSuccess(loadedWorkspace: WS): Unit = {
 							val indexOfLatestConfigChange = loadedWorkspace.indexOfLatestConfigChange
 							val primaryState = new Accessible(loadedWorkspace)
 							val rulingConfigChange = {
@@ -2382,7 +2394,7 @@ trait ConsensusParticipantSdm { thisModule =>
 							val isSeed = indexOfTheIncludingConfigChange == 0
 							if isSeed && !config.isBoundIncluded then {
 								become(Quiesced(Success(s"Start-up aborted because this ConsensusParticipant instance does not belong to the active cluster-configuration.")))
-								startingCompletedCovenant.fulfillUnsafe(Inaccessible)
+								startingCompletedCovenant.fulfillSync(Inaccessible)
 							}
 							else {
 								latestDerivedConfig = Maybe(config)
@@ -2390,14 +2402,16 @@ trait ConsensusParticipantSdm { thisModule =>
 								notifyListeners(_.onStarted(previous.ordinal, primaryState.currentTerm, rulingConfigChange, isSeed))
 								if isSeed then become(Isolated(primaryStateFence))
 								else become(Joining(primaryStateFence, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange))
-								startingCompletedCovenant.fulfillUnsafe(primaryState)
+								startingCompletedCovenant.fulfillSync(primaryState)
 							}
+						}
 
-						case failure@Failure(e) =>
+						override def onError(e: Throwable): Unit = {
 							Trace.error(s"$boundParticipantId: Unexpected error while loading the consensus-service's workspace:", e)
-							become(Quiesced(failure.castTo[String]))
-							startingCompletedCovenant.fulfillUnsafe(Inaccessible)
-					}
+							become(Quiesced(Failure(e)))
+							startingCompletedCovenant.fulfillSync(Inaccessible)
+						}
+					})
 				}
 			}
 
@@ -2534,7 +2548,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * If not, it stays in the isolated state and checks again after a while.
 			 */
 			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
-				notifyListeners(_.onBecameIsolated(previous.ordinal, psf.committedState.currentTerm))
+				notifyListeners(_.onBecameIsolated(previous.ordinal, psf.committedState.getOrElse(Inaccessible).currentTerm))
 			}
 
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.LatchingTask[ResponseToClient] = {
@@ -2708,7 +2722,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								// if decoupledCommandsApplierCompletion.isCompleted then startApplyingCommittedCommands(accessible1, false)
 							}
 						}
-						promotionCovenant.fulfillUnsafe(primaryState1)
+						promotionCovenant.fulfillSync(primaryState1)
 					}
 				}
 
@@ -3068,7 +3082,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														_ <- updateRole()
 														primaryState3 <- primaryStateFence.causalAnchor()
 														response <- replicateTccAndThenStartSecondPhase(primaryState3, tcc, tccIndex, attemptsDone + 1)
-													} do covenant.fulfillUnsafe(response)
+													} do covenant.fulfillSync(response)
 												}
 											})
 											tccReplicationRetryWakeup = Maybe(token)
@@ -3212,14 +3226,14 @@ trait ConsensusParticipantSdm { thisModule =>
 										// Wait some time before trying again.
 										val covenant = sequencer.Covenant[Boolean]()
 										val token = requestWakeUp(WakeUpReason.ReplicationLoopRetry, attemptsDone, () => {
-											if commitIndex >= sccIndex then covenant.fulfillUnsafe(true)
+											if commitIndex >= sccIndex then covenant.fulfillSync(true)
 											else {
 												Trace.trace(s"Updating role due to insufficient quorum when replicating records up-to-index $sccIndex. Attempt #$attemptsDone")
 												for {
 													_ <- updateRole()
 													primaryState1 <- primaryStateFence.causalAnchor()
 													result <- replicateSccUntilSuccessOrLeaderRoleIsAbandoned(primaryState1, sccIndex, attemptsDone + 1)
-												} do covenant.fulfillUnsafe(result)
+												} do covenant.fulfillSync(result)
 											}
 										})
 										sccReplicationRetryWakeUp = Maybe(token)
@@ -3320,7 +3334,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 *    - half of the other participants of the set, if this participant belongs to the set;
 			 *    - a majority of the other participants of the set, if this participant does not belong to the set. */
 			private def attemptToUpdateOtherParticipantsLogs(primaryState0: Accessible)(using Context): sequencer.LatchingTask[Boolean] = { // TODO coalesce calls with same argument.
-				assert(primaryState0 eq primaryStateFence.committedState, s"$primaryState0 eq ${primaryStateFence.committedState}")
+				assert(primaryStateFence.committedState.is(primaryState0), s"$primaryState0 eq ${primaryStateFence.committedState}")
 				// Set the serial number of this method execution.
 				serialOfLastReplicationAttempt += 1
 				val serialOfReplicationAttempt = serialOfLastReplicationAttempt
@@ -3442,7 +3456,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				Trace.step("appendsRecordsToParticipant") {
 					// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skip it and fake a successful response.
 					if commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex) && untilIndex <= 1 + highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex)
-					then sequencer.Venture_successful(AppendResult(primaryState.currentTerm, 0, ISOLATED))
+					then sequencer.LatchingTask_ready(AppendResult(primaryState.currentTerm, 0, ISOLATED))
 					else thisConsensusParticipant.appendRecordsToParticipant(primaryState, destinationParticipantId, fromIndex, untilIndex, commitIndex)
 				}
 			}
@@ -3503,7 +3517,7 @@ trait ConsensusParticipantSdm { thisModule =>
 				serialOfReplicationAttempt: Int
 			)(using Context): sequencer.LatchingTask[Maybe[(noParticipantIsLagging: Boolean, quorumAchieved: Boolean, lastAttemptOutcomes: IArray[AppendOutcome], currentPrimaryState: Accessible, updatedConfig: Configuration)]] = {
 				Trace.step("retryLaggingLearners") {
-					assert((accessible1 eq primaryStateFence.committedState) && (config1 eq latestDerivedConfig.get), s"$accessible1 eq ${primaryStateFence.committedState} && $config1 eq $latestDerivedConfig")
+					assert((primaryStateFence.committedState.is(accessible1)) && (config1 eq latestDerivedConfig.get), s"$accessible1 eq ${primaryStateFence.committedState} && $config1 eq $latestDerivedConfig")
 					// Trace.trace(s"retryLaggingLearners($accessible1, $config1, ${previousAttemptAppendOutcomes.mkString("[", ", ", "]")}, $indexAfterTopRecordSent, $untilNoneLags, $serialOfReplicationAttempt)") // TODO delete line
 
 					val noParticipantIsLagging = previousAttemptAppendOutcomes.forallWithIndex((previousOutcome, _) => (previousOutcome & AO_IS_LAGGING_MASK) == 0)
@@ -3787,20 +3801,20 @@ trait ConsensusParticipantSdm { thisModule =>
 							val records = potentiallyUnappendedRecords.drop((indexOfNextRecordToSend - indexOfFirstPotentiallyUnappendedRecord).toInt)
 							id.appendRecords(currentTerm0, previousRecordIndex, previousRecordTerm, records, configChangeIndex, configChangeTerm)
 						}
-					inquire.subscribeSync { response =>
-						// if the driver wasn't removed...
-						for driver <- retirementDriverByParticipantId.get(id) do {
-							// if the driver instance was replaced with a newer one, ignore the response. Else:
-							if driver eq this then {
+					inquire.triggerSync(new sequencer.MonoObserver[AppendResult] {
+						override def onSuccess(appendResult: AppendResult): Unit = {
+							// if the driver wasn't removed...
+							for driver <- retirementDriverByParticipantId.get(id) do {
+								// if the driver instance was replaced with a newer one, ignore the response. Else:
+								if driver eq this then {
 
-								// Enqueue the processing of the response in the primary state fence if the currentRole is stateful. Also get the current term.
-								for currentTerm1 <- currentRole match {
+									// Enqueue the processing of the response in the primary state fence if the currentRole is stateful. Also get the current term.
+									for currentTerm1 <- currentRole match {
 										case stateful: StatefulRole =>
 											for primaryState1 <- stateful.primaryStateFence.causalAnchor() yield primaryState1.currentTerm
 										case _ =>
 											sequencer.LatchingTask_ready(currentTerm0)
-								} do response match {
-									case Success(appendResult) =>
+									} do {
 										// If the appending was successful or the target is already retired, then: terminate this driver and, if this participant is retiring, authorized to become Quiesced by the incoming leader, and all the drivers have completed; become Quiesced.
 										if appendResult.successOrIndexForNextAttempt == 0 || appendResult.roleOrdinal < JOINING then {
 											retirementDriverByParticipantId.remove(id)
@@ -3825,8 +3839,24 @@ trait ConsensusParticipantSdm { thisModule =>
 												becomeQuiescedIfEligible(configChangeIndex)
 											}
 										}
+									}
+								}
+							}
+						}
 
-									case Failure(e) =>
+						override def onError(e: Throwable): Unit = {
+							// if the driver wasn't removed...
+							for driver <- retirementDriverByParticipantId.get(id) do {
+								// if the driver instance was replaced with a newer one, ignore the response. Else:
+								if driver eq this then {
+
+									// Enqueue the processing of the response in the primary state fence if the currentRole is stateful. Also get the current term.
+									for currentTerm1 <- currentRole match {
+										case stateful: StatefulRole =>
+											for primaryState1 <- stateful.primaryStateFence.causalAnchor() yield primaryState1.currentTerm
+										case _ =>
+											sequencer.LatchingTask_ready(currentTerm0)
+									} do {
 										if attemptsDone >= retiringParticipantMaxRetries then Trace.error(s"$boundParticipantId: The replication to the retiring participant $id is aborted because it failed too many times. The last attempt failure was:", e)
 										else {
 											val updatedAttemptsDone = attemptsDone + 1
@@ -3837,7 +3867,11 @@ trait ConsensusParticipantSdm { thisModule =>
 												() => if retirementDriverByParticipantId.contains(id) then {
 													currentRole match {
 														case stateful: StatefulRole =>
-															stateful.primaryStateFence.causalAnchor { (primaryState2, _) => driveLoop(primaryState2.currentTerm, updatedAttemptsDone) }
+															stateful.primaryStateFence.causalAnchor(new CompletionObserver[PrimaryState] {
+																override def onSuccess(primaryState2: PrimaryState, originId: OriginId): Unit = driveLoop(primaryState2.currentTerm, updatedAttemptsDone)
+
+																override def onError(e: Throwable, originId: OriginId): Unit = illegalStateQuiesce(s"Unexpected failing state: $e")
+															})
 														case retiring: Retiring =>
 															driveLoop(retiring.finalTerm, updatedAttemptsDone)
 														case _ =>
@@ -3846,11 +3880,11 @@ trait ConsensusParticipantSdm { thisModule =>
 												}
 											)
 										}
-									
+									}
 								}
 							}
 						}
-					}
+					})
 				}
 			}
 		}
@@ -4094,27 +4128,25 @@ trait ConsensusParticipantSdm { thisModule =>
 
 
 			/** CAUTION: This method mutates of the [[PrimaryState]], so it should be called within the safe temporal windows provided by [[StatefulRole.primaryStateFence.advance]]. */
-			def withWorkspaceReleased(): sequencer.Task[Inaccessible.type] =
-				workspace.releases.map(_ => Inaccessible)
+			def withWorkspaceReleased(): sequencer.LatchingTask[Inaccessible.type] =
+				workspace.release().map(_ => Inaccessible)
 
 			/** Saves the [[Workspace]] of this [[PrimaryState]] in the [[Storage]].
 			 * CAUTION: This method accesses mutable state of the [[PrimaryState]], so it should be called within an [[StatefulRole.primaryStateFence.advance]] section only.
 			 * @return the [[sequencer.LatchingTask]] that yields the saved [[PrimaryState]] */
 			private def saveWorkspace()(using Trace.Context): sequencer.LatchingTask[PrimaryState] = {
-				storage.save(workspace).map {
-					case _: Success[Unit] =>
-						if currentRole.isInstanceOf[StatefulRole] then new Accessible(workspace)
-						// Release the workspace if the current role changed to a stateless one during the save.
-						else {
-							workspace.releases.triggerAndForget()
-							Inaccessible
-						}
-
-					case failure: Failure[Unit] =>
-						Trace.error(s"$boundParticipantId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will quiesce.", failure.exception)
-						become(Quiesced(failure.castTo[String]))
-						workspace.releases.triggerAndForget() // just in case storage.save does not do it.
+				storage.save(workspace).map { _ =>
+					if currentRole.isInstanceOf[StatefulRole] then new Accessible(workspace)
+					// Release the workspace if the current role changed to a stateless one during the save.
+					else {
+						workspace.release()
 						Inaccessible
+					}
+				}.recover { e =>
+					Trace.error(s"$boundParticipantId: Unexpected error while saving the workspace. This participant's consensus service is unable to continue following the leader and will quiesce.", e)
+					become(Quiesced(Failure(e)))
+					workspace.release() // just in case storage.save does not do it.
+					Maybe(Inaccessible)
 				}
 			}
 
@@ -4538,7 +4570,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		private final def illegalStateQuiesce(detail: String = "")(using Trace.Context): Role = {
 			Trace.step("illegalStateQuiesce") {
-				val failure = new IllegalStateException("Should never happen. $detail")
+				val failure = new IllegalStateException(s"Should never happen. $detail")
 				Trace.error(s"Should never happen", failure)
 				become(Quiesced(Failure(failure)))
 			}

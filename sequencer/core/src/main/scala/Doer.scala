@@ -4,7 +4,8 @@ import Doer.*
 
 import readren.common.*
 
-import scala.annotation.{publicInBinary, tailrec, targetName, threadUnsafe}
+import scala.annotation.unchecked.uncheckedVariance
+import scala.annotation.{tailrec, targetName, threadUnsafe}
 import scala.collection.IterableFactory
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.reflect.ClassTag
@@ -17,17 +18,15 @@ object Doer {
 
 	val assertionsEnabled: Boolean = classOf[Doer].desiredAssertionStatus()
 
-	/** Wraps exception passed to [[Doer.reportFailure]] when [[Doer.reportPanicException]] is called.
-	 * [[Doer.reportPanicException]] is called by [[Doer.ownSingleThreadExecutionContext.reportFailure]], few [[Doer.Venture]] operations like [[Doer.Venture.andThen]] that can't propagate failures, and most [[Doer.Covenant]]/[[Doer.Commitment]] operations. */
-	class PanicException(message: String, cause: Throwable) extends RuntimeException(message, cause)
+
 
 	/** Information about the responsible for the completion and origin of the value with which a [[Covenant]]/[[Commitment]] is completed:
 	 *		- [[THE_PROVIDED]] if completed by the invoked completion method with the provided value.
 	 *		- [[ANOTHER_BEFORE]] if completed by other means before the completion method was invoked.
 	 *		- [[ANOTHER_AFTER]] if completed by other menas after the completion method was invoked.
 	 * TODO when a new version of scala is released (newer than 3.7.4), check if it supports making these types aliases opaque without causing obscure errors in unrelated code like the [[LoopingExtension]] despite it does not reference them. */
-	type ResultOrigin = Int
-	/** Completed by something else after the [[Doer.Covenant.fulfillWith]]/[[Doer.Commitment.completeWith]] was invoked. */
+	type ResultOrigin = OriginId
+	/** Completed by something else after the [[Doer.Covenant.fulfillWith]] was invoked. */
 	inline val ANOTHER_AFTER = 0
 	/** Information about the responsible for the completion and origin of the value with which a [[Covenant]]/[[Commitment]] is completed with an immediate value.
 	 *		- [[THE_PROVIDED]] if completed by the invoked completion method with the provided value.
@@ -38,6 +37,8 @@ object Doer {
 	final inline val ANOTHER_BEFORE = 1
 	/** Completed by the [[Doer.Covenant]]/[[Doer.Commitment]] completion method to which the `onCompleted` call-back that received this constant was provided. */
 	final inline val THE_PROVIDED = 2
+
+	final def checkWithinMsg(thisDoer: Doer): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${thisDoer.currentlyRunningDoer.fold("unknown")(_.tag)}."
 
 	//// Convenient constants ////
 
@@ -70,7 +71,7 @@ abstract class AbstractDoer extends Doer
  * @define isExecutedByDoSerEx This function is executed within the DoSerEx (doer's serial executor).
  * @define unhandledErrorsArePropagatedToVentureResult The call to this routine is guarded with try-catch. If it throws a non-fatal exception it will be caught and the [[Venture]] will complete with a [[Failure]] containing the error.
  * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
- * @define notGuarded CAUTION: The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the task will never complete. The same occurs with all routines received by [[Task]] operations. This is one of the main differences with [[Venture]] operation.
+ * @define notGuarded CAUTION! The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the task will never complete. The same occurs with all routines received by [[Task]] operations. This is one of the main differences with [[Venture]] operation.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
  * @define isWithinDoSerEx indicates whether the call to this method is within this [[Doer]]'s sequential executor. If there is no such certainty the call site should either, not specify a value in order to use the default (which is the result of [[Doer.isInSequence]]), or specify `false` to force deferred execution.
  * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
@@ -97,11 +98,28 @@ trait Doer { thisDoer =>
 	 * @note Implementations must set their associated provider's thread-local to `this` before invoking `body`, and clear it (restore to `null`) once `body` returns or throws. Failure to uphold this contract will cause [[DoerProvider.currentDoer]] to return a value of the wrong type at runtime, as the cast in that method relies on it. */
 	def executeSequentially(runnable: Runnable): Unit
 
+	/** Like [[executeSequentially]] but with asynchronous stack traces. */
+	def executeSequentiallyWithAST(runnable: Runnable): Unit = {
+		val dispatchTrace = new Throwable("Asynchronously dispatched here")
+
+		val wrappedRunnable = new Runnable {
+			def run(): Unit = {
+				try {
+					runnable.run()
+				} catch {
+					case t: Throwable =>
+						t.addSuppressed(dispatchTrace)
+						throw t
+				}
+			}
+		}
+
+		executeSequentially(wrappedRunnable) // Enqueue the wrapped runnable instead
+	}
 	/** The [[ExecutionSerial]] of the most recently executed [[Runnable]] on this [[Doer]].
 	 *
 	 * This serial is incremented immediately before each [[Runnable]] passed to [[executeSequentially]] is run.
-	 * It enables those [[Runnable]]s to observe their relative execution order and distinguish whether two operations occur during the same or different executions.
-	 */
+	 * It enables those [[Runnable]]s to observe their relative execution order and distinguish whether two operations occur during the same or different executions, allowing the user to build defensive measures againts stack-overflow due to recursive calls to [[Observable.subscribeSync]]. */
 	def currentExecutionSerial: ExecutionSerial
 
 	/**
@@ -115,21 +133,10 @@ trait Doer { thisDoer =>
 
 	/** Asserts that the current [[java.lang.Thread]] is the one that is currently assigned to this [[Doer]] instance for sequential execution of its operations. */
 	inline def checkWithin(): Unit = {
-		if Doer.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg())
+		if Doer.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg(thisDoer))
 	}
 
-	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${currentlyRunningDoer.fold("unknown")(_.tag)}."
 
-	/**
-	 * Called by few [[Venture]] and most [[Commitment]] operations when an operand function terminates abruptly and the nature of the operation does not allow to propagate the failure to the result.
-	 * Examples of such operations are [[Venture.andThen]], [[Venture.subscribeAndForgetHandlingErrors]], [[Venture_wait]], [[Venture_alien]], and [[Commitment.completeUnsafe]].
-	 * The implementation should report the received [[Throwable]] somehow. Preferably including a description that identifies the provider of the DoSerEx used by [[executeSequentially]] and mentions that the error was thrown by a deferred procedure programmed by means of a [[Venture]].
-	 * The implementation should not throw non-fatal exceptions.
-	 * This method is called within the thread assigned to this [[Doer]].
-	 * */
-	protected def reportFailure(cause: Throwable): Unit
-
-	private[sequencer] inline final def reportFailurePortal(cause: Throwable): Unit = reportFailure(cause)
 
 	/**
 	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
@@ -143,7 +150,7 @@ trait Doer { thisDoer =>
 	 * @note Is more efficient than the functionally equivalent: `Task_mine(() => procedure).subscribeAndForget()`.
 	 */
 	inline def run(inline procedure: => Unit): Unit = {
-		${ DoerMacros.executeSequentiallyImpl('thisDoer, 'procedure) }
+		${ DoerMacros.runImpl('thisDoer, 'procedure) }
 	}
 
 	//// WIRABLE SOFT ////
@@ -155,7 +162,7 @@ trait Doer { thisDoer =>
 	 * @tparam A the type of value produced by the supplier
 	 * @tparam F the effect type into which the supplier is wired
 	 */
-	trait WirableSoft[A, F[_]] {
+	trait Wirable[A, F[_]] {
 		/** Wires the given supplier into an instance of `F[A]`.\
 		 * The wiring strategy is defined by the implementing instance: it may schedule execution immediately via [[Doer.run]], defer it until the effect is engaged, or apply any other strategy consistent with this [[Doer]]'s execution model.
 		 * @param supplier the computation to wire into `F`
@@ -163,93 +170,60 @@ trait Doer { thisDoer =>
 		inline def wire(supplier: () => A): F[A]
 
 		inline def wireFlat(supplier: () => F[A]): F[A]
+
+		inline def wireGuarded(supplier: () => A): F[A]
+
+		inline def wireFlatGuarded(supplier: () => F[A]): F[A]
 	}
 
-	/** Wires the given supplier into effect type `F` using the [[WirableSoft]] instance corresponding to `F`. The [[WirableSoft]] instances for effect types defined in [[Doer]] are provided by [[Doer]] itself.
+	/** Wires the given supplier into effect type `F` using the [[Wirable]] instance corresponding to `F`. The [[Wirable]] instances for effect types defined in [[Doer]] are provided by [[Doer]] itself.
 	 * @param supplier the computation to submit
 	 * @param wirable the type-class instance that determines how the supplier is wired
 	 * @tparam A the type of value produced
 	 * @tparam F the effect type into which the supplier is wired
-	 * @return an `F[A]` wired according to the [[WirableSoft]] instance in scope */
-	inline def submit[A, F[_]](supplier: () => A)(using wirable: WirableSoft[A, F]): F[A] =
+	 * @return an `F[A]` wired according to the [[Wirable]] instance in scope */
+	inline def submit[A, F[_]](supplier: () => A)(using wirable: Wirable[A, F]): F[A] =
 		wirable.wire(supplier)
 
-	inline def submitFlat[A, F[_]](supplier: () => F[A])(using wirable: WirableSoft[A, F]): F[A] =
+	inline def submitGuarded[A, F[_]](supplier: () => A)(using wirable: Wirable[A, F]): F[A] =
+		wirable.wireGuarded(supplier)
+
+	inline def submitFlat[A, F[_]](supplier: () => F[A])(using wirable: Wirable[A, F]): F[A] =
 		wirable.wireFlat(supplier)
 
-	inline given [A] =>WirableSoft[A, Task] {
-		override inline def wire(supplier: () => A): Task[A] =
-			new Task_Mine(supplier)
+	inline def submitFlatGuarded[A, F[_]](supplier: () => F[A])(using wirable: Wirable[A, F]): F[A] =
+		wirable.wireFlatGuarded(supplier)
 
-		override inline def wireFlat(supplier: () => Task[A]): Task[A] = {
-			new Task_MineFlat(supplier)
-		}
+
+	inline given [A] =>Wirable[A, Task] {
+		override inline def wire(supplier: () => A): Task[A] = new Task_Apply(supplier)
+
+		override inline def wireFlat(supplier: () => Task[A]): Task[A] = new Task_Defers(supplier)
+
+		override inline def wireGuarded(supplier: () => A): Task[A] = ??? // TODO
+
+		override inline def wireFlatGuarded(suplier: () => Task[A]): Task[A] = ??? // TODO
 	}
 
-	inline given [A] =>WirableSoft[A, LatchingTask] {
-		override inline def wire(supplier: () => A): LatchingTask[A] =
-			Covenant_mine(supplier)
+	inline given [A] =>Wirable[A, LatchingTask] {
+		override inline def wire(supplier: () => A): LatchingTask[A] = Covenant_from(supplier)
 
-		override inline def wireFlat(supplier: () => LatchingTask[A]): LatchingTask[A] =
-			Covenant_mineFlat(supplier)
-	}
+		override inline def wireFlat(supplier: () => LatchingTask[A]): LatchingTask[A] = Covenant_defer(supplier)
 
-	//// WIRABLE HARDY ////
+		override inline def wireGuarded(supplier: () => A): LatchingTask[A] = ??? // TODO
 
-	/** Like [[WirableSoft]] but for hardy suppliers (the value is wrapped with [[Try]]). */
-	trait WirableHardy[A, F[_]] {
-		inline def wire(inline supplier: () => Try[A]): F[A]
-
-		inline def wireFlat(inline supplier: () => F[A]): F[A]
-	}
-
-	/** Wires the given supplier into an effect type `F` using the [[WirableSoft]] instance corresponding to `F`. The [[WirableSoft]] instances for effect types defined in [[Doer]] are provided by [[Doer]] itself.
-	 * @param supplier the computation to submit
-	 * @param wirable the type-class instance that determines how the supplier is wired
-	 * @tparam A the type of value produced
-	 * @tparam F the effect type into which the supplier is wired
-	 * @return an `F[A]` wired according to the [[WirableSoft]] instance in scope
-	 */
-	inline def submitHardy[A, F[_]](inline supplier: () => Try[A])(using wirable: WirableHardy[A, F]): F[A] = {
-		wirable.wire(supplier)
-	}
-
-	inline given [A] =>WirableHardy[A, Venture] {
-		override inline def wire(inline supplier: () => Try[A]): Venture[A] =
-			new Venture_Own(supplier)
-
-		override inline def wireFlat(inline supplier: () => Venture[A]): Venture[A] =
-			new Venture_OwnFlat(supplier)
-	}
-
-	inline given [A] =>WirableHardy[A, LatchingVenture] {
-		override inline def wire(inline supplier: () => Try[A]): LatchingVenture[A] = {
-			val commitment = new Commitment[A]
-			run(commitment.complete(supplier()))
-			commitment
-		}
-
-		override inline def wireFlat(inline supplier: () => LatchingVenture[A]): LatchingVenture[A] = {
-			val commitment = new Commitment[A]
-			run(supplier().subscribeSync(tryA => commitment.complete(tryA)))
-			commitment
-		}
+		override inline def wireFlatGuarded(suplier: () => LatchingTask[A]): LatchingTask[A] = ??? // TODO
 	}
 
 	//// EXCEPTION HANDLING ////
 
-	protected inline def reportPanicException(exception: Throwable): Unit =
-		${ DoerMacros.reportPanicExceptionImpl('thisDoer, 'exception) }
-
-	/**
-	 * An [[ExecutionContext]] that executes in sequence with this [[Doer]]. See [[Doer.executeSequentially]] */
+	/** An [[ExecutionContext]] that executes in sequence with this [[Doer]].\
+	 * Useful to execute [[Future]] operations within this [[Doer]]'s DoSerEx.\
+	 * Internally, it is used by operations that handle a [[Future]]. */
 	@threadUnsafe lazy val ownSingleThreadExecutionContext: ExecutionContext = new ExecutionContext {
 		def execute(runnable: Runnable): Unit = thisDoer.executeSequentially(runnable)
 
-		def reportFailure(cause: Throwable): Unit = {
-			if isInSequence then thisDoer.reportPanicException(cause)
-			else executeSequentially(() => thisDoer.reportPanicException(cause))
-		}
+		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 
 	//// PRIMITIVES ////
@@ -261,22 +235,16 @@ trait Doer { thisDoer =>
 		def unsubscribe(): Unit
 	}
 
+	/** An empty subscription that performs no action upon unsubscription. */
+	@threadUnsafe lazy val Subscription_empty: Subscription = () => ()
+
 	/** Observer of single result computations. */
 	trait MonoObserver[-A] {
 		/** The implementation should never throw a non-fatal exception. It may either terminate normally or fatally though. */
-		def onSuccess(value: A): Unit
+		def onSuccess(a: A): Unit
 
 		/** The implementation should never throw a non-fatal exception. It may either terminate normally or fatally though. */
-		def onError(ex: Throwable): Unit
-	}
-
-	/** TODO delete after migration */
-	class CallbackMonoObserver[-A](val callback: A => Unit) extends MonoObserver[A] {
-		override def onSuccess(value: A): Unit = {
-			callback(value)
-		}
-
-		override def onError(ex: Throwable): Unit = ()
+		def onError(e: Throwable): Unit
 	}
 
 	@threadUnsafe lazy val MonoObserver_ignore: MonoObserver[Any] = new MonoObserver[Any] {
@@ -285,35 +253,34 @@ trait Doer { thisDoer =>
 		override def onError(ex: Throwable): Unit = ()
 	}
 
-	/** An empty subscription that performs no action upon unsubscription. */
-	@threadUnsafe lazy val Subscription_empty: Subscription = () => ()
+	inline def MonoObserver_fromCallbacks[A](inline success: A => Unit, inline error: Throwable => Unit): MonoObserver[A] = {
+		class Local extends MonoObserver[A] {
+			override def onSuccess(a: A): Unit = success(a)
 
-	trait Observable[+A] { thisObservable =>
+			override def onError(e: Throwable): Unit = error(e)
+		}
+		new Local
+	}
+
+	/** A single result computation with observable result.
+	 * TODO rename to "Mono" */
+	trait Observable[+A] { thisMono =>
 		/** Subscribes an [[Observer]] to the result of this [[Observable]] and returns a [[Subscription]] that can be used to cancel.
 		 * This method is the sole primitive operation of this trait; all other methods are derived from it.\
-		 * @param monoObserver The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
+		 * @param downChainMono The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
 		 * The implementation may assume that `onComplete` will either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def subscribeSync(monoObserver: MonoObserver[A]): Subscription
+		def subscribeSync(downChainMono: MonoObserver[A]): Subscription
 
-		@targetName("subscribeSyncCallback")
-		inline def subscribeSync(inline consumer: A => Unit): Subscription = {
-			subscribeSync(new CallbackMonoObserver[A](consumer))
-		}
+		inline final def subscribeSyncCallbacks(inline success: A => Unit, inline error: Throwable => Unit): Subscription = subscribeSync(MonoObserver_fromCallbacks(success, error))
 
-		/** Initiates an execution of this [[Observable]] and subscribes the provided call-back as a consumer of the execution result.
-		 * Each invocation of this method triggers a new execution.
-		 * Note: Executions triggered on [[Observable]] instances whose completion depends on other executions (e.g., a pending [[Covenant]]) will not complete until those dependent executions have themselves been triggered and completed.
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onComplete Invoked when the triggered execution completes. The call-back must not throw non-fatal exceptions. It must either terminate normally or fail fatally, but never with a non-fatal exception.
-		 * $isExecutedByDoSerEx */
-		inline final def subscribe(inline isWithinDoSerEx: Boolean = isInSequence)(inline onComplete: A => Unit): Subscription = {
+		inline final def subscribe(inline isWithinDoSerEx: Boolean = isInSequence)(downChainObserver: MonoObserver[A]): Subscription = {
 			if isWithinDoSerEx then {
 				checkWithin()
-				subscribeSync(onComplete)
+				subscribeSync(downChainObserver)
 			} else {
-				new Subscription with Runnable {
+				class Junction extends Subscription with Runnable {
 					private var isActive = true
-					private var maybeTargetSubscription: Maybe[Subscription] = Maybe.empty
+					private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
 					{
 						executeSequentially(this)
@@ -321,79 +288,88 @@ trait Doer { thisDoer =>
 
 					override def run(): Unit = {
 						if isActive then {
-							val targetSubscription = subscribeSync(onComplete)
-							if isActive then maybeTargetSubscription = Maybe(targetSubscription)
-							else targetSubscription.unsubscribe()
+							val upChainSubscription = subscribeSync(downChainObserver)
+							if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+							else upChainSubscription.unsubscribe()
 						}
 					}
-
-					override def toString: String = s"${thisObservable.toString}${DoerMacros.sourceInfo(onComplete)}"
 
 					override def unsubscribe(): Unit = {
 						checkWithin()
 						isActive = false
-						maybeTargetSubscription.foreach(_.unsubscribe())
+						maybeUpChainSubscription.foreach(_.unsubscribe())
 					}
 				}
+				new Junction
 			}
 		}
 
-		inline def subscribeAndForget(inline isWithingDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithingDoSerEx)(_ => ()) // TODO provisory: update after migration
+		inline def subscribe(inline isWithinDoSerEx: Boolean)(inline onComplete: A | Throwable => Unit): Subscription = {
+			class AdaptedJunction extends Subscription with MonoObserver[A] with Runnable {
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
-		/** Like [[subscribeSync]] but does not return a [[Subscription]].
-		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation.
-		 * @param monoObserver The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
-		 * The implementation may assume that the [[MonoObserver]] methods either terminate normally or fatally, but will not throw non-fatal exceptions. */
-		def triggerSync(monoObserver: MonoObserver[A]): Unit = subscribeSync(monoObserver)
+				override def run(): Unit = {
+					if isActive then {
+						val upChainSubscription = subscribeSync(this)
+						if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+						else upChainSubscription.unsubscribe()
+					}
+				}
 
-		/** TODO provisory: delete after migration */
-		@targetName("triggerSyncCallback")
-		inline def triggerSync(inline consumer: A => Unit): Unit = {
-			triggerSync(new MonoObserver[A] {
-				override def onSuccess(value: A): Unit = consumer(value)
+				override def onSuccess(a: A): Unit = onComplete(a)
 
-				override def onError(ex: Throwable): Unit = ()
-			})
+				override def onError(e: Throwable): Unit = onComplete(e)
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					isActive = false
+					maybeUpChainSubscription.foreach(_.unsubscribe())
+				}
+			}
+			val junction = new AdaptedJunction
+			if isWithinDoSerEx then junction.run() else executeSequentially(junction)
+			junction
 		}
+
+		inline final def subscribeCallbacks(inline isWithinDoSerEx: Boolean = isInSequence)(inline success: A => Unit, inline error: Throwable => Unit): Subscription = subscribe(isWithinDoSerEx)(MonoObserver_fromCallbacks(success, error))
+
+		inline final def subscribeHardy(inline isWithinDoSerEx: Boolean = isInSequence)(inline onComplete: Try[A] => Unit): Subscription = subscribeCallbacks(isWithinDoSerEx)(a => onComplete(Success(a)), e => onComplete(Failure(e)))
+
+		inline final def subscribeAndForget(inline isWithingDoSerEx: Boolean = isInSequence): Subscription = subscribe(isWithingDoSerEx)(MonoObserver_ignore)
+
+		/** Like [[subscribeSync]] but does not return a [[Subscription]]. /
+		 * The default implementation calls [[subscribeSync]], but some subclasses have a more efficient implementation.
+		 * TODO override this method in as many primitives as possible.
+		 * @param downChainObserver The observer to be notified upon the completion of this [[Observable]]. The implementation should notify within the $DoSerEx.\
+		 * The implementation may assume that the [[MonoObserver]] methods either terminate normally or fatally, but will not throw non-fatal exceptions. */
+		def triggerSync(downChainObserver: MonoObserver[A]): Unit = subscribeSync(downChainObserver)
+
+		inline def triggerSyncCallbacks(inline success: A => Unit, inline error: Throwable => Unit): Unit = triggerSync(MonoObserver_fromCallbacks(success, error))
 
 		/** Enqueues an uncancelable execution of this [[Observable]] ignoring the result .
 		 *
 		 * $threadSafe
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx */
-		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(monoObserver: MonoObserver[A]): Unit = {
+		inline final def trigger(inline isWithinDoSerEx: Boolean = isInSequence)(downChainObserver: MonoObserver[A]): Unit = {
 			if isWithinDoSerEx then {
 				checkWithin()
-				triggerSync(monoObserver)
-			} else thisDoer.run(triggerSync(monoObserver))
+				triggerSync(downChainObserver)
+			} else thisDoer.run(triggerSync(downChainObserver))
 		}
 
-		/** TODO provisory: delete after migration */
 		@targetName("triggerCallback")
-		inline final def trigger(inline isWithinDoSerEx: Boolean)(inline consumer: A => Unit): Unit = {
-			if isWithinDoSerEx then {
-				checkWithin()
-				triggerSync(consumer)
-			} else thisDoer.run(triggerSync(consumer))
-		}
+		inline final def triggerCallbacks(inline isWithinDoSerEx: Boolean = isInSequence)(inline success: A => Unit, inline error: Throwable => Unit): Unit = trigger(isWithinDoSerEx)(MonoObserver_fromCallbacks(success, error))
 
-		/** TODO provisory: delete after migration */
-		@targetName("triggerCallbackDefault")
-		inline final def trigger(inline consumer: A => Unit): Unit = {
-			trigger(isInSequence)(consumer)
-		}
+		inline final def triggerHardy(inline isWithinDoSerEx: Boolean = isInSequence)(inline onComplete: Try[A] => Unit): Unit = triggerCallbacks(isWithinDoSerEx)(a => onComplete(Success(a)), e => onComplete(Failure(e)))
 
 		/** Enqueues an execution of this [[Observable]] ignoring the result.
 		 *
 		 * $threadSafe
 		 *
 		 * @param isWithinDoSerEx $isWithinDoSerEx */
-		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = {
-			if isWithinDoSerEx then {
-				checkWithin()
-				triggerSync(MonoObserver_ignore)
-			} else thisDoer.run(triggerSync(MonoObserver_ignore))
-		}
+		inline final def triggerAndForget(inline isWithinDoSerEx: Boolean = isInSequence): Unit = trigger(isWithinDoSerEx)(MonoObserver_ignore)
 
 		/** Enqueues an execution of this [[Task]] and then invokes the provided consumer passing the result.
 		 *
@@ -405,10 +381,19 @@ trait Doer { thisDoer =>
 		 * $isExecutedByDoSerEx
 		 *
 		 * $notGuarded */
-		def foreach(consumer: A => Unit): Unit = {
-			checkWithin()
-			triggerSync(consumer)
-		}
+		def foreach(consumer: A => Unit): Unit
+
+		/** Creates a new [[Observable]] that yields exactly the same result (same identity) as this [[Observable]] but executes the provided side-effecting function before yielding it.\
+		 * $threadSafe
+		 * @param onSuccess a function that is applied to the successful result of this [[Observable]] for its side effects before subscribers.
+		 * @param onError a function that is applied to the failure result of this [[Observable]] for its side effects before subscribers. */
+		def andThen(onSuccess: A => Unit, onError: Throwable => Unit = _ => ()): Observable[A]
+
+		def reconcile: Observable[Try[A]]
+
+		def withFilter(p: A => Boolean): Observable[A]
+
+		def withFilterGuarded(p: A => Boolean): Observable[A]
 
 		/**
 		 * Creates a new [[Observable]] that yields the result of applying the provided function to the result of this [[Observable]].
@@ -423,6 +408,8 @@ trait Doer { thisDoer =>
 		 */
 		def map[B](f: A => B): Observable[B]
 
+		def mapGuarded[B](f: A => B): Observable[B]
+
 		/**
 		 * Creates a new [[Observable]] that yields the result of executing an intermediate [[Observable]] produced by applying the provided function to the final result.
 		 *
@@ -436,13 +423,17 @@ trait Doer { thisDoer =>
 		 */
 		def flatMap[B](f: A => Observable[B]): Observable[B]
 
-		/** Creates a new [[Observable]] that yields exactly the same result (same identity) as this [[Observable]] but executes the provided side-effecting function before yielding it.
-		 *
-		 * $threadSafe
-		 *
-		 * @param sideEffect a function that is applied to the result of this [[Observable]] for its side effects.
-		 */
-		def andThen(sideEffect: A => Unit): Observable[A]
+		def flatMapGuarded[B](f: A => Observable[B]): Observable[B]
+
+		def transform[B](f: Try[A] => Try[B]): Observable[B]
+
+		def transformWith[B](f: Try[A] => Observable[B]): Observable[B]
+
+		def recover[B >: A](pf: Throwable => Maybe[B]): Observable[B]
+
+		def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B]
+
+		def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A]
 
 		/**
 		 * Wraps this [[Observable]] into another that belongs to another [[Doer]].\
@@ -450,7 +441,7 @@ trait Doer { thisDoer =>
 		 * ===Detailed behavior===
 		 * Returns a [[Observable]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this task within this [[Doer]] and, when completed, make the returned [[Observable]] to yield the result.\
 		 * CAUTION: Avoid closing over the same mutable variable from two operand functions applied to [[Observable]] instances belonging to different [[Doer]]s.\
-		 * Remember that all function operands provided to [[Observable]] methods are executed within the [[Doer]] that owns it. Therefore, calling [[trigger]] on the returned [[Observable]] will execute the `onComplete` passed to it within the `otherDoer`.\
+		 * Remember that all function operands provided to [[Observable]] methods are executed within the [[Doer]] that owns it. Therefore, calling [[triggerCallbacks]] on the returned [[Observable]] will execute the `onComplete` passed to it within the `otherDoer`.\
 		 *
 		 * $threadSafe
 		 *
@@ -472,19 +463,32 @@ trait Doer { thisDoer =>
 			this.asInstanceOf[doer.Observable[A]]
 		}
 
+		def guarded: GuardedMono[A]
+	}
+
+	trait GuardedMono[+A] {
+		def withFilter(p: A => Boolean): Observable[A]
+
+		def map[B](f: A => B): Observable[B]
+
+		def flatMap[B](f: A => Observable[B]): Observable[B]
+		/*
+		def recover[B >: A](pf: Throwable => Maybe[B]): Observable[B]
+		def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B]
+		def transform[B](f: Try[A] => Try[B]): Observable[B]
+		def transformWith[B](f: Try[A] => Observable[B]): Observable[B]
+		*/
 	}
 
 	/////////////// TASK ///////////////
-
-	abstract class AbstractTask[+A] extends Task[A]
 
 	/** A lazy computation owned by this [[Doer]]. Executions are serialized across all [[Task]] instances of the same [[Doer]]. Each execution may produce a different result if the computation depends on mutable state.\
 	 * Executions are performed in the order they were triggered.\
 	 * A [[Task]] can encapsulate one or more chained actions and provides operations to declaratively build complex duties from simpler ones.\
 	 * This tool simplifies the implementation of a handler that manages multiple simultaneous processes that interact with each other using a single sequential actor. How? By eliminating the need for state variables that determine the decision-making flow, as the code structure itself indicates the execution order.\
 	 * Instances of [[Task]] whose result is always the same follow the monadic laws. However, if the result depends on the execution (because it depends on mutable variables or time), these laws may be broken.\
-	 * For example, if the [[Task.subscribeSync]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{task.flatMap(f).flatMap(g) == task.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the task's execution.\
-	 * This does not mean that [[Task.subscribeSync]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Task]] instances.\
+	 * For example, if the [[Task.subscribeSyncCallbacks]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{task.flatMap(f).flatMap(g) == task.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the task's execution.\
+	 * This does not mean that [[Task.subscribeSyncCallbacks]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Task]] instances.\
 	 * If the goal is just deterministic behavior, it's sufficient that any closed-over mutable variable is only mutated and accessed by actions executed sequentially in a determined order. This is why the contract enforces serialized execution of actions in the order at which the actions were triggered: to maintain determinism, even when closing over mutable variables, provided they are mutated and accessed solely within the actions in said ordered sequence and those actions are deterministic.\
 	 * If you require to ensure monadic laws are followed, use [[LatchingTask]]/[[LatchingVenture]] instead.\
 	 * Design note: [[Task]] and [[Venture]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Venture]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
@@ -493,6 +497,37 @@ trait Doer { thisDoer =>
 	 * To bypass these path-dependent restrictions when composing tasks across Doer boundaries (or when types cannot be fully proven stable by the compiler), see the trigger implementations in the macro definition, which projects types using the general projected type `Doer#Task`.\
 	 * @tparam A the type of the result obtained when executing this [[Task]]. */
 	trait Task[+A] extends Observable[A] { thisTask =>
+
+		override def foreach(consumer: A => Unit): Unit = {
+			checkWithin()
+			triggerSyncCallbacks(consumer, _ => ())
+		}
+
+		/** Creates a new [[Task]] that yields exactly the same result (same identity) as this [[Task]] but executes the provided side-effecting function before yielding it.
+		 *
+		 * $threadSafe
+		 *
+		 * @param onSuccess a function that is applied to the result of this [[Task]] for its side effects.
+		 */
+		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit = _ => ()): Task[A] = new Task_AndThen[A](thisTask, onSuccess, onError)
+
+		override def reconcile: Task[Try[A]] = new AbstractTask[Try[A]] {
+			override def subscribeSync(downChainMono: MonoObserver[Try[A]]): Subscription = {
+				new Subscription with MonoObserver[A] {
+					private val upChainSubscription = thisTask.subscribeSync(this)
+
+					override def onSuccess(a: A): Unit = downChainMono.onSuccess(Success(a))
+
+					override def onError(e: Throwable): Unit = downChainMono.onSuccess(Failure(e))
+
+					override def unsubscribe(): Unit = upChainSubscription.unsubscribe()
+				}
+			}
+		}
+
+		override def withFilter(p: A => Boolean): Task[A] = new Task_WithFilter(thisTask, p, false)
+
+		override def withFilterGuarded(p: A => Boolean): Task[A] = new Task_WithFilter(thisTask, p, true)
 
 		/**
 		 * Creates a new [[Task]] that yields the result of applying the provided function to the result of this [[Task]].
@@ -505,7 +540,13 @@ trait Doer { thisDoer =>
 		 *
 		 * $notGuarded
 		 */
-		override def map[B](f: A => B): Task[B] = new Task_Map(thisTask, f)
+		override def map[B](f: A => B): Task[B] = new Task_Map(thisTask, f, false)
+
+		override def mapGuarded[B](f: A => B): Task[B] = new Task_Map(thisTask, f, true)
+
+		override def recover[B >: A](pf: Throwable => Maybe[B]): Task[B] = new Task_Recover(thisTask, pf, false)
+
+		override def transform[B](f: Try[A] => Try[B]): Task[B] = new Task_Transform(thisTask, f, false)
 
 		/**
 		 * Creates a new [[Task]] that yields the result of executing an intermediate [[Observable]] produced by applying the provided function to the final of this [[Task]].
@@ -518,28 +559,21 @@ trait Doer { thisDoer =>
 		 *
 		 * $notGuarded
 		 */
-		override def flatMap[B](f: A => Observable[B]): Task[B] = new Task_FlatMap(thisTask, f)
+		override def flatMap[B](f: A => Observable[B]): Task[B] = new Task_FlatMap(thisTask, f, false)
 
-		/** Creates a new [[Task]] that yields exactly the same result (same identity) as this [[Task]] but executes the provided side-effecting function before yielding it.
-		 *
-		 * $threadSafe
-		 *
-		 * @param sideEffect a function that is applied to the result of this [[Task]] for its side effects.
-		 */
-		override def andThen(sideEffect: A => Unit): Task[A] = new Task_AndThen[A](thisTask, sideEffect)
+		override def flatMapGuarded[B](f: A => Observable[B]): Task[B] = new Task_FlatMap(thisTask, f, true)
 
-		/** Creates a new always successful [[Venture]] that shields the result of this [[Task]].
-		 *
-		 * This operation allows a [[Task]] to participate in a [[Venture]]'s short-circuiting context without itself being a short-circuit trigger.
-		 *
-		 * Together with [[reconcile]] this method allow to mix [[Task]] and [[Venture]] operations in the same chain.
-		 * @return a [[Venture]] whose result is the result of this [[Task]] wrapped inside a [[Success]]. */
-		def succeed: Venture[A] = new Venture_fromTask(thisTask)
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Task[B] = new Task_RecoverWith(thisTask, pf, false)
 
-		/** Starts an execution of this [[Task]] and returns a successful [[Future]] that yields the result. */
-		def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
+		override def transformWith[B](f: Try[A] => Observable[B]): Task[B] = new Task_TransformWith(thisTask, f, false)
+
+		override def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
-			subscribe(isWithinDoSerEx)(a => promise.success(a))
+			subscribe(isWithinDoSerEx)(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = promise.success(a)
+
+				override def onError(e: Throwable): Unit = promise.failure(e)
+			})
 			promise.future
 		}
 
@@ -550,14 +584,14 @@ trait Doer { thisDoer =>
 		 * Returns a [[Task]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this task within this [[Doer]] and, when completed, make the returned [[Task]] to yield the result.
 		 * CAUTION: Avoid closing over the same mutable variable from two operand functions applied to [[Task]] instances belonging to different [[Doer]]s.
 		 * Remember that all function operands provided to [[Venture]] methods are executed within the [[Doer]] that owns it.
-		 * Therefore, calling [[trigger]] on the returned [[Task]] will execute the `onComplete` passed to it within the `otherDoer`.
+		 * Therefore, calling [[triggerCallbacks]] on the returned [[Task]] will execute the `onComplete` passed to it within the `otherDoer`.
 		 *
 		 * $threadSafe
 		 *
 		 * @param otherDoer the [[Doer]] to which the returned [[Task]] will belong.
 		 */
 		override def onBehalfOf(otherDoer: Doer): otherDoer.Task[A] =
-			otherDoer.Task_foreign(thisDoer)(this)
+			otherDoer.Task_from(thisDoer)(this)
 
 		/** Casts the singleton type of the [[Doer]] instance that owns this [[Task]] to the singleton-type of the provided [[Doer]].
 		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with references to the same [[Doer]] instance but through different type-paths.
@@ -572,6 +606,26 @@ trait Doer { thisDoer =>
 			assert(thisDoer eq doer)
 			this.asInstanceOf[doer.Task[A]]
 		}
+
+		override def guarded: GuardedTask[A] = new GuardedTask(thisTask)
+	}
+
+	abstract class AbstractTask[+A] extends Task[A]
+
+	final class GuardedTask[+A](val underlying: Task[A]) extends GuardedMono[A] {
+		override def withFilter(p: A => Boolean): Task[A] = new Task_WithFilter(underlying, p, true)
+
+		override def map[B](f: A => B): Task[B] = new Task_Map(underlying, f, true)
+
+		override def flatMap[B](f: A => Observable[B]): Task[B] = new Task_FlatMap(underlying, f, true)
+
+		def recover[B >: A](pf: Throwable => Maybe[B]): Task[B] = new Task_Recover(underlying, pf, true)
+
+		def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Task[B] = new Task_RecoverWith(underlying, pf, true)
+
+		def transform[B](f: Try[A] => Try[B]): Task[B] = new Task_Transform(underlying, f, true)
+
+		def transformWith[B](f: Try[A] => Observable[B]): Task[B] = new Task_TransformWith(underlying, f, true)
 	}
 
 	//// Task's factory methods ////
@@ -593,7 +647,7 @@ trait Doer { thisDoer =>
 	 *
 	 * @return a [[Task]] whose execution never ends.
 	 * */
-	@threadUnsafe lazy val Task_never: Task[Nothing] = new Task_NotEver()
+	@threadUnsafe lazy val Task_never: Task[Nothing] = new Task_Never()
 
 	/** Creates a [[Task]] whose result is calculated at the call site even before the task is constructed.
 	 * $threadSafe
@@ -601,22 +655,23 @@ trait Doer { thisDoer =>
 	 * @param a the already calculated result of the returned [[Task]]. */
 	inline def Task_ready[A](a: A): Task[A] = new Task_Ready(a)
 
-	/** Creates a [[Task]] that yields the value returned by the provided supplier.
+	inline def Task_fail(e: Throwable): Task[Nothing] = new Task_Fail(e)
+
+	/** Creates a [[Task]] that lazily executes the provided supplier and yields the value it returns.
 	 * ===Detailed behavior===
 	 * Creates a task that, when executed, evaluates the `supplier` within the $DoSerEx. If the evaluation finishes:
 	 *		- abruptly, will never complete.
 	 *		- normally, completes with the evaluation's result.
 	 *
 	 * $$threadSafe
-	 * TODO rename to Task_own
 	 *
 	 * @param supplier the supplier of the result. $isExecutedByDoSerEx $notGuarded
 	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Task_mine[A](supplier: () => A): Task[A] = new Task_Mine(supplier)
+	inline def Task_apply[A](supplier: () => A): Task[A] = new Task_Apply(supplier)
 
-	/** Creates a [[Task]] that yields what the [[Task]] created by the provided supplier yields.
-	 * Is equivalent to: {{{Task_mine(supplier).flatMap(identity)}}} but slightly more efficient
+	/** Creates a [[Task]] that lazily executes the provided [[Task]] supplier and yields whatever the produced [[Task]] yields.
+	 * Is equivalent to: {{{Task_apply(supplier).flatMap(identity)}}} but slightly more efficient
 	 * ===Detailed behavior===
 	 * Creates a task that, when executed:
 	 *		- evaluates the `supplier` within the $DoSerEx;
@@ -624,30 +679,55 @@ trait Doer { thisDoer =>
 	 *		- finally completes with the result of executed task.
 	 *
 	 * $$threadSafe
-	 * TODO rename to Task_ownFlat
 	 *
 	 * @param supplier the supplier of the task whose execution will give the result. $isExecutedByDoSerEx $notGuarded
 	 * @return the task described in the method description.
 	 */
-	inline def Task_mineFlat[A](supplier: () => Task[A]): Task[A] = new Task_MineFlat(supplier)
+	inline def Task_defers[A](supplier: () => Task[A]): Task[A] = new Task_Defers(supplier)
 
-	/** Creates a [[Task]] that triggers the execution of the provided [[Task]] by another [[Doer]], and yields its result.
-	 * When triggered, the `foreignTask` is executed within the `foreignDoer` (in sequence with whatever the `foreignDoer` is doing), and its result is supplied by the created [[Task]] in sequence with this [[Doer]].
-	 * Useful to start a process in a another [[Doer]] and access its result sequentially.
+	/** Creates a [[Task]] that wraps a [[Observable]]. */
+	def Task_from[A](mono: Observable[A]): Task[A] = {
+		mono match {
+			case task: Task[A] @unchecked => task
+			case _ => new Task_FromMono[A](mono)
+		}
+	}
+
+	/** Creates a [[Task]] that synchronously wraps a [[Observable]] of another [[Doer]]. Its result will be yielded by the returned [[Task]] in sequence with this [[Doer]].
+	 * Useful to delegate work to another [[Doer]] and access its result safely.
 	 * $threadSafe
 	 *
-	 * @param foreignDoer the [[Doer]] to whom the `foreignTask` belongs.
-	 * @param foreignTask the [[Task]] to be executed by the `foreignDoer`. Its result will be yielded by the returned [[Task]] in sequence with this [[Doer]].
-	 * @return a [[Task]] that produces what the `foreignTask` produces, but the result is yielded in sequence with this [[Doer]]. */
-	inline def Task_foreign[A](foreignDoer: Doer)(foreignTask: foreignDoer.Task[A]): Task[A] = {
-		if foreignDoer eq thisDoer then foreignTask.asInstanceOf[thisDoer.Task[A]]
-		else new Task_Foreign[A](foreignDoer, foreignTask)
+	 * @param foreignDoer the [[Doer]] to whom the `foreignMono` belongs.
+	 * @param foreignMono the [[Observable]] to subscribed to whenever the returned [[Task]] is executed.
+	 * @return a [[Task]] that yields what the `foreignMono` yields to subscribers, but the result is yielded in sequence with this [[Doer]]. */
+	def Task_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Observable[A]): Task[A] = {
+		if foreignDoer ne thisDoer then new Task_FromForeign[A](foreignDoer, foreignMono)
+		else foreignMono match {
+			case ft: foreignDoer.Task[A] @unchecked => ft.asInstanceOf[Task[A]]
+			case _ => new Task_FromMono(foreignMono.asInstanceOf[Observable[A]])
+		}
 	}
+
+	/** Create a [[Task]] whose result will be the result of the provided [[Future]] when it completes.\
+	 * Useful to access the result of a process that was already started in an alien executor as if it were executed sequentially.\
+	 * $threadSafe
+	 * @param future the future to wait for.
+	 * @return the [[Task]] described in the method description. */
+	inline final def Task_from[A](future: Future[A]): Task[A] = new Task_FromFuture(future)
+
+	/** Creates a [[Task]] whose result will be the result of the [[Future]] returned by the provided supplier.\
+	 * Useful to start a process in an alien executor and access its result as if it were executed sequentially.\
+	 * The alien executor may be the $DoSerEx of this [[Doer]].\
+	 * $threadSafe
+	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
+	 * @return the [[Task]] described in the method description. */
+	inline final def Task_from[A](supplier: () => Future[A], isGuarded: Boolean = false): Task[A] = new Task_FromFutureSupplier(supplier, isGuarded)
+
 
 	/**
 	 * Creates a [[Task]] that yields the result of applying the bifunction `f` to what the provided duties yield.
 	 * When executed, simultaneously triggers and execution of each task and returns their results combined by the provided function.
-	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided [[Task]]s involves foreign ([[Task_foreign]]) or alien ([[Venture_alien]]) actions.
+	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided [[Task]]s involves foreign ([[Task_from]]) or alien ([[Task_from]]) actions.
 	 * ===Detailed behavior===
 	 * Creates a new [[Task]] that, when executed:
 	 *		- triggers an execution for both: `taskA` and `taskB`
@@ -660,37 +740,7 @@ trait Doer { thisDoer =>
 	 * @param f the function that combines the results of the two [[Task]] instances. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
 	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B])(f: (A, B) => C): Task[C] =
-		new Task_Combined(taskA, taskB, f)
-
-	/**
-	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the provided iterable, and completes with a collection containing their results in the same order if all are successful, or a failure if any is faulty.
-	 * This overload is only convenient for very small lists. For large ones it is not efficient and also may cause stack-overflow when the [[Task]] is executed.
-	 * Use the other overload for large lists or other kind of iterables.
-	 *
-	 * $threadSafe
-	 *
-	 * @param duties the `Iterable` of duties that the returned [[Task]] will trigger simultaneously to combine their results.
-	 * @tparam A the result type of all the duties
-	 * @return the task described in the method description.
-	 * */
-	def Task_sequence[A](duties: List[Task[A]]): Task[List[A]] = {
-		@tailrec
-		def loop(incompleteResult: Task[List[A]], remainingDuties: List[Task[A]]): Task[List[A]] = {
-			remainingDuties match {
-				case Nil =>
-					incompleteResult
-				case head :: tail =>
-					val lessIncompleteResult = Task_combine(head, incompleteResult) { (a, as) => a :: as }
-					loop(lessIncompleteResult, tail)
-			}
-		}
-
-		duties.reverse match {
-			case Nil => Task_ready(Nil)
-			case lastTask :: previousDuties => loop(lastTask.map(List(_)), previousDuties);
-		}
-	}
+	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B])(f: (A, B) => C): Task[C] = new Task_Combined(taskA, taskB, f)
 
 	/**
 	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the received iterable, and completes with a collection containing their results in the same order.
@@ -717,102 +767,49 @@ trait Doer { thisDoer =>
 	}
 
 	/** Like [[Task_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Task_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]): Task[Array[A]] = new Task_Sequence[A, C](duties)
+	inline def Task_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Observable[A]]): Task[Array[A]] = new Task_Sequence[A, C](monos)
 
-	//// Concrete implementations of [[Task]] used internally ////
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Task_FromVenture(trap: Nothing): Any = trap
-
-	final class Task_FromVenture[A, B >: A](ventureA: Venture[A], exceptionHandler: Throwable => B) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Propagates subscription and maps Success/Failure for B completion
-			ventureA.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = {
-					val b = tryA match {
-						case Success(a) => a
-						case Failure(exception) => exceptionHandler(exception)
-					}
-					monoObserver.onSuccess(b)
-				}
-
-				override def onError(ex: Throwable): Unit = {
-					monoObserver.onError(ex)
-				}
-			})
-		}
-
-		override def toString: String = deriveToString[Task_FromVenture[A, B]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Task_Map(trap: Nothing): Any = trap
-
-	final class Task_Map[A, B](cA: Task[A], f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Propagates the subscription upstream while mapping success values
-			cA.subscribeSync(new MonoObserver[A] {
-				override def onSuccess(a: A): Unit = monoObserver.onSuccess(f(a))
-
-				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
-			})
-		}
-
-		override def toString: String = deriveToString[Task_Map[A, B]](this)
-	}
-
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Task_FlatMap(trap: Nothing): Any = trap
-
-	final class Task_FlatMap[A, B](cA: Task[A], f: A => Observable[B]) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Returns a delegating subscription to propagate cancel to active stage
-			new Subscription {
-				private var active = true
-				private var currentSub: Subscription = Subscription_empty
-
-				{
-					currentSub = cA.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if active then {
-								currentSub = f(a).subscribeSync(monoObserver)
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then {
-								monoObserver.onError(ex)
-							}
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					currentSub.unsubscribe()
-				}
+	/** Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, wrapped with [[Try]], in the same order.\
+	 * The result, if any, is always successful.
+	 * $threadSafe \
+	 * @param ventures the [[Iterable]] of [[Venture]]s that the returned [[Task]] will trigger simultaneously to combine their results.
+	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
+	 * @tparam A the result type of all the provided [[Venture]]s.
+	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Venture]]s.
+	 * @tparam To the higher-kinded type of the [[Iterable]] that will contain the results.
+	 * @return the successful task described in the method description. */
+	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Task[A]]): Task[To[Try[A]]] = {
+		Task_sequenceHardyToArray(ventures).map { array =>
+			val builder = factory.newBuilder[Try[A]]
+			var index = 0
+			while index < array.length do {
+				builder.addOne(array(index))
+				index += 1
 			}
+			builder.result()
 		}
-
-		override def toString: String = deriveToString[Task_FlatMap[A, B]](this)
 	}
+
+	/** Like [[Task_sequenceHardy]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
+	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Observable[A]]): Task[Array[Try[A]]] =
+		new Task_SequenceHardyToArray[A, C](ventures)
+
+	//// Concrete implementations of [[Task]] returned by instance methods ////
 
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_AndThen(trap: Nothing): Any = trap
 
-	final class Task_AndThen[A](taskA: Task[A], sideEffect: A => Unit) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Propagates the subscription upstream and performs the side effect on success
-			taskA.subscribeSync(new MonoObserver[A] {
+	final class Task_AndThen[+A](upChainMono: Observable[A], onSuccessCbf: A => Unit, onErrorCbf: Throwable => Unit) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			upChainMono.subscribeSync(new MonoObserver[A] { // TODO Optimize
 				override def onSuccess(a: A): Unit = {
-					sideEffect(a)
-					monoObserver.onSuccess(a)
+					onSuccessCbf(a)
+					downChainObserver.onSuccess(a)
 				}
 
 				override def onError(ex: Throwable): Unit = {
-					monoObserver.onError(ex)
+					onErrorCbf(ex)
+					downChainObserver.onError(ex)
 				}
 			})
 		}
@@ -821,133 +818,546 @@ trait Doer { thisDoer =>
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_NotEver(trap: Nothing): Any = trap
+	private inline def Task_WithFilter(trap: Nothing): Any = trap
 
-	class Task_NotEver extends AbstractTask[Nothing] {
-		override def subscribeSync(monoObserver: MonoObserver[Nothing]): Subscription = {
-			// Nothing is ever emitted, so returns empty subscription
-			Subscription_empty
+	final class Task_WithFilter[+A](upChainMono: Observable[A], p: A => Boolean, isGuarded: Boolean) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			upChainMono.subscribeSync(new MonoObserver[A] { // TODO Optimize
+				override def onSuccess(a: A): Unit = {
+					val pass =
+						if isGuarded then {
+							try (if p(a) then 1 else 0) catch {
+								case NonFatal(e) =>
+									downChainObserver.onError(e)
+									-1
+							}
+						} else if p(a) then 1 else 0
+					if pass == 1 then downChainObserver.onSuccess(a)
+					else if pass == 0 then downChainObserver.onError(new NoSuchElementException)
+				}
+
+				override def onError(e: Throwable): Unit = downChainObserver.onError(e)
+			})
 		}
 
-		override def toString: String = deriveToString[Task_NotEver](this)
+		override def toString: String = deriveToString[Task_WithFilter[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_Ready(trap: Nothing): Any = trap
+	private inline def Task_Map(trap: Nothing): Any = trap
 
-	final class Task_Ready[A](a: A) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Completes immediately, so returns empty subscription
-			monoObserver.onSuccess(a)
-			Subscription_empty
+	final class Task_Map[+A, +B](upChainMono: Observable[A], f: A => B, isGuarded: Boolean) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			// Propagates the subscription upstream while mapping success values
+			upChainMono.subscribeSync(new MonoObserver[A] { // TODO Optimize
+				override def onSuccess(a: A): Unit = {
+					if isGuarded then {
+						val maybeB = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								downChainObserver.onError(e)
+								Maybe.empty
+						}
+						maybeB.foreach(downChainObserver.onSuccess)
+					}
+					else downChainObserver.onSuccess(f(a))
+				}
+
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+			})
 		}
 
-		override def toFutureHardy(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
-
-		override def toString: String = deriveToString[Task_Ready[A]](this)
+		override def toString: String = deriveToString[Task_Map[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_Mine(trap: Nothing): Any = trap
+	private inline def Task_Recover(trap: Nothing): Any = trap
 
-	final class Task_Mine[A](supplier: () => A) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Completes immediately, so returns empty subscription
-			monoObserver.onSuccess(supplier())
-			Subscription_empty
+	final class Task_Recover[-A, +B >: A](upChainMono: Observable[A], pf: Throwable => Maybe[B], isGuarded: Boolean) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			upChainMono.subscribeSync(new MonoObserver[A] { // TODO Optimize
+				override def onSuccess(a: A): Unit = downChainObserver.onSuccess(a)
+
+				override def onError(e1: Throwable): Unit = {
+					val maybeMaybeB = if isGuarded then try Maybe(pf(e1)) catch {
+						case NonFatal(e2) =>
+							downChainObserver.onError(e2)
+							Maybe.empty
+					} else Maybe(pf(e1))
+					maybeMaybeB.foreach(_.fold(downChainObserver.onError(e1))(downChainObserver.onSuccess))
+				}
+			})
 		}
 
-		override def toString: String = deriveToString[Task_Mine[A]](this)
+		override def toString: String = deriveToString[Task_Recover[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_MineFlat(trap: Nothing): Any = trap
+	private inline def Task_Transform(trap: Nothing): Any = trap
 
-	final class Task_MineFlat[A](supplier: () => Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Propagates the inner subscription directly
-			supplier().subscribeSync(monoObserver)
+	final class Task_Transform[-A, B](upChainMono: Task[A], f: Try[A] => Try[B], isGuarded: Boolean) extends AbstractTask[B] {
+
+		override def subscribeSync(downChainMono: MonoObserver[B]): Subscription = {
+			upChainMono.subscribeSync(new MonoObserver[A] { // TODO Optimize
+				override def onSuccess(a: A): Unit = handle(Success(a))
+
+				override def onError(e: Throwable): Unit = handle(Failure(e))
+
+				private def handle(tryA: Try[A]): Unit = {
+					val tryB = if isGuarded then try f(tryA) catch {
+						case NonFatal(e) => Failure(e)
+					} else f(tryA)
+					tryB match {
+						case Success(b) => downChainMono.onSuccess(b)
+						case Failure(ex) => downChainMono.onError(ex)
+					}
+				}
+			})
 		}
 
-		override def toString: String = deriveToString[Task_MineFlat[A]](this)
+		override def toString: String = deriveToString[Task_Transform[A, B]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_Foreign(trap: Nothing): Any = trap
+	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
-	final class Task_Foreign[A](foreignDoer: Doer, foreignTask: foreignDoer.Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Subscribes across Doer boundaries and supports cancellation via active flag
-			new Subscription {
-				@volatile private var active = true
-				@volatile private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
+	/** TODO This class is very similar to [[DefaultCaptor_FlatMap]]. Consider removing duplication by exteinding a common super class. */
+	final class Task_FlatMap[+A, +B](upChainMono: Observable[A], f: A => Observable[B], isGuarded: Boolean) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 				{
-					foreignDoer.executeSequentially { () =>
-						if active then {
-							val foreignSubscription = foreignTask.subscribeSync(new foreignDoer.MonoObserver[A] {
-								override def onSuccess(a: A): Unit = if active then thisDoer.run(if active then monoObserver.onSuccess(a))
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
 
-								override def onError(ex: Throwable): Unit = if active then thisDoer.run(if active then monoObserver.onError(ex))
-							})
-							if active then maybeForeignSubscription = Maybe(foreignSubscription)
-							else foreignSubscription.unsubscribe()
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val maybeInnerMonoB =
+							if isGuarded then {
+								try Maybe(f(a)) catch {
+									case NonFatal(e) =>
+										downChainObserver.onError(e)
+										Maybe.empty
+								}
+							} else Maybe(f(a))
+						maybeInnerMonoB.foreach { innerMonoB =>
+							val innerSubscription = innerMonoB.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+						}
+					}
+				}
+
+				override def onError(e: Throwable): Unit = {
+					if isActive then {
+						isActive = false
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onError(e)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					isActive = false
+					val mus = maybeUpChainSubscription
+					val mis = maybeInnerSubscription
+					maybeUpChainSubscription = Maybe.empty
+					maybeInnerSubscription = Maybe.empty
+					mus.foreach(_.unsubscribe())
+					mis.foreach(_.unsubscribe())
+				}
+			}
+		}
+
+		override def toString: String = deriveToString[Task_FlatMap[A, B]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_RecoverWith(trap: Nothing): Any = trap
+
+	final class Task_RecoverWith[-A, +B >: A](upChainMono: Observable[A], pf: Throwable => Maybe[Observable[B]], isGuarded: Boolean) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+				{ // Constructor
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						isActive = false
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onSuccess(a)
+					}
+				}
+
+				override def onError(e1: Throwable): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val maybeMaybeMonoB =
+							if isGuarded then {
+								try Maybe(pf(e1)) catch {
+									case NonFatal(e2) =>
+										downChainObserver.onError(e2)
+										Maybe.empty
+								}
+							} else Maybe(pf(e1))
+
+						if isActive then maybeMaybeMonoB.foreach { maybeMonoB =>
+							maybeMonoB.fold(downChainObserver.onError(e1)) { monoB =>
+								val innerSubscription = monoB.subscribeSync(downChainObserver)
+								if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+							}
 						}
 					}
 				}
 
 				override def unsubscribe(): Unit = {
 					checkWithin()
-					if active then {
-						active = false
-						maybeForeignSubscription.foreach { s =>
-							foreignDoer.executeSequentially(() => s.unsubscribe())
+					isActive = false
+					val up = maybeUpChainSubscription
+					val inner = maybeInnerSubscription
+					maybeUpChainSubscription = Maybe.empty
+					maybeInnerSubscription = Maybe.empty
+					up.foreach(_.unsubscribe())
+					inner.foreach(_.unsubscribe())
+				}
+			}
+		}
+
+		override def toString: String = deriveToString[Task_RecoverWith[A, B]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_TransformWith(trap: Nothing): Any = trap
+
+	final class Task_TransformWith[+A, +B](upChainMono: Observable[A], f: Try[A] => Observable[B], isGuarded: Boolean) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+
+				{ // Constructor
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+
+				override def onSuccess(a: A): Unit = handle(Success(a))
+
+				override def onError(e: Throwable): Unit = handle(Failure(e))
+
+				private def handle(tryA: Try[A]): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val maybeMonoB = if isGuarded then try Maybe(f(tryA)) catch {
+							case NonFatal(e) =>
+								isActive = false
+								maybeUpChainSubscription = Maybe.empty
+								downChainObserver.onError(e)
+								Maybe.empty
+						} else Maybe(f(tryA))
+						maybeMonoB.foreach { monoB =>
+							val innerSubscription = monoB.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					isActive = false
+					val mus = maybeUpChainSubscription
+					maybeUpChainSubscription = Maybe.empty
+					mus.foreach(_.unsubscribe())
+					val mis = maybeInnerSubscription
+					maybeInnerSubscription = Maybe.empty
+					mis.foreach(_.unsubscribe())
+				}
+			}
+		}
+
+		override def toString: String = deriveToString[Task_TransformWith[A, B]](this)
+	}
+
+	//// Concrete implementations of [[Task]] returned by factory methods ////
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Never(trap: Nothing): Any = trap
+
+	class Task_Never extends AbstractTask[Nothing] {
+		override def subscribeSync(downChainObserver: MonoObserver[Nothing]): Subscription = {
+			// Nothing is ever emitted, so returns empty subscription
+			Subscription_empty
+		}
+
+		override def toString: String = deriveToString[Task_Never](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Ready(trap: Nothing): Any = trap
+
+	final class Task_Ready[+A](a: A) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			// Completes immediately, so returns empty subscription
+			downChainObserver.onSuccess(a)
+			Subscription_empty
+		}
+
+		override def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[A] = Future.successful(a)
+
+		override def toString: String = deriveToString[Task_Ready[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Fail(trap: Nothing): Any = trap
+
+	final class Task_Fail(e: Throwable) extends AbstractTask[Nothing] {
+		override def subscribeSync(downChainObserver: MonoObserver[Nothing]): Subscription = {
+			downChainObserver.onError(e)
+			Subscription_empty
+		}
+
+		override def toFuture(isWithinDoSiThEx: Boolean = isInSequence): Future[Nothing] = Future.failed(e)
+
+		override def toString: String = deriveToString[Task_Fail](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Apply(trap: Nothing): Any = trap
+
+	final class Task_Apply[+A](supplier: () => A) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			// Completes immediately, so returns empty subscription
+			downChainObserver.onSuccess(supplier())
+			Subscription_empty
+		}
+
+		override def toString: String = deriveToString[Task_Apply[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Defers(trap: Nothing): Any = trap
+
+	final class Task_Defers[+A](supplier: () => Task[A]) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			// Propagates the inner subscription directly
+			supplier().subscribeSync(downChainObserver)
+		}
+
+		override def toString: String = deriveToString[Task_Defers[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_FromMono(trap: Nothing): Any = trap
+
+	final class Task_FromMono[+A](monoA: Observable[A]) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = monoA.subscribeSync(downChainObserver)
+
+		override def toString: String = deriveToString[Task_FromMono[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_FromForeign(trap: Nothing): Any = trap
+
+	final class Task_FromForeign[+A](foreignDoer: Doer, foreignMono: foreignDoer.Observable[A]) extends AbstractTask[A] {
+		override def subscribeSync(downChainSubscripton: MonoObserver[A]): Subscription = {
+			new Subscription with MonoObserver[A] with Runnable {
+				@volatile private var isActive = true
+				private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
+
+				{ // Constructor
+					foreignDoer.executeSequentially(this)
+				}
+
+				override def run(): Unit = {
+					if isActive then {
+						val foreignSubscription = foreignMono.subscribeSync(this.asInstanceOf[foreignDoer.MonoObserver[A]])
+						// Note: Unlike single-threaded tasks (such as [[Task_FlatMap]]), we do not perform defensive checks to guarantee the clearing of maybeForeignSubscription because a failure to clear the reference is very rare and only results in a transient, minor memory leak (which is reclaimed once the delegating subscription is garbage collected), the performance and complexity cost of such optimization is not justified here.
+						maybeForeignSubscription = Maybe(foreignSubscription)
+					}
+				}
+
+				override def onSuccess(a: A): Unit = { // runs in foreignDoer
+					if isActive then {
+						maybeForeignSubscription = Maybe.empty
+						thisDoer.run {
+							if isActive then {
+								isActive = false
+								downChainSubscripton.onSuccess(a)
+							}
+						}
+					}
+				}
+
+				override def onError(e: Throwable): Unit = { // runs in foreignDoer
+					if isActive then {
+						maybeForeignSubscription = Maybe.empty
+						thisDoer.run {
+							if isActive then {
+								isActive = false
+								downChainSubscripton.onError(e)
+							}
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					if isActive then {
+						isActive = false
+						foreignDoer.run {
+							val mfs = maybeForeignSubscription
+							maybeForeignSubscription = Maybe.empty
+							mfs.foreach(_.unsubscribe())
 						}
 					}
 				}
 			}
 		}
 
-		override def toString: String = deriveToString[Task_Foreign[A]](this)
+		override def toString: String = deriveToString[Task_FromForeign[A]](this)
 	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_FromFuture(trap: Nothing): Any = trap
+
+	final class Task_FromFuture[+A](future: Future[A]) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			new Subscription with (Try[A] => Unit) {
+				private var active = true
+				{ // Constructor
+					future.onComplete(this)(using ownSingleThreadExecutionContext)
+				}
+
+				override def apply(tryA: Try[A]): Unit = {
+					if active then tryA match {
+						case Success(a) => downChainObserver.onSuccess(a)
+						case Failure(ex) => downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
+		}
+
+		override def toString: String = deriveToString[Task_FromFuture[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_FromFutureSupplier(trap: Nothing): Any = trap
+
+	final class Task_FromFutureSupplier[+A](supplier: () => Future[A], isGuarded: Boolean) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			new Subscription with (Try[A] => Unit) {
+				private var active = true
+				{ // Constructor
+					val future =
+						if isGuarded then try supplier() catch {
+							case NonFatal(e) => Future.failed(e)
+						} else supplier()
+					future.onComplete(this)(using ownSingleThreadExecutionContext)
+				}
+
+				override def apply(tryA: Try[A]): Unit = {
+					if active then tryA match {
+						case Success(a) => downChainObserver.onSuccess(a)
+						case Failure(ex) => downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					active = false
+				}
+			}
+		}
+
+		override def toString: String = deriveToString[Task_FromFutureSupplier[A]](this)
+	}
+
 
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Combined(trap: Nothing): Any = trap
 
 	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C) extends AbstractTask[C] {
-		override def subscribeSync(monoObserver: MonoObserver[C]): Subscription = {
-			object vars {
-				var aIsCompleted: Boolean = false
-				var bIsCompleted: Boolean = false
-				var maybeA: AnyRef | Null = null
-				var maybeB: AnyRef | Null = null
+		override def subscribeSync(downChainObserver: MonoObserver[C]): Subscription = new Subscription with MonoObserver[A] {
+			private var isActive = true
+			private var maybeA: Maybe[A] = Maybe.empty
+			private var maybeB: Maybe[B] = Maybe.empty
+			private var maybeSubscriptionA: Maybe[Subscription] = Maybe.empty
+			private var maybeSubscriptionB: Maybe[Subscription] = Maybe.empty
+
+			{ // Constructor
+				val subscriptionA = taskA.subscribeSync(this)
+
+				if isActive then {
+					if maybeA.isEmpty then maybeSubscriptionA = Maybe(subscriptionA)
+					val subscriptionB = taskB.subscribeSync(new MonoObserver[B] {
+						override def onSuccess(b: B): Unit = {
+							if isActive then {
+								maybeSubscriptionB = Maybe.empty
+								maybeA.fold {
+									maybeB = Maybe(b)
+								} { a =>
+									isActive = false
+									downChainObserver.onSuccess(f(a, b))
+								}
+							}
+						}
+
+						override def onError(e: Throwable): Unit = {
+							if isActive then {
+								isActive = false
+								maybeSubscriptionB = Maybe.empty
+								downChainObserver.onError(e)
+								maybeSubscriptionA.foreach(_.unsubscribe())
+							}
+						}
+					})
+					if isActive && maybeB.isEmpty then maybeSubscriptionB = Maybe(subscriptionB)
+				}
 			}
-			// Propagates unsubscription to both combined tasks
-			val subA = taskA.subscribeSync(new MonoObserver[A] {
-				override def onSuccess(a: A): Unit = {
-					if vars.bIsCompleted then monoObserver.onSuccess(f(a, vars.maybeB.asInstanceOf[B]))
-					else {
-						vars.aIsCompleted = true
-						vars.maybeA = a.asInstanceOf[AnyRef]
+
+			override def onSuccess(a: A): Unit = {
+				if isActive then {
+					maybeSubscriptionA = Maybe.empty
+					maybeB.fold {
+						maybeA = Maybe(a)
+					} { b =>
+						isActive = false
+						downChainObserver.onSuccess(f(a, b))
 					}
 				}
+			}
 
-				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
-			})
-			val subB = taskB.subscribeSync(new MonoObserver[B] {
-				override def onSuccess(b: B): Unit = {
-					if vars.aIsCompleted then monoObserver.onSuccess(f(vars.maybeA.asInstanceOf[A], b))
-					else {
-						vars.bIsCompleted = true
-						vars.maybeB = b.asInstanceOf[AnyRef]
-					}
+			override def onError(e: Throwable): Unit = {
+				if isActive then {
+					isActive = false
+					maybeSubscriptionA = Maybe.empty
+					downChainObserver.onError(e)
+					maybeSubscriptionB.foreach(_.unsubscribe())
 				}
+			}
 
-				override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
-			})
-			() => {
+			override def unsubscribe(): Unit = {
 				checkWithin()
-				subA.unsubscribe()
-				subB.unsubscribe()
+				if isActive then {
+					isActive = false
+					val msa = maybeSubscriptionA
+					val msb = maybeSubscriptionB
+					maybeSubscriptionA = Maybe.empty
+					maybeSubscriptionB = Maybe.empty
+					msa.foreach(_.unsubscribe())
+					msb.foreach(_.unsubscribe())
+				}
 			}
 		}
 
@@ -958,38 +1368,130 @@ trait Doer { thisDoer =>
 	private inline def Task_Sequence(trap: Nothing): Any = trap
 
 	/** @see [[Task_sequenceToArray]] */
-	final class Task_Sequence[A: ClassTag, C[x] <: Iterable[x]](duties: C[Task[A]]) extends AbstractTask[Array[A]] {
-		override def subscribeSync(monoObserver: MonoObserver[Array[A]]): Subscription = {
-			val size = duties.size
+	final class Task_Sequence[A: ClassTag, +C[x] <: Iterable[x]](monos: C[Observable[A]]) extends AbstractTask[Array[A]] {
+		override def subscribeSync(downChainObserver: MonoObserver[Array[A]]): Subscription = {
+			val size = monos.size
 			val array = Array.ofDim[A](size)
+			if size == 0 then {
+				downChainObserver.onSuccess(array)
+				Subscription_empty
+			} else new Subscription {
+				private var completedCounter: Int = 0
+				private var isActive = true
+				private val subscriptions = new Array[Subscription](size)
+
+				{ // Constructor
+					var index = 0
+					val monosIterator = monos.iterator
+					while index < size && isActive do {
+						val mono = monosIterator.next()
+						val monoIndex = index
+						val subscription = mono.subscribeSync(new MonoObserver[A] { // TODO this allocation could be avoided if the MonoObserver propagated the subscription id/index.
+							override def onSuccess(a: A): Unit = {
+								if isActive then {
+									array(monoIndex) = a
+									completedCounter += 1
+									if completedCounter == size then {
+										isActive = false
+										downChainObserver.onSuccess(array)
+									}
+								}
+							}
+
+							override def onError(ex: Throwable): Unit = {
+								if isActive then {
+									isActive = false
+									downChainObserver.onError(ex)
+									unsubscribeAll()
+								}
+							}
+						})
+						if isActive then subscriptions(monoIndex) = subscription
+						index += 1
+					}
+				}
+
+				private final def unsubscribeAll(): Unit = {
+					var index = 0
+					while index < size do {
+						val sub = subscriptions(index)
+						if sub != null then {
+							subscriptions(index) = null
+							sub.unsubscribe()
+						}
+						index += 1
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					if isActive then {
+						isActive = false
+						unsubscribeAll()
+					}
+				}
+			}
+		}
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_SequenceHardy(trap: Nothing): Any = trap
+
+	final class Task_SequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Observable[A]]) extends AbstractTask[Array[Try[A]]] {
+		override def subscribeSync(monoObserver: MonoObserver[Array[Try[A]]]): Subscription = {
+			val size = monos.size
+			val array = Array.ofDim[Try[A]](size)
 			if size == 0 then {
 				monoObserver.onSuccess(array)
 				Subscription_empty
-			} else {
-				val taskIterator = duties.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				val subs = new Array[Subscription](size)
-				while index < size do {
-					val task = taskIterator.next()
-					val taskIndex = index
-					subs(index) = task.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							array(taskIndex) = a
-							completedCounter += 1
-							if completedCounter == size then monoObserver.onSuccess(array)
-						}
+			} else new Subscription {
+				private val monosSubscriptions = new Array[Subscription](size)
+				private var completedCounter: Int = 0
+				private var index: Int = 0
 
-						override def onError(ex: Throwable): Unit = monoObserver.onError(ex)
-					})
-					index += 1
+				{ // constructor
+					val monosIterator = monos.iterator
+					while index < size do {
+						val mono = monosIterator.next()
+						val ventureIndex = index
+
+						val monoSubscription = new Subscription {
+							private var active = true
+							private var innerSub: Subscription = Subscription_empty
+							{
+								innerSub = mono.subscribeSync(new MonoObserver[A] {
+									override def onSuccess(a: A): Unit = {
+										if active then {
+											array(ventureIndex) = Success(a)
+											completedCounter += 1
+											if completedCounter == size then monoObserver.onSuccess(array)
+										}
+									}
+
+									override def onError(ex: Throwable): Unit = {
+										if active then {
+											array(ventureIndex) = Failure(ex)
+											completedCounter += 1
+											if completedCounter == size then monoObserver.onSuccess(array)
+										}
+									}
+								})
+							}
+
+							override def unsubscribe(): Unit = {
+								active = false
+								innerSub.unsubscribe()
+							}
+						}
+						monosSubscriptions(index) = monoSubscription
+						index += 1
+					}
 				}
-				// Cancels all sub-subscriptions in the sequence
-				() => {
-					checkWithin()
+
+				override def unsubscribe(): Unit = {
 					var i = 0
 					while i < size do {
-						val s = subs(i)
+						val s = monosSubscriptions(i)
 						if s != null then s.unsubscribe()
 						i += 1
 					}
@@ -998,81 +1500,590 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	////////////// ONCE ///////////////
+	////////////// Capturer ///////////////
 
-	/** A [Task] that remembers the result of the execution that completes first, and all the others produce the same result as the first.
-	 * Once the first completion occurs the result is subsequently delivered deterministically to present and future subscribers.
-	 * Specifically, a [[Task]] that:
-	 *		- Is completed a single time and caches the result so that, once completed, subscribing a consumer executes the call-back immediately. Note that linking a down-chain subscribes the first link as consumer.
-	 * 		- The monadic laws are always upheld. Before completion, they can’t be observed because no result exists yet; after completion, they can be observed in the cached result.
-	 *		- Allows to subscribe/unsubscribe consumers of its completion result dynamically.
-	 *		- The source of determination may be intrinsic from the start (e.g. {{{ Covenant[String]().fulfillWith(anIntrinsicallyDeterminedTask) }}}) or external (e.g. {{{ Covenant[String]().fulfill(someValueDeterminedExternally) }}}); the concrete result value is realized only at completion.
-	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Covenant]].
-	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingTask]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result.
-	 * */
-	sealed abstract class LatchingTask[+A] extends AbstractTask[A], Latching[A] {
+	/** A [[Observable]] whose completion is externally controlled and, upon completion, exposes the same result to all present and future subscribers.\
+	 * Useful to capture the result of a computation that already started.\
+	 * Once completed, subscribing a consumer executes the call-back immediately. Note that linking a down-chain subscribes the first link as consumer.
+	 * The monadic laws are always upheld. Before completion, they can’t be observed because no result exists yet; after completion, they can be observed in the cached result.\
+	 * Allows dynamic subscription and unsubscription.
+	 * TODO rename to "Capturer" */
+	sealed abstract class LatchingTask[+A] extends Observable[A] {
 
-		/** @inheritdoc
-		 * @note The override is necessary to specialize the return type; and the implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
-		 * */
-		override def succeed: LatchingVenture[A] = {
-			this match {
-				case c: Covenant[A] @unchecked => c.succeed
-				case rd: ReadyTask[A] => rd.succeed
-			}
+		inline def asMono: Observable[A] = this
+
+		/** Subscribes a consumer of the captured value.\
+		 * The subscription is automatically removed after a value was captured and the received consumer is executed.\
+		 * If a value was already captured when this method is called, the provided consumer is invoked synchronously and no subscription occurs.\
+		 * Otherwise, the provided consumer is schedule to run upon the capture occurs in subscription orden (after sequentially running all the previously subscribed captured value consumers).\
+		 * @note CAUTION: This method does not prevent duplicate subscriptions.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription
+
+		/** @return a [[Trial]] with the captured value if the target computation completed successfully, a [[Throwable]] if failed, or [[Trial.empty]] if pending.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		def maybeResult: Trial[A]
+
+		/** @return true if this the target computation completed, successfully or not.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		inline def isCompleted: Boolean = maybeResult.isDefined
+
+		/** @return true if this [[LatchingTask]] is still pending; or false if it was completed.
+		 * @note CAUTION: Must be called within the $DoSerEx */
+		inline def isPending: Boolean = maybeResult.isEmpty
+
+		inline def asLatchingTask: LatchingTask[A] = this // TODO is this necessary?
+
+		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit): LatchingTask[A] = {
+			triggerSyncCallbacks(onSuccess, onError)
+			this
 		}
 
-		inline def asTask: Task[A] = this
+		override def reconcile: LatchingTask[Try[A]]
 
-		/**
-		 * Transforms this [[LatchingTask]] by applying the given function to the result of this [[LatchingTask]].
-		 * ===Detailed behavior===
-		 * Creates a [[LatchingTask]] that yields the result of applying the provided function to the results of this [[LatchingTask]].
-		 * @note CAUTION: Must be called within the $DoSerEx
-		 * @note The override is necessary to specialize the return type, and implementation is necessary (can't leave the method abstract) because [[Covenant]] is invariant.
-		 * @param f a function that transforms the result of this [[Task]].
-		 *
-		 * $isExecutedByDoSerEx
-		 *
-		 * $notGuarded
-		 */
-		override def map[B](f: A => B): LatchingTask[B] = {
-			this match {
-				case rd: ReadyTask[A] => rd.map(f)
-				case c: Covenant[A @unchecked] => c.map(f)
-			}
-		}
+		override def withFilter(predicate: A => Boolean): LatchingTask[A]
 
+		override def withFilterGuarded(predicate: A => Boolean): LatchingTask[A]
 
-		/**
-		 * Transforms this [[LatchingTask]] by applying the provided function to the result of this [[LatchingTask]] and then subscribing-to the [[LatchingTask]] returned by said function.
-		 * The returned [[LatchingTask]] will be already fulfilled if, and only if, this [[LatchingTask]] is already fulfilled.
-		 * @note CAUTION: Must be called within the $DoSerEx
-		 * @param f a function that is applied to the result of this [[Task]] execution to return a [[Task]] that is executed next to produce the result that the [[Task]] returned by this method yields.
-		 *
-		 * $isExecutedByDoSerEx
-		 *
-		 * $notGuarded
-		 */
+		override def map[B](f: A => B): LatchingTask[B]
+
+		override def mapGuarded[B](f: A => B): LatchingTask[B]
+
+		override def flatMap[B](f: A => Observable[B]): Observable[B]
+
+		@targetName("flatMapTask")
+		def flatMap[B](f: A => Task[B]): Task[B]
+
+		@targetName("flatMapCapturer")
 		def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B]
 
-		/** Creates a new [[LatchingTask]] that yields exactly the same result (same identity) as this [[LatchingTask]] but executes the provided side-effecting function before yielding it.
-		 *
-		 * $threadSafe
-		 *
-		 * @param sideEffect a function that is applied to the result of this [[LatchingTask]] for its side effects. */
-		override def andThen(sideEffect: A => Unit): LatchingTask[A] = {
-			subscribeSync(sideEffect)
-			this
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B]
+
+		@targetName("flatMapGuardedTask")
+		def flatMapGuarded[B](f: A => Task[B]): Task[B]
+
+		@targetName("flatMapGuardedCapturer")
+		def flatMapGuarded[B](f: A => LatchingTask[B]): LatchingTask[B]
+
+		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B]
+
+		override def transformWith[B](f: Try[A] => Observable[B]): Observable[B]
+
+		@targetName("transformWithCapturer")
+		def transformWith[B](f: Try[A] => LatchingTask[B]): LatchingTask[B]
+
+		@targetName("transformWithTask")
+		def transformWith[B](f: Try[A] => Task[B]): Task[B]
+
+		override def recover[B >: A](pf: Throwable => Maybe[B]): LatchingTask[B]
+
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B]
+
+		@targetName("recoverWithCapturer")
+		def recoverWith[B >: A](pf: Throwable => Maybe[LatchingTask[B]]): LatchingTask[B]
+
+		@targetName("recoverWithTask")
+		def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B]
+
+		override def onBehalfOf(otherDoer: Doer): otherDoer.LatchingTask[A]
+
+		override def castTypePath[E <: Doer](doer: E): doer.LatchingTask[A] = {
+			assert(thisDoer eq doer)
+			this.asInstanceOf[doer.LatchingTask[A]]
+		}
+
+		override def guarded: GuardedCapturer[A] = new GuardedCapturer[A](this)
+	}
+
+	final class GuardedCapturer[+A](val underlying: LatchingTask[A]) extends GuardedMono[A] {
+
+		override def withFilter(predicate: A => Boolean): LatchingTask[A] = underlying.withFilterGuarded(predicate)
+
+		override def map[B](f: A => B): LatchingTask[B] = underlying.mapGuarded(f)
+
+		override def flatMap[B](f: A => Observable[B]): Observable[B] = underlying.flatMapGuarded(f)
+
+		@targetName("flatMapCapturer")
+		def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = underlying.flatMapGuarded(f)
+
+		@targetName("flatMapTask")
+		def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
+
+		/*
+		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B] = ???
+
+		override def transformWith[B](f: Try[A] => Observable[B]): Observable[B] = ???
+
+		@targetName("transformWithCapturer")
+		def transformWith[B](f: Try[A] => LatchingTask[B]): LatchingTask[B] = ???
+
+		@targetName("transformWithTask")
+		def transformWith[B](f: Try[A] => Task[B]): Task[B] = ???
+
+		override def recover[B >: A](pf: Throwable => Maybe[B]): LatchingTask[B] = ???
+
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B] = ???
+
+		@targetName("recoverWithCapturer")
+		def recoverWith[B >: A](pf: Throwable => Maybe[LatchingTask[B]]): LatchingTask[B] = ???
+
+		@targetName("recoverWithTask")
+		def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = ???
+		*/
+	}
+
+	/** A partial implementation of [[LatchingTask]]. Implements everything except [[state]].
+	 * Implementation note: Despite extending [[Muxer]], the [[Muxer]] state is actually a component of this class. The composition is implemented by extending [[Muxer]], instead of holding it as a component, to avoid an allocation. Also, given the [[Muxer]] pseudo-component is not public (none of its methods are public), it should not prevent variance on this class. */
+	abstract class DefaultCapturer[+A] extends LatchingTask[A], Muxer[A @uncheckedVariance, MonoObserver] { thisCaptor =>
+		protected def state: Trial[A]
+
+		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
+			state.fold {
+				addTarget(monoObserver)
+				new Subscription {
+					override def unsubscribe(): Unit = {
+						checkWithin()
+						removeAllMatching(monoObserver)
+					}
+				}
+			} { ex =>
+				monoObserver.onError(ex)
+				Subscription_empty
+			} { a =>
+				monoObserver.onSuccess(a)
+				Subscription_empty
+			}
+		}
+
+		override def triggerSync(downChainObserver: MonoObserver[A]): Unit = {
+			state.fold {
+				addTarget(downChainObserver)
+			} { ex =>
+				downChainObserver.onError(ex)
+			} { a =>
+				downChainObserver.onSuccess(a)
+			}
+		}
+
+		override def maybeResult: Trial[A] = {
+			checkWithin()
+			state
+		}
+
+		override def foreach(consumer: A => Unit): Unit = {
+			checkWithin()
+			state.fold {
+				triggerSyncCallbacks(consumer, _ => ())
+			}(_ => ())(consumer)
+		}
+
+		override def reconcile: LatchingTask[Try[A]] = {
+			state.fold {
+				new DefaultCaptor[Try[A]] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = this.fulfillSync(Success(a))
+
+					override def onError(e: Throwable): Unit = this.fulfillSync(Failure(e))
+				}
+			} { e => ReadyTask(Failure(e))
+			} { a => ReadyTask(Success(a))
+			}
+		}
+
+		override def withFilter(predicate: A => Boolean): LatchingTask[A] = {
+			checkWithin()
+			state.fold[LatchingTask[A]] {
+				new DefaultCaptor[A] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						if predicate(a) then fulfillSync(a)
+						else breakSync(new NoSuchElementException("Covenant filter predicate is not satisfied"))
+					}
+
+					override def onError(ex: Throwable): Unit = breakSync(ex)
+				}
+			} { ex => new Failed(ex) } { a =>
+				if predicate(a) then this
+				else new Failed(new NoSuchElementException("Covenant filter predicate is not satisfied"))
+			}
+		}
+
+		override def withFilterGuarded(predicate: A => Boolean): LatchingTask[A] = {
+			checkWithin()
+			state.fold[LatchingTask[A]] {
+				new DefaultCaptor[A] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						if predicate(a) then fulfillSync(a)
+						else breakSync(new NoSuchElementException("Covenant filter predicate is not satisfied"))
+					}
+
+					override def onError(ex: Throwable): Unit = breakSync(ex)
+				}
+			} { ex => new Failed(ex) } { a =>
+				if predicate(a) then this
+				else new Failed(new NoSuchElementException("Covenant filter predicate is not satisfied"))
+			}
+		}
+
+		override def map[B](f: A => B): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = fulfillSync(f(a))
+
+					override def onError(ex: Throwable): Unit = breakSync(ex)
+				}
+			} { ex => new Failed(ex) } { a => new ReadyTask[B](f(a)) }
+		}
+
+		override def mapGuarded[B](f: A => B): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						val maybeB = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								breakSync(e)
+								Maybe.empty
+						}
+						maybeB.foreach(b => fulfillSync(b))
+					}
+
+					override def onError(ex: Throwable): Unit = breakSync(ex)
+				}
+			} { ex => new Failed(ex) } { a =>
+				try {
+					new ReadyTask[B](f(a))
+				} catch {
+					case NonFatal(e) => new Failed(e)
+				}
+			}
+		}
+
+		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
+			checkWithin()
+			state.fold {
+				new DefaultCaptor_FlatMap[A, B](this, f, false)
+			} { ex => Task_fail(ex) } { a => f(a) }
+		}
+
+		@targetName("flatMapCapturer")
+		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						f(a).subscribeSync(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = fulfillSync(b)
+
+							override def onError(ex: Throwable): Unit = breakSync(ex)
+						})
+					}
+
+					override def onError(e: Throwable): Unit = breakSync(e)
+				}
+			} { ex => new Failed(ex) } { a => f(a) }
+		}
+
+		@targetName("flatMapTask")
+		override def flatMap[B](f: A => Task[B]): Task[B] = {
+			checkWithin()
+			state.fold[Task[B]] {
+				new DefaultCaptor_FlatMap[A, B](this, f, false)
+			} { ex => Task_fail(ex) } { a => f(a) }
+		}
+
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+			checkWithin()
+			state.fold[Observable[B]] {
+				new DefaultCaptor_FlatMap[A, B](this, f, true)
+			} { ex => Task_fail(ex) } { a =>
+				try {
+					f(a)
+				} catch {
+					case NonFatal(e) => Task_fail(e)
+				}
+			}
+		}
+
+		@targetName("flatMapGuardedCapturer")
+		override def flatMapGuarded[B](f: A => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						val next = try Maybe(f(a)) catch {
+							case NonFatal(e) =>
+								breakSync(e)
+								Maybe.empty
+						}
+						next.foreach(_.subscribeSync(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = fulfillSync(b)
+
+							override def onError(ex: Throwable): Unit = breakSync(ex)
+						}))
+					}
+
+					override def onError(ex: Throwable): Unit = breakSync(ex)
+				}
+			} { ex => new Failed(ex) } { a =>
+				try {
+					f(a)
+				} catch {
+					case NonFatal(e) => new Failed(e)
+				}
+			}
+		}
+
+		@targetName("flatMapGuardedTask")
+		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
+			checkWithin()
+			state.fold[Task[B]] {
+				new DefaultCaptor_FlatMap[A, B](this, f, true)
+			} { ex => Task_fail(ex) } { a =>
+				try {
+					f(a)
+				} catch {
+					case NonFatal(e) => Task_fail(e)
+				}
+			}
+		}
+
+		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = {
+						// try {
+						f(Success(a)) match {
+							case Success(b) => fulfillSync(b)
+							case Failure(e) => breakSync(e)
+						}
+						// } catch {
+						//	case NonFatal(e) => breakSync(e)
+						// }
+					}
+
+					override def onError(ex: Throwable): Unit = {
+						// try {
+						f(Failure(ex)) match {
+							case Success(b) => fulfillSync(b)
+							case Failure(e) => breakSync(e)
+						}
+						//} catch {
+						//	case NonFatal(e) => breakSync(e)
+						//}
+					}
+				}
+			} { ex =>
+				//try {
+				f(Failure(ex)) match {
+					case Success(b) => ReadyTask(b)
+					case Failure(e) => new Failed(e)
+				}
+				//} catch {
+				//	case NonFatal(e) => new Failed(e)
+				//}
+			} { a =>
+				//try {
+				f(Success(a)) match {
+					case Success(b) => ReadyTask(b)
+					case Failure(e) => new Failed(e)
+				}
+				//} catch {
+				//	case NonFatal(e) => new Failed(e)
+				//}
+			}
+		}
+
+		override def transformWith[B](f: Try[A] => Observable[B]): Observable[B] = {
+			checkWithin()
+			state.fold[Observable[B]] {
+				new DefaultCaptor_TransformWith[A, B](this, f)
+			} { ex =>
+				/*try*/ f(Failure(ex)) /*catch {
+					case NonFatal(e) => new Failed(e)
+				}*/
+			} { a =>
+				/*try*/ f(Success(a)) /*catch {
+					case NonFatal(e) => new Failed(e)
+				}*/
+			}
+		}
+
+		@targetName("transformWithCapturer")
+		override def transformWith[B](f: Try[A] => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.subscribeSync(this)
+
+					override def onSuccess(a: A): Unit = handle(Success(a))
+
+					override def onError(ex: Throwable): Unit = handle(Failure(ex))
+
+					private def handle(tryA: Try[A]): Unit = {
+						f(tryA).triggerSync(new MonoObserver[B] {
+							override def onSuccess(b: B): Unit = fulfillSync(b)
+
+							override def onError(ex: Throwable): Unit = breakSync(ex)
+						})
+					}
+				}
+			} { ex =>
+				// try {
+				f(Failure(ex))
+				//} catch {
+				//	case NonFatal(e) => new Failed(e)
+				//}
+			} { a =>
+				//try {
+				f(Success(a))
+				//} catch {
+				//	case NonFatal(e) => new Failed(e)
+				//}
+			}
+		}
+
+		@targetName("transformWithTask")
+		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
+			checkWithin()
+			state.fold[Task[B]] {
+				new DefaultCaptor_TransformWith[A, B](this, f)
+			} { ex =>
+				f(Failure(ex))
+			} { a =>
+				f(Success(a))
+			}
+		}
+
+		override def recover[B >: A](pf: Throwable => Maybe[B]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = fulfillSync(a)
+
+					override def onError(ex: Throwable): Unit = {
+						// try {
+						pf(ex).fold(breakSync(ex))(b => fulfillSync(b))
+						//} catch {
+						//	case NonFatal(e) => breakSync(e)
+						//}
+					}
+				}
+			} { ex =>
+				/*try*/ pf(ex).fold[LatchingTask[B]](thisCaptor)(ReadyTask) /*catch {
+					case NonFatal(e) => new Failed(e)
+				}*/
+			} { a => thisCaptor }
+		}
+
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B] = {
+			checkWithin()
+			state.fold[Observable[B]] {
+				new DefaultCaptor_RecoverWith[A, B](thisCaptor, pf)
+			} { ex =>
+				/*try*/ pf(ex).fold[Observable[B]](new Failed(ex))(identity) /*catch {
+					case NonFatal(e) => new Failed(e)
+				}*/
+			} { a => Task_ready(a) }
+		}
+
+		@targetName("recoverWithCapturer")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[LatchingTask[B]]): LatchingTask[B] = {
+			checkWithin()
+			state.fold[LatchingTask[B]] {
+				new DefaultCaptor[B] with MonoObserver[A] {
+					thisCaptor.triggerSync(this)
+
+					override def onSuccess(a: A): Unit = fulfillSync(a)
+
+					override def onError(ex: Throwable): Unit = {
+						pf(ex).fold {
+							breakSync(ex)
+						} { mb =>
+							mb.subscribeSync(new MonoObserver[B] {
+								override def onSuccess(b: B): Unit = fulfillSync(b)
+
+								override def onError(e: Throwable): Unit = breakSync(e)
+							})
+						}
+					}
+				}
+			} { ex =>
+				pf(ex).fold[LatchingTask[B]](thisCaptor)(identity)
+			} { a => thisCaptor }
+		}
+
+		@targetName("recoverWithTask")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = {
+			checkWithin()
+			state.fold[Task[B]] {
+				new DefaultCaptor_RecoverWith[A, B](thisCaptor, pf)
+			} { ex =>
+				pf(ex).fold[Task[B]](Task_fail(ex))(identity)
+			} { a =>
+				Task_ready(a)
+			}
+		}
+
+		override def toFuture(isWithinDoSerEx: Boolean): Future[A] = {
+			state.fold {
+				val promise = Promise[A]()
+				subscribe(isWithinDoSerEx)(new MonoObserver[A] {
+					override def onSuccess(a: A): Unit = promise.success(a)
+
+					override def onError(e: Throwable): Unit = promise.failure(e)
+				})
+				promise.future
+			} { ex => Future.failed(ex) } { a => Future.successful(a) }
+		}
+
+		override def onBehalfOf(otherDoer: Doer): otherDoer.LatchingTask[A] = {
+			state.fold {
+				otherDoer.LatchingTask_from(thisDoer)(this)
+			} { ex => otherDoer.Failed(ex) } { a => new otherDoer.ReadyTask(a) }
 		}
 	}
 
-	//// Once factory methods ////
+	/** A [[LatchingTask]] that captures a value derived from an observed result. */
+	abstract class ChainedCapturer[-A, +B] extends DefaultCapturer[B], MonoObserver[A]
+
+	/** A [[LatchingTask]] that captures the first value it observes. */
+	abstract class DirectlyChainedCaptor[A] extends ChainedCapturer[A, A] {
+		private var theState: Trial[A] = Trial.empty
+
+		override protected def state: Trial[A] = theState
+
+		override def onSuccess(a: A): Unit = theState = Trial.success(a)
+
+		override def onError(e: Throwable): Unit = theState = Trial.failure(e)
+	}
+
+	//// Capturer factory methods ////
 
 	/** Creates an already completed [[LatchingTask]].
 	 * @param immediateResult the immediate result that this [[LatchingTask]] yields. */
 	inline def LatchingTask_ready[A](immediateResult: A): ReadyTask[A] =
 		new ReadyTask(immediateResult)
+
+	inline def LatchingTask_failed(error: Throwable): Failed = new Failed(error)
 
 	/** An already completed [[LatchingTask]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
@@ -1086,38 +2097,141 @@ trait Doer { thisDoer =>
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy final val LatchingTask_false: ReadyTask[Boolean] = ReadyTask(false)
 
-	/** Like [[Task_sequenceVenturesToArray]] but eager (instead of lazy). */
-	inline def LatchingTask_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]], isWithinDoSerEx: Boolean = isInSequence): LatchingTask[Array[Try[A]]] =
-		Covenant_triggerAndWire(Task_sequenceVenturesToArray(ventures), isWithinDoSerEx)
+	def LatchingTask_from[A](mono: Observable[A]): LatchingTask[A] = {
+		mono match {
+			case capturer: LatchingTask[A] => capturer
+			case _ =>
+				val covenant = new Covenant[A]() // TODO optimize
+				mono.subscribeSync(new MonoObserver[A] {
+					override def onSuccess(a: A): Unit = covenant.fulfillSync(a)
 
-	//// READY TASK ////
+					override def onError(e: Throwable): Unit = covenant.breakSync(e)
+				})
+				covenant
+		}
+	}
 
-	/** A [[LatchingTask]] that is fulfilled since its inception. */
-	final class ReadyTask[+A](val value: A) extends LatchingTask[A] {
+	def LatchingTask_apply[A](supplier: () => A): LatchingTask[A] = {
+		val captor = new Covenant[A]() // TODO optimize
+		run(captor.fulfill(supplier()))
+		captor
+	}
 
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
+	def LatchingTask_defer[A](supplier: () => LatchingTask[A]): LatchingTask[A] = {
+		val captor = new Covenant[A]() // TODO optimize
+		run {
+			supplier().subscribeSync(new MonoObserver[A] {
+				override def onSuccess(a: A): Unit = captor.fulfillSync(a)
+
+				override def onError(e: Throwable): Unit = captor.breakSync(e)
+			})
+		}
+		captor
+	}
+
+	/** Creates a [[LatchingTask]] that subscribes to an [[Observable]] of another [[Doer]].
+	 * $threadSafe
+	 *
+	 * @param foreignDoer the [[Doer]] to whom the `foreignMono` belongs.
+	 * @param foreignMono the [[Observable]] to subscribe to. Its result will be memorized and yielded by the returned [[LatchingTask]] in sequence with this [[Doer]].
+	 * @return a [[Task]] that produces what the `foreignMono` produces, but the result is yielded in sequence with this [[Doer]]. */
+	def LatchingTask_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Observable[A]): LatchingTask[A] = {
+		if foreignDoer ne thisDoer then {
+			val covenant = new Covenant[A]() // TODO optimize
+			foreignDoer.run {
+				foreignMono.subscribeSync(new foreignDoer.MonoObserver[A] {
+					override def onSuccess(a: A): Unit = covenant.fulfill(a, false)
+
+					override def onError(e: Throwable): Unit = covenant.break(e, false)
+				})
+			}
+			covenant
+		} else foreignMono match {
+			case ft: foreignDoer.LatchingTask[A] @unchecked => ft.asInstanceOf[LatchingTask[A]]
+			case _ => LatchingTask_from(foreignMono.asInstanceOf[Observable[A]])
+		}
+	}
+
+	/** Create a [[LatchingTask]] whose result will be the result of the provided [[Future]] when it completes.\
+	 * Useful to start a process in this [[Doer]]'s DoSerEx derived from a value produced by other process.\
+	 * $threadSafe
+	 * @param future the future to wait for.
+	 * @return the [[LatchingTask]] described in the method description. */
+	final def LatchingTask_from[A](future: Future[A]): LatchingTask[A] = {
+		new DefaultCaptor[A] with (Try[A] => Unit) {
+			future.onComplete(this)(using ownSingleThreadExecutionContext)
+
+			override def apply(tryA: Try[A]): Unit = tryA match {
+				case Success(a) => fulfillSync(a)
+				case Failure(e) => breakSync(e)
+			}
+		}
+	}
+
+	/** Creates a [[LatchingTask]] whose result will be the result of the [[Future]] returned by the provided supplier.\
+	 * Useful to start a process in an alien executor and continue it within this [[Doer]]'s DoSerEx.\
+	 * The alien executor may be the $DoSerEx of this [[Doer]].\
+	 * $threadSafe
+	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
+	 * @return the [[LatchingTask]] described in the method description. */
+	final def LatchingTask_from[A](supplier: () => Future[A]): LatchingTask[A] = {
+		new DefaultCaptor[A] with (Try[A] => Unit) {
+			run(supplier().onComplete(this)(using ownSingleThreadExecutionContext))
+
+			override def apply(tryA: Try[A]): Unit = tryA match {
+				case Success(a) => fulfillSync(a)
+				case Failure(e) => breakSync(e)
+			}
+		}
+	}
+
+	inline def LatchingTask_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Observable[A]], inline isWithinDoSerEx: Boolean = isInSequence): LatchingTask[Array[A]] = {
+		Covenant_triggerAndWire(Task_sequenceToArray(monos)) // TODO optimize
+	}
+
+	/** Like [[Task_sequenceHardyToArray]] but eager (instead of lazy). */
+	inline def LatchingTask_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Observable[A]], inline isWithinDoSerEx: Boolean = isInSequence): LatchingTask[Array[Try[A]]] =
+		Covenant_triggerAndWire(Task_sequenceHardyToArray(ventures), isWithinDoSerEx)
+
+	//// Keeper ////
+
+	/** Creates a [[ReadyTask]] that yields the provided value.
+	 * @note Also suppresses the generation of the synthetic companion object. */
+	inline final def ReadyTask[A](a: A): ReadyTask[A] = new ReadyTask(a)
+
+	/** A [[LatchingTask]] that is fulfilled since its inception.
+	 * TODO rename to Keeper */
+	final class ReadyTask[+A](val value: A) extends LatchingTask[A] { thisKeeper =>
+
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
 			// Returns empty subscription since it completes synchronously
-			monoObserver.onSuccess(value)
+			downChainObserver.onSuccess(value)
 			Subscription_empty
 		}
 
-		override def succeed: ReadyVenture[A] =
-			ReadyVenture(Success(value))
+		override def triggerSync(downChainObserver: MonoObserver[A]): Unit = downChainObserver.onSuccess(value)
 
-		override val maybeResult: Maybe[A] =
-			Maybe(value)
-
-		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = ()
-
-		override def unsubscribe(onComplete: A => Unit): Unit = ()
-
-		override def isSubscribed(monoObserver: MonoObserver[A]): Boolean = false
-
-		override def isSubscribed(onComplete: A => Unit): Boolean = false
+		override val maybeResult: Trial[A] = Trial.success(value)
 
 		override def foreach(consumer: A => Unit): Unit = {
 			checkWithin()
 			consumer(value)
+		}
+
+		override def reconcile: ReadyTask[Try[A]] = ReadyTask(Success(value))
+
+		override def withFilter(predicate: A => Boolean): LatchingTask[A] = {
+			if predicate(value) then thisKeeper
+			else Failed(new NoSuchElementException)
+		}
+
+		override def withFilterGuarded(predicate: A => Boolean): LatchingTask[A] = {
+			try {
+				if predicate(value) then thisKeeper
+				else Failed(new NoSuchElementException)
+			} catch {
+				case NonFatal(e) => Failed(e)
+			}
 		}
 
 		override def map[B](f: A => B): ReadyTask[B] = {
@@ -1125,219 +2239,523 @@ trait Doer { thisDoer =>
 			ReadyTask(f(value))
 		}
 
+		override def mapGuarded[B](f: A => B): LatchingTask[B] = {
+			checkWithin()
+			try ReadyTask(f(value)) catch {
+				case NonFatal(e) => Failed(e)
+			}
+		}
+
+		@targetName("flatMapCapturer")
 		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
 			checkWithin()
 			f(value)
 		}
 
-		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[A] =
-			Future.successful(value)
+		@targetName("flatMapTask")
+		override def flatMap[B](f: A => Task[B]): Task[B] = {
+			checkWithin()
+			f(value)
+		}
 
-		override def toString: String = deriveToString[ReadyTask[A]](this)
+		override def flatMap[B](f: A => Observable[B]): Observable[B] = {
+			checkWithin()
+			f(value)
+		}
+
+		override def flatMapGuarded[B](f: A => Observable[B]): Observable[B] = {
+			checkWithin()
+			try f(value) catch {
+				case NonFatal(e) => Failed(e)
+			}
+		}
+
+		@targetName("flatMapGuardedCapturer")
+		override def flatMapGuarded[B](f: A => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			try f(value) catch {
+				case NonFatal(e) => Failed(e)
+			}
+		}
+
+		@targetName("flatMapGuardedTask")
+		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
+			checkWithin()
+			try f(value) catch {
+				case NonFatal(e) => Task_fail(e)
+			}
+		}
+
+		override def transform[B](f: Try[A] => Try[B]): LatchingTask[B] = {
+			checkWithin()
+			f(Success(value)) match {
+				case Success(b) => ReadyTask(b)
+				case Failure(e) => Failed(e)
+			}
+		}
+
+		override def transformWith[B](f: Try[A] => Observable[B]): Observable[B] = {
+			checkWithin()
+			f(Success(value))
+		}
+
+		@targetName("transformWithCapturer")
+		override def transformWith[B](f: Try[A] => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			f(Success(value))
+		}
+
+		@targetName("transformWithTask")
+		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
+			checkWithin()
+			f(Success(value))
+		}
+
+		override def recover[B >: A](pf: Throwable => Maybe[B]): ReadyTask[B] = thisKeeper
+
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): ReadyTask[B] = thisKeeper
+
+		@targetName("recoverWithCapturer")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[LatchingTask[B]]): LatchingTask[B] = thisKeeper
+
+		@targetName("recoverWithTask")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = Task_ready(value)
+
+		override def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] = Future.successful(value)
+
+		override def onBehalfOf(otherDoer: Doer): otherDoer.ReadyTask[A] = new otherDoer.ReadyTask(value)
+
+		override def toString: String = deriveToString[ReadyTask[A]](thisKeeper)
 	}
 
-	/** Creates a [[ReadyTask]] that yields the provided value.
-	 * @note Also suppresses the generation of the synthetic companion object. */
-	inline final def ReadyTask[A](a: A): ReadyTask[A] = new ReadyTask(a)
+	//// Failed ////
 
-	//// COVENANT /////
+	/** Creates a [[Failed]] that yields the provided value.
+	 * @note Also suppresses the generation of the synthetic companion object. */
+	inline final def Failed(exception: Throwable): Failed = new Failed(exception)
+
+	final class Failed(val exception: Throwable) extends LatchingTask[Nothing] { thisFailed =>
+		override def maybeResult: Trial[Nothing] = Trial.failure(exception)
+
+		override def subscribeSync(downChainObserver: MonoObserver[Nothing]): Subscription = {
+			downChainObserver.onError(exception)
+			Subscription_empty
+		}
+
+		override def triggerSync(downChainObserver: MonoObserver[Nothing]): Unit = downChainObserver.onError(exception)
+
+		override def foreach(consumer: Nothing => Unit): Unit = ()
+
+		override def reconcile: LatchingTask[Try[Nothing]] = ReadyTask(Failure(exception))
+
+		override def withFilter(predicate: Nothing => Boolean): Failed = thisFailed
+
+		override def withFilterGuarded(predicate: Nothing => Boolean): Failed = thisFailed
+
+		override def map[B](f: Nothing => B): Failed = thisFailed
+
+		override def mapGuarded[B](f: Nothing => B): Failed = thisFailed
+
+		override def flatMap[B](f: Nothing => Observable[B]): Failed = thisFailed
+
+		@targetName("flatMapCapturer")
+		override def flatMap[B](f: Nothing => LatchingTask[B]): Failed = thisFailed
+
+		@targetName("flatMapTask")
+		override def flatMap[B](f: Nothing => Task[B]): Task[B] = Task_fail(exception)
+
+		override def flatMapGuarded[B](f: Nothing => Observable[B]): Failed = thisFailed
+
+		@targetName("flatMapGuardedCapturer")
+		override def flatMapGuarded[B](f: Nothing => LatchingTask[B]): Failed = thisFailed
+
+		@targetName("flatMapGuardedTask")
+		override def flatMapGuarded[B](f: Nothing => Task[B]): Task[B] = Task_fail(exception)
+
+		// override def reconcile: LatchingTask[Try[Nothing]] = ReadyTask(Failure(exception))
+
+		override def transform[B](f: Try[Nothing] => Try[B]): LatchingTask[B] = {
+			checkWithin()
+			f(Failure(exception)) match {
+				case Success(b) => ReadyTask(b)
+				case Failure(ex) => new Failed(ex)
+			}
+		}
+
+		override def transformWith[B](f: Try[Nothing] => Observable[B]): Observable[B] = {
+			checkWithin()
+			f(Failure(exception))
+		}
+
+		@targetName("transformWithCapturer")
+		override def transformWith[B](f: Try[Nothing] => LatchingTask[B]): LatchingTask[B] = {
+			checkWithin()
+			f(Failure(exception))
+		}
+
+		@targetName("transformWithTask")
+		override def transformWith[B](f: Try[Nothing] => Task[B]): Task[B] = {
+			checkWithin()
+			f(Failure(exception))
+		}
+
+		override def recover[B >: Nothing](pf: Throwable => Maybe[B]): LatchingTask[B] = {
+			checkWithin()
+			pf(exception).fold(thisFailed)(ReadyTask)
+		}
+
+		override def recoverWith[B >: Nothing](pf: Throwable => Maybe[Observable[B]]): Observable[B] = {
+			checkWithin()
+			pf(exception).fold(thisFailed)(identity)
+		}
+
+		@targetName("recoverWithCapturer")
+		override def recoverWith[B >: Nothing](pf: Throwable => Maybe[LatchingTask[B]]): LatchingTask[B] = {
+			checkWithin()
+			pf(exception).fold(thisFailed)(identity)
+		}
+
+		@targetName("recoverWithTask")
+		override def recoverWith[B >: Nothing](pf: Throwable => Maybe[Task[B]]): Task[B] = {
+			checkWithin()
+			pf(exception).fold(Task_fail(exception))(identity)
+		}
+
+		override def toFuture(isWithinDoSerEx: Boolean): Future[Nothing] = Future.failed(exception)
+
+		override def onBehalfOf(otherDoer: Doer): otherDoer.Failed = otherDoer.Failed(exception)
+
+		override def toString: String = deriveToString[Failed](thisFailed)
+	}
+
+	//// CAPTOR /////
+
+	/** A non-instantiable complete implementation of [[LatchingTask]]. */
+	abstract class DefaultCaptor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
+		protected var theState: Trial[A] = initialState
+
+		override protected def state: Trial[A] = theState
+
+		/** Sets this [[DefaultCaptor]] captured value with the given successful `result`, unless it has already been set.
+		 *
+		 * If this [[DefaultCaptor]] captured value is not yet set, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If it is already set, the provided `result` is ignored.
+		 *
+		 * CAUTION: This method must be called within this [[Doer]].
+		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[LatchingTask]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. This could be avoided in the library but is not worth. The user can prevent it easily with the help of [[Doer.currentExecutionSerial]].
+		 *
+		 * TODO rename to `captureSuccessSync`
+		 * @param result the value to set this [[DefaultCaptor]] capture value with.
+		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
+		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
+		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
+		final def fulfillSync(result: A, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			theState.fold {
+				theState = Trial.success(result)
+				foreachTarget(_.onSuccess(result))
+				clearRegistry()
+				completionObserver.onSuccess(result, THE_PROVIDED)
+			} { ex =>
+				completionObserver.onError(ex, ANOTHER_BEFORE)
+				// Ignore or do nothing if failed
+			} { previousResult =>
+				completionObserver.onSuccess(previousResult, ANOTHER_BEFORE)
+			}
+			this
+		}
+
+		/** Sets this [[DefaultCaptor]] captured value with the given failure `excuse`, unless it has already been set.
+		 *
+		 * If this [[DefaultCaptor]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If it is already fulfilled, the provided `result` is ignored.
+		 *
+		 * CAUTION: This method must be called within this [[Doer]].
+		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[LatchingTask]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
+		 *
+		 * TODO rename to `captureFailureSync`
+		 * @param excuse the value to fulfill this [[DefaultCaptor]] with.
+		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
+		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
+		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
+		final def breakSync(excuse: Throwable, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			theState.fold {
+				theState = Trial.failure(excuse)
+				foreachTarget(_.onError(excuse))
+				clearRegistry()
+				completionObserver.onError(excuse, THE_PROVIDED)
+			} { ex =>
+				completionObserver.onError(ex, ANOTHER_BEFORE)
+			} { a =>
+				completionObserver.onSuccess(a, ANOTHER_BEFORE)
+			}
+			this
+		}
+
+		def fulfillWithSync(completingMono: Observable[A], completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			if completingMono eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
+			state.fold {
+				completingMono.triggerSync(new MonoObserver[A] {
+					override def onSuccess(result: A): Unit = {
+						state.fold {
+							theState = Trial.success(result)
+							foreachTarget(_.onSuccess(result))
+							clearRegistry()
+							completionObserver.onSuccess(result, THE_PROVIDED)
+						} { ex =>
+							completionObserver.onError(ex, ANOTHER_AFTER)
+						} { a1 =>
+							completionObserver.onSuccess(a1, ANOTHER_AFTER)
+						}
+					}
+
+					override def onError(ex: Throwable): Unit = {
+						state.fold {
+							theState = Trial.failure(ex)
+							foreachTarget(_.onError(ex))
+							clearRegistry()
+							completionObserver.onError(ex, THE_PROVIDED)
+						} { prevEx =>
+							completionObserver.onError(prevEx, ANOTHER_AFTER)
+						} { a1 =>
+							completionObserver.onSuccess(a1, ANOTHER_AFTER)
+						}
+					}
+				})
+			} { ex =>
+				completionObserver.onError(ex, ANOTHER_BEFORE)
+			} { result =>
+				completionObserver.onSuccess(result, ANOTHER_BEFORE)
+			}
+			this
+		}
+	}
 
 	/** A [[LatchingTask]] with dynamic control of its completion (the execution of the subscribed consumers).
 	 *
 	 * It exposes methods such as [[fulfill]] and [[fulfillWith]] to allow external code to complete it.
 	 *
-	 * [[Covenant]] is to [[Task]] as [[Commitment]] is to [[Venture]], and as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]]
-	 * */
-	final class Covenant[A](initialResult: Maybe[A]) extends LatchingTask[A], SubscriptionHub[A] {
-		private var oResult: Maybe[A] = initialResult
+	 * [[Covenant]] is to [[LatchingTask]] as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]] */
+	final class Covenant[A](initialState: Trial[A] = Trial.empty) extends DefaultCaptor[A](initialState) {
 
-		def this() = this(Maybe.empty)
-
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Attaches MonoObserver and returns a Subscription to detach it
-			oResult.fold {
-				attach(monoObserver)
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						checkWithin()
-						detach(monoObserver)
-					}
-				}
-			} { a =>
-				monoObserver.onSuccess(a)
-				Subscription_empty
-			}
-		}
-
-		override def succeed: LatchingVenture[A] = {
-			oResult.fold {
-				val commitment = new Commitment[A]
-				subscribeSync(new MonoObserver[A] {
-					override def onSuccess(a: A): Unit = commitment.completeUnsafe(Success(a))
-
-					override def onError(ex: Throwable): Unit = ()
-				})
-				commitment
-			} { a =>
-				ReadyVenture(Success(a))
-			}
-		}
-
-		override def maybeResult: Maybe[A] = {
-			checkWithin()
-			oResult
-		}
-
-		override def unsubscribe(monoObserver: MonoObserver[A]): Unit = {
-			checkWithin()
-			detach(monoObserver)
-		}
-
-		override def unsubscribe(onComplete: A => Unit): Unit = {
-			checkWithin()
-			detachCallback(onComplete)
-		}
-
-		override def isSubscribed(monoObserver: MonoObserver[A]): Boolean = isAttached(monoObserver)
-
-		override def isSubscribed(onComplete: A => Unit): Boolean = isAttachedCallback(onComplete)
-
-		override def foreach(consumer: A => Unit): Unit = {
-			checkWithin()
-			oResult.fold(subscribeSync(consumer))(consumer)
-		}
-
-		override def map[B](f: A => B): LatchingTask[B] = {
-			checkWithin()
-			oResult.fold {
-				val covenant = Covenant[B]()
-				this.subscribeSync(new MonoObserver[A] {
-					override def onSuccess(a: A): Unit = covenant.fulfillUnsafe(f(a))
-
-					override def onError(ex: Throwable): Unit = ()
-				})
-				covenant
-			} { a =>
-				new ReadyTask[B](f(a))
-			}
-		}
-
-		override def flatMap[B](f: A => LatchingTask[B]): LatchingTask[B] = {
-			checkWithin()
-			oResult.fold {
-				val covenant = Covenant[B]()
-				this.subscribeSync(new MonoObserver[A] {
-					override def onSuccess(a: A): Unit = {
-						f(a).subscribeSync(new MonoObserver[B] {
-							override def onSuccess(b: B): Unit = covenant.fulfillUnsafe(b)
-
-							override def onError(ex: Throwable): Unit = ()
-						})
-					}
-
-					override def onError(ex: Throwable): Unit = ()
-				})
-				covenant
-			}(f)
-		}
-
-		/** The [[LatchingTask]] whose completion is controlled by this [[Covenant]].
-		 *
-		 * Provided to mimic containment semantics, allowing external code to treat this [[Covenant]] as if it exposed a separate [[LatchingTask]] field.
-		 * @return this [[Covenant]] as a [[LatchingTask]]. */
-		inline def asLatchingTask: LatchingTask[A] = this
-
-
-		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled at the time the fulfillment is performed.
-		 *
-		 * Fulfillment is performed:
-		 * - Synchronously (before this method returns) if `isWithinDoSerEx` is true.
-		 * - Asynchronously as soon as possible otherwise.
-		 *
-		 * This method delegates to [[fulfillUnsafe]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.
-		 * TODO rename to `complete`
-		 * @param result the value to complete this [[Covenant]] with.
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and information about its origin: [[ANOTHER_BEFORE]] if the result is a previously set one; [[THE_PROVIDED]] if the result is the one provided here.
-		 */
-		inline def fulfill(result: A, isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ImmediateResultOrigin) => Unit = (_, _) => ()): this.type = {
-			if isWithinDoSerEx then fulfillUnsafe(result, onCompleted)
+		/** @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]]. */
+		inline def fulfill(result: A, inline isWithinDoSerEx: Boolean = isInSequence, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			if isWithinDoSerEx then fulfillSync(result, completionObserver)
 			else {
-				run(fulfillUnsafe(result, onCompleted))
+				run(fulfillSync(result, completionObserver))
 				this
 			}
 		}
 
-
-		/** Fulfills this [[Covenant]] with the given `result`, unless it has already been fulfilled.
-		 *
-		 * If this [[Covenant]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
-		 * If it is already fulfilled, the provided `result` is ignored.
-		 *
-		 * CAUTION: This method must be called within this [[Doer]].
-		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[LatchingTask]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
-		 * CAUTION: Too many subscriptions may overflow the stack upon fulfillment. // TODO consider implementing a list with a pointer to the tail to avoid the recursion loop of the current implementation.
-		 *
-		 * TODO rename to `completeUnsafe`
-		 * @param result the value to fulfill this [[Covenant]] with.
-		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the fulfilling value and information about its origin:
-		 *                    - [[THE_PROVIDED]] if this [[Covenant]] was completed by this method call with the provided value;
-		 *                    - [[ANOTHER_BEFORE]] if this [[Covenant]] was already completed when this method was called.
-		 */
-		def fulfillUnsafe(result: A, onCompleted: (A, ImmediateResultOrigin) => Unit = (_, _) => ()): this.type = {
-			oResult.fold {
-				// First, set the result.
-				this.oResult = Maybe(result)
-				// Second, run the consumers in subscriptions order
-				this.capture(result)
-				// Finally. call the provided call-back.
-				onCompleted(result, THE_PROVIDED)
-			}(previousResult => onCompleted(previousResult, ANOTHER_BEFORE))
-			this
+		/** @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]]. */
+		inline def break(excuse: Throwable, inline isWithinDoSerEx: Boolean = isInSequence, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			if isWithinDoSerEx then breakSync(excuse, completionObserver)
+			else {
+				run(breakSync(excuse, completionObserver))
+				this
+			}
 		}
 
-		/** Wires this [[Covenant]] to be completed with the result of a [[Task]].
-		 *
-		 * Arranges this [[Covenant]] to be fulfilled if `fulfillingTask` completes, unless it was fulfilled before.
-		 * Always one, and only one, of the two callback is invoked:
-		 *		- `onAlreadyCompleted` if this [[Covenant]] was already fulfilled when the subscription is done.
-		 *		- `onCompletedLater` if this [[Covenant]] is fulfilled after the subscription is done.
-		 * The subscription is synchronic if `isWithinDoSerEx` is true, and asynchronic ASAP otherwise.
-		 *
-		 * TODO rename to `completeWith`
-		 * @param fulfillingTask the [[Task]] whose result will be used to complete this [[Covenant]].
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked when this [[Covenant]] is fulfilled. The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
-		 * @throws IllegalArgumentException if `fulfillingTask` is the same instance as this [[Covenant]].
-		 */
-		def fulfillWith(fulfillingTask: Task[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (A, ResultOrigin) => Unit = (_, _) => ()): this.type = {
-			if fulfillingTask eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
-			if isWithinDoSerEx then {
-				oResult.fold {
-					fulfillingTask.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(result: A): Unit = {
-							oResult.fold {
-								oResult = Maybe(result)
-								capture(result)
-								onCompleted(result, THE_PROVIDED)
-							} { a1 =>
-								onCompleted(a1, ANOTHER_AFTER)
-							}
-						}
+		/** @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]]. */
+		def completeSync(result: Try[A], completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			result match {
+				case Success(a) =>
+					fulfillSync(a, completionObserver)
+				case Failure(ex) =>
+					breakSync(ex, completionObserver)
+			}
+		}
 
-						override def onError(ex: Throwable): Unit = ()
-					})
-				} { result =>
-					onCompleted(result, ANOTHER_BEFORE)
+		/** @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]]. */
+		inline def complete(result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			if isWithinDoSerEx then {
+				checkWithin()
+				completeSync(result, completionObserver)
+			} else {
+				run(completeSync(result, completionObserver))
+				this
+			}
+		}
+
+		/** @param completionObserver optional observer of the actual completion result and origin. The `originId` parameter indicates the [[ResultOrigin]]. */
+		inline def fulfillWith(completingMono: Observable[A], inline isWithinDoSerEx: Boolean = isInSequence, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+			if isWithinDoSerEx then fulfillWithSync(completingMono, completionObserver)
+			else {
+				if completingMono eq this then throw IllegalArgumentException("A Covenant can't be fulfilled with itself.")
+				run(fulfillWithSync(completingMono, completionObserver))
+				this
+			}
+		}
+
+		override def toString(): String = {
+			s"Captor(state=$state, isRegistryEmpty=$isRegistryEmpty)"
+		}
+	}
+
+	/** TODO This class is very similar to [[Task_FlatMap]]. Consider removing duplication by extending a common super class. */
+	final class DefaultCaptor_FlatMap[+A, B](upChainMono: Observable[A], f: A => Observable[B], isGuarded: Boolean) extends AbstractTask[B] {
+		private var monoBMemory: Maybe[Observable[B]] = Maybe.empty
+
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+
+				{ // Constructor
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						monoBMemory.fold {
+							val maybeInnerMonoB = if isGuarded then try Maybe(f(a)) catch {
+								case NonFatal(e) =>
+									isActive = false
+									downChainObserver.onError(e)
+									Maybe.empty
+							} else Maybe(f(a))
+							maybeInnerMonoB.foreach { mb =>
+								monoBMemory = Maybe(mb)
+								if isActive then {
+									val innerSubscription = mb.subscribeSync(downChainObserver)
+									if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+								}
+							}
+						} { mb =>
+							val innerSubscription = mb.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+						}
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					if isActive then {
+						isActive = false
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					if isActive then {
+						isActive = false
+						val mus = maybeUpChainSubscription
+						val mis = maybeInnerSubscription
+						maybeUpChainSubscription = Maybe.empty
+						maybeInnerSubscription = Maybe.empty
+						mus.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribe())
+					}
 				}
 			}
-			else run(fulfillWith(fulfillingTask, true, onCompleted))
-			this
 		}
+	}
 
-		/** @note removing the empty parameters list causes an obscure compilation error in [[Covenant.subscribe]] call sites after a full project re-build. */
-		override def toString(): String = {
-			s"Covenant(oResult=$oResult, subscriptions=[${if firstOnCompleteObserver eq null then "" else s"$firstOnCompleteObserver, ${onCompletedObservers.mkString(", ")}"}])"
+	final class DefaultCaptor_TransformWith[A, B](upChainMono: Observable[A], f: Try[A] => Observable[B]) extends AbstractTask[B] {
+		private var monoBMemory: Maybe[Observable[B]] = Maybe.empty
+
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+
+				{ // Constructor
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+
+				override def onSuccess(a: A): Unit = handle(Success(a))
+
+				override def onError(ex: Throwable): Unit = handle(Failure(ex))
+
+				private def handle(tryA: Try[A]): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val monoB = monoBMemory.getOrElse {
+							val monoB = f(tryA)
+							monoBMemory = Maybe(monoB)
+							monoB
+						}
+						if isActive then {
+							val innerSubscription = monoB.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					if isActive then {
+						isActive = false
+						val mus = maybeUpChainSubscription
+						val mis = maybeInnerSubscription
+						maybeUpChainSubscription = Maybe.empty
+						maybeInnerSubscription = Maybe.empty
+						mus.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribe())
+					}
+				}
+			}
+		}
+	}
+
+	final class DefaultCaptor_RecoverWith[A, B >: A](upChainMono: Observable[A], pf: Throwable => Maybe[Observable[B]]) extends AbstractTask[B] {
+		private var maybeMonoBMemory: Maybe[Maybe[Observable[B]]] = Maybe.empty
+
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new Subscription with MonoObserver[A] {
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+
+				{ // Constructor
+					val upChainSubscription = upChainMono.subscribeSync(this)
+					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onSuccess(a)
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val maybeMonoB = maybeMonoBMemory.getOrElse {
+							val maybeMonoB = pf(ex)
+							maybeMonoBMemory = Maybe(maybeMonoB)
+							maybeMonoB
+						}
+						if isActive then {
+							maybeMonoB.fold {
+								isActive = false
+								downChainObserver.onError(ex)
+							} { monoB =>
+								if isActive then {
+									val innerSubscription = monoB.subscribeSync(downChainObserver)
+									if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+								}
+							}
+						}
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					if isActive then {
+						isActive = false
+						val mus = maybeUpChainSubscription
+						val mis = maybeInnerSubscription
+						maybeUpChainSubscription = Maybe.empty
+						maybeInnerSubscription = Maybe.empty
+						mus.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribe())
+					}
+				}
+			}
 		}
 	}
 
@@ -1349,21 +2767,21 @@ trait Doer { thisDoer =>
 
 	/** Creates a [[Covenant]] that will fulfill with the result of executing the provided supplier within the $DoSerEx.
 	 * @param supplier a supplier function that is executed within the $DoSerEx and returns the value to fulfill the created [[Covenant]] with. */
-	def Covenant_mine[A](supplier: () => A): Covenant[A] = {
-		val covenant = new Covenant[A]
+	def Covenant_from[A](supplier: () => A): Covenant[A] = {
+		val covenant = new Covenant[A] // TODO optimize
 		run {
-			covenant.fulfillUnsafe(supplier())
+			covenant.fulfillSync(supplier())
 		}
 		covenant
 	}
 
 	/** Creates a [[Covenant]] that is wired to the [[LatchingTask]] resulting of executing the provided supplier within the $DoSerEx.
 	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[LatchingTask]] to which the created [[Covenant]] is wired. */
-	def Covenant_mineFlat[A](supplier: () => LatchingTask[A]): Covenant[A] = {
-		val covenant = new Covenant[A]
+	def Covenant_defer[A](supplier: () => LatchingTask[A]): Covenant[A] = {
+		val covenant = new Covenant[A] // TODO optimize
 		run {
 			supplier().subscribeSync(new MonoObserver[A] {
-				override def onSuccess(a: A): Unit = covenant.fulfillUnsafe(a)
+				override def onSuccess(a: A): Unit = covenant.fulfillSync(a)
 
 				override def onError(ex: Throwable): Unit = ()
 			})
@@ -1378,12 +2796,15 @@ trait Doer { thisDoer =>
 	 *
 	 * @param task the [[Task]] to be triggered.
 	 * @param isWithinDoSerEx $isWithinDoSerEx
-	 * @param onFulfilled The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
+	 * @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]].
 	 * @return a [[Covenant]] that will be completed with the result of the execution triggered by this method.
 	 */
-	inline def Covenant_triggerAndWire[A](task: Task[A], inline isWithinDoSerEx: Boolean = isInSequence, onFulfilled: (A, ImmediateResultOrigin) => Unit = (_: A, _: ImmediateResultOrigin) => ()): Covenant[A] = {
-		val covenant = new Covenant[A]()
-		task.subscribe(isWithinDoSerEx)(result => covenant.fulfillUnsafe(result, onFulfilled))
+	inline def Covenant_triggerAndWire[A](
+		task: Task[A], inline isWithinDoSerEx: Boolean = isInSequence,
+		completionObserver: CompletionObserver[A] = CompletionIgnorer,
+	): Covenant[A] = {
+		val covenant = new Covenant[A]() // TODO optimize
+		task.subscribeCallbacks(isWithinDoSerEx)(a => covenant.fulfillSync(a, completionObserver), e => covenant.breakSync(e, completionObserver))
 		covenant
 	}
 
@@ -1397,1370 +2818,74 @@ trait Doer { thisDoer =>
 	 *		- the call to the routines received by the operations are guarded with a try-catch, which allows to propagate failures through [[Venture]] chains.
 	 *		- can encapsulate a [[Future]] making interoperability with them easier.
 	 * @param A the type of the result obtained when executing this [[Venture]]. */
-	type Venture[+A] = AbstractVenture[A]
+	@deprecated
+	type Venture[+A] = Task[A]
+	@deprecated
+	type LatchingVenture[+A] = LatchingTask[A]
+	@deprecated
+	type ReadyVenture[+A] = ReadyTask[A]
+	@deprecated
+	type Commitment[A] = Covenant[A]
 
-
-	/** A hardy and short-circuiting version of [[Task]].\
-	 * Design note:
-	 * - The use of mixins to define the hardy side of the hierarchy was explored in Task3.scala and discarded due to extra allocation in many fundamental operations.
-	 * - Defining [[Venture]] as `opaque type Venture[+A] = Task[Try[A]]` was explored but discarded due to bugs in the scala compiler. See https://github.com/scala/scala3/issues/25594. This will eliminate many redundant [[Venture]] implementation classes by reusing [[Task]]'s counterpart, but it may cause IDE issues since [[Venture]] operations would need to be defined as extension methods.
-	 * @tparam A the type of the result obtained when executing this [[Venture]]. */
-	abstract class AbstractVenture[+A] extends AbstractTask[Try[A]] { thisVenture =>
-
-		/** Removes short-circuit semantics by reifying both the successful and failed outcomes as a [[scala.util.Try]] value within a strict [[Task]].\
-		 * Together with [[Task.succeed]] this method allow to mix duties and ventures in the same chain. */
-		def reconcile: Task[Try[A]] = thisVenture
-
-		/** Triggers an execution of this [[Venture]] and returns a [[Future]] of its result.\
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @return a [[Future]] that will be completed when this [[Venture]] is completed. */
-		def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
-			val promise = Promise[A]()
-			thisVenture.subscribe(isWithinDoSerEx)(promise.complete)
-			promise.future
-		}
-
-		/** Triggers an execution of this [[Venture]] noticing faulty results.\
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param errorHandler called when the triggered execution completes with a failure. $isExecutedByDoSerEx $unhandledErrorsAreReported */
-		inline def subscribeAndForgetHandlingErrors(inline errorHandler: Throwable => Unit, inline isWithinDoSerEx: Boolean = isInSequence): Unit =
-			thisVenture.subscribe(isWithinDoSerEx) {
-				case Failure(e) =>
-					try errorHandler(e) catch {
-						case NonFatal(cause) => reportPanicException(cause)
-					}
-				case _ => ()
-			}
-
-		/** Triggers this [[Venture]] and, once it is completed, processes its result for its side effects.
-		 * Differs from [[trigger]] in that it catches non-fatal exceptions thrown by the provided consumer function and reports them with [[reportPanicException]].
-		 * @param onComplete called with this [[Venture]] result when it completes, if it ever does. */
-		inline def subscribeHardy(inline onComplete: Try[A] => Unit, inline isWithinDoSerEx: Boolean = isInSequence): Unit =
-			thisVenture.subscribe(isWithinDoSerEx) { tryA =>
-				try onComplete(tryA)
-				catch {
-					case NonFatal(e) => thisDoer.reportPanicException(e)
-				}
-			}
-
-		/** Triggers this [[Venture]] and once it is completed successfully processes its result for its side effects.\
-		 * WARNING: `consumer` won't be called if this [[Venture]] completes with a failure.
-		 * @param consumer called with this [[Venture]] result when it completes successfully, if it ever does. */
-		@targetName("foreach_venture")
-		def foreach(consumer: A => Unit): Unit =
-			thisVenture.subscribeHardy {
-				case Success(a) => consumer(a)
-				case _ => ()
-			}
-
-		/** Transform this [[Venture]] by applying the given function to the result. Analogous to [[Future.transform]].\
-		 * **Detailed description:**
-		 * Creates a [[Venture]] that yields the result of applying the provided function to the results of this [[Venture]].
-		 * If the evaluation of the provided function finishes:
-		 * - abruptly, completes with the cause.
-		 * - normally, completes with the result of the evaluation.
-		 *
-		 * $threadSafe
-		 *
-		 * @param f applied to the result of this [[Venture]] to obtain the result of the returned [[Venture]].
-		 *
-		 * $isExecutedByDoSerEx
-		 *
-		 * $unhandledErrorsArePropagatedToVentureResult
-		 */
-		def transform[B](f: Try[A] => Try[B]): Venture[B] =
-			new Venture_Transform(thisVenture, f)
-
-
-		/** Transforms this [[Venture]] by applying the provided function to the result of this [[Venture]] and then executing the [[Venture]] returned by said function.\
-		 * **Detailed behavior**:
-		 * Creates a [[Venture]] that, when executed, it will:
-		 * - Execute this [[Venture]] and apply the provided function to its result.
-		 * - Then executes the [[Venture]] built in the previous step by the provided function and completes with its result.\
-		 * $threadSafe\
-		 * @param f a function that is applied to the result of this [[Venture]] execution, to build a [[Venture]] that is executed next to produce the result that the [[Venture]] returned by this method yields.\
-		 * $isExecutedByDoSerEx */
-		inline def transformWith[B](f: Try[A] => Venture[B]): Venture[B] =
-			new Venture_TransformWith(thisVenture, f)
-
-
-		/** Transforms this [[Venture]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].\
-		 * Equivalent to {{{ transform(_ map f) }}} but more efficient (creates one less closure).\
-		 * See [[recover]] and [[toTask]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.\
-		 * **Detailed behavior:**
-		 * Creates a [[Venture]] that yields the result of applying the provided function to successful results of this [[Venture]].
-		 * If the evaluation of the provided function finishes:
-		 * - abruptly, completes with the cause.
-		 * - normally, completes with the successful result.\
-		 * $threadSafe\
-		 * @param f a function that transforms successful results of this [[Venture]]. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult */
-		def map[B](f: A => B): Venture[B] =
-			new Venture_Map(thisVenture, f)
-
-		/** Composes this [[Venture]] with a second one that is built from the result of this one, but only when this one is successful. Analogous to [[Future.flatMap]].\
-		 * **Detailed behavior:**
-		 * Creates a [[Venture]] that, when executed, it will:
-		 *  - Trigger an execution of this [[Venture]] and if the result is:
-		 *    - `Failure(e)`, completes with that failure.
-		 *    - `Success(a)`, applies the function to `a`. If the evaluation finishes:
-		 *      - abruptly, completes with the cause.
-		 *      - normally with `ventureB`, triggers an execution of `ventureB` and completes with its result.\
-		 * $threadSafe\
-		 * @param f a function that receives the result of `ventureA`, when it is a [[Success]], and returns the [[Venture]] to be executed next. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult */
-		inline def flatMap[B](f: A => Venture[B]): Venture[B] =
-			new Venture_FlatMap(thisVenture, f)
-
-		/** Needed to support filtering and case matching in for-compressions. The for-expressions (or for-bindings) after the filter are not executed if the [[predicate]] is not satisfied.\
-		 * **Detailed behavior:** Gives a [[Venture]] that, when executed, it will:
-		 *  - executes this [[Venture]] and, if the result is a:
-		 *    - [[Failure]], completes with that failure.
-		 *    - [[Success]], applies the `predicate` to its content and if the evaluation finishes:
-		 *      - abruptly, completes with the cause.
-		 *      - normally with a `false`, completes with a [[Failure]] containing a [[NoSuchElementException]].
-		 *      - normally with a `true`, completes with the result of this [[Venture]].\
-		 * $threadSafe\
-		 * @param predicate a predicate that determines which values are propagated to the following for-bindings. */
-		def withFilter(predicate: A => Boolean): Venture[A] =
-			new Venture_WithFilter(thisVenture, predicate)
-
-		/** Applies the side-effecting function to the result of this [[Venture]] without affecting the propagated value.
-		 * The result of the provided function is always ignored and therefore not propagated in any way.
-		 * This method allows to enforce many callbacks to receive the same value and to be executed in the order they are chained.
-		 * It's worth mentioning that the side-effecting function is executed before triggering the next task in the chain.\
-		 * **Detailed description:**
-		 * Returns a [[Venture]] that, when executed:
-		 *  - first executes this [[Venture]];
-		 *  - second applies the received function to the result and, if the evaluation finishes:
-		 *    - normally, completes with the result of this [[Venture]].
-		 *    - abruptly with a non-fatal exception, reports the failure cause to [[Doer.reportFailure]] and completes with the result of this [[Venture]].
-		 *    - abruptly with a fatal exception, never completes.\
-		 * $threadSafe\
-		 * @param sideEffect a side-effecting function. The call to this function is wrapped in a try-catch block; however, unlike most other operators, unhandled non-fatal exceptions are not propagated to the result of the returned [[Venture]]. $isExecutedByDoSerEx */
-		override def andThen(sideEffect: Try[A] => Unit): Venture[A] =
-			new Venture_AndThen(thisVenture, sideEffect)
-
-		/** Wraps this [[Venture]] into a [[Task]] applying the given function to transform failure results into successful ones. This is like [[map]] but for the throwable; and like [[recover]] but with a complete function.
-		 * Together with [[Task.succeed]] this method allow to mix duties and ventures in the same chain. *
-		 * @param exceptionHandler a complete function to apply to the result of this [[Venture]] if it is a [[Failure]].\
-		 * $isExecutedByDoSerEx\
-		 * $notGuarded\
-		 * @return a [[Task]] that yields the result of this [[Venture]]. */
-		inline final def reconcile[B >: A](exceptionHandler: Throwable => B): Task[B] =
-			new Task_FromVenture[A, B](thisVenture, exceptionHandler)
-
-		/** @return a [[Task]] that yields the result of this [[Venture]]. */
-		inline final def asHardyTask: Task[Try[A]] =
-			thisVenture
-
-		/** Transforms this [[Venture]] applying the given partial function to failure results. This is like map but for the throwable; and like [[reconcile]] but with a partial function. Analogous to [[Future.recover]].\
-		 * **detailed description:**
-		 * Returns a new [[Venture]] that, when executed, executes this [[Venture]] and if the result is:
-		 *  - a [[Success]] or a [[Failure]] for which `pf` is not defined, completes with the same result.
-		 *  - a [[Failure]] for which `pf` is defined, applies `pf` to it and if the evaluation finishes:
-		 *    - abruptly, completes with the cause.
-		 *    - normally, completes with the result of the evaluation.\
-		 * $threadSafe\
-		 * @param pf the [[PartialFunction]] to apply to the result of this [[Venture]] if it is a [[Failure]]. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult */
-		def recover[B >: A](pf: PartialFunction[Throwable, B]): Venture[B] =
-			transform(_.recover(pf))
-
-		/** Composes this [[Venture]] with a second one that is built from the result of this one, but only when said result is a [[Failure]] for which the given partial function is defined. This is like flatMap but for the exception. Analogous to [[Future.recoverWith]].\
-		 * **detailed description:**
-		 * Returns a new [[Venture]] that, when executed, executes this [[Venture]] and if the result is:
-		 *  - a [[Success]] or a [[Failure]] for which `pf` is not defined, completes with the same result.
-		 *  - a [[Failure]] for which `pf` is defined, applies `pf` to it and if the evaluation finishes:
-		 *    - abruptly, completes with the cause.
-		 *    - normally returning a [[Venture]], triggers an execution of said [[Venture]] and completes with its same result.\
-		 * $threadSafe\
-		 * @param pf the [[PartialFunction]] to apply to the result of this [[Venture]], if it is a [[Failure]], to build the second [[Venture]]. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult */
-		def recoverWith[B >: A](pf: PartialFunction[Throwable, Venture[B]]): Venture[B] = {
-			transformWith[B] {
-				case Failure(t) => pf.applyOrElse(t, (e: Throwable) => new ReadyVenture[B](Failure(e)));
-				case sa: Success[A] => new ReadyVenture[B](sa);
-			}
-		}
-
-		/** Wraps this [[Venture]] into another that belongs to other [[Doer]].\
-		 * Useful to chain [[Venture]]'s operations that involve different [[Doer]] instances.\
-		 * **Detailed behavior:**
-		 * Returns a [[Venture]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this [[Venture]] within this [[Doer]] and, when completed, make the returned [[Venture]] to yield the result.\
-		 * CAUTION: Avoid closing over the same mutable variable from two transformations applied to [[Venture]] instances belonging to different [[Doer]]s.\
-		 * Remember that all routines (e.g., functions, procedures, predicates, and callbacks) provided to [[Venture]] methods are executed by the $DoSerEx of the [[Doer]] that owns the [[Venture]] instance on which the method is called.
-		 * Therefore, calling [[trigger]] on the returned [[Venture]] will execute the `onComplete` passed to it within the $DoSerEx of the `otherDoer`.\
-		 * $threadSafe\
-		 * @param otherDoer the [[Doer]] to which the returned [[Venture]] will belong. */
-		override def onBehalfOf(otherDoer: Doer): otherDoer.Venture[A] =
-			otherDoer.Venture_foreign(thisDoer)(this)
-
-		/** Casts the singleton type of the [[Doer]] instance that owns this [[Venture]] to the singleton-type of the received [[Doer]].\
-		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with [[Venture]]s that correspond to the same [[Doer]] instance but have different type-paths.\
-		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Venture]].\
-		 * Design note: It was decided to make [[Venture]] (and [[Task]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Venture]] (and [[Task]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.\
-		 * Using type-path checking to detect contract violations is very valuable but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Venture]]s correspond to the same [[Doer]] instance.
-		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
-		 * This operation ([[castTypePath()]]) is intended to handle those cases. */
-		override def castTypePath[E <: Doer](doer: E): doer.Venture[A] = {
-			assert(thisDoer eq doer)
-			this.asInstanceOf[doer.Venture[A]]
-		}
+	@deprecated
+	inline def ReadyVenture[A](tryA: Try[A]): ReadyTask[A] = tryA match {
+		case Success(a) => ReadyTask(a)
+		case Failure(ex) => new Failed(ex).asInstanceOf[ReadyTask[A]]
 	}
 
-	/** An always successful ready [[Venture]] that yields [[Unit]].\
-	 * Equivalent to {{{Venture_successful[Unit](())}}}\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Venture_unit: Venture[Unit] = Venture_ready(successUnit)
+	@deprecated
+	inline def Commitment[A](): Covenant[A] = new Covenant[A]()
 
-	/** An always successful ready [[Venture]] that yields [[true]].\
-	 * Equivalent to {{{Venture_successful[true](true}}}\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Venture_true: Venture[true] = Venture_ready(successTrue)
 
-	/** An always successful ready [[Venture]] that yields [[false]].\
-	 * Equivalent to {{{Venture_successful[false](false)}}}\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy val Venture_false: Venture[false] = Venture_ready(successFalse)
-
-	/** A [[Venture]] whose execution never ends. */
-	@threadUnsafe lazy val Venture_never: Venture[Nothing] = new Venture_Never()
-
-	/** Creates a [[Venture]] whose result is calculated at the call site even before the returned [[Venture]] is constructed. The result of its execution is always the provided value.\
-	 * $threadSafe
-	 * @param tryA the value that the returned [[Venture]] will give as result every time it is executed.
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_ready[A](tryA: Try[A]): Venture[A] = new Venture_Ready(tryA)
-
-	/** Creates a ready [[Venture]] that always succeeds with a result that is calculated at the call site even before the [[Venture]] is constructed. The result of its execution is always a [[Success]] with the provided value.\
-	 * $threadSafe
-	 * @param a the value contained in the [[Success]] that the returned [[Venture]] will give as result every time it is executed.
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_successful[A](a: A): Venture[A] = Venture_ready(Success(a))
-
-	/** Creates a [[Venture]] that always fails with a result that is calculated at the call site even before the [[Venture]] is constructed. The result of its execution is always a [[Failure]] with the provided [[Throwable]].\
-	 * $threadSafe
-	 * @param throwable the exception contained in the [[Failure]] that the returned [[Venture]] will give as result every time it is executed.
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_failed[A](throwable: Throwable): Venture[A] = Venture_ready(Failure(throwable))
-
-	/** Transforms a [[Task]] to a [[Venture]] */
-	def Venture_fromTask[A](task: Task[Try[A]]): Venture[A] = (monoObserver: MonoObserver[Try[A]]) => task.subscribeSync(monoObserver)
-
-	/** Creates a [[Venture]] whose result is the result of the provided supplier.\
-	 * **Detailed behavior:**
-	 * Creates a [[Venture]] that, when executed, evaluates the `resultSupplier` within the $DoSerEx. If the evaluation finishes:
-	 *  - abruptly, completes with a [[Failure]] with the cause.
-	 *  - normally, completes with the evaluation's result.\
-	 * $$threadSafe
-	 * @param supplier the supplier of the result. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_own[A](supplier: () => Try[A]): Venture[A] = new Venture_Own(supplier)
-
-	/** Creates a [[Venture]] whose result is the result of applying [[Successful.apply]] to the result of the provided supplier as long as the evaluation of the supplier finishes normally; otherwise its result is a failure with the cause.\
-	 * **Detailed behavior:**
-	 * Creates a [[Venture]] that, when executed, evaluates the `resultSupplier` within the $DoSerEx. If it finishes:
-	 *  - abruptly, completes with a [[Failure]] containing the cause.
-	 *  - normally, completes with a [[Success]] containing the evaluation's result.\
-	 * Is equivalent to {{{ own { () => Success(resultSupplier()) } }}}\
-	 * $threadSafe
-	 * @param supplier the action that supplies the successful result of [[Venture]]. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_mine[A](supplier: () => A): Venture[A] = new Venture_Own(() => Success(supplier()))
-
-	/** Creates a [[Venture]] whose result is the result of the [[Venture]] returned by the provided supplier.\
-	 * Is equivalent to: {{{own(supplier).flatMap(identity)}}} but slightly more efficient.\
-	 * **Detailed behavior:**
-	 * Creates a [[Venture]] that, when executed, evaluates the `supplier` within the $DoSerEx. If the evaluation finishes:
-	 *  - abruptly, completes with a [[Failure]] with the cause.
-	 *  - normally, triggers an execution of the returned [[Venture]] and completes with its result.\
-	 * $threadSafe
-	 * @param supplier the supplier of the result. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Venture]] described in the method description. */
-	inline def Venture_ownFlat[A](supplier: () => Venture[A]): Venture[A] = new Venture_OwnFlat(supplier)
-
-	/** Create a [[Venture]] whose result will be the result of the provided [[Future]] when it completes.\
-	 * Useful to access the result of a process that was already started in an alien executor as if it were executed sequentially.\
-	 * $threadSafe
-	 * @param future the future to wait for.
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_wait[A](future: Future[A]): Venture[A] = new Venture_Wait(future)
-
-	/** Creates a [[Venture]] whose result will be the result of the [[Future]] returned by the provided supplier.\
-	 * Useful to start a process in an alien executor and access its result as if it were executed sequentially.\
-	 * The alien executor may be the $DoSerEx of this [[Doer]].\
-	 * $threadSafe
-	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_alien[A](supplier: () => Future[A]): Venture[A] = new Venture_Alien(supplier)
-
-	/** Creates a [[Venture]] that triggers the execution of the provided [[Venture]] by another [[Doer]], and yields its result.\
-	 * When triggered, the `foreignVenture` is executed within the `foreignDoer` (in sequence with whatever the `foreignDoer` is doing), and its result is supplied by the created [[Venture]] in sequence with this [[Doer]].\
-	 * Useful to start a process in a another [[Doer]] and access its result sequentially.\
-	 * $threadSafe
-	 * @param foreignDoer the [[Doer]] to whom the `foreignVenture` belongs.
-	 * @param foreignVenture the [[Venture]] to be executed by the `foreignDoer`. Its result will be yielded by the returned [[Venture]] in sequence with this [[Doer]].
-	 * @return a [[Venture]] that produces what the `foreignVenture` produces, but the result is yielded in sequence with this [[Doer]]. */
-	inline final def Venture_foreign[A](foreignDoer: Doer)(foreignVenture: foreignDoer.Venture[A]): Venture[A] = {
-		if foreignDoer eq thisDoer then foreignVenture.asInstanceOf[thisDoer.Venture[A]]
-		else new Venture_Foreign(foreignDoer, foreignVenture)
-	}
-
-	/** Creates a [[Venture]] that simultaneously triggers an execution for each of two [[Venture]] instances and returns their results combined with the received function.\
-	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the received [[Venture]]s are a chain of actions that involve timers, foreign, or alien actions.\
-	 * **Detailed behavior:**
-	 * Creates a new [[Venture]] that, when executed:
-	 *  - triggers an execution for each [[Venture]] and when both are completed, whether normally or abruptly, the function `f` is applied to their results; and, if the evaluation finishes:
-	 *    - abruptly, completes with a [[Failure]] containing the cause.
-	 *    - normally, completes with the evaluation's result.\
-	 * $threadSafe
-	 * @param ventureA a [[Venture]]
-	 * @param ventureB a [[Venture]]
-	 * @param f the function that combines the results. $isExecutedByDoSerEx $unhandledErrorsArePropagatedToVentureResult
-	 * @return the [[Venture]] described in the method description. */
-	inline final def Venture_combine[A, B, C](ventureA: Venture[A], ventureB: Venture[B])(f: (Try[A], Try[B]) => Try[C]): Venture[C] =
-		new Venture_Combined(ventureA, ventureB, f)
-
-	/** Creates a [[Venture]] that, when executed, simultaneously triggers an execution for each [[Venture]]s in the received list, and completes with a list containing their results in the same order.\
-	 * This overload only accepts [[List]]s and is only convenient when the list is small. For large ones it is not efficient and also may cause stack-overflow when the [[Venture]] is executed.\
-	 * Use the other overload for large lists or other kind of iterables.\
-	 * $threadSafe
-	 * @param ventures the list of [[Venture]]s that the returned [[Venture]] will trigger simultaneously to combine their results.
-	 * @return the [[Venture]] described in the method description. */
-	final def Venture_sequence[A](ventures: List[Venture[A]]): Venture[List[A]] = {
-		@tailrec
-		def loop(incompleteResult: Venture[List[A]], remainingVentures: List[Venture[A]]): Venture[List[A]] = {
-			remainingVentures match {
-				case Nil =>
-					incompleteResult
-				case head :: tail =>
-					val lessIncompleteResult = Venture_combine(incompleteResult, head) { (tla, ta) =>
-						for {
-							la <- tla
-							a <- ta
-						} yield a :: la
-					}
-					loop(lessIncompleteResult, tail)
-			}
-		}
-
-		ventures.reverse match {
-			case Nil => Venture_successful(Nil)
-			case lastVenture :: previousVentures => loop(lastVenture.map(List(_)), previousVentures);
-		}
-	}
-
-	/** Creates a [[Venture]] that, when executed, simultaneously triggers and execution for each [[Venture]]s in the received list, and completes with a list containing their results in the same order if all are successful, or a Failure if anyone is faulty.\
-	 * This overload accepts any [[Iterable]] and is more efficient than the other (above). Especially for large iterables.\
-	 * $threadSafe
-	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @param ventures the `Iterable` of [[Venture]] instances that the returned [[Venture]] will trigger simultaneously to combine their results.
-	 * @tparam A the result type of all the [[Venture]] instances.
-	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Venture]]s.
-	 * @tparam To the type of the [[Iterable]] that will contain the results.
-	 * @return the [[Venture]] described in the method description. */
-	def Venture_sequence[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Venture[A]]): Venture[To[A]] = {
-		Venture_sequenceToArray(ventures).map { array =>
-			val builder = factory.newBuilder[A]
-			var index = 0
-			while index < array.length do {
-				builder.addOne(array(index))
-				index += 1
-			}
-			builder.result()
-		}
-	}
-
-	/** Like [[Venture_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Venture_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]): Venture[Array[A]] = new Venture_Sequence[A, C](ventures)
-
-
-	/** Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Venture]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, in the same order.\
-	 * $threadSafe \
-	 * TODO change return type to [[Task]] to better expose the fact that always yields a successful result
-	 * @param ventures the [[Iterable]] of [[Venture]]s that the returned [[Task]] will trigger simultaneously to combine their results.
-	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @tparam A the result type of all the provided [[Venture]]s.
-	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Venture]]s.
-	 * @tparam To the higher-kinded type of the [[Iterable]] that will contain the results.
-	 * @return the successful task described in the method description. */
-	def Task_sequenceVentures[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Venture[A]]): Task[To[Try[A]]] = {
-		Task_sequenceVenturesToArray(ventures).map { array =>
-			val builder = factory.newBuilder[Try[A]]
-			var index = 0
-			while index < array.length do {
-				builder.addOne(array(index))
-				index += 1
-			}
-			builder.result()
-		}
-	}
-
-	/** Like [[Task_sequenceVentures]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Task_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]): Task[Array[Try[A]]] =
-		new Task_SequenceHardy[A, C](ventures)
-
-	//// Venture concrete implementations used internally ////
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Never(trap: Nothing): Any = trap
-
-	/** A [[Venture]] that never completes.\
-	 * $onCompleteExecutedBy */
-	final class Venture_Never extends AbstractVenture[Nothing] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[Nothing]]): Subscription = {
-			// Never completes, returns empty subscription
-			Subscription_empty
-		}
-
-		override def toString: String = deriveToString[Venture_Never](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_fromTask(trap: Nothing): Any = trap
-
-	final class Venture_fromTask[A](cA: Task[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Propagates underlying task subscription while mapping completion
-			cA.subscribeSync(new MonoObserver[A] {
-				override def onSuccess(value: A): Unit = monoObserver.onSuccess(Success(value))
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_fromTask[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Ready(trap: Nothing): Any = trap
-
-	final class Venture_Ready[A](tryA: Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Completes immediately, returns empty subscription
-			monoObserver.onSuccess(tryA)
-			Subscription_empty
-		}
-
-		override def toString: String = deriveToString[Venture_Ready[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Own(trap: Nothing): Any = trap
-
-	final class Venture_Own[+A](supplier: () => Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Evaluates immediately, returns empty subscription
-			val result =
-				try supplier() catch {
-					case NonFatal(e) => Failure(e)
-				}
-			monoObserver.onSuccess(result)
-			Subscription_empty
-		}
-
-		override def toString: String = deriveToString[Venture_Own[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def TVenture_OwnFlat(trap: Nothing): Any = trap
-
-	final class Venture_OwnFlat[+A](supplier: () => Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Returns delegating subscription to cancel flatMap chain stages
-			new Subscription {
-				private var active = true
-				private var currentSub: Subscription = Subscription_empty
-
-				{
-					val venturesA =
-						try supplier() catch {
-							case NonFatal(e) => Venture_failed(e)
-						}
-					if active then currentSub = venturesA.subscribeSync(monoObserver)
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					currentSub.unsubscribe()
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_OwnFlat[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Wait(trap: Nothing): Any = trap
-
-	final class Venture_Wait[+A](future: Future[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Returns subscription that allows ignoring the future outcome on cancellation
-			new Subscription {
-				private var active = true
-				{
-					future.onComplete { tryA =>
-						if active then thisDoer.run(if active then monoObserver.onSuccess(tryA))
-					}(using ownSingleThreadExecutionContext)
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_Wait[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Alien(trap: Nothing): Any = trap
-
-	final class Venture_Alien[+A](builder: () => Future[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Returns subscription that ignores the future outcome on cancellation
-			new Subscription {
-				private var active = true
-				{
-					val future =
-						try builder()
-						catch {
-							case NonFatal(e) => Future.failed(e)
-						}
-					future.onComplete { tryA =>
-						if active then thisDoer.run(if active then monoObserver.onSuccess(tryA))
-					}(using ownSingleThreadExecutionContext)
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_Alien[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Foreign(trap: Nothing): Any = trap
-
-	final class Venture_Foreign[+A](foreignDoer: Doer, foreignVenture: foreignDoer.Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Subscribes across Doers, checking active status
-			new Subscription {
-				private var active = true
-				{
-					foreignVenture.subscribe(false) { tryA =>
-						if active then run(if active then monoObserver.onSuccess(tryA))
-					}
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_Foreign[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Consume(trap: Nothing): Any = trap
-
-	final class Venture_Consume[A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[Unit] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[Unit]]): Subscription = {
-			// Propagates underlying subscription and processes result with consumer
-			ventureA.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = {
-					val tryConsumerResult =
-						try {
-							consumer(tryA)
-							successUnit
-						} catch {
-							case NonFatal(cause) => Failure(cause)
-						}
-					monoObserver.onSuccess(tryConsumerResult)
-				}
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_Consume[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_WithFilter(trap: Nothing): Any = trap
-
-	final class Venture_WithFilter[A](ventureA: Venture[A], predicate: A => Boolean) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Propagates underlying subscription and applies predicate logic
-			ventureA.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryResult: Try[A]): Unit = tryResult match {
-					case sa@Success(a) =>
-						val predicateResult =
-							try {
-								if predicate(a) then sa
-								else Failure(new NoSuchElementException(s"Venture filter predicate is not satisfied for $a"))
-							} catch {
-								case NonFatal(cause) => Failure(cause)
-							}
-						monoObserver.onSuccess(predicateResult)
-
-					case f@Failure(_) => monoObserver.onSuccess(f)
-				}
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_WithFilter[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Transform(trap: Nothing): Any = trap
-
-	final class Venture_Transform[+A, +B](originalVenture: Venture[A], f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Propagates underlying subscription and transforms result
-			originalVenture.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = monoObserver.onSuccess(tryA.reifyBack(f))
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_Transform[A, B]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Map(trap: Nothing): Any = trap
-
-	final class Venture_Map[+A, +B](originalVenture: Venture[A], f: A => B) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Propagates underlying subscription and maps success values
-			originalVenture.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = monoObserver.onSuccess(tryA.mapFast(f))
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_Map[A, B]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_FlatMap(trap: Nothing): Any = trap
-
-	final class Venture_FlatMap[+A, +B](ventureA: Venture[A], f: A => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Returns delegating subscription to cancel flatMap stages
-			new Subscription {
-				private var active = true
-				private var currentSub: Subscription = Subscription_empty
-
-				{
-					currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = tryA match {
-							case Success(a) =>
-								if active then {
-									val maybeVentureB = try Maybe(f(a)) catch {
-										case NonFatal(e) =>
-											monoObserver.onSuccess(Failure(e))
-											Maybe.empty
-									}
-									if active then {
-										maybeVentureB.fold {
-											currentSub = Subscription_empty
-										} { ventureB =>
-											currentSub = ventureB.subscribeSync(monoObserver)
-										}
-									}
-								}
-							case failure: Failure[A] => if active then monoObserver.onSuccess(failure.castTo[B])
-						}
-
-						override def onError(ex: Throwable): Unit = if active then monoObserver.onSuccess(Failure(ex))
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					currentSub.unsubscribe()
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_FlatMap[A, B]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_TransformWith(trap: Nothing): Any = trap
-
-	final class Venture_TransformWith[+A, +B](ventureA: Venture[A], f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Returns delegating subscription to cancel transform stages
-			new Subscription {
-				private var active = true
-				private var currentSub: Subscription = Subscription_empty
-
-				{
-					currentSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = {
-							if active then {
-								tryA.reify { e =>
-									monoObserver.onSuccess(Failure(e))
-								} { tryA =>
-									currentSub = f(tryA).subscribeSync(monoObserver)
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = if active then monoObserver.onSuccess(Failure(ex))
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					currentSub.unsubscribe()
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_TransformWith[A, B]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_AndThen(trap: Nothing): Any = trap
-
-	final class Venture_AndThen[+A](ventureA: Venture[A], consumer: Try[A] => Unit) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Propagates underlying subscription and runs side effect on completion
-			ventureA.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = {
-					try consumer(tryA) catch {
-						case NonFatal(e) => reportPanicException(e)
-					}
-					monoObserver.onSuccess(tryA)
-				}
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-		}
-
-		override def toString: String = deriveToString[Venture_AndThen[A]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Combined(trap: Nothing): Any = trap
-
-	final class Venture_Combined[+A, +B, +C](ventureA: Venture[A], ventureB: Venture[B], f: (Try[A], Try[B]) => Try[C]) extends AbstractVenture[C] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[C]]): Subscription = {
-			var ota: Maybe[Try[A]] = Maybe.empty
-			var otb: Maybe[Try[B]] = Maybe.empty
-			// Propagates unsubscription to both combined ventures
-			val subA = ventureA.subscribeSync(new MonoObserver[Try[A]] {
-				override def onSuccess(tryA: Try[A]): Unit = {
-					otb.fold {
-						ota = Maybe(tryA)
-					} { tryB =>
-						val tryC = try f(tryA, tryB) catch {
-							case NonFatal(e) => Failure(e)
-						}
-						monoObserver.onSuccess(tryC)
-					}
-				}
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-			val subB = ventureB.subscribeSync(new MonoObserver[Try[B]] {
-				override def onSuccess(tryB: Try[B]): Unit = {
-					ota.fold {
-						otb = Maybe(tryB)
-					} { tryA =>
-						val tryC = try f(tryA, tryB) catch {
-							case NonFatal(e) => Failure(e)
-						}
-						monoObserver.onSuccess(tryC)
-					}
-				}
-
-				override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-			})
-			new Subscription {
-				override def unsubscribe(): Unit = {
-					subA.unsubscribe()
-					subB.unsubscribe()
-				}
-			}
-		}
-
-		override def toString: String = deriveToString[Venture_Combined[A, B, C]](this)
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Venture_Sequence(trap: Nothing): Any = trap
-
-	final class Venture_Sequence[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractVenture[Array[A]] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[Array[A]]]): Subscription = {
-			val size = ventures.size
-			val array = Array.ofDim[A](size)
-			if size == 0 then {
-				monoObserver.onSuccess(Success(array))
-				Subscription_empty
-			} else {
-				val venturesIterator = ventures.iterator
-				var completedCounter: Int = 0
-				var index = 0
-				val subs = new Array[Subscription](size)
-				while index < size do {
-					val venture = venturesIterator.next()
-					val ventureIndex = index
-					subs(index) = venture.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = tryA match {
-							case Success(a) =>
-								array(ventureIndex) = a
-								completedCounter += 1
-								if completedCounter == size then monoObserver.onSuccess(Success(array))
-
-							case failure: Failure[A] => monoObserver.onSuccess(failure.asInstanceOf[Failure[Array[A]]])
-						}
-
-						override def onError(ex: Throwable): Unit = monoObserver.onSuccess(Failure(ex))
-					})
-					index += 1
-				}
-				// Cancels all sub-subscriptions in the sequence
-				() => {
-					var i = 0
-					while i < size do {
-						val s = subs(i)
-						if s != null then s.unsubscribe()
-						i += 1
-					}
-				}
-			}
-		}
-	}
-
-	/** $suppressSyntheticCompanionObject */
-	private inline def Task_SequenceHardy(trap: Nothing): Any = trap
-
-	final class Task_SequenceHardy[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Venture[A]]) extends AbstractTask[Array[Try[A]]] {
-		override def subscribeSync(monoObserver: MonoObserver[Array[Try[A]]]): Subscription = {
-			val size = ventures.size
-			val array = Array.ofDim[Try[A]](size)
-			if size == 0 then {
-				monoObserver.onSuccess(array)
-				Subscription_empty
-			} else new Subscription {
-				private val venturesSubscriptions = new Array[Subscription](size)
-				private var completedCounter: Int = 0
-				private var index: Int = 0
-
-				{ // constructor
-					val venturesIterator = ventures.iterator
-					while index < size do {
-						val venture = venturesIterator.next()
-						val ventureIndex = index
-
-						venturesSubscriptions(index) = venture.subscribeSync(new MonoObserver[Try[A]] {
-							override def onSuccess(tryA: Try[A]): Unit = {
-								array(ventureIndex) = tryA
-								completedCounter += 1
-								if completedCounter == size then monoObserver.onSuccess(array)
-							}
-
-							override def onError(ex: Throwable): Unit = {
-								array(ventureIndex) = Failure(ex)
-								completedCounter += 1
-								if completedCounter == size then monoObserver.onSuccess(array)
-							}
-						})
-						index += 1
-					}
-				}
-
-				override def unsubscribe(): Unit = {
-					var i = 0
-					while i < size do {
-						val s = venturesSubscriptions(i)
-						if s != null then s.unsubscribe()
-						i += 1
-					}
-				}
-			}
-		}
-	}
 
 
 	////////////// EVER ///////////////
 
-	/** A [[Venture]] that remembers the result of the execution that completes first, and all the others produce the same result as the first.\
-	 * Once the first completion occurs the result is subsequently delivered deterministically to present and future subscribers.\
-	 * Specifically, a [[Venture]] that:
-	 *  - Is completed a single time and caches the result so that, once completed, subscribing a consumer executes the call-back immediately. Note that linking a down-chain subscribes the first link as consumer.
-	 *  - The monadic laws are always upheld. Before completion, they can’t be observed because no result exists yet; after completion, they can be observed in the cached result.
-	 *  - Allows to subscribe/unsubscribe consumers of its completion result dynamically.
-	 *  - The source of determination may be intrinsic from the start (e.g. {{{ Covenant[String]().fulfillWith(anIntrinsicallyDeterminedVenture) }}}) or external (e.g. {{{ Covenant[String]().fulfill(someValueDeterminedExternally) }}}); the concrete result value is realized only at completion.\
-	 * The timing and outcome of completion are not specified by this class. That behavior is delegated to subclasses; see [[Covenant]].
-	 * @note Triggering (calling [[trigger]]) on a pending [[LatchingVenture]] does not trigger the execution of the subscribed consumers, but just subscribes the `onComplete` call-back passed to [[trigger]] as a consumer of the future result. */
-	sealed abstract class LatchingVenture[+A] extends AbstractVenture[A], Latching[Try[A]] { thisLatchingVenture =>
+	inline final def LatchingVenture[A](fixedResult: Maybe[Try[A]]): LatchingTask[A] =
+		fixedResult.fold(new Covenant[A]())(tryA => LatchingVenture_ready(tryA))
 
-		inline def asVenture: Venture[A] = this
-
-		override def reconcile: LatchingTask[Try[A]] = {
-			maybeResult.fold {
-				val covenant = new Covenant[Try[A]]
-				subscribeSync(tryA => covenant.fulfillUnsafe(tryA))
-				covenant
-			} { tryA => ReadyTask(tryA) }
-		}
-
-		override def withFilter(predicate: A => Boolean): LatchingVenture[A] = {
-			thisLatchingVenture match {
-				case commitment: Commitment[A] @unchecked => commitment.withFilter(predicate)
-				case ready: ReadyVenture[A] => ready.withFilter(predicate)
-			}
-		}
-
-		/** Transform this [[LatchingVenture]] by applying the given function to the result of this [[LatchingVenture]]. Analogous to [[Future.transform]]
-		 * **Detailed description:**
-		 * Creates a [[LatchingVenture]] that yields the result of applying the provided function to the result of this [[LatchingVenture]].
-		 * If the evaluation of the provided function finishes:
-		 *  - abruptly, completes with the cause.
-		 *  - normally, completes with the result of the evaluation.\
-		 * $threadSafe
-		 * @param f the function applied to the result of this [[LatchingVenture]] to obtain the result of the returned [[LatchingVenture]].\
-		 * $isExecutedByDoSerEx \
-		 * $unhandledErrorsArePropagatedToVentureResult */
-		override def transform[B](f: Try[A] => Try[B]): LatchingVenture[B] = {
-			thisLatchingVenture match {
-				case commitment: Commitment[A] @unchecked => commitment.transform(f)
-				case ready: ReadyVenture[A] => ready.transform(f)
-			}
-		}
-
-
-		/** Transforms this [[LatchingVenture]] by applying the provided function to the result of this [[LatchingVenture]] and then subscribing to the [[LatchingVenture]] returned by said function.\
-		 * The returned [[LatchingVenture]] will be already completed if, and only if, this [[LatchingVenture]] is already completed.\
-		 * @param f a function that is applied to the result of this [[LatchingVenture]] execution, to build a [[LatchingVenture]] that is executed next to produce the result that the [[LatchingVenture]] returned by this method yields.\
-		 * $isExecutedByDoSerEx \
-		 * $unhandledErrorsArePropagatedToVentureResult */
-		def transformWith[B](f: Try[A] => LatchingVenture[B]): LatchingVenture[B] = {
-			thisLatchingVenture match {
-				case commitment: Commitment[A] @unchecked => commitment.transformWith(f)
-				case ready: ReadyVenture[A] => ready.transformWith(f)
-			}
-		}
-
-		/** Transforms this [[LatchingTask]] by applying the given function to the result if it is successful. Analogous to [[Future.map]].\
-		 * Equivalent to {{{ transform(_ map f) }}} but more efficient (one less closure allocation).\
-		 * See [[recover]] and [[reconcile]] if you want to transform the failures; and [[transform]] if you want to transform both, successful and failed ones.\
-		 * **Detailed behavior:**
-		 * Creates a [[LatchingVenture]] that yields the result of applying the provided function to the result of this [[LatchingVenture]].
-		 * If the evaluation of the provided function finishes:
-		 *  - abruptly, completes with that failure.
-		 *  - normally, apply `f` to `a` and if the evaluation finishes:
-		 *    - abruptly with `cause`, completes with `Failure(cause)`.
-		 *    - normally with value `b`, completes with `Success(b)`.\
-		 * @param f a function that transforms the result of this [[Venture]], when it is successful.\
-		 * $isExecutedByDoSerEx \
-		 * $unhandledErrorsArePropagatedToVentureResult */
-		override def map[B](f: A => B): LatchingVenture[B] = {
-			thisLatchingVenture match {
-				case commitment: Commitment[A] @unchecked => commitment.map(f)
-				case ready: ReadyVenture[A] => ready.map(f)
-			}
-		}
-
-		/** Transforms this [[LatchingVenture]] by applying the provided function to the result of this [[LatchingVenture]] and then subscribing-to the [[LatchingVenture]] returned by said function.\
-		 * The returned [[LatchingVenture]] will be already completed if, and only if, this [[LatchingVenture]] is already completed.\
-		 * $threadSafe \
-		 * @param f a function that is applied to the result of this [[Venture]] execution to return a [[Venture]] that is executed next to produce the result that the [[Venture]] returned by this method yields.\
-		 * $isExecutedByDoSerEx \
-		 * $notGuarded */
-		def flatMap[B](f: A => LatchingVenture[B]): LatchingVenture[B] = {
-			thisLatchingVenture match {
-				case commitment: Commitment[A] @unchecked => commitment.flatMap(f)
-				case ready: ReadyVenture[A] => ready.flatMap(f)
-			}
-		}
-
-		/** Returns this [[LatchingVenture]] after subscribing the provided side-effecting procedure to it.\
-		 * If this [[LatchingVenture]] is already completed, the provided side-effecting procedure is executed synchronously (before this method returns).\
-		 * Otherwise, the provided side-effecting procedure is scheduled to run upon completion in subscription order (after sequentially running all the previously subscribed result consumers).\
-		 * Note that the implicit subscription done when chaining an operation to this one occurs after the subscription of the provided side-effecting procedure, se they are ran after the provided side-effecting procedure.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		override final def andThen(sideEffect: Try[A] => Unit): LatchingVenture[A] = {
-			thisLatchingVenture.subscribeSync(sideEffect)
-			thisLatchingVenture
-		}
+	inline final def LatchingVenture_ready[A](immediateResult: Try[A]): LatchingTask[A] = immediateResult match {
+		case Success(a) => ReadyTask(a)
+		case Failure(ex) => new Failed(ex).asInstanceOf[LatchingTask[A]]
 	}
 
-	//// LATCHING TASK FACTORY METHODS ////
+	@threadUnsafe lazy final val LatchingVenture_unit: LatchingTask[Unit] = LatchingTask_unit
+	@threadUnsafe lazy final val LatchingVenture_true: LatchingTask[Boolean] = LatchingTask_true
+	@threadUnsafe lazy final val LatchingVenture_false: LatchingTask[Boolean] = LatchingTask_false
 
-	/** Creates a [[LatchingVenture]] that is already completed if the provided value is defined, or is pending otherwise. */
-	inline final def LatchingVenture[A](fixedResult: Maybe[Try[A]]): LatchingVenture[A] =
-		fixedResult.fold(Commitment())(tryA => new ReadyVenture(tryA))
-
-	/** Creates an already completed [[LatchingVenture]].
-	 * @param immediateResult the immediate result that this [[LatchingVenture]] yields. */
-	inline final def LatchingVenture_ready[A](immediateResult: Try[A]): LatchingVenture[A] =
-		LatchingVenture(Maybe(immediateResult))
-
-	/** An already completed [[LatchingVenture]] that yields [[Unit]].\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingVenture_unit: ReadyVenture[Unit] = ReadyVenture(Doer.successUnit)
-
-	/** An already completed [[LatchingVenture]] that yields `true`.\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingVenture_true: ReadyVenture[true] = ReadyVenture(Doer.successTrue)
-
-	/** An already completed [[LatchingVenture]] that yields `false`.\
-	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val LatchingVenture_false: ReadyVenture[false] = ReadyVenture(Doer.successFalse)
-
-	//// READY TASK ////
-
-	/** A [[LatchingVenture]] that is fulfilled since its inception. */
-	final class ReadyVenture[+A](val value: Try[A]) extends LatchingVenture[A] { thisReadyVenture =>
-
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Returns empty subscription since it completes synchronously
-			monoObserver.onSuccess(value)
-			Subscription_empty
-		}
-
-		override def maybeResult: Maybe[Try[A]] =
-			Maybe(value)
-
-		override def unsubscribe(monoObserver: MonoObserver[Try[A]]): Unit = ()
-
-		override def unsubscribe(onComplete: Try[A] => Unit): Unit = ()
-
-		override def isSubscribed(monoObserver: MonoObserver[Try[A]]): Boolean = false
-
-		override def isSubscribed(onComplete: Try[A] => Unit): Boolean = false
-
-		override def toFutureHardy(isWithinDoSerEx: Boolean = isInSequence): Future[Try[A]] =
-			Future.successful(value)
-
-		override def withFilter(predicate: A => Boolean): ReadyVenture[A] = {
-			value.foldAndThenReify(
-				_ => thisReadyVenture,
-				e => ReadyVenture(Failure(e)),
-				a => if predicate(a) then thisReadyVenture else ReadyVenture(Failure(new NoSuchElementException(s"ReadyVenture filter predicate is not satisfied for $a")))
-			)
-		}
-
-
-		override def transform[B](f: Try[A] => Try[B]): ReadyVenture[B] = {
-			checkWithin()
-			ReadyVenture(f(thisReadyVenture.value))
-		}
-
-		override def transformWith[B](f: Try[A] => LatchingVenture[B]): LatchingVenture[B] = {
-			checkWithin()
-			f(thisReadyVenture.value)
-		}
-
-		override def map[B](f: A => B): ReadyVenture[B] = {
-			checkWithin()
-			ReadyVenture(thisReadyVenture.value.map(f))
-		}
-
-		override def flatMap[B](f: A => LatchingVenture[B]): LatchingVenture[B] = {
-			thisReadyVenture.value match {
-				case success: Success[A] =>
-					checkWithin()
-					f(success.value)
-				case failure: Failure[A] =>
-					ReadyVenture(failure.castTo[B])
-			}
-		}
+	inline def Commitment[A](fixedResult: Maybe[Try[A]]): Commitment[A] = {
+		val c = new Covenant[A]()
+		fixedResult.foreach(tryA => c.completeSync(tryA))
+		c
 	}
 
-	inline final def ReadyVenture[A](tryA: Try[A]): ReadyVenture[A] = new ReadyVenture(tryA)
-
-	////////////// COMMITMENT ///////////////
-
-	/** A [[LatchingVenture]] with dynamic control of its completion (the execution of the subscribed consumers).\
-	 * It exposes methods such as [[complete]] and [[completeWith]] to allow external code to complete it.\
-	 * Analogous to [[scala.concurrent.Promise]] but for [[Venture]]s instead of a [[scala.concurrent.Future]]s. */
-	final class Commitment[A] @publicInBinary private[Doer](initialResult: Maybe[Try[A]]) extends LatchingVenture[A], SubscriptionHub[Try[A]] { thisCommitment =>
-		private var oResult: Maybe[Try[A]] = initialResult
-
-		def this() = this(Maybe.empty)
-
-		/** The [[LatchingVenture]] whose completion is controlled by this [[Commitment]].\
-		 * Provided to mimic containment semantics, allowing external code to treat this [[Commitment]] as if it exposed a separate [[LatchingVenture]] field.\
-		 * @return this [[Commitment]] as a [[LatchingVenture]] */
-		inline def asLatchingVenture: LatchingVenture[A] = thisCommitment
-
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Attaches monoObserver and returns a Subscription to detach it
-			oResult.fold {
-				attach(monoObserver)
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						checkWithin()
-						detach(monoObserver)
-					}
-				}
-			} { tryA =>
-				monoObserver.onSuccess(tryA)
-				Subscription_empty
-			}
-		}
-
-		override def maybeResult: Maybe[Try[A]] = {
-			checkWithin()
-			oResult
-		}
-
-		override def unsubscribe(monoObserver: MonoObserver[Try[A]]): Unit = {
-			checkWithin()
-			detach(monoObserver)
-		}
-
-		override def unsubscribe(onComplete: Try[A] => Unit): Unit = {
-			checkWithin()
-			detachCallback(onComplete)
-		}
-
-		override def isSubscribed(monoObserver: MonoObserver[Try[A]]): Boolean = {
-			checkWithin()
-			isAttached(monoObserver)
-		}
-
-		override def isSubscribed(onComplete: Try[A] => Unit): Boolean = {
-			checkWithin()
-			isAttachedCallback(onComplete)
-		}
-
-		override def withFilter(predicate: A => Boolean): LatchingVenture[A] = {
-			checkWithin()
-			thisCommitment.maybeResult.fold {
-				val commitment = new Commitment[A]
-				thisCommitment.subscribeSync { tryA =>
-					tryA.foldAndThenReify(
-						commitment.completeUnsafe(_),
-						e => commitment.completeUnsafe(Failure(e)),
-						a => if predicate(a) then commitment.completeUnsafe(Success(a)) else commitment.completeUnsafe(Failure(new NoSuchElementException(s"LatchingVenture filter predicate is not satisfied for $a")))
-					)
-				}
-				commitment
-			} { tryA =>
-				tryA.foldAndThenReify(
-					_ => thisCommitment,
-					e => ReadyVenture(Failure(e)),
-					a => if predicate(a) then thisCommitment else ReadyVenture(Failure(new NoSuchElementException(s"LatchingVenture filter predicate is not satisfied for $a")))
-				)
-			}
-		}
-
-		override def transform[B](f: Try[A] => Try[B]): LatchingVenture[B] = {
-			checkWithin()
-			thisCommitment.maybeResult.fold {
-				val commitment = Commitment[B]()
-				thisCommitment.subscribeSync { tryA => commitment.completeUnsafe(tryA.reifyBack(f)) }
-				commitment
-			} { tryA =>
-				ReadyVenture[B](tryA.reifyBack(f))
-			}
-		}
-
-		override def transformWith[B](f: Try[A] => LatchingVenture[B]): LatchingVenture[B] = {
-			checkWithin()
-			thisCommitment.maybeResult.fold {
-				val commitment = new Commitment[B]
-				thisCommitment.subscribeSync(tryA =>
-					tryA.reify(e =>
-						commitment.completeUnsafe(Failure(e))
-					)(tryA =>
-						f(tryA).subscribeSync(tryB => commitment.completeUnsafe(tryB))
-					)
-				)
-				commitment
-			}(_.reify(e => ReadyVenture(Failure(e)))(f))
-		}
-
-		override def map[B](f: A => B): LatchingVenture[B] = {
-			checkWithin()
-			thisCommitment.maybeResult.fold {
-				val commitment = new Commitment[B]
-				thisCommitment.subscribeSync { tryA => commitment.completeUnsafe(tryA.mapFast(f)) }
-				commitment
-			} { tryA =>
-				ReadyVenture(tryA.mapFast(f))
-			}
-		}
-
-		override def flatMap[B](f: A => LatchingVenture[B]): LatchingVenture[B] = {
-			checkWithin()
-			thisCommitment.maybeResult.fold {
-				val commitment = new Commitment[B]
-				thisCommitment.subscribeSync {
-					case success: Success[A] =>
-						val maybeVentureB = try Maybe(f(success.value)) catch {
-							case NonFatal(e) =>
-								commitment.completeUnsafe(Failure(e))
-								Maybe.empty
-						}
-						maybeVentureB.foreach(_.subscribeSync(tryB => commitment.completeUnsafe(tryB)))
-					case failure: Failure[A] =>
-						commitment.completeUnsafe(failure.castTo[B])
-				}
-				commitment
-			}(_.foldAndThenReify(ReadyVenture(_), e => ReadyVenture(Failure(e)), f))
-		}
-
-		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed at the time the completion is performed.\
-		 * Completion is performed:
-		 *  - Synchronously (before this method returns) if `isWithinDoSerEx` is true.
-		 *  - Asynchronously as soon as possible otherwise.\
-		 * This method delegates to [[completeUnsafe]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.\
-		 * @param result the value to complete this [[Commitment]] with.
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and information about its origin: [[ANOTHER_BEFORE]] if the result is a previously set one; [[THE_PROVIDED]] if the result is the one provided here. */
-		inline def complete(result: Try[A], inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type = {
-			if isWithinDoSerEx then completeUnsafe(result, onCompleted)
-			else {
-				run(completeUnsafe(result, onCompleted))
-				thisCommitment
-			}
-		}
-
-		/** Completes this [[Commitment]] with the given `result`, unless it has already been completed.\
-		 * If this [[Commitment]] is not yet completed, the provided `result` becomes its final value and is made immediately visible to all subscribers.\
-		 * If it is already completed, the provided `result` is ignored.\
-		 * @note CAUTION: must be called from within this [[Doer]].
-		 * @param result the value to complete this [[Commitment]] with.
-		 * @param onCompleted optional callback invoked synchronously (before this method returns) with the fulfilling value and information about its origin:
-		 *  - [[THE_PROVIDED]] if this [[Covenant]] was completed by this method call with the provided value;
-		 *  - [[ANOTHER_BEFORE]] if this [[Covenant]] was already completed when this method was called. */
-		def completeUnsafe(result: Try[A], onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type = {
-			checkWithin()
-			oResult.fold {
-				// First, set the result.
-				this.oResult = Maybe(result)
-				// Second, run the consumers in subscriptions order
-				this.capture(result)
-				// Finally. call the provided call-back.
-				try onCompleted(result, THE_PROVIDED)
-				catch {
-					case NonFatal(e) => reportPanicException(e)
-				}
-			} { value =>
-				try onCompleted(value, ANOTHER_BEFORE)
-				catch {
-					case NonFatal(cause) => reportPanicException(cause)
-				}
-			}
-			thisCommitment
-		}
-
-		/** Fulfills this [[Commitment]] with the given `result`, unless it has already been completed at the time the fulfillment is performed.\
-		 * Fulfillment is performed:
-		 *  - Synchronously (before this method returns) if `isWithinDoSerEx` is true.
-		 *  - Asynchronously as soon as possible otherwise.\
-		 * This method delegates to [[completeUnsafe]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.\
-		 * @param result the value to complete this [[Commitment]] with.
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.\
-		 * If `true`, the result is a previously set one; if `false`, the result is the one provided here.
-		 */
-		inline def fulfill(result: A, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_, _) => ()): this.type =
-			complete(Success(result), isWithinDoSerEx, onCompleted)
-
-		/** Breaks this [[Commitment]] with the given `excuse`, unless it has already been completed at the time the fulfillment is performed.\
-		 * Fulfillment is performed:
-		 *  - Synchronously (before this method returns) if `isWithinDoSerEx` is true.
-		 *  - Asynchronously as soon as possible otherwise.\
-		 * This method delegates to [[completeUnsafe]], scheduling it within this [[Doer]]'s sequential executor if not already executing within it.\
-		 * @param excuse the [[Failure]] to break this [[Commitment]] with.
-		 * @param isWithinDoSerEx $isWithinDoSerEx
-		 * @param onCompleted optional callback invoked with the final result and a boolean indicating whether this [[Commitment]] was already completed.\
-		 * If `true`, the result is a previously set one; if `false`, the result is the one provided here. */
-		inline def break(excuse: Throwable, inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ImmediateResultOrigin) => Unit = (_: Try[A], _: ImmediateResultOrigin) => ()): thisCommitment.type =
-			complete(Failure(excuse), isWithinDoSerEx, onCompleted)
-
-		/** Wires this [[Commitment]] to the completion of a [[LatchingVenture]].\
-		 * Arranges this [[Commitment]] to be completed if `completingVenture`` completes, unless it was completed before.\
-		 * Always one, and only one, of the two callback is invoked:
-		 *  - `onAlreadyCompleted` if this [[Commitment]] was already completed when the subscription is done.
-		 *  - `onCompletedLater` if this [[Commitment]] is completed after the subscription is done.
-		 * The subscription is synchronic if `isWithinDoSerEx` is true, and asynchronic ASAP otherwise.\
-		 * @param completingVenture the [[Venture]] whose result will be used to complete this [[Commitment]].
-		 * @param isWithinDoSerEx informs if this method was called within this [[Doer]].
-		 * @param onCompleted optional callback invoked when this [[Commitment]] is completed. The first parameter is the completing value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
-		 * @throws IllegalArgumentException if `completingVenture` is the same instance as this [[Commitment]]. */
-		def completeWith(completingVenture: Venture[A], isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ResultOrigin) => Unit = (_: Try[A], _: ResultOrigin) => ()): thisCommitment.type = {
-			if completingVenture eq this then throw IllegalArgumentException("A Commitment can't be fulfilled with itself.")
-			if isWithinDoSerEx then {
-				oResult.fold {
-					completingVenture.subscribeSync { tryA2 =>
-						oResult.fold {
-							this.oResult = Maybe(tryA2)
-							this.capture(tryA2)
-							try onCompleted(tryA2, THE_PROVIDED)
-							catch {
-								case NonFatal(e) => reportPanicException(e)
-							}
-						} { tryA1 =>
-							try onCompleted(tryA1, ANOTHER_AFTER)
-							catch {
-								case NonFatal(cause) => reportPanicException(cause)
-							}
-						}
-					}
-				} { tryA0 =>
-					try onCompleted(tryA0, ANOTHER_BEFORE)
-					catch {
-						case NonFatal(e) => reportPanicException(e)
-					}
-				}
-			}
-			else run(completeWith(completingVenture, true, onCompleted))
-			this
-		}
-	}
-
-	inline def Commitment[A](fixedResult: Maybe[Try[A]] = Maybe.empty): Commitment[A] =
-		new Commitment(fixedResult)
-
-	/** Creates a [[Commitment]] that will fulfill with the result of executing the provided supplier within the $DoSerEx.\
-	 * @param supplier a supplier function that is executed within the $DoSerEx and returns the value to fulfill the created [[Commitment]] with. */
 	def Commitment_own[A](supplier: () => Try[A]): Commitment[A] = {
-		val commitment = new Commitment[A]
-		run(commitment.completeUnsafe(supplier()))
+		val commitment = new Commitment[A]()
+		run(commitment.completeSync(supplier()))
 		commitment
 	}
 
-	/** Creates a [[Commitment]] that is wired to the [[LatchingVenture]] resulting of executing the provided supplier within the $DoSerEx.\
-	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[LatchingVenture]] to which the created [[Commitment]] is wired. */
 	def Commitment_ownFlat[A](supplier: () => LatchingVenture[A]): Commitment[A] = {
-		val commitment = new Commitment[A]
-		run(supplier().subscribeSync(a => commitment.completeUnsafe(a)))
+		val commitment = new Commitment[A]()
+		run(supplier().subscribeSync(new MonoObserver[A] {
+			override def onSuccess(a: A): Unit = commitment.fulfillSync(a)
+
+			override def onError(ex: Throwable): Unit = commitment.completeSync(Failure(ex))
+		}))
 		commitment
 	}
 
-	/** Triggers the given [[Venture]] and returns a [[Commitment]] that will be completed with the result of the triggered execution unless this [[Commitment]] is completed before by other means.\
-	 * This method triggers an execution of the given [[Venture]] and wires its result to a newly created [[Commitment]].\
-	 * The returned [[Commitment]] acts as a completion handle for the execution triggered by this method, and can be used to observe or react to its result.\
-	 * @param venture the [[Venture]] to be triggered.
-	 * @param isWithinDoSerEx true if triggering occurs within the current [[Doer]] sequence.
-	 * @param onCompleted  The first parameter is the fulfilling value and the second informs about its origin. Invoked within this [[Doer]] sequential executor.
-	 * @return a [[Commitment]] that will be completed with the result of the execution triggered by this method. */
-	inline def Commitment_triggerAndWire[A](venture: Venture[A], inline isWithinDoSerEx: Boolean = isInSequence, onCompleted: (Try[A], ResultOrigin) => Unit = (_: Try[A], _: ResultOrigin) => ()): Commitment[A] = {
+	inline def Commitment_triggerAndWire[A](
+		venture: Venture[A],
+		inline isWithinDoSerEx: Boolean = isInSequence,
+		onSuccess: (A, ResultOrigin) => Unit = (_: A, _: ResultOrigin) => (),
+		onError: (Throwable, ResultOrigin) => Unit = (_, _) => ()
+	): Commitment[A] = {
 		val commitment = Commitment[A]()
-		venture.subscribe(isWithinDoSerEx)(result => commitment.completeUnsafe(result, onCompleted))
+		venture.subscribeCallbacks(isWithinDoSerEx)(a => commitment.fulfillSync(a), e => commitment.breakSync(e))
 		commitment
 	}
+
 
 	//////////////// Flow //////////////////////
 
@@ -2774,8 +2899,8 @@ trait Doer { thisDoer =>
 
 		protected def flush(a: A): Task[B]
 
-		inline def apply(a: A, inline isWithinDoSerEx: Boolean = isInSequence)(onComplete: B => Unit): Unit = {
-			def work(): Unit = flush(a).subscribeSync(onComplete)
+		inline def apply(a: A, inline isWithinDoSerEx: Boolean = isInSequence)(onSuccess: B => Unit, onError: Throwable => Unit): Unit = {
+			def work(): Unit = flush(a).subscribeSyncCallbacks(onSuccess, onError)
 
 			if isWithinDoSerEx then work()
 			else run(work())
@@ -2790,124 +2915,171 @@ trait Doer { thisDoer =>
 			(z: Z) => previous.flush(z).flatMap(a => thisFlow.flush(a))
 	}
 
+	///////////////////////////////////////////
+	//// Targets registry and broadcasting ////
+	///////////////////////////////////////////
 
-	//////////////// Subscriptable producer ////////////////////
 
-	/** Facade of a [[Task]] that, once completed, memorizes its result forever. All subscribers receive the same memorized result, even after completion.\
-	 * @tparam A The type of the value. */
-	trait Latching[+A] extends Observable[A] {
-
-		/** @return the result if completed.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		def maybeResult: Maybe[A]
-
-		/** @return true if this [[LatchingTask]] was fulfilled; or false if it is still pending.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		inline def isCompleted: Boolean = maybeResult.isDefined
-
-		/** @return true if this [[LatchingTask]] is still pending; or false if it was completed.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		inline def isPending: Boolean = maybeResult.isEmpty
-
-		/** Subscribes a consumer of the result of this producer.\
-		 * The subscription is automatically removed after an execution of this producer has completed and the received consumer is executed.\
-		 * If this producer is already fulfilled when this method is called, the provided consumer is invoked synchronously and no subscription occurs.\
-		 * Otherwise, the provided consumer is schedule to run upon completion in subscription orden (after sequentially running all the previously subscribed result consumers).\
-		 * @note CAUTION: This method does not prevent duplicate subscriptions.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription
-
-		/** Removes a subscription done with [[subscribe]].\
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		@deprecated("Use Subscription.unsubscribe() returned from subscribe instead", "since bi-convergent alignment")
-		def unsubscribe(monoObserver: MonoObserver[A]): Unit
-
-		@deprecated("Use Subscription.unsubscribe() returned from subscribe instead", "since bi-convergent alignment")
-		def unsubscribe(onComplete: A => Unit): Unit
-
-		/** @return `true` if the provided consumer is currently subscribed.
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		def isSubscribed(monoObserver: MonoObserver[A]): Boolean
-
-		/** TODO delete when migration completes */
-		def isSubscribed(onComplete: A => Unit): Boolean
+	trait TargetProxy[-A, +T[-_] <: AnyRef] {
+		def target: T[A]
 	}
 
-	/** A mixin trait that maintains a list of observers subscribed to a future result.\
-	 * @tparam A The type of the result obtained when the associated process completes. */
-	trait SubscriptionHub[A] {
-		protected var firstOnCompleteObserver: MonoObserver[A] | Null = null
-		protected var onCompletedObservers: List[MonoObserver[A]] = Nil // TODO Change the collection to one with a efficient iterator from first to last appended.
+	/** Convenient conjunction of [[TargetProxy]] and [[Subscription]] due to its ubiquity. */
+	trait ObservingSubscription[-A, +T[-_] <: AnyRef] extends Subscription, TargetProxy[A, T]
 
-		protected def attach(monoObserver: MonoObserver[A]): Unit = {
-			if firstOnCompleteObserver eq null then firstOnCompleteObserver = monoObserver
-			else onCompletedObservers = monoObserver :: onCompletedObservers
-		}
+	/** A registry of targets capable of applying any operation to all of them.\
+	 * **Maintenance note:** None of the methods in [[Muxer]] can be public. This restriction ensures that subclasses can extend [[Muxer]] and bypass the variance limitations without exposing type-unsafe operations to external clients. */
+	trait Muxer[A, T[-_] <: AnyRef] {
+		type Target = T[A] | TargetProxy[A, T]
 
-		protected def detach(monoObserver: MonoObserver[A]): Unit = {
-			if firstOnCompleteObserver eq monoObserver then {
-				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
-				else {
-					firstOnCompleteObserver = onCompletedObservers.head
-					onCompletedObservers = onCompletedObservers.tail
-				}
-			} else onCompletedObservers = onCompletedObservers.filterNot(_ ne monoObserver)
-		}
+		private var maybeFirstTarget: Maybe[Target] = Maybe.empty
+		private var maybeFollowingTargets: Maybe[Array[Target]] = Maybe.empty
+		private var followingTargetsSize: Int = 0
+		private var recursionDepth: Int = 0
 
-		protected def isAttached(monoObserver: MonoObserver[A]): Boolean = {
-			(firstOnCompleteObserver eq monoObserver) || onCompletedObservers.exists(_ eq monoObserver)
-		}
-
-		/** TODO delete after migration */
-		protected def detachCallback(consumer: A => Unit): Unit = {
-			def matches(obs: MonoObserver[A] | Null): Boolean = obs match {
-				case null => false
-				case c: CallbackMonoObserver[A] => c.callback eq consumer
-				case _ => false
-			}
-
-			if matches(firstOnCompleteObserver) then {
-				if onCompletedObservers.isEmpty then firstOnCompleteObserver = null
-				else {
-					firstOnCompleteObserver = onCompletedObservers.head
-					onCompletedObservers = onCompletedObservers.tail
-				}
-			} else onCompletedObservers = onCompletedObservers.filterNot(obs => matches(obs))
-		}
-
-		/** TODO delete after migration */
-		protected def isAttachedCallback(consumer: A => Unit): Boolean = {
-			def matches(obs: MonoObserver[A] | Null): Boolean = obs match {
-				case null => false
-				case c: CallbackMonoObserver[A] => c.callback eq consumer
-				case _ => false
-			}
-
-			matches(firstOnCompleteObserver) || onCompletedObservers.exists(matches)
-		}
-
-		/** Apply the provided value to each consumers in subscriptions order and then clear all the subscriptions.\
-		 * @note CAUTION: Must be called within the $DoSerEx */
-		protected def capture(a: A): Unit = {
-			if firstOnCompleteObserver ne null then {
-				try {
-					firstOnCompleteObserver.nn.onSuccess(a)
-					if onCompletedObservers.nonEmpty then {
-						// TODO change this implementation to one that does not cause StackOverflow when onCompleteObserver is big..
-						def loop(head: MonoObserver[A], tail: List[MonoObserver[A]]): Unit = {
-							if tail.nonEmpty then loop(tail.head, tail.tail)
-							head.onSuccess(a)
+		protected def addTarget(target: Target): Unit = {
+			if maybeFirstTarget.isEmpty && followingTargetsSize == 0 then {
+				maybeFirstTarget = Maybe(target)
+			} else {
+				maybeFollowingTargets.fold {
+					val followingTargets = new Array[Target](8)
+					followingTargets(0) = target
+					followingTargetsSize = 1
+					maybeFollowingTargets = Maybe(followingTargets)
+				} { followingTargets =>
+					val fts = followingTargetsSize
+					val newFollowingTargets =
+						if fts < followingTargets.length then followingTargets
+						else {
+							val expanded = new Array[Target](fts * 2)
+							System.arraycopy(followingTargets, 0, expanded, 0, fts)
+							maybeFollowingTargets = Maybe(expanded)
+							expanded
 						}
-
-						loop(onCompletedObservers.head, onCompletedObservers.tail)
-					}
-				} catch {
-					case NonFatal(e) => reportPanicException(e)
-				} finally {
-					firstOnCompleteObserver = null // unbind the observer reference to help the garbage collector
-					onCompletedObservers = Nil // Clean the observers list to help the garbage collector.
+					newFollowingTargets(fts) = target
+					followingTargetsSize = fts + 1
 				}
 			}
 		}
+
+		protected def removeAllMatching(target: Target): Int = {
+			var removedCount = 0
+			maybeFirstTarget = maybeFirstTarget.flatMap { firstTarget =>
+				if firstTarget ne target then Maybe(firstTarget)
+				else {
+					removedCount += 1
+					Maybe.empty
+				}
+			}
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					if followingTargets(index) eq target then {
+						removedCount += 1
+						followingTargets(index) = null
+					}
+				}
+			}
+			if recursionDepth == 0 then removeHoles()
+
+			removedCount
+		}
+
+		private def removeHoles(): Maybe[Array[Target]] = {
+
+			if maybeFirstTarget.isEmpty then {
+				maybeFirstTarget = maybeFollowingTargets.flatMap { followingTargets =>
+					// Search for the first non-null and not matching entry in the array.
+					var index = 0
+					var targetAtIndex: Target | Null = null
+					while index < followingTargetsSize && {
+						targetAtIndex = followingTargets(index)
+						(targetAtIndex eq null)
+					} do index += 1
+					// If none found then the registry is empty
+					if index == followingTargetsSize then Maybe.empty
+					// else, remove it from the array and make it be the first target
+					else {
+						followingTargets(index) = null
+						Maybe(targetAtIndex)
+					}
+				}
+			}
+
+			maybeFollowingTargets.flatMap { followingTargets =>
+				val initialSize = followingTargetsSize
+				var insertIndex = 0
+				var readIndex = 0
+				while readIndex < initialSize do {
+					val element = followingTargets(readIndex)
+					if element ne null then {
+						if insertIndex != readIndex then {
+							followingTargets(insertIndex) = element
+							followingTargets(readIndex) = null
+						}
+						insertIndex += 1
+					}
+					readIndex += 1
+				}
+				followingTargetsSize = insertIndex
+				if insertIndex == 0 then Maybe.empty else Maybe(followingTargets)
+			}
+		}
+
+		protected def countAllMatching(target: Target): Int = {
+			var counter = 0
+			maybeFirstTarget.foreach { firstTarget =>
+				if firstTarget eq target then counter += 1
+			}
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					if followingTargets(index) eq target then counter += 1
+				}
+			}
+			counter
+		}
+
+		protected inline def foreachTarget(inline consumer: T[A] => Unit): Unit = {
+			recursionDepth += 1
+			maybeFirstTarget.foreach {
+				case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
+				case direct: T[A] @unchecked => consumer(direct)
+			}
+			// CRITICAL: The cast is necessary to bypass an invalid Scala 3 compiler optimization during the inline expansion. Because Entry is a Union Type, its runtime allocation is a raw JVM Object array (Object[]). However, if an Observer implementation happens to extend a trait like java.io.Serializable, the Scala 3 compiler will try to optimize this inline closure by implicitly downcasting the entire array container to a Serializable[] array. Since an Object[] cannot be downcast to a Serializable[], the JVM explodes with a ClassCastException. Forcing an AnyRef array view strips away this aggressive optimization and keeps it as a safe, generic pointer array.
+			maybeFollowingTargets.asInstanceOf[Maybe[IArray[AnyRef]]].foreach { followingTargets =>
+				var i = 0
+				val size = followingTargetsSize
+				while i < size do {
+					followingTargets(i) match {
+						case null => // do nothing
+						case proxy: TargetProxy[A, ?] @unchecked => consumer(proxy.target.asInstanceOf[T[A]])
+						case direct: T[A] @unchecked => consumer(direct)
+					}
+					i += 1
+				}
+			}
+
+			recursionDepth -= 1
+			if recursionDepth == 0 then removeHoles()
+		}
+
+		protected def isRegistryEmpty: Boolean = maybeFirstTarget.isEmpty
+
+		protected def clearRegistry(): Unit = {
+			maybeFollowingTargets.foreach { followingTargets =>
+				var index = followingTargetsSize
+				while index > 0 do {
+					index -= 1
+					followingTargets(index) = null
+				}
+			}
+			maybeFirstTarget = Maybe.empty
+			maybeFollowingTargets = Maybe.empty
+			followingTargetsSize = 0
+		}
 	}
+
 }

@@ -1,12 +1,20 @@
 package readren.sequencer
 
-import readren.common.{Maybe, castTo}
+import SchedulingExtension.{DELAY, FIXED_DELAY, FIXED_RATE, ScheduleKind}
+
+import readren.common.Maybe
 import readren.sequencer.Doer
 
 import scala.annotation.targetName
 import scala.util.control.NonFatal
-import scala.util.{Failure, Success, Try}
 
+
+object SchedulingExtension {
+	opaque type ScheduleKind <: Int = Int
+	val DELAY: ScheduleKind = 1
+	val FIXED_RATE: ScheduleKind = 2
+	val FIXED_DELAY: ScheduleKind = 3
+}
 
 /** Extends the [[Doer]] trait and its [[Task]] and [[Task]] inner traits with scheduling operations.
  *
@@ -31,12 +39,24 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * Given all the operations added to [[Task]] and [[Venture]] by this extension ([[SchedulingExtension]]) rely explicitly or implicitly on a [[Schedule]] instance, they all are also not referentially transparent.
 	 * TODO: avoid the limitation of using the same instance in more than one call to [[schedule]], by enforcing [[Schedule]] to be referentially transparent. This change requires that instances of [[Schedule]] instances to be associated to all the routines that accompanied it in a calls to [[schedule]], and that the `cancel` method to apply to all of them. */
 	type Schedule <: AnyRef
+	type Delay <: Schedule
 
-	/** Creates a [[Schedule]] for a single time execution after a delay.
+	trait TimedSubscription extends Subscription {
+		def schedule: Schedule
+	}
+
+	trait TimedTask[+A] extends Task[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription
+
+		inline final def onSubscription(inline action: Schedule => Unit): TimedTask[A] =
+			new Task_OnSubscription[A](this, action)
+	}
+
+	/** Creates a [[Delay]] for a single time execution after a delay.
 	 * If the delay is non-positive, the execution would be as soon as possible.
 	 * @param delay duration before the execution.
-	 * @return a [[Schedule]] instance intended solely as an argument for a single call to the [[schedule]] method. */
-	def newDelaySchedule(delay: MilliDuration): Schedule
+	 * @return a [[Delay]] instance intended solely as an argument for a single call to the [[schedule]] method. */
+	def newDelaySchedule(delay: MilliDuration): Delay
 
 	/** Creates a [[Schedule]] for a fixed rate repeated execution after an initial delay.
 	 * @param initialDelay duration before the first execution. If non-positive, the first execution would be ASAP.
@@ -79,97 +99,41 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	inline def schedule(schedule: Schedule)(routine: Schedule => Unit): Unit =
 		scheduleSequentially(schedule, routine)
 
-	//// TASK ////
-
-	//// Task instance operations  ////
+	//// Task extension methods ////
 
 	extension [A](thisTask: Task[A]) {
 
 		/** Returns a [[Task]] that triggers the up-chain [[Task]] according to a [[Schedule]].
-		 * The [[Schedule]] is activated when the returned [[Task]] is executed.
+		 * The [[Schedule]] is activated whenever the returned [[Task]] is executed.
 		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
 		 *
 		 * $notReusableTask */
-		@targetName("scheduledTask")
-		inline def scheduled(schedule: Schedule): Task[A] =
-			new ScheduledTask(thisTask, schedule)
+		// @targetName("scheduledTask")
+		inline def scheduled(kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration): TimedTask[A] =
+			new Task_Scheduled(thisTask, kind, initialDelay, loopDelay)
 
 		/** Returns a [[Task]] that triggers the up-chain [[Task]] after a delay measured from the moment the returned [[Task]] is executed. */
-		@targetName("delayedTask")
-		inline def delayed(delay: MilliDuration): Task[A] =
-			new DelayedTask(thisTask, delay)
-
-		/** Like [[Task.map]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain task has completed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisTask.flatMap(a => Task_schedules(schedule)(_ => f(a)) }}} but more efficient.
-		 *
-		 * $notReusableTask */
-		inline def scheduledMap[B](aSchedule: Schedule)(f: A => B): Task[B] =
-			new ScheduledMap(thisTask, aSchedule, f)
-
-		/** Like [[Task.map]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.flatMap(a => Task_delays(delay)(_ => f(a)) }}} but more efficient.
-		 * */
-		inline def delayedMap[B](delay: MilliDuration)(f: A => B): Task[B] =
-			new DelayedMap(thisTask, delay, f)
-
-		/** Like [[Task.flatMap]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Task]]. The provided [[Schedule]] is activated only after the up-chain task has completed.
-		 * If the provided [[Schedule]] schedules more than one execution (fixed-rate or fixed-delay) then the function application will be executed multiple times according to the [[Schedule]] until it is canceled.
-		 * Is equivalent to {{{ thisTask.flatMap(a => Task_schedulesFlat(schedule)(_ => f(a)) }}} but more efficient.
-		 *
-		 * $notReusableTask */
-		inline def scheduledFlatMap[B](aSchedule: Schedule)(f: A => Task[B]): Task[B] =
-			new ScheduledFlatMap[A, B](thisTask, aSchedule, f)
-
-		/** Like [[Task.flatMap]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Task]]. The delay occurs only after the up-chain [[Task]] is completed.
-		 * Is equivalent to {{{ thisTask.flatMap(a => Task_delaysFlat(delay)(_ => f(a)) }}} but more efficient.
-		 * */
-		inline def delayedFlatMap[B](delay: MilliDuration)(f: A => Task[B]): Task[B] =
-			new DelayedFlatMap(thisTask, delay, f)
-
-		/**
-		 * Returns a [[Task]] that waits for the up-chain [[Task]] to yield a result, but only for a limited time.
-		 * The time limit is determined by the initial delay of the provided [[Schedule]].
-		 * If the up-chain [[Task]] yields a result within the time limit, the returned [[Task]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Task]] yields [[Maybe.empty]] immediately and does not wait for the up-chain result.
-		 * The up-chain [[Task]] is executed regardless and may complete in the background after the timeout.
-		 * The [[Schedule]] is activated when the returned [[Task]] is executed and canceled when it completes. Therefore, fixed-rate and fixed-delay kind schedules are worthless.
-		 * If the [[Schedule]] is cancelled before the time limit, then the returned [[Task]] waits the up-chain [[Task]] completion forever, ensuring a non-empty result (provided there is one).
-		 *
-		 * $notReusableTask
-		 *
-		 * @param schedule a [[Schedule]] whose initial delay is the maximum time to wait for a result, measured from the start of the returned [[Task]]'s execution.
-		 *                 If the up-chain [[Task]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Task]] yields [[Maybe.empty]] immediately without waiting any more.
-		 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the up-chain [[Task]] if it completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the timeout is reached.
-		 */
-		inline def timeLimited(schedule: Schedule): Task[Maybe[A]] = {
-			new TimeLimitedTask[A](thisTask.subscribeSync, 0, schedule)
+		// @targetName("delayedTask")
+		inline def delayed(delay: MilliDuration): TimedTask[A] = {
+			new Task_Scheduled(thisTask, DELAY, delay, 0)
 		}
 
 		/**
-		 * Returns a [[Task]] that waits for the up-chain [[Task]] to yield a result, but only for a limited time.
+		 * Returns a [[Task]] that waits for the up-chain [[Observable]] to yield a result, but only for a limited time.
 		 * If the up-chain [[Task]] yields a result within the time limit, the returned [[Task]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Task]] yields [[Maybe.empty]] immediately and does not wait for the up-chain result.
-		 * The up-chain [[Task]] is executed regardless and may complete in the background after the timeout.
+		 * If the time limit is exceeded, the up-chain [[Observable]] is canceled and the returned [[Task]] yields [[Maybe.empty]] immediately (does not wait for the up-chain result).
 		 *
 		 * @param limit the maximum time to wait for a result, measured from the start of the returned [[Task]]'s execution. If the up-chain [[Task]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Task]] yields [[Maybe.empty]] immediately without waiting any more.
-		 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the up-chain [[Task]] if it completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the timeout is reached.
+		 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the up-chain [[Task]] if it completes within the time limit; otherwise, yields [[Maybe.empty]] upon limit elapses.
 		 */
-		inline def timeLimited(limit: MilliDuration): Task[Maybe[A]] = {
-			new TimeLimitedTask[A](thisTask.subscribeSync, limit, null)
+		inline def timeLimited(limit: MilliDuration): TimedTask[Maybe[A]] = {
+			new Task_TimeLimited[A](thisTask, limit)
 		}
 
 		/**
-		 * Repeats the up-chain [[Task]] whenever its execution duration exceeds a specified limit, up to a maximum number of retries.
-		 * Each retry is triggered immediately after the previous attempt times out, with no delay between retries.
-		 * The up-chain [[Task]] is not cancelled when it times out; it continues executing in the background even as retries begin.
-		 * The time limit is best-effort: it does not forcibly interrupt the up-chain [[Task]], but determines whether a retry should be initiated.
-		 * If the up-chain [[Task]] has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
-		 * Equivalent to the [[Venture]]'s [[reattemptedOnTimeout]] method but for [[Task]].
+		 * Repeats the up-chain [[Task]] whenever its execution duration exceeds a specified limit, up to a maximum number of retries.\
+		 * Each retry is triggered immediately after the previous attempt times out, with no delay between retries.\
+		 * The timed-out up-chain [[Subscription]]s are canceled.
 		 *
 		 * @param limit      the maximum duration allowed for each execution of the up-chain [[Task]] before triggering a retry.
 		 * @param maxRetries the maximum number of retries permitted after the initial attempt.
@@ -187,863 +151,449 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	//// Task factory methods ////
 
-	/** Builds a [[Task]] that, once executed, does nothing but yields a value of `()` after the specified duration.
-	 * The delay period begins when the returned [[Task]] is started, not when it is built.
-	 * This is equivalent to both `Task_unit.delayed(duration)` and `Task_delays(duration)(_ => ())`.
+	/** Builds a [[Task]] that, once executed, does nothing but yields a value of `()` after the specified duration.\
+	 * The delay period begins whenever the returned [[Task]] is started, not when it is built.\
+	 * This is equivalent to both `Task_unit.delayed(duration)` and `Task_delays(duration)(_ => ())`.\
 	 *
 	 * @param duration the time to wait before the [[Task]] yields its result.
-	 * @return a new [[Task]] that will yield a value of `()` after the specified delay.
-	 */
-	inline def Task_sleeps(duration: MilliDuration): Task[Unit] =
+	 * @return a new [[Task]] that will yield a value of `()` after the specified delay. */
+	inline def Task_sleeps(duration: MilliDuration): TimedTask[Unit] =
 		Task_unit.delayed(duration)
 
 	/**
-	 * Builds a [[Task]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.
-	 * The schedule is activated only when the returned [[Task]] is started, not when it is constructed.
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the supplier is executed repeatedly, yielding each result, until the schedule is canceled.
+	 * Builds a [[Task]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.\
+	 * The schedule is activated only whenever the returned [[Task]] is started, not when it is constructed.\
+	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the supplier is executed repeatedly, yielding each result, until the schedule is canceled.\
 	 *
 	 * $notReusableTask
-	 * @param schedule the [[Schedule]] controlling when the supplier function is executed.
 	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
-	 * @return a [[Task]] that yields the supplier’s result(s) according to the specified [[Schedule]].
-	 */
-	inline def Task_schedules[A](schedule: Schedule)(supplier: Schedule => A): Task[A] =
-		new DelayedSupplierTask(0, schedule, supplier)
+	 * @return a [[Task]] that yields the supplier’s result(s) according to the specified [[Schedule]]. */
+	inline def Task_schedules[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration)(supplier: TimedSubscription => A): TimedTask[A] =
+		new Task_SchedulesSupplier(kind, initialDelay, loopDelay, supplier)
 
 	/**
-	 * Builds a [[Task]] that schedules the execution of a [[Task]] builder according to a specified [[Schedule]] and yields the results of the [[Task]] produced by the builder for each scheduled execution.
-	 * The schedule is activated only when the returned [[Task]] is started, not when it is constructed.
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Task]] for each execution, and the results of each produced [[Task]] are yielded until the schedule is canceled.
+	 * Builds a [[Task]] that schedules the execution of a [[Task]] builder according to a specified [[Schedule]] and yields the results of the [[Task]] produced by the builder for each scheduled execution.\
+	 * The schedule is activated only whenever the returned [[Task]] is started, not when it is constructed.\
+	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Task]] for each execution, and the results of each produced [[Task]] are yielded until the schedule is canceled.\
 	 * This [[Task]] is not reusable and can only be executed once.
 	 *
-	 * @param schedule the [[Schedule]] controlling when the [[Task]] builder is executed.
 	 * @param builder  the function that produces a new [[Task[A]]] for each scheduled execution.
-	 * @return a [[Task]] that yields the results of the [[Task]] produced by the builder according to the specified [[Schedule]].
-	 */
-	inline def Task_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Task[A]): Task[A] =
-		new DelayedSupplierFlatTask(0, schedule, builder)
+	 * @return a [[Task]] that yields the results of the [[Task]] produced by the builder according to the specified [[Schedule]]. */
+	inline def Task_schedulesFlat[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration)(builder: TimedSubscription => Task[A]): TimedTask[A] =
+		new Task_SchedulesSupplierFlat(kind, initialDelay, loopDelay, builder)
 
 	/**
-	 * Builds a [[Task]] that waits for a specified duration before executing a supplier function and yielding its result.
-	 * The delay begins only when the returned [[Task]] is started, not when it is constructed.
-	 * The supplier is executed once after the delay, and its result is what the returned [[Task]] yields.
+	 * Builds a [[Task]] that waits for a specified duration before executing a supplier function and yielding its result.\
+	 * The delay begins only whenever the returned [[Task]] is started, not when it is constructed.\
+	 * The supplier is executed once after the delay, and its result is what the returned [[Task]] yields.\
 	 *
 	 * @param duration the duration to wait before executing the supplier function.
 	 * @param supplier the function that produces a value of type [[A]] after the delay.
-	 * @return a [[Task]] that yields the supplier’s result after the specified duration.
-	 */
-	inline def Task_delays[A](duration: MilliDuration)(supplier: Schedule => A): Task[A] =
-		new DelayedSupplierTask(duration, null, supplier)
+	 * @return a [[Task]] that yields the supplier’s result after the specified duration. */
+	inline def Task_delays[A](duration: MilliDuration)(supplier: TimedSubscription => A): TimedTask[A] =
+		new Task_SchedulesSupplier(DELAY, duration, 0, supplier)
 
 	/**
-	 * Builds a [[Task]] that waits for a specified duration before executing a [[Task]] builder and yielding the result of the produced [[Task]].
-	 * The delay begins only when the returned [[Task]] is started, not when it is constructed.
-	 * The builder is executed once after the delay, producing a [[Task]] whose result is yielded by the returned [[Task]].
+	 * Builds a [[Task]] that waits for a specified duration before executing a [[Task]] builder and yielding the result of the produced [[Task]].\
+	 * The delay begins only whenever the returned [[Task]] is started, not when it is constructed.\
+	 * The builder is executed once after the delay, producing a [[Task]] whose result is yielded by the returned [[Task]].\
 	 *
 	 * @param duration the duration to wait before executing the [[Task]] builder.
 	 * @param builder  the function that produces a new [[Task[A]]] after the delay.
-	 * @return a [[Task]] that yields the result of the [[Task]] produced by the builder after the specified duration.
-	 */
-	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Task[A]): Task[A] =
-		new DelayedSupplierFlatTask(duration, null, builder)
+	 * @return a [[Task]] that yields the result of the [[Task]] produced by the builder after the specified duration. */
+	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: TimedSubscription => Task[A]): TimedTask[A] =
+		new Task_SchedulesSupplierFlat(DELAY, duration, 0, builder)
 
 	/**
-	 * Builds a [[Task]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
-	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.
-	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.
-	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.
-	 * If the supplier has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
+	 * Builds a [[Task]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.\
+	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.\
+	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.\
+	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.\
+	 * If the supplier has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.\
 	 * The supplier receives the number of failed attempts as a parameter, allowing it to adjust its behavior based on prior timeouts.
 	 *
 	 * @param limit         the maximum duration allowed for each execution of the supplier function before triggering a retry.
-	 * @param maxRetries    the maximum number of retries permitted after the initial attempt.
-	 * @param supplier          the supplier function that produces a value of type [[A]], taking the number of failed attempts as an input.
-	 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the supplier function if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
-	 */
-	def Task_retryOnTimeout[A](limit: MilliDuration, maxRetries: Int, supplier: (failedAttempts: Int) => A): Task[Maybe[A]] = {
-		def loop(failedAttempts: Int): Task[Maybe[A]] = {
-			TimeLimitedTask[A](_(supplier(failedAttempts)), limit, null)
-				.flatMap(_.fold {
-					if failedAttempts >= maxRetries then Task_ready(Maybe.empty)
-					else loop(failedAttempts + 1)
-				} { a =>
-					Task_ready(Maybe(a))
-				})
+	 * @param maxAttempts    the maximum number of attempts permitted.
+	 * @param supplier          the supplier function that takes the number of failed attempts and produces the [[Task]] to be time limited.
+	 * @return a [[Task]] that yields [[Maybe.some]] containing the result of the supplier function if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out. */
+	def Task_retriesOnTimeout[A](limit: MilliDuration, maxAttempts: Int, supplier: (attemptsDone: Int) => Task[A]): Task[Maybe[A]] = {
+		def loop(attemptsDone: Int): Task[Maybe[A]] = {
+			if attemptsDone >= maxAttempts then Task_ready(Maybe.empty)
+			else {
+				var maybeFailure: Maybe[Throwable] = Maybe.empty
+				val maybeTaskA = try Maybe(supplier(attemptsDone)) catch {
+					case NonFatal(e) =>
+						maybeFailure = Maybe(e)
+						Maybe.empty
+				}
+				maybeFailure.fold {
+					maybeTaskA.get.timeLimited(limit).flatMap { maybeA =>
+						maybeA.fold(loop(attemptsDone + 1)) { a => Task_ready(maybeA) }
+					}
+				}(Task_fail)
+			}
 		}
 
 		loop(0)
 	}
 
-	//// Task implementation classes ////
+	//// Task operations implementation classes ////
 
-	/** $notReusableTask */
-	final class ScheduledTask[A](task: Task[A], aSchedule: Schedule) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
+	private inline def buildSchedule(kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration): Schedule = {
+		kind match {
+			case DELAY => newDelaySchedule(initialDelay)
+			case FIXED_RATE => newFixedRateSchedule(initialDelay, loopDelay)
+			case FIXED_DELAY => newFixedDelaySchedule(initialDelay, loopDelay)
+		}
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_Scheduled(trap: Nothing): Any = trap
+
+	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_Scheduled and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
+	final class Task_Scheduled[A](monoA: Observable[A], kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration) extends AbstractTask[A] with TimedTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
 			// Returns subscription that guards schedule trigger and inner task completion
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
+			new TimedSubscription with MonoObserver[A] with (Schedule => Unit) {
+				private val aSchedule = buildSchedule(kind, initialDelay, loopDelay)
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
-				{
-					schedule(aSchedule) { _ =>
-						if active then {
-							innerSub = task.subscribeSync(monoObserver)
-						}
+				override def schedule: Schedule = aSchedule
+
+				{ // Constructor
+					thisSchedulingExtension.schedule(aSchedule)(this)
+				}
+
+				override def apply(aSchedule: Schedule): Unit = {
+					if isActive then {
+						val ucs = monoA.subscribeSync(this)
+						if isActive then maybeUpChainSubscription = Maybe(ucs)
+					}
+				}
+
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						if kind == DELAY then isActive = false
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onSuccess(a)
+					}
+				}
+
+				override def onError(e: Throwable): Unit = {
+					if isActive then {
+						if kind == DELAY then isActive = false
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onError(e)
 					}
 				}
 
 				override def unsubscribe(): Unit = {
 					checkWithin()
-					active = false
-					innerSub.unsubscribe()
+					if isActive then {
+						isActive = false
+						cancel(aSchedule)
+						val ucs = maybeUpChainSubscription
+						maybeUpChainSubscription = Maybe.empty
+						ucs.foreach(_.unsubscribe())
+					}
 				}
 			}
 		}
 	}
 
-	/** $notReusableTask */
-	final class ScheduledMap[A, B](task: Task[A], aSchedule: Schedule, f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Returns subscription that propagates unsubscription to underlying task
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_TimeLimited(trap: Nothing): Any = trap
+
+	final class Task_TimeLimited[A](monoA: Observable[A], limit: MilliDuration) extends AbstractTask[Maybe[A]] with TimedTask[Maybe[A]] {
+		override def subscribeSync(downChainObserver: MonoObserver[Maybe[A]]): TimedSubscription = {
+			new TimedSubscription with MonoObserver[A] with (Schedule => Unit) { thisSubOb =>
+				private val timer: Schedule = newDelaySchedule(limit)
+				private var isActive = true
+				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+
+				override def schedule: Schedule = timer
 
 				{
-					innerSub = task.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if active then {
-								schedule(aSchedule) { _ =>
-									if active then monoObserver.onSuccess(f(a))
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then monoObserver.onError(ex)
-						}
-					})
+					val upChainSubscription = monoA.subscribeSync(thisSubOb)
+					if isActive then {
+						maybeUpChainSubscription = Maybe(upChainSubscription)
+						thisSchedulingExtension.schedule(timer)(thisSubOb)
+					}
 				}
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	/** $notReusableTask */
-	final class ScheduledFlatMap[A, B](task: Task[A], aSchedule: Schedule, f: A => Task[B]) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Returns subscription that handles unsubscription from both outer and inner task
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = task.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if active then {
-								schedule(aSchedule) { _ =>
-									if active then {
-										innerSub = f(a).subscribeSync(monoObserver)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then monoObserver.onError(ex)
-						}
-					})
+				override def apply(timer: Schedule): Unit = {
+					if isActive then {
+						isActive = false
+						downChainObserver.onSuccess(Maybe.empty)
+						maybeUpChainSubscription.foreach(_.unsubscribe())
+					}
 				}
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
+				override def onSuccess(a: A): Unit = {
+					if isActive then {
+						isActive = false
+						cancel(timer)
+						downChainObserver.onSuccess(Maybe(a))
+					}
 				}
-			}
-		}
-	}
 
-	final class DelayedTask[A](task: Task[A], delay: MilliDuration) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			// Returns subscription that cancels schedule callback or inner task subscription
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					schedule(newDelaySchedule(delay)) { _ =>
-						if active then {
-							innerSub = task.subscribeSync(monoObserver)
-						}
+				override def onError(e: Throwable): Unit = {
+					if isActive then {
+						isActive = false
+						cancel(timer)
+						downChainObserver.onError(e)
 					}
 				}
 
 				override def unsubscribe(): Unit = {
 					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	final class DelayedMap[A, B](task: Task[A], delay: MilliDuration, f: A => B) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Returns subscription that cancels schedule or propagates upstream
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = task.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if active then {
-								schedule(newDelaySchedule(delay)) { _ =>
-									if active then monoObserver.onSuccess(f(a))
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then monoObserver.onError(ex)
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	final class DelayedFlatMap[A, B](task: Task[A], delay: MilliDuration, f: A => Task[B]) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
-			// Returns subscription that propagates cancel to both delayed outer and inner task
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = task.subscribeSync(new MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if active then {
-								schedule(newDelaySchedule(delay)) { _ =>
-									if active then {
-										innerSub = f(a).subscribeSync(monoObserver)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then monoObserver.onError(ex)
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	/**
-	 * Caution: This [[Task]] is reusable only when limit2 is null.
-	 */
-	final class TimeLimitedTask[A](task: (A => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractTask[Maybe[A]] {
-		override def subscribeSync(monoObserver: MonoObserver[Maybe[A]]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			var hasElapsed = false
-			var hasCompleted = false
-			// Returns subscription that stops timer and ignores task callback
-			new Subscription {
-				private var active = true
-
-				{
-					schedule(timer) { _ =>
-						if active then {
-							cancel(timer)
-							if !hasCompleted then {
-								hasElapsed = true
-								monoObserver.onSuccess(Maybe.empty)
-							}
-						}
-					}
-					task { a =>
-						if active && !hasElapsed then {
-							cancel(timer)
-							hasCompleted = true
-							monoObserver.onSuccess(Maybe(a))
-						}
+					if isActive then {
+						isActive = false
+						cancel(timer)
+						val ucs = maybeUpChainSubscription
+						maybeUpChainSubscription = Maybe.empty
+						ucs.foreach(_.unsubscribe())
 					}
 				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-				}
 			}
 		}
 	}
 
-	/**
-	 * Caution: This [[Task]] is reusable only when limit2 is null.
-	 */
-	final class DelayedSupplierTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => A) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			// Returns subscription that ignores supplier callback and cancels timer
-			new Subscription {
-				private var active = true
-				{
-					schedule(timer)(_ => if active then monoObserver.onSuccess(supplier(timer)))
-				}
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_OnSubscription(trap: Nothing): Any = trap
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-				}
+	final class Task_OnSubscription[+A](taskA: TimedTask[A], action: Schedule => Unit) extends AbstractTask[A] with TimedTask[A] {
+
+		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
+			val upChainSubscription = taskA.subscribeSync(downChainObserver)
+			try {
+				action(upChainSubscription.schedule)
+				upChainSubscription
+			} catch {
+				case scala.util.control.NonFatal(e) =>
+					upChainSubscription.unsubscribe()
+					throw e
 			}
 		}
 	}
 
-	/**
-	 * Caution: This [[Task]] is reusable only when limit2 is null.
-	 */
-	final class DelayedSupplierFlatTask[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Task[A]) extends AbstractTask[A] {
-		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			// Returns subscription that propagates unsubscription to inner task
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-				{
-					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(monoObserver))
-				}
+	//// Capturer extension methods ////
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-					innerSub.unsubscribe()
-				}
-			}
+	extension [A](thisCapturer: LatchingTask[A]) {
+
+		/** Returns a [[LatchingTask]] that subscribes to the up-chain [[LatchingTask]] after a delay determined by the provided [[Delay]]. */
+		@targetName("delayedLatchingTask")
+		inline def delayed(delay: Delay): LatchingTask[A] = {
+			new Capturer_Delayed(thisCapturer, delay)
 		}
-	}
-
-	//// VENTURE ////
-
-	//// Task instance operations ////
-
-	extension [A](thisVenture: Venture[A]) {
-
-		/** Like [[Task.scheduled]] but for [[Venture]]s.
-		 * $notReusableTask */
-		@targetName("scheduledVenture")
-		def scheduled(schedule: Schedule): Venture[A] =
-			new ScheduledVenture(thisVenture, schedule)
-
-		/** Like [[Task.delayed]] but for [[Venture]]s.
-		 * $notReusableTask */
-		@targetName("delayedVenture")
-		inline def delayed(delay: MilliDuration): Venture[A] =
-			scheduled(newDelaySchedule(delay))
-
-		/** Like [[Venture.transform]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Venture]]. The provided [[Schedule]] is activated only after the up-chain [[Venture]] has completed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Venture]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_schedules(schedule)(_ => f(tryA)) }}} but more efficient.
-		 * $notReusableTask */
-		def scheduledTransform[B](schedule: Schedule)(f: Try[A] => Try[B]): Venture[B] =
-			new ScheduledTransform[A, B](thisVenture, schedule, f)
-
-		/** Like [[Venture.transform]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Venture]]. The delay occurs only after the up-chain [[Venture]] is completed.
-		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_delays(delay)(_ => f(tryA)) }}} but more efficient.
-		 * */
-		inline def delayedTransform[B](delay: MilliDuration)(f: Try[A] => Try[B]): Venture[B] =
-			new DelayedTransform(thisVenture, delay, f)
-
-		/** Like [[Venture.transformWith]] but the function application is scheduled.
-		 * Note that what is scheduled is the function application, not the execution of the up-chain [[Venture]]. The provided [[Schedule]] is activated only after the up-chain [[Venture]] has completed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Venture]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_schedulesFlat(schedule)(_ => f(tryA)) }}} but more efficient.
-		 * $notReusableTask */
-		inline def scheduledTransformWith[B](schedule: Schedule)(f: Try[A] => Venture[B]): Venture[B] =
-			new ScheduledTransformWith(thisVenture, schedule, f)
-
-		/** Like [[Venture.transformWith]] but the function application is delayed.
-		 * Note that what is delayed is the function application, not the execution of the up-chain [[Venture]]. The delay occurs only after the up-chain [[Venture]] is completed.
-		 * Is equivalent to {{{ thisVenture.transformWith(tryA => Venture_delaysFlat(delay)(_ => f(tryA)) }}} but more efficient.
-		 * */
-		inline def delayedTransformWith[B](delay: MilliDuration, f: Try[A] => Venture[B]): Venture[B] =
-			new DelayedTransformWith(thisVenture, delay, f)
 
 		/**
-		 * Returns a [[Venture]] that waits for the up-chain [[Venture]] to yield a result, but only for a limited time.
-		 * The time limit is determined by the initial delay of the provided [[Schedule]].
-		 * If the up-chain [[Venture]] yields a result within the time limit, the returned [[Venture]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Venture]] yields [[Maybe.empty]] immediately and does not wait for the up-chain result.
-		 * The up-chain [[Venture]] is executed regardless and may complete in the background after the timeout.
-		 * The [[Schedule]] is activated when the returned [[Venture]] is executed and canceled when it completes. Therefore, fixed-rate and fixed-delay kind schedules are worthless.
-		 * If the [[Schedule]] is cancelled before the time limit, then the returned [[Venture]] waits the up-chain [[Venture]] completion forever, ensuring a non-empty result (provided there is one).
-		 *
-		 * @param schedule a [[Schedule]] whose initial delay is the maximum time to wait for a result, measured from the start of the returned [[Task]]'s execution.
-		 *                 If the up-chain [[Task]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Task]] yields [[Maybe.empty]] immediately without waiting any more.
-		 * @return a [[Task]] that will complete with [[Maybe.some]] wrapping the result if it is available within the time limit, or with [[Maybe.empty]] otherwise.
+		 * Returns a [[LatchingTask]] that waits for the up-chain [[LatchingTask]] to yield a result, but only for a limited time determined by the provided [[Delay]].
+		 * If the up-chain [[LatchingTask]] yields a result within the time limit, the returned [[LatchingTask]] yields that result wrapped in [[Maybe.some]].
+		 * If the time limit is exceeded, the up-chain [[LatchingTask]] is canceled and the returned [[LatchingTask]] yields [[Maybe.empty]] immediately.
 		 */
-		inline def timeBounded(schedule: Schedule): Venture[Maybe[A]] =
-			new TimeLimitedVenture[A](thisVenture.subscribeSync, 0, schedule)
-
-		/**
-		 * Returns a [[Venture]] that waits for the up-chain [[Venture]] to yield a result, but only for a limited time.
-		 * If the up-chain [[Venture]] yields a result within the time limit, the returned [[Venture]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the returned [[Venture]] yields [[Maybe.empty]] immediately, ignoring the future up-chain result.
-		 * The up-chain [[Venture]] is executed regardless and may complete in the background after the timeout.
-		 * $notReusableTask
-		 *
-		 * @param limit the maximum time to wait for a result, measured from the start of the returned [[Task]]'s execution. If the up-chain [[Task]] yields a result before this time elapses, the result is wrapped in [[Maybe.some]]. If the timer expires first, the returned [[Task]] yields [[Maybe.empty]] immediately without waiting any more.
-		 * @return a [[Task]] that will complete with [[Maybe.some]] wrapping the result if it is available within the timeout, or with [[Maybe.empty]] if the timeout elapses first.
-		 */
-		inline def timeBounded(limit: MilliDuration): Venture[Maybe[A]] =
-			new TimeLimitedVenture[A](thisVenture.subscribeSync, limit, null)
-
-
-		/**
-		 * Repeats the up-chain [[Venture]] whenever its execution duration exceeds a specified limit, up to a maximum number of retries.
-		 * Each retry is triggered immediately after the previous attempt times out, with no delay between retries.
-		 * The up-chain [[Venture]] is not cancelled when it times out; it continues executing in the background even as retries begin.
-		 * The time limit is best-effort: it does not forcibly interrupt the up-chain [[Venture]], but determines whether a retry should be initiated.
-		 * If the up-chain [[Venture]] has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
-		 * Equivalent to the [[Task]]'s [[retriedOnTimeout]] method but for [[Venture]].
-		 *
-		 * @param limit      the maximum duration allowed for each execution of the up-chain [[Venture]] before triggering a retry.
-		 * @param maxRetries the maximum number of retries permitted after the initial attempt.
-		 * @return a [[Venture]] that yields [[Maybe.some]] containing the result of the up-chain [[Venture]] if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
-		 */
-		def reattemptedOnTimeout(limit: MilliDuration, maxRetries: Int): Venture[Maybe[A]] = {
-			thisVenture.timeBounded(limit).flatMap(_.fold {
-				if maxRetries > 0 then reattemptedOnTimeout(limit, maxRetries - 1)
-				else Venture_successful(Maybe.empty)
-			} { r =>
-				Venture_successful(Maybe(r))
-			})
+		inline def timeLimited(delay: Delay): LatchingTask[Maybe[A]] = {
+			new Capturer_TimeLimited[A](thisCapturer, delay)
 		}
 	}
 
-	//// Task factory methods ////
-
-	/** Builds a [[Venture]] that, once executed, does nothing but yields a value of `()` after the specified duration.
-	 * The delay period begins when the returned [[Venture]] is started, not when it is built.
-	 * This is equivalent to both `Task_unit.delayed(duration)` and `Task_delay(duration)(() => ())`.
+	/** Builds a [[LatchingTask]] that schedules the execution of a supplier function after a specified delay.\
+	 * The delay begins immediately when this method is called (hot/eager start).\
+	 * The supplier is executed once after the delay, and its result is what the returned [[LatchingTask]] yields.
 	 *
-	 * @param duration the time to wait before the [[Venture]] yields its result.
-	 * @return a new [[Venture]] that will yield a value of `()` after the specified delay.
-	 */
-	inline def Venture_sleeps(duration: MilliDuration): Venture[Unit] =
-		Venture_unit.delayed(duration)
+	 * @param delay the schedule delay that determines when the supplier function will be executed.
+	 * @param supplier the function that produces a value of type [[A]] after the delay.
+	 * @return a [[LatchingTask]] that yields the supplier’s result. */
+	def Capturer_delay[A](delay: Delay)(supplier: Schedule => A): LatchingTask[A] = new DefaultCaptor[A] with (Schedule => Unit) {
+		schedule(delay)(this)
 
-	/**
-	 * Builds a [[Venture]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.
-	 * The schedule is activated only when the returned [[Venture]] is started, not when it is constructed.
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the supplier is executed repeatedly, yielding each result, until the schedule is canceled.
-	 *
-	 * $notReusableTask
-	 * @param schedule the [[Schedule]] controlling when the supplier function is executed.
-	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
-	 * @return a [[Venture]] that yields the supplier’s result(s) according to the specified [[Schedule]].
-	 */
-	inline def Venture_schedules[A](schedule: Schedule)(supplier: Schedule => Try[A]): Venture[A] =
-		new DelayedSupplierVenture(0, schedule, supplier)
-
-	/**
-	 * Builds a [[Venture]] that schedules the execution of a [[Venture]] builder according to a specified [[Schedule]] and yields the results of the [[Venture]] produced by the builder for each scheduled execution.
-	 * The schedule is activated only when the returned [[Venture]] is started, not when it is constructed.
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Venture]] for each execution, and the results of each produced [[Venture]] are yielded until the schedule is canceled.
-	 * This [[Venture]] is not reusable and can only be executed once.
-	 *
-	 * @param schedule the [[Schedule]] controlling when the [[Venture]] builder is executed.
-	 * @param builder  the function that produces a new [[Venture[A]]] for each scheduled execution.
-	 * @return a [[Venture]] that yields the results of the [[Venture]] produced by the builder according to the specified [[Schedule]].
-	 */
-	inline def Venture_schedulesFlat[A](schedule: Schedule)(builder: Schedule => Venture[A]): Venture[A] =
-		new DelayedSupplierFlatVenture(0, schedule, builder)
-
-	/**
-	 * Builds a [[Venture]] that waits for a specified duration before executing a supplier function and yielding its result.
-	 * The delay begins only when the returned [[Venture]] is started, not when it is constructed.
-	 * The supplier is executed once after the delay, and its result is what the returned [[Venture]] yields.
-	 *
-	 * @param duration the duration to wait before executing the supplier function.
-	 * @param supplier the function that produces a result after the delay.
-	 * @return a [[Venture]] that yields the supplier’s result after the specified duration.
-	 */
-	inline def Venture_delays[A](duration: MilliDuration)(supplier: Schedule => Try[A]): Venture[A] =
-		new DelayedSupplierVenture(duration, null, supplier)
-
-	/**
-	 * Builds a [[Venture]] that waits for a specified duration before executing a [[Venture]] builder and yielding the result of the produced [[Venture]].
-	 * The delay begins only when the returned [[Venture]] is started, not when it is constructed.
-	 * The builder is executed once after the delay, producing a [[Venture]] whose result is yielded by the returned [[Venture]].
-	 *
-	 * @param duration the duration to wait before executing the [[Venture]] builder.
-	 * @param builder  the function that produces a new [[Venture]] after the delay.
-	 * @return a [[Venture]] that yields the result of the [[Venture]] produced by the builder after the specified duration.
-	 */
-	inline def Venture_delaysFlat[A](duration: MilliDuration)(builder: Schedule => Venture[A]): Venture[A] =
-		new DelayedSupplierFlatVenture(duration, null, builder)
-
-	/**
-	 * Builds a [[Venture]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.
-	 * If the execution exceeds the limit, the supplier is retried immediately, up to a maximum number of retries.
-	 * The supplier is not stopped when it times out; it continues executing in the background even as retries begin.
-	 * The time limit is best-effort: it does not forcibly interrupt the supplier function, but determines whether a retry should be initiated.
-	 * If the supplier has side effects, they will occur once per attempt, resulting in a total of one plus the number of retries.
-	 * The supplier receives the number of failed attempts as a parameter, allowing it to adjust its behavior based on prior timeouts.
-	 *
-	 * @param limit         the maximum duration allowed for each execution of the supplier function before triggering a retry.
-	 * @param maxRetries    the maximum number of retries permitted after the initial attempt.
-	 * @param supplier          the supplier function that produces a value of type [[A]], taking the number of failed attempts as an input.
-	 * @return a [[Venture]] that yields [[Maybe.some]] containing the result of the supplier function if any attempt completes within the time limit; otherwise, yields [[Maybe.empty]] as soon as the final attempt times out.
-	 */
-	def Venture_retryOnTimeout[A](limit: MilliDuration, maxRetries: Int, supplier: Int => Try[A]): Venture[Maybe[A]] = {
-		def loop(failedAttempts: Int): Venture[Maybe[A]] = {
-			TimeLimitedVenture[A](_(supplier(failedAttempts)), limit, null)
-				.flatMap(_.fold {
-					if failedAttempts >= maxRetries then Venture_successful(Maybe.empty)
-					else loop(failedAttempts + 1)
-				} { a =>
-					Venture_successful(Maybe(a))
-				})
+		override def apply(schedule: Schedule): Unit = {
+			val maybeA = try Maybe(supplier(schedule)) catch {
+				case NonFatal(e) =>
+					breakSync(e)
+					Maybe.empty
+			}
+			maybeA.foreach(a => fulfillSync(a))
 		}
-
-		loop(0)
 	}
 
-	//// Task implementation classes ////
+	/** Builds a [[LatchingTask]] that waits for a specified delay before executing a [[LatchingTask]] builder and yielding the result of the produced [[LatchingTask]].\
+	 * The delay begins immediately when this method is called (hot/eager start).\
+	 * The builder is executed once after the delay, producing a [[LatchingTask]] whose result is yielded by the returned [[LatchingTask]].
+	 *
+	 * @param delay the schedule delay that determines when the [[LatchingTask]] builder will be executed.
+	 * @param builder the function that produces a new [[LatchingTask[A]]] after the delay.
+	 * @return a [[LatchingTask]] that yields the result of the [[LatchingTask]] produced by the builder. */
+	def Capturer_delayFlat[A](delay: Delay)(builder: Schedule => LatchingTask[A]): LatchingTask[A] = new DefaultCaptor[A] with (Schedule => Unit) {
+		schedule(delay)(this)
 
-	/** $notReusableTask */
-	final class ScheduledVenture[A](venture: Venture[A], aSchedule: Schedule) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// The returned subscription cancels the scheduled task and handles inner subscription cancellation.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
+		override def apply(schedule: Schedule): Unit = {
+			val maybeCapturerA = try Maybe(builder(schedule)) catch {
+				case NonFatal(e) =>
+					breakSync(e)
+					Maybe.empty
+			}
+			maybeCapturerA.foreach(capturerA => fulfillWithSync(capturerA))
+		}
+	}
 
-				{
-					schedule(aSchedule) { _ =>
-						if active then {
-							innerSub = venture.subscribeSync(monoObserver)
+	//// Capturer operations implementation classes ////
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Capturer_Delayed(trap: Nothing): Any = trap
+
+	final class Capturer_Delayed[A](latchingTask: LatchingTask[A], delay: Delay) extends DefaultCaptor[A] with (Schedule => Unit) with MonoObserver[A] {
+		private var isActive = true
+		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+
+		{ // Constructor
+			thisSchedulingExtension.schedule(delay)(this)
+		}
+
+		override def apply(schedule: Schedule): Unit = {
+			if isActive then {
+				val upChainSubscription = latchingTask.subscribeSync(this)
+				if isActive then {
+					maybeUpChainSubscription = Maybe(upChainSubscription)
+				}
+			}
+		}
+
+		override def onSuccess(a: A): Unit = {
+			isActive = false
+			fulfillSync(a)
+		}
+
+		override def onError(e: Throwable): Unit = {
+			isActive = false
+			breakSync(e)
+		}
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Capturer_TimeLimited(trap: Nothing): Any = trap
+
+	final class Capturer_TimeLimited[A](latchingTask: LatchingTask[A], delay: Delay) extends DefaultCaptor[Maybe[A]] with (Schedule => Unit) with MonoObserver[A] {
+		private var isActive = true
+		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
+
+		{ // Constructor
+			val upChainSubscription = latchingTask.subscribeSync(this)
+			if isActive then {
+				maybeUpChainSubscription = Maybe(upChainSubscription)
+				thisSchedulingExtension.schedule(delay)(this)
+			}
+		}
+
+		override def apply(schedule: Schedule): Unit = {
+			if isActive then {
+				isActive = false
+				maybeUpChainSubscription.foreach(_.unsubscribe())
+				fulfillSync(Maybe.empty)
+			}
+		}
+
+		override def onSuccess(a: A): Unit = {
+			if isActive then {
+				isActive = false
+				cancel(delay)
+				fulfillSync(Maybe.some(a))
+			}
+		}
+
+		override def onError(e: Throwable): Unit = {
+			if isActive then {
+				isActive = false
+				cancel(delay)
+				breakSync(e)
+			}
+		}
+	}
+
+	//// Flux operations implementation classes ////
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_SchedulesSupplier(trap: Nothing): Any = trap
+
+	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_SchedulesSupplier and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
+	final class Task_SchedulesSupplier[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration, supplier: TimedSubscription => A) extends AbstractTask[A] with TimedTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
+			new TimedSubscription with (Schedule => Unit) {
+				private val aSchedule: Schedule = buildSchedule(kind, initialDelay, loopDelay)
+				private var isActive = true
+
+				override def schedule: Schedule = aSchedule
+
+				{ // Constructor
+					thisSchedulingExtension.schedule(aSchedule)(this)
+				}
+
+				override def apply(schedule: Schedule): Unit = {
+					if isActive then {
+						val maybeA = try Maybe(supplier(this)) catch {
+							case NonFatal(e) =>
+								isActive = false
+								downChainObserver.onError(e)
+								Maybe.empty
+						}
+
+						maybeA.foreach(a => downChainObserver.onSuccess(a))
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
+					isActive = false
+					cancel(aSchedule)
+				}
+			}
+		}
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_SchedulesSupplierFlat(trap: Nothing): Any = trap
+
+	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_SchedulesSupplierFlat and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
+	final class Task_SchedulesSupplierFlat[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration, supplier: TimedSubscription => Task[A]) extends AbstractTask[A] with TimedTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
+			new TimedSubscription with (Schedule => Unit) {
+				private val aSchedule: Schedule = buildSchedule(kind, initialDelay, loopDelay)
+				private var isActive = true
+				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
+
+				override def schedule: Schedule = aSchedule
+
+				{ // Constructor
+					thisSchedulingExtension.schedule(aSchedule)(this)
+				}
+
+				override def apply(schedule: Schedule): Unit = {
+					if isActive then {
+						val maybeTaskA = try Maybe(supplier(this)) catch {
+							case NonFatal(e) =>
+								if isActive then {
+									unsubscribe()
+									downChainObserver.onError(e)
+								}
+								Maybe.empty
+						}
+						maybeTaskA.foreach { taskA =>
+							val innerSubscription = taskA.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
 				}
 
 				override def unsubscribe(): Unit = {
 					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	/** $notReusableTask */
-	final class ScheduledTransform[A, B](venture: Venture[A], aSchedule: Schedule, f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// Propagates the unsubscribe call back to the underlying upstream venture.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = {
-							if active then {
-								schedule(aSchedule) { _ =>
-									if active then {
-										val tryB =
-											try f(tryA)
-											catch {
-												case NonFatal(e) => Failure(e)
-											}
-										monoObserver.onSuccess(tryB)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then {
-								monoObserver.onSuccess(Failure(ex))
-							}
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	/** $notReusableTask */
-	final class ScheduledTransformWith[A, B](ventureA: Venture[A], aSchedule: Schedule, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// Propagates cancellation to both the outer (upstream) venture and the inner venture.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = ventureA.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = {
-							if active then {
-								schedule(aSchedule) { _ =>
-									if active then {
-										val ventureB =
-											try f(tryA)
-											catch {
-												case NonFatal(e) => Venture_failed(e)
-											}
-										innerSub = ventureB.subscribeSync(monoObserver)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then {
-								monoObserver.onSuccess(Failure(ex))
-							}
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	final class DelayedVenture[A](venture: Venture[A], delay: MilliDuration) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// It guards the delay timer and propagates cancellation down to the inner venture.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					schedule(newDelaySchedule(delay)) { _ =>
-						if active then {
-							innerSub = venture.subscribeSync(monoObserver)
-						}
+					if isActive then {
+						isActive = false
+						cancel(aSchedule)
+						val mis = maybeInnerSubscription
+						maybeInnerSubscription = Maybe.empty
+						mis.foreach(_.unsubscribe())
 					}
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	final class DelayedTransform[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Try[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// Propagates cancellation upstream to the source venture and guards scheduled callback execution.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = {
-							if active then {
-								schedule(newDelaySchedule(delay)) { _ =>
-									if active then {
-										val tryB =
-											try f(tryA)
-											catch {
-												case NonFatal(e) => Failure(e)
-											}
-										monoObserver.onSuccess(tryB)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then {
-								monoObserver.onSuccess(Failure(ex))
-							}
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	final class DelayedTransformWith[A, B](venture: Venture[A], delay: MilliDuration, f: Try[A] => Venture[B]) extends AbstractVenture[B] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[B]]): Subscription = {
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// Propagates cancellation to both upstream and inner ventures during delay.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-
-				{
-					innerSub = venture.subscribeSync(new MonoObserver[Try[A]] {
-						override def onSuccess(tryA: Try[A]): Unit = {
-							if active then {
-								schedule(newDelaySchedule(delay)) { _ =>
-									if active then {
-										val ventureB =
-											try f(tryA)
-											catch {
-												case NonFatal(e) => Venture_failed(e)
-											}
-										innerSub = ventureB.subscribeSync(monoObserver)
-									}
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if active then {
-								monoObserver.onSuccess(Failure(ex))
-							}
-						}
-					})
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					innerSub.unsubscribe()
-				}
-			}
-		}
-	}
-
-	/**
-	 * This [[Venture]] is reusable only when limit2 is null.
-	 */
-	final class TimeLimitedVenture[A](upChain: (Try[A] => Unit) => Unit, limit1: MilliDuration, limit2: Schedule | Null) extends AbstractVenture[Maybe[A]] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[Maybe[A]]]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			var hasElapsed = false
-			var hasCompleted = false
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// The returned subscription cancels the delay timer and ignores any further callbacks.
-			new Subscription {
-				private var active = true
-
-				{
-					schedule(timer) { _ =>
-						if active then {
-							cancel(timer)
-							if !hasCompleted then {
-								hasElapsed = true
-								monoObserver.onSuccess(Success(Maybe.empty))
-							}
-						}
-					}
-					upChain { tryA =>
-						if active && !hasElapsed then {
-							cancel(timer)
-							hasCompleted = true
-							tryA match {
-								case Success(a) => monoObserver.onSuccess(Success(Maybe(a)))
-								case f: Failure[A] => monoObserver.onSuccess(f.castTo[Maybe[A]])
-							}
-						}
-					}
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-				}
-			}
-		}
-	}
-
-	/**
-	 * Caution: This [[Venture]] is reusable only when limit2 is null.
-	 */
-	final class DelayedSupplierVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Try[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// The returned subscription cancels the scheduler timer and ignores the supplier callback if inactive.
-			new Subscription {
-				private var active = true
-				{
-					schedule(timer)(_ => if active then monoObserver.onSuccess(supplier(timer)))
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-				}
-			}
-		}
-	}
-
-	/**
-	 * Caution: This [[Venture]] is reusable only when limit2 is null.
-	 */
-	final class DelayedSupplierFlatVenture[A](limit1: MilliDuration, limit2: Schedule | Null, supplier: Schedule => Venture[A]) extends AbstractVenture[A] {
-		override def subscribeSync(monoObserver: MonoObserver[Try[A]]): Subscription = {
-			val timer: Schedule = if limit2 eq null then newDelaySchedule(limit1) else limit2.asInstanceOf[Schedule]
-			// Changed to return a Subscription to support the modernized cancel/unsubscribe flow.
-			// The returned subscription cancels the scheduler timer and propagates cancellation to the inner venture.
-			new Subscription {
-				private var active = true
-				private var innerSub: Subscription = Subscription_empty
-				{
-					schedule(timer)(_ => if active then innerSub = supplier(timer).subscribeSync(monoObserver))
-				}
-
-				override def unsubscribe(): Unit = {
-					checkWithin()
-					active = false
-					cancel(timer)
-					innerSub.unsubscribe()
 				}
 			}
 		}

@@ -59,12 +59,12 @@ object Prueba {
 	private val probes: Seq[Probe[?]] = List(
 		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularAf),
 		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularAf),
-		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
+		Probe("CooperativeWorkersWithThreadDrivenScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
 		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultPollingSchedulingDpd, RegularAf),
 		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultThreadDrivenSchedulingDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithPollingScheduler and SequentialRf", DefaultPollingSchedulingDpd, SequentialInqueueAf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {
@@ -112,7 +112,7 @@ object Prueba {
 
 		iterationLoop(1).andThen {
 			case Success(totalDuration) =>
-				println(s"""All nexuss were shutdown""")
+				println(s"""All nexus were shutdown""")
 				for probe <- probes do {
 					probe.showResult()
 				}
@@ -195,9 +195,9 @@ object Prueba {
 
 			try {
 				val sb = new StringBuilder
-				sb.append("\n<<< InspectorA <<<\n")
+				sb.append("\n<<< Inspector A <<<\n")
 				manager.diagnose(sb)
-				sb.append(">>> InspectorA >>>\n")
+				sb.append(">>> Inspector A >>>\n")
 				println(sb)
 			} catch {
 				case e: Throwable =>
@@ -211,14 +211,14 @@ object Prueba {
 		// println(nexus.doerProvidersManager.diagnose(new StringBuilder("Pre parent creation:\n")))
 
 		val parentDoer = nexus.provideDoer("parent", descriptor)
-		nexus.createsActant[ProducerWasStopped | ConsumerWasStopped, parentDoer.type](actantFactory, parentDoer) { parent =>
+		nexus.createActant[ProducerWasStopped | ConsumerWasStopped, parentDoer.type](actantFactory, parentDoer) { parent =>
 			// println("Parent initialization")
 			parent.doer.checkWithin()
 
 			parent.doer.Task_sequenceToArray(
 				for consumerIndex <- 0 until NUMBER_OF_CONSUMERS yield {
 					val consumerDoer = parent.provideDoer(s"consumer#$consumerIndex", descriptor)
-					parent.spawns[Consumable, consumerDoer.type](actantFactory, consumerDoer) { consumer =>
+					parent.spawn[Consumable, consumerDoer.type](actantFactory, consumerDoer) { consumer =>
 						consumer.doer.checkWithin()
 						var completedCounter = 0
 						consumable =>
@@ -234,87 +234,93 @@ object Prueba {
 							}
 					}.map { consumer =>
 						parent.doer.checkWithin()
-						parent.watch(consumer, ConsumerWasStopped(consumerIndex))
+						parent.watch(consumer, _ => ConsumerWasStopped(consumerIndex))
 						consumer.receptorProvider.local[Consumable]
 					}
 				}
-			).subscribeSync { consumersReceptors =>
-				parent.doer.checkWithin()
-				for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
+			).subscribeSyncCallbacks(
+				consumersReceptors => {
+					parent.doer.checkWithin()
+					for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 
-					/** Creates a Task that builds a producer with operates as follows:
-					 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
-					 * - The Consumables are sent one after the other without waiting any response.
-					 * */
-					def buildsRegularProducer = {
-						val producerDoer = parent.provideDoer(s"regular-producer#$producerIndex", descriptor)
-						parent.spawns[Initialization, producerDoer.type](actantFactory, producerDoer) { producer =>
-							producer.doer.checkWithin()
+						/** Creates a [[Doer.LatchingTask]] that builds a producer with operates as follows:
+						 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
+						 * - The Consumables are sent one after the other without waiting any response.
+						 * */
+						def buildsRegularProducer = {
+							val producerDoer = parent.provideDoer(s"regular-producer#$producerIndex", descriptor)
+							parent.spawn[Initialization, producerDoer.type](actantFactory, producerDoer) { producer =>
+								producer.doer.checkWithin()
 
-							def loop(restartCount: Int): Behavior[Initialization] = {
-								_ =>
-									if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
-										for consumerReceptor <- consumersReceptors do
-											consumerReceptor.tell(Consumable(producerIndex, restartCount))
-										RestartWith(loop(restartCount + 1))
-									} else {
-										for consumerReceptor <- consumersReceptors do
-											consumerReceptor.tell(Consumable(producerIndex, -1))
-										Stop
-									}
-							}
-
-							loop(0)
-						}
-					}
-
-					/**
-					 * Creates a Task that builds a producer which operates as follows:
-					 * - For each consumer, the following actions are performed sequentially, repeated NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times:
-					 *   - A Consumable is sent to the consumer.
-					 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
-					 * - These actions are performed concurrently across all consumers.
-					 */
-					def buildsInquisitiveProducer = {
-						val producerDoer = parent.provideDoer(s"inquisitive-producer#$producerIndex", descriptor)
-						parent.spawns[Started.type | Acknowledge, producerDoer.type](actantFactory, producerDoer) { producer =>
-							producer.doer.checkWithin()
-							val selfAckReceptor = producer.receptorProvider.local[Acknowledge]
-
-							behaviors.inquisitiveNest(producer) { (started: Started.type) =>
-								import Inquisitive.*
-								var completedConsumersCounter = 0
-								// for each consumer simultaneously do: send a Consumable to it and wait for the Acknowledge before sending the next Consumable to it, repeating this cycle NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
-								for (consumerReceptor, consumerIndex) <- consumersReceptors.zipWithIndex do {
-									def loop(numberOfMessagesAlreadySentToConsumer: Int): Unit = {
-
-										if numberOfMessagesAlreadySentToConsumer < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
-											consumerReceptor.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfAckReceptor))
-												.andThen(_ => loop(numberOfMessagesAlreadySentToConsumer + 1))
-												.triggerAndForget(true)
+								def loop(restartCount: Int): Behavior[Initialization] = {
+									_ =>
+										if restartCount < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
+											for consumerReceptor <- consumersReceptors do
+												consumerReceptor.tell(Consumable(producerIndex, restartCount))
+											RestartWith(loop(restartCount + 1))
 										} else {
-											consumerReceptor.tell(Consumable(producerIndex, -1))
-											completedConsumersCounter += 1
-											if completedConsumersCounter == NUMBER_OF_CONSUMERS then producer.stop()
+											for consumerReceptor <- consumersReceptors do
+												consumerReceptor.tell(Consumable(producerIndex, -1))
+											Stop
 										}
-									}
-
-									loop(0)
 								}
-								Continue
-							}()
-						}
-					}
 
-					val buildsProducer: parent.doer.Task[Actant[?, ?]] =
-						if useInquisitiveProducer then buildsInquisitiveProducer
-						else buildsRegularProducer
-					buildsProducer.subscribeSync { producer =>
-						parent.doer.checkWithin()
-						parent.watch(producer, ProducerWasStopped(producerIndex, producer.doer))
+								loop(0)
+							}
+						}
+
+						/**
+						 * Creates a Task that builds a producer which operates as follows:
+						 * - For each consumer, the following actions are performed sequentially, repeated NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times:
+						 *   - A Consumable is sent to the consumer.
+						 *   - The producer waits for an Acknowledge from the consumer before sending the next Consumable.
+						 * - These actions are performed concurrently across all consumers.
+						 */
+						def buildsInquisitiveProducer = {
+							val producerDoer = parent.provideDoer(s"inquisitive-producer#$producerIndex", descriptor)
+							parent.spawn[Started.type | Acknowledge, producerDoer.type](actantFactory, producerDoer) { producer =>
+								producer.doer.checkWithin()
+								val selfAckReceptor = producer.receptorProvider.local[Acknowledge]
+
+								behaviors.inquisitiveNest(producer) { (started: Started.type) =>
+									import Inquisitive.*
+									var completedConsumersCounter = 0
+									// for each consumer simultaneously do: send a Consumable to it and wait for the Acknowledge before sending the next Consumable to it, repeating this cycle NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
+									for (consumerReceptor, consumerIndex) <- consumersReceptors.zipWithIndex do {
+										def loop(numberOfMessagesAlreadySentToConsumer: Int): Unit = {
+
+											if numberOfMessagesAlreadySentToConsumer < NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER then {
+												consumerReceptor.ask(questionId => Consumable(producerIndex, numberOfMessagesAlreadySentToConsumer, questionId, selfAckReceptor))
+													.andThen(_ => loop(numberOfMessagesAlreadySentToConsumer + 1))
+													.triggerAndForget(true)
+											} else {
+												consumerReceptor.tell(Consumable(producerIndex, -1))
+												completedConsumersCounter += 1
+												if completedConsumersCounter == NUMBER_OF_CONSUMERS then producer.stop()
+											}
+										}
+
+										loop(0)
+									}
+									Continue
+								}()
+							}
+						}
+
+						val buildsProducer: parent.doer.LatchingTask[Actant[?, ?]] =
+							if useInquisitiveProducer then buildsInquisitiveProducer
+							else buildsRegularProducer
+						buildsProducer.subscribeSyncCallbacks(
+							producer => {
+								parent.doer.checkWithin()
+								parent.watch(producer, _ => ProducerWasStopped(producerIndex, producer.doer))
+							},
+							error => throw new Exception(error) // TODO 
+						)
 					}
-				}
-			}
+				},
+				error => throw new Exception(error) // TODO
+			)
 
 			var activeConsumers = NUMBER_OF_CONSUMERS
 			var activeProducers = NUMBER_OF_PRODUCERS
@@ -342,37 +348,36 @@ object Prueba {
 						Stop
 					}
 			}
-		}.trigger { parent =>
-			nexus.doer.checkWithin()
-			// println("Parent created")
+		}.triggerCallbacks(false)(
+			parent => {
+				nexus.doer.checkWithin()
+				// println("Parent created")
 
-			diagnosticScheduler.fixedRate(0, WATCH_DOG_DELAY_MILLIS, TimeUnit.MILLISECONDS) { () =>
+				diagnosticScheduler.fixedRate(0, WATCH_DOG_DELAY_MILLIS, TimeUnit.MILLISECONDS) { () =>
 
-				try {
-					val sb = new StringBuilder
-					sb.append("\n<<< InspectorB <<<\n")
-					sb.append(
-						s"""Parent's diagnostic: ${parent.staleDiagnose}""".stripMargin
-					)
-					sb.append("\n>>> InspectorB >>>\n")
-					println(sb)
-				} catch {
-					case e: Throwable =>
-						e.printStackTrace()
-						throw e
+					parent.diagnose.foreach { diagnostic =>
+						val sb = new StringBuilder
+						sb.append("\n<<< Inspector B <<<\n")
+						sb.append(
+							s"""Parent's diagnostic: $diagnostic""".stripMargin
+						)
+						sb.append("\n>>> Inspector B >>>\n")
+						println(sb)
+					}
 				}
-			}
 
-			parent.stopTask.trigger { _ =>
-				val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
+				parent.stopCapturer.subscribe(false) { _ =>
+					val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
-				println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
-				println(s"+++ Descriptor: ${descriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_MEGA}M")
-				// println(s"After successful completion diagnostic:\n${nexus.doerProvidersManager.diagnose(new StringBuilder())}")
+					println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")
+					println(s"+++ Descriptor: ${descriptor.id} +++ Duration: ${(nanoAtEnd - nanoAtStart) / 1000000} ms +++, Consumption: ${consumption / A_MEGA}M")
+					// println(s"After successful completion diagnostic:\n${nexus.doerProvidersManager.diagnose(new StringBuilder())}")
 
-				result.success((nanoAtEnd - nanoAtStart, consumption))
-			}
-		}
+					result.success((nanoAtEnd - nanoAtStart, consumption))
+				}
+			},
+			error => throw new Exception(error)
+		)
 		result.future.andThen { tryDuration =>
 			// println(s"Before closing: duration=${tryDuration.map(_ / 1000000)}")
 			manager.shutdown()

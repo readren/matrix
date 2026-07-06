@@ -33,8 +33,8 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		ScribeConfig.init(deleteLogFilesOnLaunch = true)
 		sharedDoerProvider = new CooperativeWorkersDp.Impl(
 			applyMemoryFence = false,
-			failureReporter = (doer, failure) => scribe.debug(s"Failure reported: ${failure.getMessage}"),
-			unhandledExceptionReporter = (doer, exception) => scribe.debug(s"Unhandled exception: ${exception.getMessage}")
+			unhandledExceptionReporter = (doer, exception) => scribe.debug(s"Unhandled exception: ${exception.getMessage}"),
+			threadFactory = new TestThreadFactory
 		)
 		sharedDoer = sharedDoerProvider.provide("shared-doer")
 	}
@@ -98,7 +98,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 
 		var mutable = 1
 
-		val task = doer.Task_mine { () =>
+		val task = doer.Task_apply { () =>
 			println("start")
 
 			def m12(): Unit = {

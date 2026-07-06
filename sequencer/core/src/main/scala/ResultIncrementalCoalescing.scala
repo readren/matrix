@@ -23,12 +23,13 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 	private var maybeFinalResult: Maybe[doer.Covenant[R]] = Maybe.empty
 	/** The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of the ongoing [[Competition]]. */
 	private var incumbent: doer.LatchingTask[R] | Null = null
+	private var maybeIncumbentSubscription: Maybe[doer.Subscription] = Maybe.empty
 
 	/**
 	 * Enters a new execution into the ongoing competition.
 	 * A new competition is started if none is ongoing, in which case the `arbitrator` function receives an empty incumbent.
 	 *
-	 * This method is the entry point for a "contender" It uses the `arbitrator` function to determine if this contender should displace the current [[incumbent]].
+	 * This method is the entry point for a "contender". It uses the `arbitrator` function to determine if this contender should displace the current [[incumbent]].
 	 *
 	 * @param arbitrator A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingTask]] that yields the result of the execution that should hold the title.
 	 * If it returns the provided incumbent, the new contender "loses."
@@ -47,13 +48,26 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 
 			def supersedeWith(chosenWinner: doer.LatchingTask[R], finalResult: doer.Covenant[R]): Unit = {
 				incumbent = chosenWinner
-				chosenWinner.subscribeSync { result =>
-					if chosenWinner eq incumbent then {
-						incumbent = null
-						maybeFinalResult = Maybe.empty
-						finalResult.fulfillUnsafe(result)
+				val subscription = chosenWinner.subscribeSync(new doer.MonoObserver[R] {
+					override def onSuccess(result: R): Unit = {
+						if chosenWinner eq incumbent then {
+							incumbent = null
+							maybeFinalResult = Maybe.empty
+							maybeIncumbentSubscription = Maybe.empty
+							finalResult.fulfillSync(result)
+						}
 					}
-				}
+
+					override def onError(e: Throwable): Unit = {
+						if chosenWinner eq incumbent then {
+							incumbent = null
+							maybeFinalResult = Maybe.empty
+							maybeIncumbentSubscription = Maybe.empty
+							finalResult.breakSync(e)
+						}
+					}
+				})
+				if chosenWinner eq incumbent then maybeIncumbentSubscription = Maybe(subscription)
 			}
 
 			val chosenWinner = arbitrator(Maybe(incumbent))
@@ -63,13 +77,24 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 				supersedeWith(chosenWinner, finalResult)
 				finalResult
 			} { finalResult =>
-				if chosenWinner ne incumbent then supersedeWith(chosenWinner, finalResult)
+				if chosenWinner ne incumbent then {
+					val mis = maybeIncumbentSubscription
+					maybeIncumbentSubscription = Maybe.empty
+					mis.foreach(_.unsubscribe())
+					supersedeWith(chosenWinner, finalResult)
+				}
 				finalResult
 			}
 		} else {
-			val joiningCovenant = doer.Covenant[R]()
-			doer.run(contend(arbitrator, true).subscribeSync(r => joiningCovenant.fulfillUnsafe(r)))
-			joiningCovenant
+			new doer.DefaultCaptor[R] with doer.MonoObserver[R] with Runnable {
+				doer.run(this)
+
+				override def run(): Unit = contend(arbitrator, true).triggerSync(this)
+
+				override def onSuccess(r: R): Unit = fulfillSync(r)
+
+				override def onError(e: Throwable): Unit = breakSync(e)
+			}
 		}
 	}
 

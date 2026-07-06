@@ -43,8 +43,6 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 		override def currentlyRunningDoer: Maybe[DoerSandbox2] = {
 			if forceSandboxInSequence then Maybe(this) else Maybe.empty
 		}
-
-		override def reportFailure(cause: Throwable): Unit = throw cause
 	}
 
 	import sandbox.*
@@ -892,8 +890,6 @@ class DoerSandbox2Spec extends ScalaCheckEffectSuite {
 				override def currentlyRunningDoer: Maybe[DoerSandbox2] = {
 					if forceInSequence then Maybe(this) else Maybe.empty
 				}
-
-				override def reportFailure(cause: Throwable): Unit = throw cause
 
 				def runPending(): Unit = {
 					val q = queue

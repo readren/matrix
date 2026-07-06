@@ -14,8 +14,7 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
 	) extends CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
@@ -26,9 +25,6 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
 
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 
 	inline def NOT_ACTIVATED: Long= Long.MaxValue
@@ -39,6 +35,7 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
  * The scheduling information is operated by the current thread by means of atomic and synchronization primitives.
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
+ * TODO Define a variant of this class in which each [[Doer]] also has its own [[MinHeapPriorityQueue]], and the shared one ([[priorityQueue]]) contains only the earliest [[MinHeapPriorityQueue.Element]] of each [[Doer]]'s [[MinHeapPriorityQueue]]. This would simplify the cancelAll operation and would minimize blocking.
  */
 abstract class CooperativeWorkersWithPollingSchedulerDp(
 	applyMemoryFence: Boolean = true,
@@ -59,10 +56,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		/** The routine whose execution is scheduled by this [[ScheduleImpl]].
 		 * Initialized when this instance is activated, which happens when it is passed to the [[scheduleSequentially]] method. */
 		var runnable: Runnable | Null = null
-		/** Knows if the [[scheduler.enqueuedSchedulesByDoer]] collection contains this instance.
-		 * Its purpose is to improve efficiency by avoiding unnecessary manipulations of said collection.
-		 * Only accessed within the scheduling thread. */
-		var isTriggered = false
+
 		@volatile var isCanceled = false
 
 		/** Executes the routine associated to this [[ScheduleImpl]] */
@@ -71,17 +65,18 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		/** Adds this [[ScheduleImpl]] instance to the [[priorityQueue]] at the specified time. */
 		def program(scheduledTime: MilliTime): Unit = {
 			this.scheduledTime = scheduledTime
-			val previousPriorityQueueSize = thisProvider synchronized {
-				val previousSize = priorityQueue.size
+			val earliestChanged = thisProvider synchronized {
+				val oldEarliest = earliestScheduledTime
 				priorityQueue.add(this)
-				earliestScheduledTime = priorityQueue.peek.scheduledTime
-				previousSize
+				val newEarliest = priorityQueue.peek.scheduledTime
+				earliestScheduledTime = newEarliest
+				oldEarliest - newEarliest > 0
 			}
-			if previousPriorityQueueSize == 0 then wakeUpAWorkerIfAllSleeping()
+			if earliestChanged then wakeUpASleepingWorkerIfAny(owner.lastTimeWorkerIndex)
 		}
 
 		override def toString: String =
-			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
+			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated)"
 	}
 
 	/** The priority queue used to memorize the [[ScheduleImpl]] instances and sort them by its next scheduled-time. */
@@ -106,11 +101,12 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisDoer =>
 
 		override type Schedule = ScheduleImpl
+		override type Delay = ScheduleImpl
 
 		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
 		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
 
-		override def newDelaySchedule(delay: MilliDuration): Schedule =
+		override def newDelaySchedule(delay: MilliDuration): Delay =
 			new ScheduleImpl(thisDoer, delay, 0L, false)
 
 		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =
@@ -148,6 +144,8 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 			schedule.isCanceled = true
 			thisProvider synchronized {
 				priorityQueue.remove(schedule)
+				val next = priorityQueue.peek
+				earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
 			}
 		}
 
@@ -164,9 +162,11 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 					val schedule = priorityQueue(index)
 					if schedule.owner eq thisDoer then {
 						schedule.isCanceled = true
-						priorityQueue.remove(schedule)
+						if priorityQueue.remove(schedule) && index < priorityQueue.size then index += 1
 					}
 				}
+				val next = priorityQueue.peek
+				earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
 			}
 		}
 

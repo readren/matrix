@@ -1,9 +1,10 @@
 package readren.sequencer
 
 import GeneratorsForDoerTests.{*, given}
+
 import munit.ScalaCheckEffectSuite
+import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import org.scalacheck.{Arbitrary, Gen, Prop}
 import readren.common.{Maybe, ScribeConfig}
 
 import scala.compiletime.uninitialized
@@ -11,7 +12,6 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Future, Promise}
 import scala.reflect.ClassTag
-import scala.util.control.NonFatal
 
 /** Abstract test suite for testing [[ResultIncrementalCoalescing]].
  *
@@ -73,29 +73,31 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
-				expectedResult <- intGen
-				contender <- genTask(expectedResult)
-			} yield (expectedResult, doer.Covenant_triggerAndWire(contender): doer.LatchingTask[Int])
-		} { (expectedResult, contender) =>
+				successfulResult <- smallIntGen
+				result <- genTryFrom(successfulResult, "expected-result", 50)
+				contender <- genTaskFrom(result)
+			} yield (successfulResult, result, doer.Covenant_triggerAndWire(contender): doer.LatchingTask[Int])
+		} { (successfulResult, expectedResult, contender) =>
 
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
-				val resultTask = mc.contend { maybeIncumbent =>
-					maybeIncumbent.fold {
-						contender
-					} { _ =>
-						break("First contender should see empty incumbent")
-						contender
+				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
+				val resultCapturer = ric.contend { maybeIncumbent =>
+					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
+					contender
+				}
+				resultCapturer.triggerSyncCallbacks(
+					actualResult => {
+						if actualResult == successfulResult then promise.trySuccess(())
+						else break(s"Expected $successfulResult, got $actualResult")
+					}, actualError => {
+						if expectedResult.fold(_ eq actualError, _ => false) then promise.trySuccess(())
+						else break(s"Expected $expectedResult, got Failure($actualError)")
 					}
-				}
-				resultTask.subscribeSync { result =>
-					if result == expectedResult then promise.trySuccess(())
-					else promise.tryFailure(new AssertionError(s"Expected 42, got $result"))
-				}
+				)
 			}
 			gate
 		}
@@ -104,42 +106,50 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 	test("MonotonicConvergence - second contender supersedes the first") {
 		val generators = getGenerators
 		import generators.*
+
 		PropF.forAllNoShrinkF {
 			for {
-				expectedResult1 <- intGen
-				expectedResult2 <- intGen
-				firstContender0 <- genTask(expectedResult1)
-				secondContender0 <- genTask(expectedResult2)
+				contenderATask <- genTask[Int]()
+				expectedResultB <- genTry[Int]
+				contenderB <- genCapturerFrom(expectedResultB)
+				bool <- Gen.oneOf(true, false)
 			} yield (
-				expectedResult2,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int],
-				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
+				contenderATask,
+				expectedResultB,
+				contenderB,
+				bool
 			)
-		} { (expectedResult2, firstContender, secondContender) =>
+		} { case (contenderATask, expectedResultB, contenderB, bool) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
+				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val firstResultTask = mc.contend { _ => firstContender }
+				val contenderA = new Covenant[Int]()
+				val firstResultCapturer = ric.contend { maybeIncumbent =>
+					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
+					contenderA
+				}
+				val secondResultCapturer = ric.contend { maybeIncumbent =>
+					if maybeIncumbent.fold(true)(_ ne contenderA) then break("Second contender should see contenderA as incumbent")
+					contenderB
+				}
+				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
 
-				val secondResultTask = mc.contend { maybeIncumbent =>
-					maybeIncumbent.fold {
-						secondContender
-					} { incumbent =>
-						if incumbent ne firstContender then break("Incumbent should be the first covenant")
-						secondContender
+				if bool then contenderA.fulfillWithSync(contenderATask)
+				secondResultCapturer.triggerSyncCallbacks(
+					actualResultB => {
+						if expectedResultB.fold(_ => true, _ != actualResultB) then break(s"expected $expectedResultB, got Success($actualResultB)")
+						else promise.trySuccess(())
+					}, actualErrorB => {
+						if expectedResultB.fold(_ ne actualErrorB, _ => true) then break(s"expected $expectedResultB, got Failure($actualErrorB)")
+						else promise.trySuccess(())
 					}
-				}
-
-				secondResultTask.subscribeSync { result =>
-					if result == expectedResult2 then promise.trySuccess(())
-					else break(s"Expected $expectedResult2, got $result")
-				}
+				)
+				if !bool then contenderA.fulfillWithSync(contenderATask)
 			}
-
 			gate
 		}
 	}
@@ -149,40 +159,47 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
-				expectedResult1 <- intGen
-				firstContender0 <- genTask(expectedResult1)
+				expectedResultA <- genTry[Int]
+				contenderATask <- genTaskFrom(expectedResultA)
+				bool <- Gen.oneOf(true, false)
 			} yield (
-				expectedResult1,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int]
+				expectedResultA,
+				contenderATask,
+				bool
 			)
-		} { (expectedResult1, firstContender) =>
+		} { (expectedResultA, contenderATask, bool) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
+				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				// To test yielding, the FIRST contender must be evaluated and complete on its own,
-				// so we use the generated one. The second contender yields simply by returning the incumbent.
-				// However, if the first already completed, yielding is technically starting a new competition!
-				// But yielding returning the incumbent means returning the one passed in `maybeIncumbent`.
-				// To guarantee the competition doesn't close before `mc.contend` executes, we delay `mc.contend(2)`
-				// OR we make sure firstContender is delayed. Actually, we can just use `trySuccess` if the result matches!
-				val firstResultTask = mc.contend { _ => firstContender }
+				val contenderA = new Covenant[Int]()
+				val firstResultCapturer = ric.contend { maybeIncumbent =>
+					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
+					contenderA
+				}
 
-				val secondResultTask = mc.contend { maybeIncumbent =>
+				val secondResultCapturer = ric.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
-						firstContender
-					} { incumbent =>
-						incumbent
-					}
+						break("Second contender should see contenderA as incumbent")
+						LatchingTask_ready(0)
+					}(identity)
 				}
+				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
 
-				secondResultTask.subscribeSync { result =>
-					if result == expectedResult1 then promise.trySuccess(())
-					else break(s"Expected $expectedResult1, got $result")
-				}
+				if bool then contenderA.fulfillWithSync(contenderATask)
+				secondResultCapturer.triggerSyncCallbacks(
+					actualResult => {
+						if expectedResultA.fold(_ => true, _ != actualResult) then break(s"Expected $expectedResultA, got Success($actualResult)")
+						else promise.trySuccess(())
+					}, actualError => {
+						if expectedResultA.fold(_ ne actualError, _ => true) then break(s"Expected $expectedResultA, got Failure($actualError)")
+						else promise.trySuccess(())
+					}
+				)
+				if !bool then contenderA.fulfillWithSync(contenderATask)
 			}
 
 			gate
@@ -194,41 +211,46 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
-				expectedResult1 <- intGen
-				expectedResult2 <- intGen
-				firstContender0 <- genTask(expectedResult1)
-				secondContender0 <- genTask(expectedResult2)
+				contenderA <- genCapturer[Int]()
+				expectedResultB <- genTry[Int]
+				contenderB <- genCapturerFrom(expectedResultB)
 			} yield (
-				expectedResult1,
-				doer.Covenant_triggerAndWire(firstContender0): doer.LatchingTask[Int],
-				expectedResult2,
-				doer.Covenant_triggerAndWire(secondContender0): doer.LatchingTask[Int]
+				contenderA,
+				expectedResultB,
+				contenderB
 			)
-		} { (expectedResult1, firstContender, expectedResult2, secondContender) =>
+		} { (contenderA, expectedResultB, contenderB) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
 
 			doer.run {
-				val mc = new ResultIncrementalCoalescing[Int, doer.type](doer)
+				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val firstResultTask = mc.contend { _ => firstContender }
+				val firstResultCapturer = ric.contend { maybeIncumbent =>
+					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
+					contenderA
+				}
 
-				firstResultTask.subscribeSync { _ =>
-					doer.run {
-						val newResultTask = mc.contend { maybeIncumbent =>
-							maybeIncumbent.fold {
-								secondContender
-							} { _ =>
-								break("Should start a new competition after previous completed")
-								secondContender
+				contenderA.subscribe(true) {
+					_ => {
+						val newResultTask = ric.contend(
+							maybeIncumbent => {
+								if maybeIncumbent.isDefined then break("Should start a new competition after previous completed")
+								contenderB
 							}
-						}
+						)
 
-						newResultTask.subscribeSync { result =>
-							if result == expectedResult2 then promise.trySuccess(())
-							else break(s"Expected $expectedResult2, got $result")
-						}
+						newResultTask.subscribeCallbacks(true)(
+							actualResultB => {
+								if expectedResultB.fold(_ => false, _ == actualResultB) then promise.trySuccess(())
+								else break(s"Expected $expectedResultB, got $actualResultB")
+							},
+							actualErrorB => {
+								if expectedResultB.fold(_ eq actualErrorB, _ => false) then promise.trySuccess(())
+								else break(s"Expected $expectedResultB, got $actualErrorB")
+							}
+						)
 					}
 				}
 			}

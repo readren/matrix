@@ -15,10 +15,10 @@ import scala.util.control.NonFatal
  *
  * This is intended for stateless or point-in-time inquiries where any result retrieved after the request is enqueued is considered sufficient for all concurrent callers in that coalesced group.
  */
-final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.LatchingVenture[R]) {
-	private val inFlight: mutable.Map[P, doer.LatchingVenture[R]] = mutable.Map.empty
+final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.LatchingTask[R]) {
+	private val inFlight: mutable.Map[P, doer.LatchingTask[R]] = mutable.Map.empty
 
-	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.LatchingVenture[R] = {
+	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.LatchingTask[R] = {
 		if isWithinDoer then {
 			inFlight.get(params) match {
 				case Some(lt) =>
@@ -27,18 +27,19 @@ final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.Latc
 					try {
 						val lt = querier(params)
 						inFlight.put(params, lt)
-						lt.andThen(_ => inFlight.remove(params))
+						lt.andThen(
+							_ => inFlight.remove(params),
+							_ => inFlight.remove(params)
+						)
 						lt
 					} catch {
-						case NonFatal(e) => doer.LatchingVenture_ready(Failure(e))
+						case NonFatal(e) => doer.LatchingTask_failed(e)
 					}
 			}
 		} else {
-			val commitment = doer.Commitment[R]()
-			doer.run {
-				commitment.completeWith(getOrStart(params, true))
-			}
-			commitment
+			val covenant = doer.Covenant[R]()
+			covenant.fulfillWith(getOrStart(params, false))
+			covenant
 		}
 	}
 }

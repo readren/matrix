@@ -20,12 +20,6 @@ class CooperativeWorkersWithPollingSchedulerDpResultIncrementalCoalescingTest ex
 				scribe.error(s"Unhandled exception:", exception)
 			}
 		}
-
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = {
-			if doer.isInSequence then {
-				scribe.debug(s"Failure reported: ${failure.getMessage}")
-			}
-		}
 	}
 
 	/** The implementation should release the specified [[DoerProvider]]. */

@@ -33,8 +33,7 @@ object CooperativeWorkersDp {
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		override type Tag = String
@@ -43,9 +42,6 @@ object CooperativeWorkersDp {
 
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 }
 
@@ -105,7 +101,7 @@ abstract class CooperativeWorkersDp(
 		private val runnablesQueueSize: AtomicInteger = new AtomicInteger(0)
 		@volatile protected var firstRunnableInQueue: Runnable = null
 		/** Remembers the index of the worker that executed this doer's tasks the last time. This allows reusing the same worker if available, to take advantage of CPU-core local cache. */
-		private[CooperativeWorkersDp] var lastTimeWorkerIndex = 0
+		var lastTimeWorkerIndex = 0
 		private var executionSequencer: Int = 0
 
 		override def numOfPendingRunnables: Int = runnablesQueueSize.get
@@ -139,7 +135,7 @@ abstract class CooperativeWorkersDp(
 
 		override def currentlyRunningDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
 
-		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
+
 
 		/** Executes all the pending tasks that are visible from the calling [[Worker.thread]].
 		 * Assumes that [[runnablesQueueSize]] is greater than zero because, for this method to be called, this [[DoerImpl]] should have been added to the [[queuedDoers]], which happens when the [[runnablesQueueSize]] transitions from zero to one.
@@ -217,9 +213,9 @@ abstract class CooperativeWorkersDp(
 		false
 	}
 
-	protected def wakeUpAWorkerIfAllSleeping(): Unit = {
+	protected def wakeUpAWorkerIfAllSleeping(workerIndex: Int): Unit = {
 		if sleepZonePopulation.get == workers.length then {
-			workers(0).wakeUpIfSleeping()
+			workers(workerIndex).wakeUpIfSleeping()
 		}
 	}
 
@@ -348,12 +344,10 @@ abstract class CooperativeWorkersDp(
  	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeWorkersWithPollingSchedulerDp.determineWaitDurationFor]] for an example.
 	 * @param worker the last [[Worker]] to enter the sleep zone.
 	 */
-	protected def lull(worker: Worker): Unit = 
-		worker.wait()
+	protected def lull(worker: Worker): Unit = worker.wait()
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
-	protected def pollNextDoer(): DoerImpl | Null =
-		queuedDoers.poll()
+	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
 
 	protected inline def startAllWorkersIfNotAlready(): Unit = {
 		if state.compareAndSet(State.notStarted.ordinal, State.keepRunning.ordinal) then {

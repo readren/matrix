@@ -45,13 +45,11 @@ object ActorBasedSchedulingDoer {
 			override def currentlyRunningDoer: Maybe[ActorBasedDoer] =
 				Maybe.apply(ActorBasedDoer.currentDoerThreadLocal.get)
 
-			override def reportFailure(cause: Throwable): Unit =
-				actorBasedDoer.reportFailurePortal(cause)
-
 			override def akkaScheduler: Scheduler =
 				actorBasedDoer.akkaScheduler
 
 			override type Schedule = Plan
+			override type Delay = SingleTime
 
 			override def newDelaySchedule(delay: MilliDuration): SingleTime = SingleTime(delay)
 

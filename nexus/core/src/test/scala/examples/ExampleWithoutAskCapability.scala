@@ -23,7 +23,7 @@ object ExampleWithoutAskCapability {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val calculatorDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularAf, calculatorDoer)(_ => {
+		nexus.createActant[CalcCmd, calculatorDoer.type](RegularAf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo) =>
 					replyTo.tell(SumResult(a + b))
 					Continue
@@ -31,7 +31,7 @@ object ExampleWithoutAskCapability {
 				val receptorForCalculator = calculator.receptorProvider.local[CalcCmd]
 
 				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
-				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularAf, userDoer) { user =>
+				nexus.createActant[Started.type | SumResult, userDoer.type](RegularAf, userDoer) { user =>
 					val userReceptor = user.receptorProvider.local[SumResult]
 
 					{
@@ -46,10 +46,11 @@ object ExampleWithoutAskCapability {
 				}
 
 			}
-			.flatMap { user => user.stopTask.onBehalfOf(nexus.doer) }
-			.trigger { _ =>
-				manager.shutdown()
-			}
+			.flatMap { user => user.stopCapturer.onBehalfOf(nexus.doer) }
+			.triggerCallbacks()(
+				_ => manager.shutdown(),
+				error => throw new Exception(error)
+			)
 
 
 	}

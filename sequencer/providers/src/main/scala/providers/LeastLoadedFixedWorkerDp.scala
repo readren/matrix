@@ -1,10 +1,10 @@
 package readren.sequencer
 package providers
 
+import Doer.ExecutionSerial
 import providers.ShutdownAble
 
 import readren.common.Maybe
-import readren.sequencer.Doer.ExecutionSerial
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -13,15 +13,12 @@ import java.util.concurrent.atomic.AtomicInteger
 object LeastLoadedFixedWorkerDp {
 	final class Impl(
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends LeastLoadedFixedWorkerDp(threadPoolSize, threadFactory, queueFactory) {
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
-		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = ???
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 	}
 }
 
@@ -51,7 +48,6 @@ abstract class LeastLoadedFixedWorkerDp(
 
 	class ProvidedDoer(
 		override val tag: String,
-		failureReporter: Throwable => Unit = _.printStackTrace(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends Doer { thisDoer =>
@@ -73,8 +69,6 @@ abstract class LeastLoadedFixedWorkerDp(
 		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
 		override def currentlyRunningDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
-
-		override def reportFailure(cause: Throwable): Unit = failureReporter(cause)
 	}
 
 	override def provide(tag: Tag): ProvidedDoer = {

@@ -16,8 +16,7 @@ object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersD
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
 	) extends CooperativeWorkersWithThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		override type Tag = String
@@ -26,9 +25,6 @@ object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersD
 
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
 }
 
@@ -65,8 +61,9 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
 
 		override type Schedule = ScheduleImpl
+		override type Delay = ScheduleImpl
 
-		override def newDelaySchedule(delay: MilliDuration): Schedule =
+		override def newDelaySchedule(delay: MilliDuration): Delay =
 			new ScheduleImpl(thisSchedulingDoer, delay, 0L, false)
 
 		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =

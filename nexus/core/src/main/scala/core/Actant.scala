@@ -24,14 +24,14 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 
 	/** Creates a child [[ActantCore]] backed by the specified [[Doer]]
 	 * Calls must be within the [[doer]]. */
-	def spawns[V, CD <: Doer](
+	def spawn[V, CD <: Doer](
 		childFactory: ActantFactory,
 		childDoer: CD
 	)(
 		initialChildBehaviorBuilder: Actant[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Task[Actant[V, CD]]
+	): doer.LatchingTask[Actant[V, CD]]
 
 	/** Calls must be within the [[doer]]. */
 	def children: MapView[Long, Actant[?, ?]]
@@ -40,18 +40,20 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 * Instructs to stop this [[ActantCore]].
 	 * Supports being called from anywhere at any moment and many times.
 	 * If this actant is processing a message when this method is called, the process of that single message will continue but no other message will be processed after it.
-	 * It is not necessary to trigger the execution of the returned [[Task]] to start the stop process. The result can be ignored.
+	 * TODO consider adding a parameter of type `U` to this method to allow the actants that are [[watch]]ing this [[Actant]] receive a clue of the cause. This would be convenient to:
+	 *   - Avoid the necessity for the watched [[Actant]] to have a [[Receptor]] of the [[watch]]ing [[Actant]].
+	 *   - Simplify the watcher's logic given [[Signal]]s skip the messages queue and, therefore, any message intended to inform the cause may arrive after the stop signal, forcing the watcher to remember the situation during the gap.
 	 *
 	 * This method is thread-safe.
 	 * @return a [[Task]] that completes when this [[ActantCore]] is fully stopped. */
-	def stop(): doer.Task[Unit]
+	def stop(): doer.LatchingTask[Unit]
 
 	/** A [[SubscriptableTask]] that completes when this [[ActantCore]] is fully stopped (after the [[StopReceived]] signal was handled and this [[ActantCore]] was removed from its progenitor's children list).
 	 *
 	 * This task is the same as the returned by the [[stop]] method.
 	 *
 	 * This method is thread-safe but some methods of the returned [[SubscriptableTask]] require being called within the [[doer]]. */
-	def stopTask: doer.LatchingTask[Unit]
+	def stopCapturer: doer.LatchingTask[Unit]
 
 	/** Registers this [[ActantCore]] to be notified with the specified signal when the given `watchedActant` is fully stopped.
 	 *
@@ -62,18 +64,20 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 * **Usage:** This method must be called within the [[doer]].
 	 *
 	 * @param watchedActant The [[ActantCore]] to be observed.
-	 * @param stoppedSignal   The signal to be passed to the `[[Behavior.handle]]` method of this [[ActantCore]]'s behavior after the `watchedActant` is fully stopped.
+	 * @param stoppedSignalBuilder A builder for the signal to be passed to the `[[Behavior.handle]]` method of this [[ActantCore]]'s behavior after the `watchedActant` is fully stopped.
 	 * @param univocally      When `true`, any existing subscriptions to the `watchedActant` are cleared. This mode avoids redundant subscriptions that might occur after a restart.
 	 *                        When `false`, the behavior must handle potential duplicate subscriptions after a restart. This mode is useful when two [[Behaviors]] combined with
 	 *                        [[Behavior.unitedNest]] watch the same [[ActantCore]].
 	 * @param subscriptionCompleted An optional [[Doer.Covenant]] that will be fulfilled when the subscription process completes.
 	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
 	 */
-	def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignal: SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
+	def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignalBuilder: (Unit | Throwable) => SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 
-	/** Provides diagnostic information about the current instance. */
-	def diagnoses: doer.Task[ActantDiagnostic]
+	/** Provides diagnostic information about the current instance.
+	 * The different nested [[ActantDiagnostic]] are build by different [[Doer]] instances so they may be inconsistent. */
+	def diagnose: doer.LatchingTask[ActantDiagnostic]
 
 	/** Provides diagnostic information about the current instance that may be stale due to cache visibility issues across processor cores. */
+	@deprecated
 	def staleDiagnose: ActantDiagnostic
 }

@@ -14,13 +14,13 @@ trait ActantFactory {
 	 * @param initialBehaviorBuilder a builder of the [[Behavior]] that the created [[ActantCore]] will host when is born.
 	 * @tparam U the type of the messages that the created [[ActantCore]] understands.
 	 * @tparam D the type of the [[Doer]] assigned to the created [[ActantCore]]. */
-	def createsActant[U, D <: Doer](
+	def createActant[U, D <: Doer](
 		serial: ActantCore.SerialNumber,
 		progenitor: Spawner[?],
 		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
-	): actantDoer.Task[ActantCore[U, D]]
+	): actantDoer.LatchingTask[ActantCore[U, D]]
 
 
 }

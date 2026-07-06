@@ -29,15 +29,15 @@ object Borrame {
 
 		val laDog: doer.LatchingTask[Animal] = doer.Covenant[Dog]().fulfill(dog)
 
-		laDog.trigger(a => println(a))
+		laDog.triggerCallbacks()(a => println(a), e => throw new Exception(e))
 
 		val laDogMutatedToCat: doer.LatchingTask[Cat] = laDog.map(_ => cat)
 
-		laDogMutatedToCat.trigger(b => println(b))
+		laDogMutatedToCat.triggerCallbacks()(b => println(b), e => throw new Exception(e))
 
-		val dOne = doer.Task_mine(() => 1)
+		val dOne = doer.Task_apply(() => 1)
 		val covenant = doer.Covenant[Int]()
-		covenant.trigger(x => println(s"covenant completed with $x"))
+		covenant.triggerCallbacks()(x => println(s"covenant completed with $x"), e => throw new Exception(e))
 		covenant.fulfillWith(dOne)
 
 		val stateUpdater: Animal => Maybe[doer.LatchingTask[Animal]] = {
@@ -58,7 +58,7 @@ object Borrame {
 				z <- fence.advanceIf(stateUpdater)
 			} yield (i, x, y, z)
 
-		steps.trigger(r => println(r))
+		steps.triggerCallbacks()(r => println(r), e => throw new Exception(e))
 		provider.shutdown()
 	}
 

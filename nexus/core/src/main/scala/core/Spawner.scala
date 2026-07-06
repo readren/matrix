@@ -40,11 +40,11 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
-	): doer.Task[Actant[U, CD]] = {
+	): doer.LatchingTask[Actant[U, CD]] = {
 		doer.checkWithin()
 		lastChildSerial += 1
 		val childSerial = lastChildSerial
-		childFactory.createsActant(childSerial, thisSpawner, childDoer, isSignalTest, initialBehaviorBuilder)
+		childFactory.createActant(childSerial, thisSpawner, childDoer, isSignalTest, initialBehaviorBuilder)
 			.onBehalfOf(doer)
 			.map { childActant =>
 				children.addOne(childSerial, childActant)
@@ -53,10 +53,10 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 	}
 
 	/** Calls must be within the [[doer]]. */
-	def stopsChildren(): doer.Task[Array[Unit]] = {
+	def stopChildren(): doer.LatchingTask[Array[Unit]] = {
 		doer.checkWithin()
-		val stopDuties = childrenView.values.map(child => doer.Task_foreign(child.doer)(child.stop()))
-		doer.Task_sequenceToArray(stopDuties)
+		val stopDuties = childrenView.values.map(child => doer.Task_from(child.doer)(child.stop()))
+		doer.LatchingTask_sequenceToArray(stopDuties)
 	}
 
 	/** Calls must be within the [[doer]]. */
