@@ -1,8 +1,8 @@
 ---
 type: "Component"
 title: "Sequencer Core Component"
-description: "Core execution model, Task hierarchy, and Covenant (Captor) implementation details."
-tags: ["sequencer", "task", "covenant", "captor"]
+description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
+tags: ["sequencer", "task", "captor", "captor"]
 timestamp: "2026-07-07T15:00:00Z"
 ---
 
@@ -14,16 +14,16 @@ This component defines the single-threaded deterministic sequencing primitives u
 
 * `Observable` (future `Mono`): The base trait for all lazy computations.
 * `Task`: A task that executes lazily and can be subscribed to multiple times.
-* `LatchingTask` (future `Capturer`): A single-run task that caches its completed result.
-* `Covenant` (future `Captor`): A latching task with an externally controllable completion hook (Promise-like).
+* `Capturer` (future `Capturer`): A single-run task that caches its completed result.
+* `Captor` (future `Captor`): A latching task with an externally controllable completion hook (Promise-like).
 
 ## Semantic Invariants
 
 * **Task Evaluation**: `Task` represents a lazy computation. Chained functional operands (e.g., functions passed to `map`, `flatMap`, `transformWith`) are evaluated **on every subscription**. Subscribing multiple times re-runs the entire
   pipeline and its side effects.
-* **LatchingTask Evaluation**: `LatchingTask` caches its outcome (success or failure) once resolved. Chained functional operands are evaluated **at most once**. Subsequent subscriptions instantly yield the cached result without
+* **Capturer Evaluation**: `Capturer` caches its outcome (success or failure) once resolved. Chained functional operands are evaluated **at most once**. Subsequent subscriptions instantly yield the cached result without
   re-evaluating the transition functions or pipeline side effects.
-* **Subscription Lifetime**: For pipelines returning a `LatchingTask`, discarding/unsubscribing from upstream mid-flight is semantically not supported because latching tasks are designed to guarantee run-to-completion once triggered.
+* **Subscription Lifetime**: For pipelines returning a `Capturer`, discarding/unsubscribing from upstream mid-flight is semantically not supported because latching tasks are designed to guarantee run-to-completion once triggered.
 
 ## Subscription & Muxing
 
@@ -56,11 +56,11 @@ structured as follows:
   which provides type-safe access to the underlying `Schedule` via its `schedule` member. Scheduled suppliers receive the `TimedSubscription` handle to allow cancellation and inspection from within the callback.
 * **Immediate Subscription Hooks**: Callers can inspect the underlying `Schedule` before the task completes (e.g. for custom cancellation, logging, or pre-trigger checks) using the `.onSubscription(schedule => Unit)` side-effect hook on a
   `TimedTask`. This runs synchronously during `subscribeSync` right after the schedule is created, but before it can run.
-* **Split Semantics (Task vs. LatchingTask)**:
+* **Split Semantics (Task vs. Capturer)**:
     * **Task (Lazy Timer Start)**: Scheduling operations (`delayed`, `timeLimited`, `scheduled`, `retriedOnTimeout`) on a `Task` start their timers lazily when the task is **subscribed to**.
-    * **LatchingTask (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `LatchingTask` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety
-      against incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `LatchingTask` that preserves caching guarantees and resolves to
-      completion (either success or timeout) at most once. Periodic/retry operations are restricted from `LatchingTask` due to caching invariants.
+  * **Capturer (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capturer` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety
+    against incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capturer` that preserves caching guarantees and resolves to
+    completion (either success or timeout) at most once. Periodic/retry operations are restricted from `Capturer` due to caching invariants.
 
 ## Implementation Guidelines
 

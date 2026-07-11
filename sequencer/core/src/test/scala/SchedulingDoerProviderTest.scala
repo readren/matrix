@@ -838,7 +838,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// CAPTOR ////
 
-	test("Captor: `Captor.complete(v)` should trigger a single execution, passing `v`, of each subscribed consumers it has wired.") {
+	test("Captor: `Captor.seize(v)` should trigger a single execution, passing `v`, of each subscribed consumers it has wired.") {
 		val generators = getGenerators
 		import generators.*
 		PropF.forAllF(
@@ -850,13 +850,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { case (expectedSuccessfulResult, expectedResult, numberOfPendingSubscriptions) =>
 			// println(s"Begin: int: $int, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]()
-			val testedCaptor = doer.Covenant[Int]()
-			checkCaptor[doer.type](doer, testedCaptor, promise, expectedSuccessfulResult, expectedResult, numberOfPendingSubscriptions, () => testedCaptor.complete(expectedResult))
+			val testedCaptor = doer.Captor[Int]()
+			checkCaptor[doer.type](doer, testedCaptor, promise, expectedSuccessfulResult, expectedResult, numberOfPendingSubscriptions, () => testedCaptor.seize(expectedResult))
 			gate(using promise)
 		}
 	}
 
-	test("Captor: `Captor.fulfillWith(task)` should trigger a single execution, passing what `task` shields, of each subscribed consumers it has wired.") {
+	test("Captor: `Captor.seizeWith(task)` should trigger a single execution, passing what `task` shields, of each subscribed consumers it has wired.") {
 		val generators = getGenerators
 		import generators.{taskArbitrary, *}
 		PropF.forAllF(
@@ -869,16 +869,16 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// println(s"Begin: int: $int, task: $task, f1(int): ${f1(int)}")
 			val promise = Promise[Unit]()
 
-			val testedCaptor = doer.Covenant[Int]()
-			val completingCaptor = doer.Covenant[Int]()
-			testedCaptor.fulfillWith(completingCaptor)
-			checkCaptor[doer.type](doer, testedCaptor, promise, expectedSuccessfulResult, expectedResult, numberOfPendingSubscriptions, () => completingCaptor.complete(expectedResult))
+			val testedCaptor = doer.Captor[Int]()
+			val completingCaptor = doer.Captor[Int]()
+			testedCaptor.seizeWith(completingCaptor)
+			checkCaptor[doer.type](doer, testedCaptor, promise, expectedSuccessfulResult, expectedResult, numberOfPendingSubscriptions, () => completingCaptor.seize(expectedResult))
 
 			gate(using promise)
 		}
 	}
 
-	private def checkCaptor[DD <: Doer](doer: DD, testedCaptor: doer.Covenant[Int], promise: Promise[Unit], expectedSuccessfulResult: Int, expectedResult: Try[Int], numberOfPendingSubscriptions: Int, capture: () => Unit): Unit = {
+	private def checkCaptor[DD <: Doer](doer: DD, testedCaptor: doer.Captor[Int], promise: Promise[Unit], expectedSuccessfulResult: Int, expectedResult: Try[Int], numberOfPendingSubscriptions: Int, capture: () => Unit): Unit = {
 		given Promise[Unit] = promise
 
 		import doer.*
@@ -920,7 +920,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (initial: Int, updater: Int => LatchingTask[Int]) =>
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Capturer[Int]) =>
 			println(s"Begin: initial=$initial, updater=$updater)")
 			val promise = Promise[Unit]()
 
@@ -966,7 +966,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		PropF.forAllNoShrinkF(
 			smallIntGen,
-			Gen.function1[Int, LatchingTask[Int]](genSuccessfulCapturer[Int]())
+			Gen.function1[Int, Capturer[Int]](genSuccessfulCapturer[Int]())
 		) { (initial, updater) =>
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
@@ -1000,27 +1000,27 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	}
 
 	/**
-	 * Test invariants of [[Doer.CausalFence]] ensuring that synchronous consumers of the [[Doer.LatchingTask]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
+	 * Test invariants of [[Doer.CausalFence]] ensuring that synchronous consumers of the [[Doer.Capturer]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
 	 *
 	 * Unique checks in this test:
-	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.LatchingTask]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.Capturer]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
 	 *
-	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.LatchingTask]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.Capturer]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
 	 *
-	 *  - Game‑changing invariant: Immediately after an [[Doer.CausalFence.advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Covenant]] (seen as [[Doer.LatchingTask]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *  - Game‑changing invariant: Immediately after an [[Doer.CausalFence.advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Captor]] (seen as [[Doer.Capturer]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Captor fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
 	 *
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.
-	 * TODO This is a cheating variant of the following test. The cheat avoids the stack-overflow bug mentioned in [[Doer.Covenant.fulfillSync]]'s documentation. Remove this test and keep the following one when appropriate.
+	 * TODO This is a cheating variant of the following test. The cheat avoids the stack-overflow bug mentioned in [[Doer.Captor.captureSync]]'s documentation. Remove this test and keep the following one when appropriate.
 	 */
 	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using hoping tasks to avoid stack overflow (much faster than the version that uses random delays below)") {
 		val generators = getGenerators
 		import generators.*
 
-		/** Build an [[Observable]] that yields the provided `serial` hopping (= calling [[Doer.executeSequentially]]) the specified times.
+		/** Build an [[Mono]] that yields the provided `serial` hopping (= calling [[Doer.executeSequentially]]) the specified times.
 		 * // TODO: Using this method is cheating. Replace it with a randomly generated successful Mono. */
-		def buildHopingMono(serial: Int, hops: Int): Observable[Int] = {
+		def buildHopingMono(serial: Int, hops: Int): Mono[Int] = {
 			if hops <= 0 then Task_ready(serial)
-			else Covenant[Int]().fulfillWith(buildHopingMono(serial, hops - 1), false)
+			else Captor[Int]().seizeWith(buildHopingMono(serial, hops - 1), false)
 		}
 
 		type PrimaryState = (pathId: Int, serial: Int)
@@ -1045,7 +1045,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 
-			def path(pathId: Int): LatchingTask[PrimaryState] = {
+			def path(pathId: Int): Capturer[PrimaryState] = {
 				var hasAdvanced = false
 				for {
 					nextState <- {
@@ -1067,15 +1067,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					}
 					anchoredState <- {
 						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
-						if hasAdvanced && nextState.pathId != pathId then break(s"A consumer subscribed to the LatchingTask returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchingTask` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchingTask returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						if hasAdvanced && nextState.pathId != pathId then break(s"A consumer subscribed to the Capturer returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capturer returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					recursiveState <- {
 						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
-						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingTask` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial < topSerial then path(pathId)
 						else fence.committed
 					}
@@ -1086,7 +1086,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			val swarm: Seq[Observable[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.LatchingTask_defer(() => path(n)) }
+			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.Capturer_defer(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
 			gate
@@ -1096,18 +1096,18 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 
 	/**
-	 * Test invariants of [[Doer.CausalFence]] ensuring that synchronous consumers of the [[Doer.LatchingTask]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
+	 * Test invariants of [[Doer.CausalFence]] ensuring that synchronous consumers of the [[Doer.Capturer]] returned by [[Doer.CausalFence.advance]] observe the up‑to‑date state deterministically.
 	 *
 	 * Unique checks in this test:
-	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.LatchingTask]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
+	 *  - Consumers subscribed immediately (synchronously) to the [[Doer.Capturer]] returned by [[Doer.CausalFence.advance]] must be executed strictly in order of subscription, before any other consumer, and even before the updaters passed to subsequent calls to [[advance]].
 	 *
-	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.LatchingTask]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
+	 *  - A consumer subscribed immediately (synchronously) to the [[Doer.Capturer]] returned by [[causalAnchor]] must observe either the state to which the last advance transitioned to, or a state produced earlier, but never an later one.
 	 *
-	 *  - Game‑changing invariant: Immediately after an [[Doer.CausalFence.advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Covenant]] (seen as [[Doer.LatchingTask]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Covenant fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
+	 *  - Game‑changing invariant: Immediately after an [[Doer.CausalFence.advance]] call, there are no other advances in flight except the one just created. The returned [[Doer.Captor]] (seen as [[Doer.Capturer]]) is the new tail, and any immediate synchronous subscription to it is guaranteed to be the first subscriber in its list. Therefore, when the Captor fulfills, that consumer sees the up‑to‑date state deterministically, free of concurrent updates to the primary state.
 	 *
 	 * The test constructs multiple paths that repeatedly advance the fence up to a top serial number, failing if any consumer observes stale state, incorrect ordering, or out‑of‑sequence execution.\
-	 * A non-cheating variant of the previous test using random Monos. It unveils the stack-overflow bug mentioned in [[Doer.Covenant.fulfillSync]]'s documentation.
-	 * TODO stack-overflows when many consecutive synchronous transitions occur. Consider a solution. See note in [[Doer.Covenant.fulfillSync]]. If this problem deserves a solution, add the generation of samples whose transitions are all synchronic to verify if the solution works.
+	 * A non-cheating variant of the previous test using random Monos. It unveils the stack-overflow bug mentioned in [[Doer.Captor.captureSync]]'s documentation.
+	 * TODO stack-overflows when many consecutive synchronous transitions occur. Consider a solution. See note in [[Doer.Captor.captureSync]]. If this problem deserves a solution, add the generation of samples whose transitions are all synchronic to verify if the solution works.
 	 */
 	test("CausalFence - synchronous consumer ordering and anchor freshness: synchronous consumers see up‑to‑date state deterministically - using random delays (very slow)") {
 		val generators = getGenerators
@@ -1115,7 +1115,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		type PrimaryState = (pathId: Int, serial: Int)
 		val initialState: PrimaryState = (0, 0)
-		val topSerial = 99 // Note that incrementing this number causes stack overflow when syncOnly == true. See note in `DefaultCaptor.fulfillSync`.
+		val topSerial = 99 // Note that incrementing this number causes stack overflow when syncOnly == true. See note in `DefaultCaptor.captureSync`.
 		PropF.forAllF(Gen.choose(1, 9), Gen.oneOf(true, false)) { (swarmSize: Int, syncOnly: Boolean) =>
 			println(s"Begin: swarmSize=$swarmSize, syncOnly=$syncOnly")
 
@@ -1126,14 +1126,14 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 
-			def path(pathId: Int): LatchingTask[PrimaryState] = {
+			def path(pathId: Int): Capturer[PrimaryState] = {
 				for {
 					nextState <- {
 						// Do a state transition that increments the `serial` field and keeps the `path` field invariant.
 						fence.advance { (previous: PrimaryState) =>
 							val commitedAtStart: PrimaryState = fence.committedState.getOrElse(break(s"Unexpected failing state at updater start: ${fence.committedState}"))
-							val monoGenerator: Gen[Observable[Int]] = genSuccessfulMonoFrom(previous.serial + 1, syncOnly)
-							val randomMono: Observable[Int] = monoGenerator.sample.get
+							val monoGenerator: Gen[Mono[Int]] = genSuccessfulMonoFrom(previous.serial + 1, syncOnly)
+							val randomMono: Mono[Int] = monoGenerator.sample.get
 							// val delay = Gen.choose(-1, 1).sample.get
 							// val task = if delay > 0 then randomTask.delayed(delay) else randomTask
 							randomMono.map(newSerial => (pathId, newSerial))
@@ -1145,15 +1145,15 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					}
 					anchoredState <- {
 						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
-						if nextState.pathId != pathId then break(s"A consumer subscribed to the LatchingTask returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `LatchingTask` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the LatchingTask returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						if nextState.pathId != pathId then break(s"A consumer subscribed to the Capturer returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capturer returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					recursiveState <- {
 						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
-						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `LatchingTask` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial < topSerial then path(pathId)
 						else fence.committed
 					}
@@ -1164,7 +1164,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				}
 			}
 
-			val swarm: Seq[Observable[PrimaryState]] = Seq.tabulate(swarmSize) { n => LatchingTask_defer(() => path(n)) }
+			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => Capturer_defer(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
 			gate
@@ -1175,7 +1175,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (expectedState0: Int, firstUpdater: Int => Observable[Int], secondUpdater: Int => Observable[Int]) =>
+		PropF.forAllNoShrinkF { (expectedState0: Int, firstUpdater: Int => Mono[Int], secondUpdater: Int => Mono[Int]) =>
 			// println(s"initial: $initial")
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
@@ -1221,7 +1221,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		type PrimaryState = Int
-		PropF.forAllNoShrinkF { (expectedInitialState: PrimaryState, updater: PrimaryState => Observable[PrimaryState]) =>
+		PropF.forAllNoShrinkF { (expectedInitialState: PrimaryState, updater: PrimaryState => Mono[PrimaryState]) =>
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
@@ -1281,7 +1281,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		type PrimaryState = Int
-		PropF.forAllNoShrinkF { (state0: PrimaryState, updater: PrimaryState => Observable[PrimaryState]) =>
+		PropF.forAllNoShrinkF { (state0: PrimaryState, updater: PrimaryState => Mono[PrimaryState]) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -1302,7 +1302,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		type PrimaryState = Int
-		PropF.forAllNoShrinkF { (initialState: PrimaryState, updater: PrimaryState => Observable[PrimaryState]) =>
+		PropF.forAllNoShrinkF { (initialState: PrimaryState, updater: PrimaryState => Mono[PrimaryState]) =>
 			println(s"Begin: initialState=$initialState, updater=$updater")
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
@@ -1501,7 +1501,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		) { (initialDelay: Int, interval: Int, task: Task[Int]) =>
 			val repetitions = 5 - interval
 			// println(s"\nBegin: initialDelay = $initialDelay, interval = $interval, repetitions = $repetitions")
-			val testCompletion = doer.Covenant[Unit]()
+			val testCompletion = doer.Captor[Unit]()
 			var counter: Int = 0
 			var maybeCheckSubscription: Maybe[Subscription] = Maybe.empty 
 			val check = for {
@@ -1509,13 +1509,13 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				startMilli = System.currentTimeMillis()
 				scheduledResult <- task.scheduled(FIXED_DELAY, initialDelay, interval)
 			} yield {
-				if scheduledResult != directResult then testCompletion.break(new AssertionError(s"the scheduled result differs from the original"))
+				if scheduledResult != directResult then testCompletion.trap(new AssertionError(s"the scheduled result differs from the original"))
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * counter + initialDelay
-				if actualDelay + 1 < expectedDelay then testCompletion.break(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
+				if actualDelay + 1 < expectedDelay then testCompletion.trap(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
 				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				if counter == repetitions then {
-					testCompletion.fulfill(())
+					testCompletion.capture(())
 					maybeCheckSubscription.foreach(_.unsubscribe())
 				} else counter += 1
 			}
@@ -1579,7 +1579,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF(genCapturer[Int](), Gen.choose(1, 5)) { (capturer: LatchingTask[Int], duration: Int) =>
+		PropF.forAllNoShrinkF(genCapturer[Int](), Gen.choose(1, 5)) { (capturer: Capturer[Int], duration: Int) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -1741,8 +1741,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val otherDoer = buildDoer("other")
 			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
 				cancelNanoTime = System.nanoTime()
-				cancelAllWasCalled = true
 				doer.cancelAll()
+				cancelAllWasCalled = true
 				otherDoer.schedule(otherDoer.newDelaySchedule(maxDelay)) { _ =>
 					promise.trySuccess(())
 					if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println("No executions after cancellation: VERY GOOD")

@@ -63,9 +63,9 @@ It might seem tempting to define a global `ScheduleBase` trait for `Schedule` to
 2. **Loss of Strict Path Checking**: Using a global non-path-dependent `ScheduleBase` would weaken type safety. The compiler would no longer enforce that a schedule belongs to the specific `Doer` instance on which operations (like `cancel`
    or `isCanceled`) are being called. Relying on the path-dependent `Schedule` type member keeps these checks strong.
 
-## Target API: Split Extension Model (Task vs. LatchingTask)
+## Target API: Split Extension Model (Task vs. Capturer)
 
-We define specific scheduling extension behaviors for both `Task` and `LatchingTask` to preserve their native lifecycle and evaluation semantics:
+We define specific scheduling extension behaviors for both `Task` and `Capturer` to preserve their native lifecycle and evaluation semantics:
 
 ### 1. Reusable `Task` Semantics (Lazy Timer Start)
 
@@ -87,23 +87,23 @@ extension [A](thisTask: Task[A]) {
 }
 ```
 
-### 2. Caching `LatchingTask` Semantics (Immediate/Hot Timer Start)
+### 2. Caching `Capturer` Semantics (Immediate/Hot Timer Start)
 
-For [LatchingTask](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/Doer.scala) (which represents a single-run caching computation), the timer starts **immediately on operation call** (when the method is called). Since a
+For [Capturer](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/Doer.scala) (which represents a single-run caching computation), the timer starts **immediately on operation call** (when the method is called). Since a
 cached task completes at most once, periodic schedules are semantically invalid.
 
-To enforce this at compile time, we introduce a new abstract type member `Delay <: Schedule` representing single-shot delay timers. `newDelaySchedule` returns `Delay`, and `LatchingTask` operations accept `Delay` instead of the general
+To enforce this at compile time, we introduce a new abstract type member `Delay <: Schedule` representing single-shot delay timers. `newDelaySchedule` returns `Delay`, and `Capturer` operations accept `Delay` instead of the general
 `Schedule` type:
 
 - `delayed`: Subscribes to the underlying latching task after a delay determined by the provided delay schedule.
 - `timeLimited`: Enforces a timeout determined by the provided delay schedule.
 
-These return `LatchingTask` and are defined via:
+These return `Capturer` and are defined via:
 
 ```scala
-extension [A](thisLatchingTask: LatchingTask[A]) {
-  inline def delayed(schedule: Delay): LatchingTask[A] = ...
-  inline def timeLimited(timer: Delay): LatchingTask[Maybe[A]] = ...
+extension [A](thisLatchingTask: Capturer[A]) {
+  inline def delayed(schedule: Delay): Capturer[A] = ...
+  inline def timeLimited(timer: Delay): Capturer[Maybe[A]] = ...
 }
 ```
 

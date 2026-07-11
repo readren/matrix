@@ -20,8 +20,8 @@ abstract class ActantFactoryTemplate[MS[u] <: Inbox[u] & Inqueue[u]] extends Act
 		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
-	): actantDoer.LatchingTask[ActantCore[U, D]] = {
-		actantDoer.LatchingTask_defer { () =>
+	): actantDoer.Capturer[ActantCore[U, D]] = {
+		actantDoer.Capturer_defer { () =>
 			new ActantCore[U, D](serial, actantDoer, progenitor, isSignalTest, initialBehaviorBuilder) {
 				
 				override protected val inbox: MsgBuffer[U] = createMsgBuffer(this)

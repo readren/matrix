@@ -639,7 +639,7 @@ trait DoerSandbox2 { thisDoer =>
 	//// Capturer hierarchy ////
 	///////////////////////////
 
-	/** Exception-unaware single result capturer. Ex LatchingTask
+	/** Exception-unaware single result capturer. Ex Capturer
 	 * Does not inherit from Task, cleanly separating results from doable work. */
 	sealed trait Capturer[+A] extends Mono[A] { thisCapturer =>
 		def trial: Trial[A]
@@ -697,7 +697,7 @@ trait DoerSandbox2 { thisDoer =>
 		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
 	}
 
-	/** A [[Capturer]] that has already captured a successful value. Ex ReadyTask */
+	/** A [[Capturer]] that has already captured a successful value. Ex Keeper */
 	final class Keeper[+A](val value: A) extends Capturer[A] {
 		override def isCompleted: Boolean = true
 

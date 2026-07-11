@@ -1,8 +1,7 @@
 package readren.sequencer
 
-import readren.common.{Maybe, castTo, deriveToString}
+import readren.common.{Maybe, deriveToString}
 
-import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 
 trait LoopingExtension { thisDoer: Doer =>
@@ -93,12 +92,13 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *
 	 * @param a0 the initial iteration state.
 	 * @param condition function that, based on the `completedExecutionsCounter` and the iteration's state `a`, determines if the loop should end or otherwise creates the [[Task]] to execute in the next iteration.
+	 * @param isGuarded determines whether non-fatal exceptions thrown by `condition` are propagated to the result (true) or are left unhandled (false).
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 * @tparam A the type of the state passed from an iteration to the next.
 	 * @tparam B the type of the result of created [[Task]]
 	 */
-	def Task_whileRightRepeat[A, B](a0: A, condition: (Int, A) => Either[B, Task[A]], maxRecursionDepthPerExecutor: Int = 9): Task[B] =
-		new Task_WhileRightRepeat[A, B](a0, condition, maxRecursionDepthPerExecutor)
+	def Task_whileRightRepeat[A, B](a0: A, condition: (Int, A) => Either[B, Task[A]], isGuarded: Boolean = false, maxRecursionDepthPerExecutor: Int = 9): Task[B] =
+		new Task_WhileRightRepeat[A, B](a0, condition, isGuarded, maxRecursionDepthPerExecutor)
 
 	/** Creates a new [[Task]] that, when executed, repeatedly constructs and executes tasks until the `condition` is met.
 	 * ===Detailed behavior:===
@@ -121,7 +121,7 @@ trait LoopingExtension { thisDoer: Doer =>
 
 	/** Creates a new [[Task]] that, when executed, repeatedly constructs and executes tasks until it succeeds or `maxRetries` is reached.
 	 * ===Detailed behavior:===
-	 * When the returned [[Venture]] is executed, it will:
+	 * When the returned [[Task]] is executed, it will:
 	 * 		- Apply the function `taskBuilder` to the number of tries that were already done.
 	 * 		- Then executes the returned task and if the result is:
 	 *				- `Right(b)`, completes with `Success(b)`.
@@ -186,7 +186,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	private inline def Task_RepeatUntilSome(trap: Nothing): Any = trap
 
 	final class Task_RepeatUntilSome[+A, +B](upChainTask: Task[A], condition: (Int, A) => Maybe[B], isGuarded: Boolean, maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(downChainMono: MonoObserver[B]): Subscription = {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription {
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
@@ -201,7 +201,7 @@ trait LoopingExtension { thisDoer: Doer =>
 										if isGuarded then try condition(completedCycles, a) catch {
 											case NonFatal(e) =>
 												isActive = false
-												downChainMono.onError(e)
+												downChainObserver.onError(e)
 												Maybe.empty
 										} else condition(completedCycles, a)
 
@@ -214,7 +214,7 @@ trait LoopingExtension { thisDoer: Doer =>
 											}
 										} { b =>
 											isActive = false
-											downChainMono.onSuccess(b)
+											downChainObserver.onSuccess(b)
 										}
 									}
 								}
@@ -224,7 +224,7 @@ trait LoopingExtension { thisDoer: Doer =>
 								if isActive then {
 									isActive = false
 									maybeInnerSubscription = Maybe.empty
-									downChainMono.onError(ex)
+									downChainObserver.onError(ex)
 								}
 							}
 						})
@@ -253,7 +253,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	private inline def Task_RepeatWhileEmpty(trap: Nothing): Any = trap
 
 	final class Task_RepeatWhileEmpty[+A, +B](upChainTask: Task[A], a0: A, condition: (Int, A) => Maybe[B], isGuarded: Boolean, maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(downChainMono: MonoObserver[B]): Subscription = {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription {
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
@@ -264,7 +264,7 @@ trait LoopingExtension { thisDoer: Doer =>
 							if isGuarded then try condition(completedCycles, lastTaskResult) catch {
 								case NonFatal(e) =>
 									isActive = false
-									downChainMono.onError(e)
+									downChainObserver.onError(e)
 									Maybe.empty
 							} else condition(completedCycles, lastTaskResult)
 
@@ -283,12 +283,12 @@ trait LoopingExtension { thisDoer: Doer =>
 										if isActive then {
 											isActive = false
 											maybeInnerSubscription = Maybe.empty
-											downChainMono.onError(ex)
+											downChainObserver.onError(ex)
 										}
 									}
 								})
 								if isActive then maybeInnerSubscription = Maybe(innerSubscription)
-							}(downChainMono.onSuccess)
+							}(downChainObserver.onSuccess)
 						}
 					}
 				}
@@ -325,16 +325,24 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param checkAndBuild function that takes completed cycles count and last task result, returning an `Either[B, Task[A]]`.
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
-	final class Task_WhileRightRepeat[+A, +B](a0: A, checkAndBuild: (Int, A) => Either[B, Task[A]], maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(monoObserver: MonoObserver[B]): Subscription = {
+	final class Task_WhileRightRepeat[+A, +B](a0: A, checkAndBuild: (Int, A) => Either[B, Task[A]], isGuarded: Boolean, maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription {
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
 
 				def loop(completedCycles: Int, lastTaskResult: A, recursionDepth: Int): Unit = {
 					if isActive then {
-						checkAndBuild(completedCycles, lastTaskResult) match {
-							case Left(b) => monoObserver.onSuccess(b)
+						val decision: Either[B, Task[A]] =
+							if isGuarded then try checkAndBuild(completedCycles, lastTaskResult) catch {
+								case NonFatal(e) =>
+									isActive = false
+									downChainObserver.onError(e)
+									Right(Task_fail(e))
+							} else checkAndBuild(completedCycles, lastTaskResult)
+
+						if isActive then decision match {
+							case Left(b) => downChainObserver.onSuccess(b)
 							case Right(taskA) =>
 								val innerSubscription = taskA.subscribeSync(new MonoObserver[A] {
 									override def onSuccess(newA: A): Unit = {
@@ -349,7 +357,7 @@ trait LoopingExtension { thisDoer: Doer =>
 										if isActive then {
 											isActive = false
 											maybeInnerSubscription = Maybe.empty
-											monoObserver.onError(ex)
+											downChainObserver.onError(ex)
 										}
 									}
 								})
@@ -391,7 +399,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 * @param maxRecursionDepthPerExecutor $maxRecursionDepthPerExecutor
 	 */
 	final class Task_RepeatUntilLeft[+A, +B](a0: A, buildAndCheck: (Int, A) => Task[Either[B, A]], isGuarded: Boolean, maxRecursionDepthPerExecutor: Int) extends AbstractTask[B] {
-		override def subscribeSync(downChainMono: MonoObserver[B]): Subscription = {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription {
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
@@ -410,7 +418,7 @@ trait LoopingExtension { thisDoer: Doer =>
 								if isActive then {
 									maybeInnerSubscription = Maybe.empty
 									res match {
-										case Left(b) => downChainMono.onSuccess(b)
+										case Left(b) => downChainObserver.onSuccess(b)
 										case Right(a) =>
 											if recursionDepth < maxRecursionDepthPerExecutor then loop(executionsCounter + 1, a, recursionDepth + 1)
 											else run(loop(executionsCounter + 1, a, 0))
@@ -422,7 +430,7 @@ trait LoopingExtension { thisDoer: Doer =>
 								if isActive then {
 									isActive = false
 									maybeInnerSubscription = Maybe.empty
-									downChainMono.onError(ex)
+									downChainObserver.onError(ex)
 								}
 							}
 						})
@@ -463,7 +471,7 @@ trait LoopingExtension { thisDoer: Doer =>
 	 *  				- `retriesCounter < maxRetries`, increments the `retriesCounter` (which starts at zero) and goes back to the first step.
 	 */
 	final class Task_RetryUntilRight[+A, +B](maxRetries: Int, taskBuilder: Int => Task[Either[A, B]], isGuarded: Boolean, maxRecursionDepthPerExecutor: Int) extends AbstractTask[Either[A, B]] {
-		override def subscribeSync(downChainMono: MonoObserver[Either[A, B]]): Subscription = {
+		override def subscribeSync(downChainObserver: MonoObserver[Either[A, B]]): Subscription = {
 			new Subscription {
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
@@ -481,9 +489,9 @@ trait LoopingExtension { thisDoer: Doer =>
 								if isActive then {
 									maybeInnerSubscription = Maybe.empty
 									aOrB match {
-										case _: Right[A, B] => downChainMono.onSuccess(aOrB)
+										case _: Right[A, B] => downChainObserver.onSuccess(aOrB)
 										case la@Left(a) =>
-											if attemptsAlreadyMade >= maxRetries then downChainMono.onSuccess(la)
+											if attemptsAlreadyMade >= maxRetries then downChainObserver.onSuccess(la)
 											else if recursionDepth < maxRecursionDepthPerExecutor then loop(attemptsAlreadyMade + 1, recursionDepth + 1)
 											else run(loop(attemptsAlreadyMade + 1, 0))
 									}
@@ -494,7 +502,7 @@ trait LoopingExtension { thisDoer: Doer =>
 								if isActive then {
 									isActive = false
 									maybeInnerSubscription = Maybe.empty
-									downChainMono.onError(ex)
+									downChainObserver.onError(ex)
 								}
 							}
 						})

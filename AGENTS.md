@@ -44,7 +44,7 @@ This is a multi-module Scala codebase centered around deterministic single-threa
 - `common`
   - Shared low-level utilities (`Maybe`, macros/helpers, logging config helpers, concurrent collections).
 - `sequencer/core`
-  - Core execution model (`Doer`) and composable async primitives (`Duty`, `Task`, `LatchedDuty`, `Covenant`, `CausalFence`).
+    - Core execution model (`Doer`) and composable async primitives (`Duty`, `Task`, `LatchedDuty`, `Captor`, `CausalFence`).
   - This is the foundation used by higher layers for ordered, deterministic mutation.
 - `sequencer/providers` + `sequencer/providers-manager`
   - Concrete `Doer` providers (worker-based executors, scheduling-enabled variants) and provider management.

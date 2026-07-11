@@ -243,7 +243,7 @@ object Prueba {
 					parent.doer.checkWithin()
 					for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 
-						/** Creates a [[Doer.LatchingTask]] that builds a producer with operates as follows:
+						/** Creates a [[Doer.Capturer]] that builds a producer with operates as follows:
 						 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
 						 * - The Consumables are sent one after the other without waiting any response.
 						 * */
@@ -307,7 +307,7 @@ object Prueba {
 							}
 						}
 
-						val buildsProducer: parent.doer.LatchingTask[Actant[?, ?]] =
+						val buildsProducer: parent.doer.Capturer[Actant[?, ?]] =
 							if useInquisitiveProducer then buildsInquisitiveProducer
 							else buildsRegularProducer
 						buildsProducer.subscribeSyncCallbacks(

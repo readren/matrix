@@ -172,22 +172,22 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			indexById(id)
 		}
 
-		def startAllNodes: netSequencer.LatchingTask[Array[Unit]] = {
+		def startAllNodes: netSequencer.Capturer[Array[Unit]] = {
 			val starters = for nodeIndex <- 0 until clusterSize yield {
 				val node = getNode(nodeIndex)
 				node.startIfNotRunning(0, ListSet.empty).onBehalfOf(netSequencer)
 			}
-			netSequencer.LatchingTask_sequenceToArray(starters)
+			netSequencer.Capturer_sequenceToArray(starters)
 		}
 
 		/** Stops all the running [[Node]]s and clears all [[Channel]]s used to simulate the TCP communication between them. */
-		def stop(): netSequencer.LatchingTask[Array[Unit]] = {
+		def stop(): netSequencer.Capturer[Array[Unit]] = {
 			val nodesStoppers = for i <- 0 until clusterSize yield {
 				val node = getNode(i)
-				val stopsNode = node.sequencer.LatchingTask_defer(() => if node.isDown then node.sequencer.LatchingTask_unit else node.participant.quiesce())
-				netSequencer.LatchingTask_from(node.sequencer)(stopsNode)
+				val stopsNode = node.sequencer.Capturer_defer(() => if node.isDown then node.sequencer.Capturer_unit else node.participant.quiesce())
+				netSequencer.Capturer_from(node.sequencer)(stopsNode)
 			}
-			netSequencer.LatchingTask_sequenceToArray(nodesStoppers)
+			netSequencer.Capturer_sequenceToArray(nodesStoppers)
 				.andThen(
 					{ _ =>
 						numberOfTravelingMessages = 0
@@ -315,7 +315,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Venture]]. The function is called within the replier's [[Node.sequencer]].
 			 * @return a [[netSequencer.Venture]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
 			 * @throws RuntimeException if this [[Net]] does not contain the [[Node]]s identified with `inquirerId` and `replierId`. */
-			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.LatchingTask[R]): netSequencer.LatchingTask[R] = {
+			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Capturer[R]): netSequencer.Capturer[R] = {
 
 				if true then {
 					val inquirerIndex = indexOf(inquirerId)
@@ -323,7 +323,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					val inquirerNode = getNode(inquirerIndex)
 					assert(inquirerNode.sequencer.isInSequence)
 					val inquirerRole = RoleOrdinal_nameOf(inquirerNode.participant.getRoleOrdinal)
-					val covenant = netSequencer.Covenant[(Try[R], RequestId)]()
+					val captor = netSequencer.Captor[(Try[R], RequestId)]()
 					netSequencer.run {
 						val requestChannel = channelBySenderByReceiver(inquirerIndex)(replierIndex)
 						val responseChannel = channelBySenderByReceiver(replierIndex)(inquirerIndex)
@@ -354,7 +354,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							if requestIsCursed then {
 								netSequencer.Task_apply[Unit] { () =>
 									injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
-									covenant.fulfill((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId), true)
+									captor.capture((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId), true)
 									injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
 								}
 							} else {
@@ -374,7 +374,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription failed because the node is down, $numberOfTravelingMessages messages are traveling.")
 										val respondingTask = netSequencer.Task_apply[Unit] { () =>
 											injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
-											covenant.fulfill((Failure(new RuntimeException(s"Net: target node is down: requestId=$requestId")), requestId), true)
+											captor.capture((Failure(new RuntimeException(s"Net: target node is down: requestId=$requestId")), requestId), true)
 											injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
 										}
 										responseChannel.enqueue(respondingTask)
@@ -386,7 +386,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 											else Success(reply)
 										val respondingTask = netSequencer.Task_apply[Unit] { () =>
 											injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
-											covenant.fulfill((response, requestId), true)
+											captor.capture((response, requestId), true)
 											injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
 										}
 										responseChannel.enqueue(respondingTask)
@@ -399,10 +399,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						while numberOfTravelingMessages > enqueueThresholdForEarlyDelivery do chooseAChannel().dispatchNext()
 					}
 
-					netSequencer.LatchingTask_defer { () =>
-						covenant.transform {
+					netSequencer.Capturer_defer { () =>
+						captor.transform {
 							case Success((response, requestId)) =>
-								// TODO consider moving this to the line after calling `covenant.fulfill` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
+								// TODO consider moving this to the line after calling `captor.capture` (which would avoid the need to pass the requestId) and also consider using a commitment instead.
 								scribe.trace(s"$inquirerId <- $replierId: $requestId:$response, $numberOfTravelingMessages messages on the way")
 								response
 							case Failure(e) => Failure(AssertionError("Should not happen"))
@@ -411,7 +411,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				} else {
 					/// Simple implementation where RPCs always succeeds and adds no randomness
 					val replierNode = getNode(replierId)
-					replierNode.sequencer.LatchingTask_defer[R](() => call(replierNode)).onBehalfOf(netSequencer)
+					replierNode.sequencer.Capturer_defer[R](() => call(replierNode)).onBehalfOf(netSequencer)
 				}
 			}
 		}
@@ -475,11 +475,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Sends a configuration change request to each [[Node]] of this [[Net]].
-		 * @return a [[LatchingTask]] of the responses of the [[Node]]s */
-		private def sendsConfigChangeRequests(targetNodes: Seq[Id], configChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.LatchingTask[List[ConfigChangeResponse]] = {
+		 * @return a [[Capturer]] of the responses of the [[Node]]s */
+		private def sendsConfigChangeRequests(targetNodes: Seq[Id], configChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Capturer[List[ConfigChangeResponse]] = {
 			scribe.info(s"Net: About to request (#$configChangeRequest) a configuration change to $includedParticipants")
 
-			def loop(previousResponses: List[ConfigChangeResponse], alreadyTriedNodes: List[Id]): netSequencer.LatchingTask[List[ConfigChangeResponse]] = {
+			def loop(previousResponses: List[ConfigChangeResponse], alreadyTriedNodes: List[Id]): netSequencer.Capturer[List[ConfigChangeResponse]] = {
 				val remainingTargetNodes = ArrayBuffer.from[Id](targetNodes.filter(n => !alreadyTriedNodes.contains(n)))
 
 
@@ -489,7 +489,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					thisNet.getNode(nodeId)
 				}
 
-				if remainingTargetNodes.isEmpty then netSequencer.LatchingTask_ready(previousResponses)
+				if remainingTargetNodes.isEmpty then netSequencer.Keeper(previousResponses)
 				else {
 					val (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) = previousResponses match {
 						case Nil =>
@@ -517,10 +517,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							(Maybe(previousResponse), maybeNextNodeId)
 					}
 					maybeNextNodeId.fold {
-						netSequencer.LatchingTask_ready(previousResponses)
+						netSequencer.Keeper(previousResponses)
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
-						val inquire = node.sequencer.LatchingTask_defer(() =>
+						val inquire = node.sequencer.Capturer_defer(() =>
 							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponse)
 						).onBehalfOf(netSequencer)
 						for {
@@ -590,11 +590,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param durationBetweenAttempts The duration to wait between attempts to shut down.
 		 * @return a [[netSequencer.Task]] yielding [[Maybe.empty]] on success, or a message detailing the failure if `maxAttempts` is reached.
 		 */
-		def shutDownGracefully(maxAttempts: Int, durationBetweenAttempts: MilliDuration = 9): netSequencer.LatchingTask[Maybe[String]] = {
+		def shutDownGracefully(maxAttempts: Int, durationBetweenAttempts: MilliDuration = 9): netSequencer.Capturer[Maybe[String]] = {
 			netSequencer.checkWithin()
 
-			def loop(failedAttempts: Int): netSequencer.LatchingTask[Maybe[String]] = {
-				if failedAttempts == maxAttempts then netSequencer.LatchingTask_ready(Maybe(s"Net: graceful shutdown failed after $maxAttempts attempts"))
+			def loop(failedAttempts: Int): netSequencer.Capturer[Maybe[String]] = {
+				if failedAttempts == maxAttempts then netSequencer.Keeper(Maybe(s"Net: graceful shutdown failed after $maxAttempts attempts"))
 				else {
 					val configChangeRequestId = createNewConfigChangeRequestId()
 					for {
@@ -604,7 +604,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 								|| responses.forall { response => response.isInstanceOf[STOPPED] }
 							then {
 								scribe.trace(s"Net: Graceful shutdown of the net completed with: ${responses.mkString("[", ", ", "]")}")
-								netSequencer.LatchingTask_ready(Maybe.empty)
+								netSequencer.Keeper(Maybe.empty)
 							}
 							else {
 								val attemptNumber = failedAttempts + 1
@@ -639,29 +639,29 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 * @param commandPayload The payload of the command to send.
 		 * @param attemptFlag tells the participant that will receive the command whether this is the first attempt, a redirect, or a fallback.
 		 * @return A task that completes with [[Maybe.empty]] if the command was processed; a [[Maybe]] containing the next attempt flag if the command was not processed despite all nodes were tried or the net is empty. */
-		private def sendCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.LatchingTask[Maybe[CommandAttemptFlag]] = {
-			if knownParticipants.isEmpty then return net.netSequencer.LatchingTask_ready(Maybe(attemptFlag))
+		private def sendCommand(commandPayload: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.Capturer[Maybe[CommandAttemptFlag]] = {
+			if knownParticipants.isEmpty then return net.netSequencer.Keeper(Maybe(attemptFlag))
 			val receiverNode = targetParticipant
 			scribe.info(s"Client: Sent command:$commandPayload, attemptFlag:$attemptFlag, to:${receiverNode.myId}")
 			net.onBeforeClientCommandSent()
 
-			def retry(nextAttemptFlag: CommandAttemptFlag): net.netSequencer.LatchingTask[Maybe[CommandAttemptFlag]] = {
+			def retry(nextAttemptFlag: CommandAttemptFlag): net.netSequencer.Capturer[Maybe[CommandAttemptFlag]] = {
 				knownParticipants.find(p => !alreadyTriedParticipants.contains(p)).fold {
 					alreadyTriedParticipants.clear()
-					net.netSequencer.LatchingTask_ready(Maybe(nextAttemptFlag))
+					net.netSequencer.Keeper(Maybe(nextAttemptFlag))
 				} { chosen =>
 					targetParticipant = net.getNode(chosen)
 					sendCommand(commandPayload, nextAttemptFlag)
 				}
 			}
 
-			net.netSequencer.LatchingTask_from(receiverNode.sequencer)(receiverNode.sequencer.LatchingTask_defer { () =>
+			net.netSequencer.Capturer_from(receiverNode.sequencer)(receiverNode.sequencer.Capturer_defer { () =>
 				receiverNode.clusterParticipant.delegate.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
 			}).flatMap {
 				case receiverNode.Processed(content) =>
 					scribe.info(s"Client: command `$commandPayload` was processed by ${receiverNode.myId} which replied with `$content`.")
 					alreadyTriedParticipants.clear()
-					net.netSequencer.LatchingTask_ready(Maybe.empty)
+					net.netSequencer.Keeper(Maybe.empty)
 				case receiverNode.RedirectTo(leaderId) =>
 					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
 					targetParticipant = net.getNode(leaderId)
@@ -676,11 +676,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		def sendCommandsUntil(predicate: (commandIndex: Int) => Boolean, maxRetries: Int = 9): net.netSequencer.LatchingTask[Maybe[String]] = {
+		def sendCommandsUntil(predicate: (commandIndex: Int) => Boolean, maxRetries: Int = 9): net.netSequencer.Capturer[Maybe[String]] = {
 
-			def sendCommandLoop(commandIndex: Int, attemptsCounter: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.LatchingTask[Maybe[String]] = {
-				if predicate.apply(commandIndex) then net.netSequencer.LatchingTask_ready(Maybe.empty)
-				else if attemptsCounter > maxRetries then net.netSequencer.LatchingTask_ready(Maybe("The cluster got stuck unable to progress"))
+			def sendCommandLoop(commandIndex: Int, attemptsCounter: Int, attemptFlag: CommandAttemptFlag): net.netSequencer.Capturer[Maybe[String]] = {
+				if predicate.apply(commandIndex) then net.netSequencer.Keeper(Maybe.empty)
+				else if attemptsCounter > maxRetries then net.netSequencer.Keeper(Maybe("The cluster got stuck unable to progress"))
 				else for {
 					wasProcessed <- sendCommand(commandIndex, attemptFlag)
 					maybeError <- {
@@ -692,7 +692,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				} yield maybeError
 			}
 
-			net.netSequencer.LatchingTask_defer(() =>
+			net.netSequencer.Capturer_defer(() =>
 				sendCommandLoop(1, 0, FIRST_ATTEMPT)
 			)
 		}
@@ -749,8 +749,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates the [[ConsensusParticipant]] service instance of this [[Node]]. */
-		def startIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): sequencer.LatchingTask[Unit] = {
-			sequencer.LatchingTask_apply { () =>
+		def startIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): sequencer.Capturer[Unit] = {
+			sequencer.Capturer_apply { () =>
 				if isDown || participant.getRoleOrdinal == QUIESCED then {
 					scribe.info(s"node-$myId: about to create the consensus participant service due to the configuration change at $indexOfTheIncludingConfigChange")
 					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange, List(initialNotificationListener, notificationScribe))
@@ -770,7 +770,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			var highestAppliedCommandSerial: Int = 0
 			var highestAppliedCommandIndex: RecordIndex = 0
 
-			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.LatchingTask[StateMachineResponse] = {
+			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Capturer[StateMachineResponse] = {
 				sequencer.checkWithin()
 				if index > highestAppliedCommandIndex then highestAppliedCommandIndex = index
 				if command.serial > highestAppliedCommandSerial then {
@@ -779,20 +779,20 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 				statesChangesListener.onCommandApplied(command, index)
 				// TODO add delay
-				sequencer.LatchingTask_ready(command.serial)
+				sequencer.Keeper(command.serial)
 			}
 
-			override def recoverIndexOfLastAppliedCommand: sequencer.LatchingTask[RecordIndex] = {
+			override def recoverIndexOfLastAppliedCommand: sequencer.Capturer[RecordIndex] = {
 				sequencer.checkWithin()
-				if remembersLastAppliedCommandIndex then sequencer.LatchingTask_ready(highestAppliedCommandIndex)
+				if remembersLastAppliedCommandIndex then sequencer.Keeper(highestAppliedCommandIndex)
 				else {
 					highestAppliedCommandSerial = 0
 					highestAppliedCommandIndex = 0
-					sequencer.LatchingTask_ready(0)
+					sequencer.Keeper(0)
 				}
 			}
 
-			override def takeSnapshot(): sequencer.LatchingTask[IArray[Byte]] = {
+			override def takeSnapshot(): sequencer.Capturer[IArray[Byte]] = {
 				sequencer.checkWithin()
 				// Serialize the applied commands map as a simple byte array
 				val bytes = java.io.ByteArrayOutputStream()
@@ -800,7 +800,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				out.writeInt(highestAppliedCommandSerial)
 				out.writeLong(highestAppliedCommandIndex)
 				out.flush()
-				sequencer.LatchingTask_ready(IArray.unsafeFromArray(bytes.toByteArray))
+				sequencer.Keeper(IArray.unsafeFromArray(bytes.toByteArray))
 			}
 
 			override def installSnapshot(data: IArray[Byte]): sequencer.LatchingVenture[Unit] = {
@@ -850,7 +850,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			extension (replierId: ParticipantId) {
 
 
-				override def howAreYou(inquirerInfo: StateInfo): sequencer.LatchingTask[StateInfo] = {
+				override def howAreYou(inquirerInfo: StateInfo): sequencer.Capturer[StateInfo] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[StateInfo](
 						replierId,
@@ -860,7 +860,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.LatchingTask[Vote[ParticipantId]] = {
+				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capturer[Vote[ParticipantId]] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[Vote[ParticipantId]](
 						replierId,
@@ -870,7 +870,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingTask[AppendResult] = {
+				override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capturer[AppendResult] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[AppendResult](
 						replierId,
@@ -880,17 +880,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.LatchingTask[Unit] = {
+				override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Capturer[Unit] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[Unit](
 						replierId,
 						s"PermitQuiesce($indexOfGrantedStableConfigChange)"
 					) { replier =>
-						replier.sequencer.LatchingTask_ready(replier.clusterParticipant.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedStableConfigChange))
+						replier.sequencer.Keeper(replier.clusterParticipant.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedStableConfigChange))
 					}.onBehalfOf(sequencer)
 				}
 
-				override def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.LatchingTask[AppendResult] = {
+				override def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capturer[AppendResult] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[AppendResult](
 						replierId,
@@ -937,15 +937,15 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		object storage extends Storage {
 			private[ConsensusParticipantSdmTest] var memory: WS = TestWorkspace()
 
-			override def load: sequencer.LatchingTask[WS] = {
+			override def load: sequencer.Capturer[WS] = {
 				sequencer.checkWithin()
-				sequencer.LatchingTask_ready(memory)
+				sequencer.Keeper(memory)
 			} // TODO add a delay
 
-			override def save(workspace: WS): sequencer.LatchingTask[Unit] = {
+			override def save(workspace: WS): sequencer.Capturer[Unit] = {
 				sequencer.checkWithin()
 				memory = workspace
-				sequencer.LatchingTask_ready(Doer.successUnit) // TODO add a delay
+				sequencer.Keeper(Doer.successUnit) // TODO add a delay
 			}
 		}
 
@@ -1127,9 +1127,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 
-			override def release(): sequencer.LatchingTask[Unit] = {
+			override def release(): sequencer.Capturer[Unit] = {
 				scribe.info(s"workspace-$myId: was released")
-				sequencer.LatchingTask_unit
+				sequencer.Capturer_unit
 			}
 		}
 
@@ -1381,7 +1381,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				maybeErrorMsg <- maybeCommandErrorMsg.fold {
 					net.shutDownGracefully(maxRetries, configChangeRetryPeriod)
 				} { errorMsg =>
-					net.netSequencer.LatchingTask_ready(Maybe(errorMsg))
+					net.netSequencer.Keeper(Maybe(errorMsg))
 				}
 			} do maybeErrorMsg.fold(promise.tryComplete(Success(())))(errorMsg => promise.tryFailure(new AssertionError(errorMsg)))
 		}

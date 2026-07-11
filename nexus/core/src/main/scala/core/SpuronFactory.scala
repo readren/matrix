@@ -20,7 +20,7 @@ trait ActantFactory {
 		actantDoer: D,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, D] => Behavior[U]
-	): actantDoer.LatchingTask[ActantCore[U, D]]
+	): actantDoer.Capturer[ActantCore[U, D]]
 
 
 }

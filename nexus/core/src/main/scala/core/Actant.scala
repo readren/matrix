@@ -31,7 +31,7 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 		initialChildBehaviorBuilder: Actant[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.LatchingTask[Actant[V, CD]]
+	): doer.Capturer[Actant[V, CD]]
 
 	/** Calls must be within the [[doer]]. */
 	def children: MapView[Long, Actant[?, ?]]
@@ -46,14 +46,14 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 *
 	 * This method is thread-safe.
 	 * @return a [[Task]] that completes when this [[ActantCore]] is fully stopped. */
-	def stop(): doer.LatchingTask[Unit]
+	def stop(): doer.Capturer[Unit]
 
 	/** A [[SubscriptableTask]] that completes when this [[ActantCore]] is fully stopped (after the [[StopReceived]] signal was handled and this [[ActantCore]] was removed from its progenitor's children list).
 	 *
 	 * This task is the same as the returned by the [[stop]] method.
 	 *
 	 * This method is thread-safe but some methods of the returned [[SubscriptableTask]] require being called within the [[doer]]. */
-	def stopCapturer: doer.LatchingTask[Unit]
+	def stopCapturer: doer.Capturer[Unit]
 
 	/** Registers this [[ActantCore]] to be notified with the specified signal when the given `watchedActant` is fully stopped.
 	 *
@@ -68,14 +68,14 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 * @param univocally      When `true`, any existing subscriptions to the `watchedActant` are cleared. This mode avoids redundant subscriptions that might occur after a restart.
 	 *                        When `false`, the behavior must handle potential duplicate subscriptions after a restart. This mode is useful when two [[Behaviors]] combined with
 	 *                        [[Behavior.unitedNest]] watch the same [[ActantCore]].
-	 * @param subscriptionCompleted An optional [[Doer.Covenant]] that will be fulfilled when the subscription process completes.
+	 * @param subscriptionCompleted An optional [[Doer.Captor]] that will be fulfilled when the subscription process completes.
 	 * @return A [[WatchSubscription]] that can be used to cancel the subscription, if needed.
 	 */
-	def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignalBuilder: (Unit | Throwable) => SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Covenant[Unit]] = Maybe.empty): Maybe[WatchSubscription]
+	def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignalBuilder: (Unit | Throwable) => SS, univocally: Boolean = true, subscriptionCompleted: Maybe[doer.Captor[Unit]] = Maybe.empty): Maybe[WatchSubscription]
 
 	/** Provides diagnostic information about the current instance.
 	 * The different nested [[ActantDiagnostic]] are build by different [[Doer]] instances so they may be inconsistent. */
-	def diagnose: doer.LatchingTask[ActantDiagnostic]
+	def diagnose: doer.Capturer[ActantDiagnostic]
 
 	/** Provides diagnostic information about the current instance that may be stale due to cache visibility issues across processor cores. */
 	@deprecated

@@ -34,13 +34,13 @@ object Inquisitive {
 
 	extension [A <: Answer, Q <: Question[A], U >: A](receptor: Receptor[Q])
 		/**
-		 * Sends a question constructed by the provided `questionBuilder` to the specified [[Receptor]], and returns an instance of {{{ inquisitive.agent.doer.LatchingTask[A] }}} that will be completed when the corresponding answer is received.
+		 * Sends a question constructed by the provided `questionBuilder` to the specified [[Receptor]], and returns an instance of {{{ inquisitive.agent.doer.Capturer[A] }}} that will be completed when the corresponding answer is received.
 		 *
 		 * @param questionBuilder A function that takes a unique [[QuestionId]] and builds a [[Question]] of type `Q`.
 		 * @param inquisitive The instance of [[Inquisitive]] responsible for managing the interaction. It is the interceptor
 		 * @return A subscriptable task of type `SubscriptableTask[A]`, representing the eventual answer to the question.
 		 */
-		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.LatchingTask[A] = {
+		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.Capturer[A] = {
 			inquisitive.ask(receptor, questionBuilder)
 		}
 	
@@ -61,7 +61,7 @@ object Inquisitive {
  */
 class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBehavior: Behavior[A] = Ignore) extends Behavior[A] {
 	private var lastQuestionId = 0L
-	private val pendingQuestions: mutable.LongMap[agent.doer.Covenant[A]] = mutable.LongMap.empty
+	private val pendingQuestions: mutable.LongMap[agent.doer.Captor[A]] = mutable.LongMap.empty
 
 	/**
 	 * Handles answers received for previously sent questions.
@@ -69,7 +69,7 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 	 * **Behavior**:
 	 * - If the `Answer` corresponds to a tracked `Question` (via its `toQuestion` field):
 	 *   - Removes the corresponding question from the `pendingQuestions` map.
-	 *   - Fulfills the associated `Covenant`.
+	 *   - Fulfills the associated `Captor`.
 	 *   - Returns `Continue` to indicate successful processing.
 	 * - If the `Answer` does NOT correspond to any known `Question`:
 	 *   - Delegates handling to the `unaskedAnswersBehavior` fallback.
@@ -79,9 +79,9 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 	 */
 	override final def handle(answer: A): HandleResult[A] = {
 		pendingQuestions.getOrElse(answer.toQuestion, null) match {
-			case covenant: agent.doer.Covenant[A] =>
+			case captor: agent.doer.Captor[A] =>
 				pendingQuestions.subtractOne(answer.toQuestion)
-				covenant.fulfill(answer)
+				captor.capture(answer)
 				Continue
 			case null =>
 				unaskedAnswersBehavior.handle(answer)
@@ -96,13 +96,13 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 	 * @tparam Q The type of the `Question`, constrained to match `A`.
 	 * @return A {{{ actant.doer.SubscriptableTask[A] }}} instance that will be completed when the answer is received.
 	 */
-	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.LatchingTask[A] = {
+	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.Capturer[A] = {
 		assert(agent.doer.isInSequence)
-		val covenant = new agent.doer.Covenant[A]
+		val captor = new agent.doer.Captor[A]
 		lastQuestionId += 1
-		pendingQuestions.update(lastQuestionId, covenant)
+		pendingQuestions.update(lastQuestionId, captor)
 		val question = questionBuilder(lastQuestionId)
 		receptor.tell(question)
-		covenant.asLatchingTask
+		captor
 	}
 }

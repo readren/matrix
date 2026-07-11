@@ -1,7 +1,6 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersDp.*
 import providers.CooperativeWorkersWithThreadDrivenSchedulerDp.*
 
 import readren.common.CompileTime.getTypeName

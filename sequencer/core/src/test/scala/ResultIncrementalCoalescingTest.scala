@@ -76,7 +76,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				successfulResult <- smallIntGen
 				result <- genTryFrom(successfulResult, "expected-result", 50)
 				contender <- genTaskFrom(result)
-			} yield (successfulResult, result, doer.Covenant_triggerAndWire(contender): doer.LatchingTask[Int])
+			} yield (successfulResult, result, doer.Captor_triggerAndWire(contender): doer.Capturer[Int])
 		} { (successfulResult, expectedResult, contender) =>
 
 			val promise = Promise[Unit]()
@@ -127,7 +127,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			doer.run {
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val contenderA = new Covenant[Int]()
+				val contenderA = new Captor[Int]()
 				val firstResultCapturer = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contenderA
@@ -138,7 +138,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				}
 				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
 
-				if bool then contenderA.fulfillWithSync(contenderATask)
+				if bool then contenderA.seizeWithSync(contenderATask)
 				secondResultCapturer.triggerSyncCallbacks(
 					actualResultB => {
 						if expectedResultB.fold(_ => true, _ != actualResultB) then break(s"expected $expectedResultB, got Success($actualResultB)")
@@ -148,7 +148,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 						else promise.trySuccess(())
 					}
 				)
-				if !bool then contenderA.fulfillWithSync(contenderATask)
+				if !bool then contenderA.seizeWithSync(contenderATask)
 			}
 			gate
 		}
@@ -175,7 +175,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 			doer.run {
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val contenderA = new Covenant[Int]()
+				val contenderA = new Captor[Int]()
 				val firstResultCapturer = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contenderA
@@ -184,12 +184,12 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 				val secondResultCapturer = ric.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						break("Second contender should see contenderA as incumbent")
-						LatchingTask_ready(0)
+						Keeper(0)
 					}(identity)
 				}
 				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
 
-				if bool then contenderA.fulfillWithSync(contenderATask)
+				if bool then contenderA.seizeWithSync(contenderATask)
 				secondResultCapturer.triggerSyncCallbacks(
 					actualResult => {
 						if expectedResultA.fold(_ => true, _ != actualResult) then break(s"Expected $expectedResultA, got Success($actualResult)")
@@ -199,7 +199,7 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 						else promise.trySuccess(())
 					}
 				)
-				if !bool then contenderA.fulfillWithSync(contenderATask)
+				if !bool then contenderA.seizeWithSync(contenderATask)
 			}
 
 			gate

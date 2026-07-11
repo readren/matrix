@@ -5,12 +5,12 @@ import readren.common.Maybe
 /**
  * A coordination primitive that manages the convergence of multiple concurrent executions into a single, stable, terminal result.
  *
- * This class implements a **Monotonic Convergence** pattern. It maintains a single stable [[doer.Covenant]] for each ongoing competition.
+ * This class implements a **Monotonic Convergence** pattern. It maintains a single stable [[doer.Captor]] for each ongoing competition.
  * An execution is started by calling [[contend]].
  * There is at most one competition per `parameter` value.
  * A new competition is created when [[contend]] is called and no competition exists for the provided parameter.
  * Every competition has an incumbent execution.
- * When the incumbent execution completes, the competition is ended and the stable [[doer.Covenant]] is fulfilled.
+ * When the incumbent execution completes, the competition is ended and the stable [[doer.Captor]] is fulfilled.
  *
  * The provided `arbitrator` function acts as both a participant and an arbitrator, deciding whether the existing `incumbent` remains the leader of the competition or is superseded by its own execution.
  * Convergence is reached only when the incumbency completes its execution without being unseated.
@@ -25,14 +25,14 @@ import readren.common.Maybe
 final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 
 	/**
-	 * The stable [[doer.LatchingTask]] returned by all the calls to [[contend]] that participate in this [[Competition]].
+	 * The stable [[doer.Capturer]] returned by all the calls to [[contend]] that participate in this [[Competition]].
 	 * Manages the internal state of an ongoing convergence process.
 	 *
-	 * The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
+	 * The [[doer.Capturer]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
 	 */
 	private final class Competition extends doer.DefaultCaptor[R] {
-		/** The [[doer.LatchingTask]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]]. */
-		var incumbent: doer.LatchingTask[R] | Null = null
+		/** The [[doer.Capturer]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]]. */
+		var incumbent: doer.Capturer[R] | Null = null
 		/** The [[Subscription]] to the [[incumbent]]. */
 		var maybeIncumbentSubscription: Maybe[doer.Subscription] = Maybe.empty
 	}
@@ -48,17 +48,17 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 	 * This method is the entry point for a "contender." It uses the `arbitrator` function to determine if this new entry should displace the current [[incumbent]].
 	 *
 	 * @param parameter      The key used to group competing executions.
-	 * @param arbitrator        A function that receives the current [[incumbent]] (if any) and returns a [[doer.LatchingTask]] that yields the result of the execution that should hold the title.
+	 * @param arbitrator        A function that receives the current [[incumbent]] (if any) and returns a [[doer.Capturer]] that yields the result of the execution that should hold the title.
 	 * If it returns the provided incumbent, the new contender "loses."
-	 * If it returns another [[doer.LatchingTask]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Covenant]] of the competition result.
+	 * If it returns another [[doer.Capturer]] instance, the execution that fulfills it becomes the new incumbent and "wins" the right to fulfill the stable [[doer.Captor]] of the competition result.
 	 * @param isWithinDoSerEx   A flag indicating if the call is already executing within the [[doer]]'s sequential context.
-	 * @return A [[doer.LatchingTask]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
+	 * @return A [[doer.Capturer]] that will eventually yield the result of whichever execution completes while being the competition's incumbent.
 	 */
 	def contend(
 		parameter: P,
-		arbitrator: (parameter: P, incumbent: Maybe[doer.LatchingTask[R]]) => doer.LatchingTask[R],
+		arbitrator: (parameter: P, incumbent: Maybe[doer.Capturer[R]]) => doer.Capturer[R],
 		isWithinDoSerEx: Boolean = doer.isInSequence
-	): doer.LatchingTask[R] = {
+	): doer.Capturer[R] = {
 
 		if isWithinDoSerEx then {
 			// Access or create the state for this specific parameter
@@ -95,7 +95,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 							competition.maybeIncumbentSubscription = Maybe.empty
 							activeCompetitions.remove(parameter)
 
-							competition.fulfillSync(result)
+							competition.captureSync(result)
 						}
 					}
 
@@ -107,7 +107,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 							competition.maybeIncumbentSubscription = Maybe.empty
 							activeCompetitions.remove(parameter)
 
-							competition.breakSync(e)
+							competition.trapSync(e)
 						}
 					}
 				})
@@ -122,9 +122,9 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 
 				override def run(): Unit = contend(parameter, arbitrator, true).triggerSync(this)
 
-				override def onSuccess(a: R): Unit = fulfillSync(a)
+				override def onSuccess(a: R): Unit = captureSync(a)
 
-				override def onError(e: Throwable): Unit = breakSync(e)
+				override def onError(e: Throwable): Unit = trapSync(e)
 
 			}
 		}

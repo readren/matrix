@@ -228,56 +228,56 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** Implicitly provide an Arbitrary instance for `doer.Task` */
 	given taskArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Task[A]] = Arbitrary(genTask())
 
-	def genSuccessfulCapturerFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[LatchingTask[A]] = {
-		val readyGen: Gen[LatchingTask[A]] = LatchingTask_ready(a)
+	def genSuccessfulCapturerFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Capturer[A]] = {
+		val readyGen: Gen[Capturer[A]] = Keeper(a)
 
-		val applyGen: Gen[LatchingTask[A]] = LatchingTask_apply(() => a)
+		val applyGen: Gen[Capturer[A]] = Capturer_apply(() => a)
 
-		val deferredGen: Gen[LatchingTask[A]] = Gen.oneOf(readyGen, applyGen).map(lt => LatchingTask_defer(() => lt))
+		val deferredGen: Gen[Capturer[A]] = Gen.oneOf(readyGen, applyGen).map(lt => Capturer_defer(() => lt))
 
-		val fromFutureGen: Gen[LatchingTask[A]] = genFutureFromTry(Success(a), "Capturer_fromFuture").map(future => LatchingTask_from(future))
+		val fromFutureGen: Gen[Capturer[A]] = genFutureFromTry(Success(a), "Capturer_fromFuture").map(future => Capturer_from(future))
 
-		val fromDeferFutureGen: Gen[LatchingTask[A]] = genFutureFromTry(Success(a), "Capturer_fromDeferFuture").map(future => LatchingTask_from(() => future))
+		val fromDeferFutureGen: Gen[Capturer[A]] = genFutureFromTry(Success(a), "Capturer_fromDeferFuture").map(future => Capturer_from(() => future))
 
-		def foreignGen: Gen[LatchingTask[A]] = foreignDoerGenerators().genSuccessfulCapturerFrom(a).map(_.onBehalfOf(doer))
+		def foreignGen: Gen[Capturer[A]] = foreignDoerGenerators().genSuccessfulCapturerFrom(a).map(_.onBehalfOf(doer))
 
 		if syncExecutionOnly then readyGen
 		else if includeForeign then Gen.oneOf(readyGen, applyGen, deferredGen, fromFutureGen, fromDeferFutureGen, foreignGen)
 		else Gen.oneOf(readyGen, applyGen, deferredGen, fromFutureGen, fromDeferFutureGen)
 	}
 
-	def genSuccessfulCapturer[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[LatchingTask[A]] = {
+	def genSuccessfulCapturer[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Capturer[A]] = {
 		for {
 			a <- genA.arbitrary
 			f <- genSuccessfulCapturerFrom(a, syncExecutionOnly)
 		} yield f
 	}
 
-	def genFailingCapturerFrom(e: Throwable, syncExecutionOnly: Boolean = false): Gen[LatchingTask[Nothing]] = {
+	def genFailingCapturerFrom(e: Throwable, syncExecutionOnly: Boolean = false): Gen[Capturer[Nothing]] = {
 
-		val readyGen: Gen[LatchingTask[Nothing]] = Failed(e)
+		val readyGen: Gen[Capturer[Nothing]] = Failed(e)
 
-		val deferredGen: Gen[LatchingTask[Nothing]] = readyGen.map(lt => LatchingTask_defer(() => lt))
+		val deferredGen: Gen[Capturer[Nothing]] = readyGen.map(lt => Capturer_defer(() => lt))
 
-		val fromFutureGen: Gen[LatchingTask[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromFuture").map(future => LatchingTask_from(future))
+		val fromFutureGen: Gen[Capturer[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromFuture").map(future => Capturer_from(future))
 
-		val fromDeferFutureGen: Gen[LatchingTask[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromDeferFuture").map(future => LatchingTask_from(() => future))
+		val fromDeferFutureGen: Gen[Capturer[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromDeferFuture").map(future => Capturer_from(() => future))
 
-		def foreignGen: Gen[LatchingTask[Nothing]] = foreignDoerGenerators().genFailingCapturerFrom(e).map(_.onBehalfOf(doer))
+		def foreignGen: Gen[Capturer[Nothing]] = foreignDoerGenerators().genFailingCapturerFrom(e).map(_.onBehalfOf(doer))
 
 		if syncExecutionOnly then readyGen
 		else if includeForeign then Gen.oneOf(readyGen, deferredGen, fromFutureGen, fromDeferFutureGen, foreignGen)
 		else Gen.oneOf(readyGen, deferredGen, fromFutureGen, fromDeferFutureGen)
 	}
 
-	def genCapturerFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[LatchingTask[A]] = {
+	def genCapturerFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Capturer[A]] = {
 		tryA match {
 			case Success(a) => genSuccessfulCapturerFrom(a, syncExecutionOnly)
 			case Failure(e) => genFailingCapturerFrom(e, syncExecutionOnly)
 		}
 	}
 
-	def genCapturer[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[LatchingTask[A]] = {
+	def genCapturer[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Capturer[A]] = {
 		for {
 			tryA <- genTryA.arbitrary
 			capturerA <- genCapturerFrom(tryA, syncExecutionOnly)
@@ -285,30 +285,30 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	}
 	
 	/** Implicitly provide an Arbitrary instance for `doer.Task` */
-	given capturerArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[LatchingTask[A]] = Arbitrary(genCapturer())
+	given capturerArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Capturer[A]] = Arbitrary(genCapturer())
 
-	def genSuccessfulMonoFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Observable[A]] = {
+	def genSuccessfulMonoFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Mono[A]] = {
 		Gen.oneOf(genSuccessfulTaskFrom(a, syncExecutionOnly), genSuccessfulCapturerFrom(a, syncExecutionOnly))
 	}
 
-	def genSuccessfulMono[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Observable[A]] = {
+	def genSuccessfulMono[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Mono[A]] = {
 		for {
 			a <- genA.arbitrary
 			f <- genSuccessfulMonoFrom(a, syncExecutionOnly)
 		} yield f
 	}
 
-	def genMonoFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Observable[A]] = {
+	def genMonoFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Mono[A]] = {
 		Gen.oneOf(genTaskFrom(tryA, syncExecutionOnly), genCapturerFrom(tryA, syncExecutionOnly))
 	}
 
-	def genMono[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Observable[A]] = {
+	def genMono[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Mono[A]] = {
 		for {
 			tryA <- genTryA.arbitrary
 			monoA <- genMonoFrom(tryA, syncExecutionOnly)
 		} yield monoA
 	}
 
-	given monoArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Observable[A]] = Arbitrary(genMono())
+	given monoArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Mono[A]] = Arbitrary(genMono())
 
 }

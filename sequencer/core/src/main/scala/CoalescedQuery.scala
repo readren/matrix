@@ -10,15 +10,15 @@ import scala.util.control.NonFatal
  * Coalesces concurrent requests by sharing the result of the in-flight query triggered for a specific parameter.
  *
  * This implements a '''First-In-Flight-Wins''' strategy:
- *  - If an equivalent request is already being processed, new callers subscribe to the existing [[LatchingTask]] handle.
+ *  - If an equivalent request is already being processed, new callers subscribe to the existing [[Capturer]] handle.
  *  - Once that initial execution completes, the handle is removed, and the result is delivered to all concurrent subscribers.
  *
  * This is intended for stateless or point-in-time inquiries where any result retrieved after the request is enqueued is considered sufficient for all concurrent callers in that coalesced group.
  */
-final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.LatchingTask[R]) {
-	private val inFlight: mutable.Map[P, doer.LatchingTask[R]] = mutable.Map.empty
+final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.Capturer[R]) {
+	private val inFlight: mutable.Map[P, doer.Capturer[R]] = mutable.Map.empty
 
-	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.LatchingTask[R] = {
+	def getOrStart(params: P, isWithinDoer: Boolean = doer.isInSequence): doer.Capturer[R] = {
 		if isWithinDoer then {
 			inFlight.get(params) match {
 				case Some(lt) =>
@@ -33,13 +33,13 @@ final class CoalescedQuery[P, R, D <: Doer](val doer: D)(querier: P => doer.Latc
 						)
 						lt
 					} catch {
-						case NonFatal(e) => doer.LatchingTask_failed(e)
+						case NonFatal(e) => doer.Failed(e)
 					}
 			}
 		} else {
-			val covenant = doer.Covenant[R]()
-			covenant.fulfillWith(getOrStart(params, false))
-			covenant
+			val captor = doer.Captor[R]()
+			captor.seizeWith(getOrStart(params, false))
+			captor
 		}
 	}
 }

@@ -40,7 +40,7 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 		childDoer: CD,
 		isSignalTest: IsSignalTest[U],
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
-	): doer.LatchingTask[Actant[U, CD]] = {
+	): doer.Capturer[Actant[U, CD]] = {
 		doer.checkWithin()
 		lastChildSerial += 1
 		val childSerial = lastChildSerial
@@ -53,10 +53,10 @@ class Spawner[D <: Doer](val owner: Procreative, val doer: D, initialSerial: Act
 	}
 
 	/** Calls must be within the [[doer]]. */
-	def stopChildren(): doer.LatchingTask[Array[Unit]] = {
+	def stopChildren(): doer.Capturer[Array[Unit]] = {
 		doer.checkWithin()
 		val stopDuties = childrenView.values.map(child => doer.Task_from(child.doer)(child.stop()))
-		doer.LatchingTask_sequenceToArray(stopDuties)
+		doer.Capturer_sequenceToArray(stopDuties)
 	}
 
 	/** Calls must be within the [[doer]]. */

@@ -36,7 +36,7 @@ timestamp: "2026-07-09T14:30:00Z"
 
 - Added and refined ADR `okf/adr-scheduling-subscription-design.md` detailing the design options and recommendation for exposing schedules in timed task subscriptions, detailing the new `.onSubscription` side-effect hook.
 - Documented user-guide specifications for the scheduling split model, TimedSubscription access, and immediate subscription hooks in `okf/sequencer-core.md`.
-- Implemented `TimedSubscription` and `TimedTask` traits, split scheduling extension methods (lazy on `Task` receiving duration properties, immediate/hot on `LatchingTask` receiving pre-built `Delay <: Schedule` directly), and updated
+- Implemented `TimedSubscription` and `TimedTask` traits, split scheduling extension methods (lazy on `Task` receiving duration properties, immediate/hot on `Capturer` receiving pre-built `Delay <: Schedule` directly), and updated
   scheduled supplier factories inside [SchedulingExtension.scala](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala).
 - Implemented the `onSubscription(Schedule => Unit)` hook and backing class `Task_OnSubscription` inside [SchedulingExtension.scala](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala), providing
   synchronous pre-trigger access to schedules.
@@ -63,21 +63,21 @@ timestamp: "2026-07-09T14:30:00Z"
 
 ## [2026-06-25T18:51:15Z]
 
-- Documented Task and LatchingTask semantic evaluation invariants in sequencer-core.md.
+- Documented Task and Capturer semantic evaluation invariants in sequencer-core.md.
 - Documented the introduction of shared helper classes (DefaultCapturer_FlatMap, DefaultCapturer_FlatMapGuarded, DefaultCapturer_TransformWith, DefaultCapturer_RecoverWith) to optimize Observable and Task pipelines.
 
 ## [2026-06-25T02:00:00Z]
 
-- Optimized LatchingTask-returning combinators (withFilter, map, mapGuarded, flatMapGuarded, transform, transformWith, recover, recoverWith) on DefaultCapturer to use lightweight anonymous DefaultCapturer subclasses directly, removing
-  Covenant allocations.
+- Optimized Capturer-returning combinators (withFilter, map, mapGuarded, flatMapGuarded, transform, transformWith, recover, recoverWith) on DefaultCapturer to use lightweight anonymous DefaultCapturer subclasses directly, removing
+  Captor allocations.
 
 ## [2026-06-24T19:30:00Z]
 
-- Documented transition function caching (`maybeMonoB`) design guidelines for `LatchingTask` combinators in `sequencer-core.md`.
+- Documented transition function caching (`maybeMonoB`) design guidelines for `Capturer` combinators in `sequencer-core.md`.
 
 ## [2026-06-24T13:17:00Z]
 
-- Documented Sequencer Core components and Covenant zero-allocation implementation guidelines in sequencer-core.md.
+- Documented Sequencer Core components and Captor zero-allocation implementation guidelines in sequencer-core.md.
 
 ## [2026-06-24T02:10:00Z]
 
