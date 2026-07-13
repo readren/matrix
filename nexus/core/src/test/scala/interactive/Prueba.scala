@@ -6,9 +6,9 @@ import core.*
 import factories.{RegularAf, SequentialInqueueAf}
 
 import readren.sequencer.Doer
-import readren.sequencer.manager.descriptors.{DefaultThreadDrivenSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultRoundRobinDpd, DefaultPollingSchedulingDpd}
+import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultHierarchicalPollingSchedulingDpd, DefaultPollingSchedulingDpd, DefaultRoundRobinDpd, DefaultThreadDrivenSchedulingDpd}
 import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager, ShutdownAbleDpm}
-import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithThreadDrivenSchedulerDp, CooperativeWorkersWithPollingSchedulerDp, RoundRobinDp}
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithPollingSchedulerDp, CooperativeWorkersWithThreadDrivenSchedulerDp, RoundRobinDp}
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -38,8 +38,8 @@ object Prueba {
 
 	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Receptor[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
-	private val NUMBER_OF_WARM_UP_REPETITIONS = 3
-	private val NUMBER_OF_MEASURE_REPETITIONS = 10
+	private val NUMBER_OF_WARM_UP_REPETITIONS = 4
+	private val NUMBER_OF_MEASURE_REPETITIONS = 20
 
 	private inline val NUMBER_OF_PRODUCERS = 100
 	private inline val NUMBER_OF_CONSUMERS = 100
@@ -61,10 +61,12 @@ object Prueba {
 		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularAf),
 		Probe("CooperativeWorkersWithThreadDrivenScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
 		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeWorkersWithHierarchicalSchedulerDp and RegularRf", DefaultHierarchicalPollingSchedulingDpd, RegularAf),
 		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultThreadDrivenSchedulingDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkersWithPollingScheduler and SequentialRf", DefaultPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeWorkersWithHierarchicalPollingScheduler and SequentialRf", DefaultHierarchicalPollingSchedulingDpd, SequentialInqueueAf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {

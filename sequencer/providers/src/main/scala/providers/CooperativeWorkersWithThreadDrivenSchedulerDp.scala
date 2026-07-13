@@ -7,7 +7,7 @@ import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
 
 import java.util.concurrent.*
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import scala.language.adhocExtensions
 
 object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
@@ -25,6 +25,8 @@ object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersD
 		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 	}
+
+	inline def NOT_ACTIVATED: Long = Long.MaxValue
 }
 
 /** Adds scheduling features to the [[CooperativeWorkersDp]].
@@ -40,9 +42,9 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	private class ScheduleImpl(owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](owner), ScheduleFacade {
-		val activated: AtomicBoolean = AtomicBoolean(false)
+		val activationSerial: AtomicLong = AtomicLong(NOT_ACTIVATED)
 
-		override def wasActivated: Boolean = activated.get
+		override def wasActivated: Boolean = activationSerial.get() != NOT_ACTIVATED
 
 		override def toString: String =
 			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
@@ -62,6 +64,9 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 		override type Schedule = ScheduleImpl
 		override type Delay = ScheduleImpl
 
+		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
+		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
+
 		override def newDelaySchedule(delay: MilliDuration): Delay =
 			new ScheduleImpl(thisSchedulingDoer, delay, 0L, false)
 
@@ -73,13 +78,15 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			val activationTime = nanosToMillisRoundedUp(System.nanoTime)
-			if schedule.activated.getAndSet(true) then throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+			val activationSerial = lastActivationSerial.incrementAndGet()
+			if !schedule.activationSerial.compareAndSet(NOT_ACTIVATED, activationSerial) then
+				throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 			else if !schedule.isCanceled then {
 				schedule.runnable = new Runnable {
 					override def run(): Unit = {
-						if !schedule.isCanceled then {
+						if !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
 							routine(schedule)
-							if schedule.interval > 0 && !schedule.isCanceled then {
+							if schedule.interval > 0 && !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
 								if schedule.isFixedRate then scheduler.scheduleRelativeToPrevious(schedule, schedule.interval)
 								else scheduler.schedule(schedule, nanosToMillisRoundedUp(System.nanoTime()) + schedule.interval)
 							}
@@ -102,16 +109,21 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 		 * This implementation removes all the scheduled executions corresponding to this [[Doer]] from its schedule.
 		 * If called near a scheduled time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
 		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
-		override def cancelAll(): Unit = scheduler.cancelAllBelongingTo(thisSchedulingDoer)
+		override def cancelAll(): Unit = {
+			activationSerialAtLastCancelAll = lastActivationSerial.get
+			scheduler.cancelAllBelongingTo(thisSchedulingDoer)
+		}
 
 		/** @inheritdoc
 		 * An instance becomes active when is passed to the [[scheduleSequentially]] method.
 		 * An instance becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
-		override def wasActivated(schedule: Schedule): Boolean = schedule.activated.get()
+		override def wasActivated(schedule: Schedule): Boolean =
+			schedule.activationSerial.get != NOT_ACTIVATED
 
 		/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
 		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
-		override def isCanceled(schedule: ScheduleImpl): Boolean = schedule.isCanceled
+		override def isCanceled(schedule: ScheduleImpl): Boolean =
+			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
 

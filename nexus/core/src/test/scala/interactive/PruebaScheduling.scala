@@ -5,8 +5,8 @@ import core.{Continue, NexusTyped, Stop}
 import factories.RegularAf
 
 import readren.sequencer.manager.ShutdownAbleDpm
-import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultPollingSchedulingDpd}
-import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithPollingSchedulerDp}
+import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultHierarchicalPollingSchedulingDpd}
+import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithHierarchicalPollingSchedulerDp}
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -25,7 +25,7 @@ object PruebaScheduling {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 		println(s"Nexus created")
 
-		val schedulingDoer: CooperativeWorkersWithPollingSchedulerDp.SchedulingDoerFacade = nexus.provideDoer(DefaultPollingSchedulingDpd, "scheduling-doer")
+		val schedulingDoer: CooperativeWorkersWithHierarchicalPollingSchedulerDp.SchedulingDoerFacade = nexus.provideDoer(DefaultHierarchicalPollingSchedulingDpd, "scheduling-doer")
 
 		if false then {
 			@volatile var inside = false

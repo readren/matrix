@@ -40,9 +40,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	@volatile private var observingSession: Int = 0
 
-	/** Executions that start more than this number or nanos after [[SchedulingExtension.cancelAll]] was called outside the [[Doer]]'s thread will fail the test. */
-	protected val schedulerMaximumToleratedNanosBetweenCancellationAndExecution: Long
-
 	override def scalaCheckInitialSeed = "VGtbAPL-x8B3LNaFTqrChP5DoBPGiOpWnmcpQoAYzhN="
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
@@ -1397,6 +1394,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			assert(intercept[IllegalStateException] {
 				doer.schedule(fixedDelaySchedule)(_ => ())
 			}.getMessage.contains("twice"), "No exception thrown despite the same fixed delay schedule was used twice")
+			doer.cancelAll()
 		}
 	}
 
@@ -1706,8 +1704,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val maxDelay = 5
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, maxDelay),
-			Gen.nonEmptyListOf(Gen.choose(1, maxDelay))
-		) { (cancelDelay: Int, delays: List[Int]) =>
+			Gen.nonEmptyListOf(Gen.choose(1, maxDelay)),
+			Gen.oneOf(true, false)
+		) { (cancelDelay: Int, delays: List[Int], useCpuSaturator) =>
 			// println(s"Begin: cancelDelay: $cancelDelay, delays: $delays")
 
 			val promise = Promise[Unit]()
@@ -1718,38 +1717,45 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			@volatile var cancelNanoTime: Long = 0
 			@volatile var maxDistanceBetweenCancellationAndExecutionInNanos: Long = 0
 
+
+			val saturationStopper = if useCpuSaturator then CpuSaturator.startSaturation() else new Runnable {
+				override def run(): Unit = ()
+			}
+
 			for delayMillis <- delays do {
 				val schedule = doer.newFixedRateSchedule(delayMillis, 1)
-				var executionsCounter = 0
+				var executionsAfterCancelAllCounter = 0
 				val activationNanoTime: Long = System.nanoTime()
 				doer.schedule(schedule) { s =>
 					val actualExecutionNanoTime = System.nanoTime()
 					if cancelAllWasCalled then {
+						if executionsAfterCancelAllCounter > 0 then break(s"A schedule routine was executed more than once after `cancelAll` was called.")
 						val distanceBetweenCancellationAndExecutionInNanos = actualExecutionNanoTime - cancelNanoTime
 						if distanceBetweenCancellationAndExecutionInNanos > maxDistanceBetweenCancellationAndExecutionInNanos then maxDistanceBetweenCancellationAndExecutionInNanos = distanceBetweenCancellationAndExecutionInNanos
 						// if cancelAll was called and either, a previous execution occurred or the distance between cancellation and expected execution is large enough, break the promise.
-						if distanceBetweenCancellationAndExecutionInNanos > schedulerMaximumToleratedNanosBetweenCancellationAndExecution then {
-							val message = s"A schedule's routine was executed despite cancelAll was called: previousExecutionsCounter: $executionsCounter, distanceBetweenCancellationAndExecutionInMicros: ${distanceBetweenCancellationAndExecutionInNanos / 1_000}, delay: $delayMillis, cancelTime: $cancelNanoTime, schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
+						if distanceBetweenCancellationAndExecutionInNanos > 500_000 then { // 500 micro
+							val message = s"A schedule's routine was executed despite `cancelAll` was called: previousExecutionsCounter: $executionsAfterCancelAllCounter, distanceBetweenCancellationAndExecutionInMicros: ${distanceBetweenCancellationAndExecutionInNanos / 1_000}, delay: $delayMillis, cancelTime: $cancelNanoTime, schedule: $schedule, isActive=${doer.wasActivated(schedule)}"
 							break(message)
 						}
+						executionsAfterCancelAllCounter += 1
 					}
-					executionsCounter += 1
 				}
 			}
 
 			// With another Doer instance, schedule the execution of `doer.cancelAll` outside the doer and wait enough time for the routines be executed before considering the test as passed.
 			val otherDoer = buildDoer("other")
-			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
-				cancelNanoTime = System.nanoTime()
+			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { cancelSchedule =>
 				doer.cancelAll()
+				cancelNanoTime = System.nanoTime()
 				cancelAllWasCalled = true
-				otherDoer.schedule(otherDoer.newDelaySchedule(maxDelay)) { _ =>
+				otherDoer.schedule(otherDoer.newDelaySchedule(maxDelay)) { checkSchedule =>
 					promise.trySuccess(())
-					if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println("No executions after cancellation: VERY GOOD")
-					else println(s"maxDistanceBetweenCancellationAndExecutionInMicros = ${maxDistanceBetweenCancellationAndExecutionInNanos / 1_000}")
+					if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println(s"No executions after cancellation: VERY GOOD, is CPU saturated=$useCpuSaturator")
+					else println(s"is CPU saturated=$useCpuSaturator, maxDistanceBetweenCancellationAndExecutionInMicros = ${maxDistanceBetweenCancellationAndExecutionInNanos / 1_000}")
 				}
 			}
 
+			saturationStopper.run()
 			gate
 		}
 	}
@@ -1804,9 +1810,9 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			val latch = new CountDownLatch(REPETITIONS)
 
-			val startTime = System.nanoTime()
 			var executionsCounter = 0
 			var maybeSchedule: Maybe[doer.Schedule] = Maybe.empty
+			val startTime = System.nanoTime()
 			val task = doer.Task_schedules(FIXED_RATE, expectedInitialDelay, expectedPeriod) { s =>
 				maybeSchedule = Maybe(s.schedule)
 				val actualDurationNanos = System.nanoTime() - startTime
@@ -1820,7 +1826,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 			task.triggerAndForget()
 			if latch.await(expectedInitialDelay + expectedPeriod * REPETITIONS + EXECUTION_DELAY_MARGIN_MILLIS, TimeUnit.MILLISECONDS) then promise.trySuccess(())
-			else break(s"The number of executions within the provided time is less than the expected")
+			else break(s"The number of executions ($executionsCounter) within the provided time is less than the expected")
 			doer.cancel(maybeSchedule.get)
 			testExecutionsCounter += 1
 			gate

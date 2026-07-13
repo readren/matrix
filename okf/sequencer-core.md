@@ -3,7 +3,7 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-07T15:00:00Z"
+timestamp: "2026-07-13T03:48:00Z"
 ---
 
 # Sequencer Core Component
@@ -61,6 +61,11 @@ structured as follows:
   * **Capturer (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capturer` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety
     against incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capturer` that preserves caching guarantees and resolves to
     completion (either success or timeout) at most once. Periodic/retry operations are restricted from `Capturer` due to caching invariants.
+* **Two-Level Scheduling & Chronological Ordering**:
+    * **Hierarchical Queue**: Scalable scheduling uses a two-level heap structure (a global min-heap of active doers, and a per-doer private min-heap of schedules). This limits global queue operations to $O(\log D)$ (where $D$ is the number
+      of active doers) instead of $O(\log N)$ (total schedules), drastically reducing lock contention on `thisProvider`.
+    * **Ordering & Linearization**: Chronological execution order of schedules across different doers is guaranteed up to the serialization point of the queue pop (the `thisProvider.synchronized` block in
+      `pollEmptyDoerWithEarliestElapsedSchedule`). Concurrent updates to schedules programmed after a worker thread has popped a doer are subject to standard race conditions (i.e. they do not preempt a popped doer's dispatched runnables).
 
 ## Implementation Guidelines
 

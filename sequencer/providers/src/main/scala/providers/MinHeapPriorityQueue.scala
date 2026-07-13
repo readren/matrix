@@ -13,7 +13,7 @@ object MinHeapPriorityQueue {
 	trait Element {
 		var scheduledTime: MilliTime = 0L
 		/** The index of this instance in the array-based min-heap.
-		 * Only accessed within the scheduling thread. */
+		 * Exposed for read only. Do not write. */
 		var heapIndex: Int = -1
 	}
 }
@@ -28,9 +28,9 @@ class MinHeapPriorityQueue[E <: Element](initialCapacity: Int = 16)(using ctP: C
 	private var heap: Array[E | Null] = new Array(initialCapacity)
 	private var heapSize: Int = 0
 
-	inline def size: Int = heapSize
+	def size: Int = heapSize
 
-	inline def peek: E | Null = heap(0)
+	def peek: E | Null = heap(0)
 
 	/** Adds the provided element to this min-heap based priority queue. */
 	def add(element: E): Unit = {
@@ -77,7 +77,7 @@ class MinHeapPriorityQueue[E <: Element](initialCapacity: Int = 16)(using ctP: C
 
 	inline def indexOf(element: E): Int = element.heapIndex
 
-	inline def apply(index: Int): E | Null = heap(index)
+	def apply(index: Int): E | Null = heap(index)
 
 	def clear(): Unit = {
 		var index = heapSize

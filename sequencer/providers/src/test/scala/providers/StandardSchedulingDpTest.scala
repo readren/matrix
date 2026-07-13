@@ -5,8 +5,6 @@ package providers
  */
 class StandardSchedulingDpTest extends SchedulingDoerProviderTest[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
 
-	override val schedulerMaximumToleratedNanosBetweenCancellationAndExecution: Long = 300_000
-
 	override type DP = StandardSchedulingDp
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
