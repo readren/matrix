@@ -40,8 +40,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	@volatile private var observingSession: Int = 0
 
-	override def scalaCheckInitialSeed = "VGtbAPL-x8B3LNaFTqrChP5DoBPGiOpWnmcpQoAYzhN="
-
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	protected def buildDoerProvider: DP
 
@@ -66,6 +64,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	}
 
 	//// Suite lifecycle ////
+
+	// override def scalaCheckInitialSeed = "VGtbAPL-x8B3LNaFTqrChP5DoBPGiOpWnmcpQoAYzhN="
 
 	override val munitTimeout: Duration = scala.concurrent.duration.Duration(30, "seconds")
 
@@ -182,10 +182,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		var mutable = 1
 
 		val task = doer.Task_apply { () =>
-			println("start")
 
 			def m12(): Unit = {
-				println("executing 12")
 				if mutable != 1 then break(s"An execute was not decoupled 1: mutable=$mutable")
 				mutable = 2
 			}
@@ -193,7 +191,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			doer.run(m12())
 
 			inline def m23(): Unit = {
-				println("executing 23")
 				if mutable != 2 then break(s"An execute was not decoupled 2: mutable=$mutable")
 				mutable = 3
 			}
@@ -201,7 +198,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			doer.run(m23())
 
 			def m34(): Unit = {
-				println("executing 34")
 				if mutable != 3 then break(s"An execute was not decoupled 3: mutable=$mutable")
 				mutable = 4
 			}
@@ -209,15 +205,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			doer.run(m34())
 
 			def end(): Unit = {
-				println("executing end")
 				if mutable != 4 then break(s"An execute was not decoupled 4: mutable=$mutable")
 				promise.trySuccess(())
 			}
 
 			doer.run(end())
 			if mutable != 1 then break(s"An execute was not decoupled 0: mutable=$mutable")
-
-			println("completed")
 		}
 
 		task.triggerAndForget(false)
@@ -663,7 +656,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				expectedUnhandledException <- throwableArbitrary.arbitrary
 			} yield (successfulTask, failingTaskException, failingTask, expectedUnhandledException)
 		) { case (successfulTask, failingTaskException, failingTask, expectedUnhandledException) =>
-			println(s"Begin: successfulTask=$successfulTask, failingTaskException=$failingTaskException, failingTask=$failingTask, expectedException: $expectedUnhandledException")
+			// println(s"Begin: successfulTask=$successfulTask, failingTaskException=$failingTaskException, failingTask=$failingTask, expectedException: $expectedUnhandledException")
 
 			/** Do the test for a single operation */
 			def check[R](opName: String, operatedTask: Task[R], shouldPropagateNonFatales: Boolean = false): Future[Unit] = {
@@ -918,7 +911,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		import generators.*
 
 		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Capturer[Int]) =>
-			println(s"Begin: initial=$initial, updater=$updater)")
+			// println(s"Begin: initial=$initial, updater=$updater)")
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -926,24 +919,19 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val fence = CausalFence[Int, doer.type](doer)(initial)
 
 			def loop(currentValue: Int, repetition: Int): Unit = {
-				println(s"loop($currentValue, $repetition)")
 				if repetition == 9 then promise.trySuccess(())
 				else {
 					updater(currentValue).triggerHardy(true) { expectedNextState =>
-						println(s"expectedNextState=$expectedNextState")
 						val advanceCapturer = fence.advance[Int] { previousValue =>
-							println(s"previousValue=$previousValue")
 							if previousValue != currentValue then break(s"repetition #$repetition mismatch")
 							updater(previousValue)
 						}
 						advanceCapturer.triggerCallbacks(true)(
 							actualNextSuccessfulState => {
-								println(s"actualNextSuccessfulState=$actualNextSuccessfulState")
 								if expectedNextState.fold(_ => true, _ != actualNextSuccessfulState) then break(s"Expected: $expectedNextState, got: Success($actualNextSuccessfulState)")
 								else loop(actualNextSuccessfulState, repetition + 1)
 							},
 							actualNextFaultyState => {
-								println(s"actualNextFaultyState=$actualNextFaultyState")
 								if expectedNextState.fold(_ !=== actualNextFaultyState, _ => true) then break(s"Expected: $expectedNextState, got: Failure($actualNextFaultyState)")
 								else promise.trySuccess(())
 							}
@@ -1033,7 +1021,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val hopsList = hopsHead :: hopsTail
 			val topSerial = hopsList.size
 
-			println(s"Begin: swarmSize=$swarmSize, topSerial=$topSerial, hopsList=$hopsList")
+			// println(s"Begin: swarmSize=$swarmSize, topSerial=$topSerial, hopsList=$hopsList")
 
 			val promise = Promise[Unit]()
 
@@ -1114,7 +1102,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val initialState: PrimaryState = (0, 0)
 		val topSerial = 99 // Note that incrementing this number causes stack overflow when syncOnly == true. See note in `DefaultCaptor.captureSync`.
 		PropF.forAllF(Gen.choose(1, 9), Gen.oneOf(true, false)) { (swarmSize: Int, syncOnly: Boolean) =>
-			println(s"Begin: swarmSize=$swarmSize, syncOnly=$syncOnly")
+			// println(s"Begin: swarmSize=$swarmSize, syncOnly=$syncOnly")
 
 			val promise = Promise[Unit]()
 
@@ -1300,7 +1288,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		type PrimaryState = Int
 		PropF.forAllNoShrinkF { (initialState: PrimaryState, updater: PrimaryState => Mono[PrimaryState]) =>
-			println(s"Begin: initialState=$initialState, updater=$updater")
+			// println(s"Begin: initialState=$initialState, updater=$updater")
 			val promise = Promise[Unit]()
 			given Promise[Unit] = promise
 
@@ -1325,7 +1313,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 											override def onError(actualFinalFailureState: Throwable, rollbackApplication: OriginId): Unit = {
 												if rollbackApplication != ROLLBACK_IGNORED then break("The rollback's CompletionObserver was told that the rollback wasn't ignored despite it should")
-												else if expectedFinalState.fold(_ ne actualFinalFailureState, _ => true) then break("The rollback's CompletionObserver received an unexpected primary state")
+												else if expectedFinalState.fold(_ !=== actualFinalFailureState, _ => true) then break("The rollback's CompletionObserver received an unexpected primary state")
 											}
 										}
 									)
@@ -1341,12 +1329,12 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 							fence.causalAnchor(new CompletionObserver[PrimaryState] {
 								override def onSuccess(actualFinalSuccessState: PrimaryState, originId: OriginId): Unit = {
-									println(s"causalAnchor's onSuccess originId = $originId")
+									// println(s"causalAnchor's onSuccess originId = $originId")
 									if expectedFinalState.fold(_ => true, _ != actualFinalSuccessState) then break("The `causalAnchor`'s CompletionObserver received an unexpected value")
 								}
 
 								override def onError(actualFinalErrorState: Throwable, originId: OriginId): Unit = {
-									println(s"causalAnchor's onError originId = $originId")
+									// println(s"causalAnchor's onError originId = $originId")
 									if expectedFinalState.fold(_ !=== actualFinalErrorState, _ => true) then break("The `causalAnchor`'s CompletionObserver received an unexpected value")
 								}
 							}).subscribeHardy(true) { actualAnchor =>
@@ -1668,7 +1656,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			} yield schedule),
 			Gen.choose(1, maxDuration)
 		) { (samples: List[doer.Schedule], cancelDelay: Int) =>
-			println(s"Begin: cancelDelay: $cancelDelay, samples: $samples")
+			// println(s"Begin: cancelDelay: $cancelDelay, samples: $samples")
 
 			val promise = Promise[Unit]()
 
@@ -1750,8 +1738,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				cancelAllWasCalled = true
 				otherDoer.schedule(otherDoer.newDelaySchedule(maxDelay)) { checkSchedule =>
 					promise.trySuccess(())
-					if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println(s"No executions after cancellation: VERY GOOD, is CPU saturated=$useCpuSaturator")
-					else println(s"is CPU saturated=$useCpuSaturator, maxDistanceBetweenCancellationAndExecutionInMicros = ${maxDistanceBetweenCancellationAndExecutionInNanos / 1_000}")
+					// if maxDistanceBetweenCancellationAndExecutionInNanos == 0 then println(s"No executions after cancellation: VERY GOOD, is CPU saturated=$useCpuSaturator")
+					// else println(s"is CPU saturated=$useCpuSaturator, maxDistanceBetweenCancellationAndExecutionInMicros = ${maxDistanceBetweenCancellationAndExecutionInNanos / 1_000}")
 				}
 			}
 

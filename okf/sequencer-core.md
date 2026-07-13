@@ -3,10 +3,11 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-13T03:48:00Z"
+timestamp: "2026-07-13T18:15:00Z"
 ---
 
 # Sequencer Core Component
+
 
 This component defines the single-threaded deterministic sequencing primitives under matrix.
 
@@ -66,6 +67,48 @@ structured as follows:
       of active doers) instead of $O(\log N)$ (total schedules), drastically reducing lock contention on `thisProvider`.
     * **Ordering & Linearization**: Chronological execution order of schedules across different doers is guaranteed up to the serialization point of the queue pop (the `thisProvider.synchronized` block in
       `pollEmptyDoerWithEarliestElapsedSchedule`). Concurrent updates to schedules programmed after a worker thread has popped a doer are subject to standard race conditions (i.e. they do not preempt a popped doer's dispatched runnables).
+
+## DoerProvider Selection Guide
+
+When configuring execution environments, select the `DoerProvider` implementation that matches the scheduling, priority, load balancing, and contention requirements:
+
+### 1. Schedulers (Support for `SchedulingExtension` / Timer tasks)
+
+* **CooperativeWorkersWithPollingSchedulerDp (Single-Layer)**:
+  * **Workload**: Low to moderate schedule density (few active timers overall) or sparse timers (at most one schedule per doer).
+  * **Pros**: Low constant overhead, minimal GC footprint, and simpler lock structure (no nested doer-local locks in `program`/`cancel`).
+  * **Cons**: Global schedule management scales at $O(\log N)$ (where $N$ is total schedules), increasing lock contention under massive numbers of timers.
+* **CooperativeWorkersWithHierarchicalPollingSchedulerDp (Hierarchical)**:
+  * **Workload**: High timer density (many concurrent active timers grouped under each active doer/actor).
+  * **Pros**: Decouples global schedule management into a two-level queue, scaling at $O(\log D)$ (where $D$ is the number of active doers) instead of $O(\log N)$.
+  * **Cons**: Higher memory footprint (allocates a private priority queue per doer) and nested lock complexity (locks both `owner` and `thisProvider` during schedule modification).
+* **CooperativeWorkersWithThreadDrivenSchedulerDp (Thread-Driven)**:
+  * **Workload**: Complex scheduling environments where queue management should be offloaded from worker threads.
+  * **Pros**: Offloads timer management and worker wakeup triggers to a dedicated scheduler thread, isolating worker execution pools from timer overhead.
+  * **Cons**: Requires an additional active thread, increasing system resource usage.
+* **StandardSchedulingDp (Dedicated Thread)**:
+  * **Workload**: Testing or extremely small-scale production with very few doers where independent thread behavior is required.
+  * **Pros**: Bypasses shared worker pools; every doer has its own private `ScheduledExecutorService` (1 thread per doer), eliminating scheduling interference or global queue locks.
+  * **Cons**: Extremely high thread overhead; does not scale to large numbers of doers.
+
+### 2. General Executors (Asynchronous task execution only)
+
+* **CooperativeWorkersDp (Default Cooperative)**:
+  * **Workload**: Standard asynchronous task execution without scheduling or custom priority constraints.
+  * **Pros**: Highly efficient shared cooperative thread pool with $O(1)$ lock-free task polling.
+  * **Cons**: No native support for timer tasks or priority queuing.
+* **CooperativeWorkersTieredDp (Tiered Priority)**:
+  * **Workload**: Dual-priority task execution (regular vs. high-priority doers).
+  * **Pros**: Polls high-priority doers from a separate priority queue before processing regular doers, ensuring priority task precedence.
+  * **Cons**: No scheduling or timer support.
+* **RoundRobinDp (Static Load Balancing)**:
+  * **Workload**: Static number of long-lived doers where execution load is evenly distributed.
+  * **Pros**: Simple round-robin doer mapping matching the thread pool size exactly (1 thread per doer), removing worker-coordination overhead.
+  * **Cons**: No scheduling or dynamic load balancing.
+* **LeastLoadedFixedWorkerDp (Dynamic Load Balancing)**:
+  * **Workload**: Abundant, short-lived doers created on demand.
+  * **Pros**: Dynamically routes new doers to the worker thread with the shortest execution queue at allocation time.
+  * **Cons**: Binds doers statically to threads at creation time; no scheduling support.
 
 ## Implementation Guidelines
 

@@ -5,7 +5,7 @@ import readren.sequencer.SchedulingDoerProviderTest
 
 /** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[CooperativeWorkersWithHierarchicalPollingSchedulerDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
  */
-class CooperativeWorkersWithHierarchicalSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeWorkersWithHierarchicalPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+class CooperativeWorkersWithHierarchicalPollingSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeWorkersWithHierarchicalPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeWorkersWithHierarchicalPollingSchedulerDp
 

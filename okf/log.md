@@ -3,10 +3,14 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-13T03:48:00Z"
+timestamp: "2026-07-13T18:30:00Z"
 ---
 
 # Change Log
+
+## [2026-07-13T18:30:00Z]
+
+- Added the DoerProvider Selection Guide detailing all eight scheduler and executor implementations in `okf/sequencer-core.md`.
 
 ## [2026-07-13T03:48:00Z]
 

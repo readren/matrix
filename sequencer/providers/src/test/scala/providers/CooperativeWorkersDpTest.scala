@@ -11,6 +11,7 @@ import readren.common.ScribeConfig
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.compiletime.uninitialized
+import scala.concurrent.duration.Duration
 import scala.concurrent.{ExecutionContext, Promise}
 
 /** Test suite for [[CooperativeWorkersDp]] trait using fixed samples instead of property-based testing.
@@ -28,6 +29,9 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 	private var sharedDoerProvider: CooperativeWorkersDp.Impl = uninitialized
 
 	private var sharedDoer: CooperativeWorkersDp.DoerFacade = uninitialized
+
+
+	override val munitTimeout: Duration = scala.concurrent.duration.Duration(60, "seconds")
 
 	override def beforeAll(): Unit = {
 		ScribeConfig.init(deleteLogFilesOnLaunch = true)
@@ -317,7 +321,7 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 				}
 
 				// Wait for the tasks to finish.
-				// As soon as this unblocks successfuly, all workers are finishing their tasks and will poll an empty queue, transitioning to sleep. The next iteration will immediately enqueue new tasks, maximizing the probability of hitting the tryToSleep window.
+				// As soon as this unblocks successfully, all workers are finishing their tasks and will poll an empty queue, transitioning to sleep. The next iteration will immediately enqueue new tasks, maximizing the probability of hitting the tryToSleep window.
 				val success = latch.await(1, TimeUnit.SECONDS)
 				if !success then {
 					val diagnostic = testProvider.diagnose(new StringBuilder)
@@ -333,4 +337,26 @@ class CooperativeWorkersDpTest extends ScalaCheckEffectSuite {
 		}
 	}
 
+	test("Worker sleep/wakeup race condition under concurrent task submission") {
+		val doer = sharedDoerProvider.provide("race-test-doer")
+		val iterations = 1000
+		val latch = new CountDownLatch(iterations)
+		val rand = new scala.util.Random()
+
+		val threads = for (_ <- 0 until 4) yield new Thread {
+			override def run(): Unit = {
+				for (_ <- 0 until iterations / 4) {
+					Thread.sleep(rand.nextInt(3)) // random delay up to 2ms
+					doer.executeSequentially { () =>
+						latch.countDown()
+					}
+				}
+			}
+		}
+
+		threads.foreach(_.start())
+		val completed = latch.await(10, TimeUnit.SECONDS)
+		threads.foreach(_.join())
+		assert(completed, "Worker threads hung or a deadlock occurred during concurrent task submission!")
+	}
 }

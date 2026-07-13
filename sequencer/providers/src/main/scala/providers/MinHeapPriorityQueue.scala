@@ -83,6 +83,8 @@ class MinHeapPriorityQueue[E <: Element](initialCapacity: Int = 16)(using ctP: C
 		var index = heapSize
 		while index > 0 do {
 			index -= 1
+			val element = heap(index)
+			element.heapIndex = -1
 			heap(index) = null
 		}
 		heapSize = 0

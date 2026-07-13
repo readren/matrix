@@ -8,6 +8,7 @@ import readren.common.{Maybe, deriveToString}
 
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.{Executors, ThreadFactory}
+import scala.annotation.threadUnsafe
 
 object CooperativeWorkersWithHierarchicalPollingSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
 	final class Impl(
@@ -115,7 +116,7 @@ abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
 		override type Schedule = ScheduleImpl
 		override type Delay = ScheduleImpl
 
-		private[CooperativeWorkersWithHierarchicalPollingSchedulerDp] val doerPriorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
+		@threadUnsafe lazy val doerPriorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
 		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
 		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
 
@@ -180,11 +181,11 @@ abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
 		override def cancelAll(): Unit = {
 			activationSerialAtLastCancelAll = lastActivationSerial.get
 			thisDoer.synchronized {
-				var i = 0
-				while i < doerPriorityQueue.size do {
+				var i = doerPriorityQueue.size
+				while i > 0 do {
+					i -= 1
 					val schedule = doerPriorityQueue(i)
-					if schedule ne null then schedule.isCanceled = true
-					i += 1
+					schedule.isCanceled = true
 				}
 				doerPriorityQueue.clear()
 				thisProvider synchronized {

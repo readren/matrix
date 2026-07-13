@@ -204,24 +204,23 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	}
 
 	private def pollDoerWithEarliestExpiredTimer(currentTime: MilliTime): DoerImpl | Null = thisProvider synchronized {
+		var maybeAwakenedDoer: DoerImpl | Null = null
 		while true do {
 			val earliestToExpire: ScheduleImpl = priorityQueue.peek
 			if earliestToExpire eq null then {
 				earliestScheduledTime = clock.MaxValue
-				return null
+				return maybeAwakenedDoer
 			} else if earliestToExpire.scheduledTime - currentTime > 0 then {
 				earliestScheduledTime = earliestToExpire.scheduledTime
-				return null
-			} else {
+				return maybeAwakenedDoer
+			} else if (maybeAwakenedDoer ne null) && (earliestToExpire.owner ne maybeAwakenedDoer) then return maybeAwakenedDoer
+			else {
 				priorityQueue.finishPoll(earliestToExpire)
-				if earliestToExpire.owner.enqueueRunnable(earliestToExpire.runnable) then {
-					val next = priorityQueue.peek
-					earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
-					return earliestToExpire.owner
-				}
+				val owner = earliestToExpire.owner
+				if owner.enqueueRunnable(earliestToExpire.runnable) then maybeAwakenedDoer = owner
 			}
 		}
-		null
+		maybeAwakenedDoer
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {

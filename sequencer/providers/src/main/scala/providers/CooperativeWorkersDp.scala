@@ -127,7 +127,7 @@ abstract class CooperativeWorkersDp(
 		}
 
 		/** Enqueues this [[DoerImpl]] in the queue of [[DoerImpl]] instances that have pending tasks. */
-		protected def enqueueMyself(): Unit = {
+		def enqueueMyself(): Unit = {
 			queuedDoers.offer(thisDoer)
 		}
 
@@ -236,6 +236,11 @@ abstract class CooperativeWorkersDp(
 		 * This field is updated exclusively within this worker [[thread]]. */
 		@volatile private var potentiallySleeping: Boolean = false
 
+		/** Prevents lost wake-ups while avoiding lock-ordering deadlocks during worker sleep transitions in [[SchedulingExtension]] implementations. \
+		 * This flag acts as a latch indicating whether a concurrent wakeup attempt was made. \
+		 * By checking this flag instead of calling [[pollNextDoer]] inside `thisWorker.synchronized` as in the previous version, the worker thread does not acquire the provider-level lock ([[thisProvider.synchronized]]) while holding the worker-level lock in scheduling extensions (like [[CooperativeWorkersWithHierarchicalPollingSchedulerDp]]), breaking the circular wait condition with client threads calling [[SchedulingExtension.scheduleSequentially]] or [[SchedulingExtension.cancel]]. */
+		@volatile private[providers] var hasBeenSignaled: Boolean = false
+
 		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep due to a salient [[Doer]].
 		 * This field is updated exclusively within this worker [[thread]]. */
 		private var salientDoerCounter: Int = 0
@@ -282,13 +287,14 @@ abstract class CooperativeWorkersDp(
 		}
 
 		/** Puts this [[Worker]] to sleep unless a salient [[DoerImpl]] is seen in the [[queuedDoers]], in which case such [[DoerImpl]] is immediately returned. */
-		private def tryToSleep(): DoerImpl = {
+		private def tryToSleep(): DoerImpl | Null = {
 			doerThreadLocal.set(null)
 			val sleepZonePopulationAtEntry = sleepZonePopulation.incrementAndGet() // Sleep zone begin
 			potentiallySleeping = true
-			val salientDoer = thisWorker.synchronized {
-				val salientDoer = pollNextDoer()
-				if salientDoer == null then {
+			val salientDoer = pollNextDoer() // Is necessary, and must be called after setting potentiallySleeping to true, to solve a race condition in which the worker goes to sleep with a pending task.
+			if salientDoer == null then thisWorker.synchronized {
+				if hasBeenSignaled then hasBeenSignaled = false
+				else {
 					isSleeping = true
 					// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
 					// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
@@ -296,8 +302,8 @@ abstract class CooperativeWorkersDp(
 					else if sleepZonePopulationAtEntry < workers.length then thisWorker.wait()
 					else lull(thisWorker)
 					isSleeping = !keepRunning
+					hasBeenSignaled = false
 				}
-				salientDoer
 			}
 			if keepRunning then {
 				potentiallySleeping = false
@@ -311,6 +317,7 @@ abstract class CooperativeWorkersDp(
 		 * @return `true` if this worker was awakened, otherwise `false`. */
 		def wakeUpIfSleeping(): Boolean = {
 			if potentiallySleeping then {
+				hasBeenSignaled = true
 				thisWorker.synchronized {
 					if isSleeping then {
 						thisWorker.notify()
@@ -324,11 +331,12 @@ abstract class CooperativeWorkersDp(
 
 		def stop(): Unit = thisWorker.synchronized {
 			keepRunning = false
+			hasBeenSignaled = true
 			thisWorker.notify()
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b,hasBeenSignaled$hasBeenSignaled, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
 		}
 
 		override def toString: String = s"${getTypeName[Worker]}(index=$index, threadId=${thread.threadId()})"
