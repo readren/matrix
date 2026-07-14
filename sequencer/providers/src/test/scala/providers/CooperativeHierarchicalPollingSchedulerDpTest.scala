@@ -3,14 +3,14 @@ package providers
 
 import readren.sequencer.SchedulingDoerProviderTest
 
-/** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[CooperativeWorkersWithHierarchicalPollingSchedulerDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
+/** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[CooperativeHierarchicalPollingSchedulerDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
  */
-class CooperativeWorkersWithHierarchicalPollingSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeWorkersWithHierarchicalPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+class CooperativeHierarchicalPollingSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeHierarchicalPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
-	override type DP = CooperativeWorkersWithHierarchicalPollingSchedulerDp
+	override type DP = CooperativeHierarchicalPollingSchedulerDp
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
-	override protected def buildDoerProvider: DP = new CooperativeWorkersWithHierarchicalPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
+	override protected def buildDoerProvider: DP = new CooperativeHierarchicalPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
 		override def tagFromText(text: String): String = text

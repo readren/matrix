@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersWithPollingSchedulerDp.{NOT_ACTIVATED, ScheduleFacade, SchedulingDoerFacade}
+import providers.CooperativeFlatPollingSchedulerDp.{NOT_ACTIVATED, ScheduleFacade, SchedulingDoerFacade}
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
@@ -10,14 +10,14 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.{Executors, ThreadFactory}
 
 
-object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
+object CooperativeFlatPollingSchedulerDp extends CooperativeSchedulerDpCompanion {
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+	) extends CooperativeFlatPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
 
 		override type Tag = String
 
@@ -37,7 +37,7 @@ object CooperativeWorkersWithPollingSchedulerDp extends CooperativeWorkersDpWith
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  * TODO Define a variant of this class in which each [[Doer]] also has its own [[MinHeapPriorityQueue]], and the shared one ([[priorityQueue]]) contains only the earliest [[MinHeapPriorityQueue.Element]] of each [[Doer]]'s [[MinHeapPriorityQueue]]. This would simplify the cancelAll operation and would minimize blocking.
  */
-abstract class CooperativeWorkersWithPollingSchedulerDp(
+abstract class CooperativeFlatPollingSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
@@ -184,7 +184,6 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 
 	override def lull(worker: Worker): Unit = {
 		val est = earliestScheduledTime
-		// scribe.trace(s"CooperativeWorkersWithPollingSchedulerDp.lull($worker): earliestScheduledTime=$est, clock.currentTimeRoundedDown=${clock.currentTimeRoundedDown}") // TODO remove
 		if est == clock.MaxValue then clock.suspend(worker)
 		else {
 			val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
@@ -193,7 +192,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		}
 	}
 
-	override def pollNextDoer(): DoerImpl | Null = {
+	override def pollNextDoer(worker: Worker): DoerImpl | Null = {
 		val currentMilliTime = clock.currentTimeRoundedDown
 		if earliestScheduledTime - currentMilliTime > 0 then queuedDoers.poll()
 		else {
@@ -203,6 +202,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 		}
 	}
 
+	/** Polls the [[SchedulingDoerImpl]] instance that both, its [[SchedulingDoerImpl.runnablesQueue]] was empty, and has the [[ScheduleImpl]] with the earliest elapsed schedule-time. */
 	private def pollDoerWithEarliestExpiredTimer(currentTime: MilliTime): DoerImpl | Null = thisProvider synchronized {
 		var maybeAwakenedDoer: DoerImpl | Null = null
 		while true do {
@@ -224,7 +224,7 @@ abstract class CooperativeWorkersWithPollingSchedulerDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[CooperativeWorkersWithPollingSchedulerDp]).append('\n')
+		sb.append(getTypeName[CooperativeFlatPollingSchedulerDp]).append('\n')
 		sb.append("\tskippedLullsCounter = ").append(skippedLullsCounter).append('\n')
 		super.diagnose(sb)
 	}

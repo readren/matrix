@@ -3,10 +3,22 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-13T18:30:00Z"
+timestamp: "2026-07-14T02:56:00Z"
 ---
 
 # Change Log
+
+## [2026-07-14T02:56:00Z]
+
+- Renamed all scheduling-enabled `DoerProvider` classes to follow a symmetrical, clean, and semantically honest naming convention in `okf/sequencer-core.md`.
+
+## [2026-07-14T02:15:00Z]
+
+- Added documentation for the `CooperativeShardedPollingSchedulerDp` sharded scheduler implementation in the DoerProvider selection guide in `okf/sequencer-core.md`.
+
+## [2026-07-14T01:27:00Z]
+
+- Added documentation for the new `CooperativeLocalPollingSchedulerDp` thread-local scheduler implementation in the DoerProvider selection guide in `okf/sequencer-core.md`.
 
 ## [2026-07-13T18:30:00Z]
 

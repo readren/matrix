@@ -6,7 +6,7 @@ import cluster.service.Protocol.Instant
 
 import readren.common.ScribeConfig
 import readren.common.ToStringWithFields.toStringWithFields
-import readren.sequencer.providers.CooperativeWorkersWithThreadDrivenSchedulerDp
+import readren.sequencer.providers.CooperativeThreadDrivenSchedulerDp
 import scribe.*
 
 import java.net.{InetSocketAddress, StandardSocketOptions}
@@ -45,7 +45,7 @@ object InteractiveTests {
 		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
-		val schedulingDap = new CooperativeWorkersWithThreadDrivenSchedulerDp.Impl(unhandledExceptionReporter = (doer, e) => scribe.error(s"Unhandled exception in an operation executed by the sequencer of the service at port ${doer.tag}", e))
+		val schedulingDap = new CooperativeThreadDrivenSchedulerDp.Impl(unhandledExceptionReporter = (doer, e) => scribe.error(s"Unhandled exception in an operation executed by the sequencer of the service at port ${doer.tag}", e))
 		val sequencerA: SchedulingDoer = schedulingDap.provide(portA.toString)
 		val sequencerB: SchedulingDoer = schedulingDap.provide(portB.toString)
 		

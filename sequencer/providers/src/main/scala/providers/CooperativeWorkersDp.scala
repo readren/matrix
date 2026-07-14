@@ -72,7 +72,7 @@ abstract class CooperativeWorkersDp(
 	 * TODO create and use an implementation of concurrent non-blocking queue that minimizes dynamic memory allocation. */
 	protected val queuedDoers = new ConcurrentLinkedQueue[DoerImpl]()
 
-	private val workers: Array[Worker] = Array.tabulate(threadPoolSize)(buildWorker)
+	protected val workers: Array[Worker] = Array.tabulate(threadPoolSize)(buildWorker)
 
 	private val runningWorkersLatch: CountDownLatch = new CountDownLatch(workers.length)
 	/** Knows how many [[Worker]]s are in the sleep zone. Usually equal to the number of workers whose [[Worker.isSleeping]] flag is set, but may be temporarily greater. Never smaller.
@@ -86,7 +86,7 @@ abstract class CooperativeWorkersDp(
 
 	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any.
 	 *  Exposed for testing only. */
-	inline private[providers] def currentWorker: Runnable | Null = workerThreadLocal.get
+	protected def currentWorker: Runnable | Null = workerThreadLocal.get
 
 	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any.
 	 *
@@ -238,7 +238,7 @@ abstract class CooperativeWorkersDp(
 
 		/** Prevents lost wake-ups while avoiding lock-ordering deadlocks during worker sleep transitions in [[SchedulingExtension]] implementations. \
 		 * This flag acts as a latch indicating whether a concurrent wakeup attempt was made. \
-		 * By checking this flag instead of calling [[pollNextDoer]] inside `thisWorker.synchronized` as in the previous version, the worker thread does not acquire the provider-level lock ([[thisProvider.synchronized]]) while holding the worker-level lock in scheduling extensions (like [[CooperativeWorkersWithHierarchicalPollingSchedulerDp]]), breaking the circular wait condition with client threads calling [[SchedulingExtension.scheduleSequentially]] or [[SchedulingExtension.cancel]]. */
+		 * By checking this flag instead of calling [[pollNextDoer]] inside `thisWorker.synchronized` as in the previous version, the worker thread does not acquire the provider-level lock ([[thisProvider.synchronized]]) while holding the worker-level lock in scheduling extensions (like [[CooperativeHierarchicalPollingSchedulerDp]]), breaking the circular wait condition with client threads calling [[SchedulingExtension.scheduleSequentially]] or [[SchedulingExtension.cancel]]. */
 		@volatile private[providers] var hasBeenSignaled: Boolean = false
 
 		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep due to a salient [[Doer]].
@@ -265,7 +265,7 @@ abstract class CooperativeWorkersDp(
 		override def run(): Unit = {
 			workerThreadLocal.set(thisWorker)
 			while keepRunning do {
-				var assignedDoer: DoerImpl | Null = pollNextDoer()
+				var assignedDoer: DoerImpl | Null = pollNextDoer(thisWorker)
 				if assignedDoer == null then assignedDoer = tryToSleep()
 				if assignedDoer != null then {
 					assignedDoer.lastTimeWorkerIndex = this.index
@@ -291,7 +291,7 @@ abstract class CooperativeWorkersDp(
 			doerThreadLocal.set(null)
 			val sleepZonePopulationAtEntry = sleepZonePopulation.incrementAndGet() // Sleep zone begin
 			potentiallySleeping = true
-			val salientDoer = pollNextDoer() // Is necessary, and must be called after setting potentiallySleeping to true, to solve a race condition in which the worker goes to sleep with a pending task.
+			val salientDoer = pollNextDoer(thisWorker) // Is necessary, and must be called after setting potentiallySleeping to true, to solve a race condition in which the worker goes to sleep with a pending task.
 			if salientDoer == null then thisWorker.synchronized {
 				if hasBeenSignaled then hasBeenSignaled = false
 				else {
@@ -299,7 +299,7 @@ abstract class CooperativeWorkersDp(
 					// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
 					// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
 					if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
-					else if sleepZonePopulationAtEntry < workers.length then thisWorker.wait()
+					else if sleepZonePopulationAtEntry < workers.length && shouldSleepIndefinitely(thisWorker) then thisWorker.wait()
 					else lull(thisWorker)
 					isSleeping = !keepRunning
 					hasBeenSignaled = false
@@ -342,6 +342,8 @@ abstract class CooperativeWorkersDp(
 		override def toString: String = s"${getTypeName[Worker]}(index=$index, threadId=${thread.threadId()})"
 	}
 
+	protected def shouldSleepIndefinitely(worker: Worker): Boolean = true
+
 	/** Puts the current [[Thread]] to sleep, assuming it is the [[Worker.thread]] of the provided worker and the owner of its monitor.
 	 * Called when the last [[Worker]] to enter the sleep zone (where workers go after finding the [[queuedDoers]] queue empty) must be put to sleep.
 	 * 
@@ -349,13 +351,13 @@ abstract class CooperativeWorkersDp(
 	 * If a false positive occurs (i.e., a worker calls `lull` while another is still active), it safely degrades to a timed wait instead of an infinite wait, ensuring scheduled tasks are monitored without incurring the O(N) cost of checking all workers' precise states.
 	 *
 	 * The default implementation puts the specified [[Worker]] to wait without timeout until it is awakened.
- 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeWorkersWithPollingSchedulerDp.determineWaitDurationFor]] for an example.
+	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeFlatPollingSchedulerDp.determineWaitDurationFor]] for an example.
 	 * @param worker the last [[Worker]] to enter the sleep zone.
 	 */
 	protected def lull(worker: Worker): Unit = worker.wait()
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
-	protected def pollNextDoer(): DoerImpl | Null = queuedDoers.poll()
+	protected def pollNextDoer(worker: Worker): DoerImpl | Null = queuedDoers.poll()
 
 	protected inline def startAllWorkersIfNotAlready(): Unit = {
 		if state.compareAndSet(State.notStarted.ordinal, State.keepRunning.ordinal) then {

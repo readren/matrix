@@ -5,12 +5,12 @@ import readren.sequencer.SchedulingDoerProviderTest
 
 /** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[StandardSchedulingDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
  */
-class CooperativeWorkersWithThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeWorkersWithThreadDrivenSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+class CooperativeThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeThreadDrivenSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
-	override type DP = CooperativeWorkersWithThreadDrivenSchedulerDp
+	override type DP = CooperativeThreadDrivenSchedulerDp
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
-	override protected def buildDoerProvider: DP = new CooperativeWorkersWithThreadDrivenSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
+	override protected def buildDoerProvider: DP = new CooperativeThreadDrivenSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text

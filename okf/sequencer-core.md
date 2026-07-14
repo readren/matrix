@@ -3,7 +3,7 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-13T18:15:00Z"
+timestamp: "2026-07-14T02:56:00Z"
 ---
 
 # Sequencer Core Component
@@ -74,18 +74,26 @@ When configuring execution environments, select the `DoerProvider` implementatio
 
 ### 1. Schedulers (Support for `SchedulingExtension` / Timer tasks)
 
-* **CooperativeWorkersWithPollingSchedulerDp (Single-Layer)**:
+* **CooperativeFlatPollingSchedulerDp (Flat Polling)**:
   * **Workload**: Low to moderate schedule density (few active timers overall) or sparse timers (at most one schedule per doer).
   * **Pros**: Low constant overhead, minimal GC footprint, and simpler lock structure (no nested doer-local locks in `program`/`cancel`).
   * **Cons**: Global schedule management scales at $O(\log N)$ (where $N$ is total schedules), increasing lock contention under massive numbers of timers.
-* **CooperativeWorkersWithHierarchicalPollingSchedulerDp (Hierarchical)**:
+* **CooperativeHierarchicalPollingSchedulerDp (Hierarchical Polling)**:
   * **Workload**: High timer density (many concurrent active timers grouped under each active doer/actor).
   * **Pros**: Decouples global schedule management into a two-level queue, scaling at $O(\log D)$ (where $D$ is the number of active doers) instead of $O(\log N)$.
   * **Cons**: Higher memory footprint (allocates a private priority queue per doer) and nested lock complexity (locks both `owner` and `thisProvider` during schedule modification).
-* **CooperativeWorkersWithThreadDrivenSchedulerDp (Thread-Driven)**:
+* **CooperativeThreadDrivenSchedulerDp (Thread-Driven)**:
   * **Workload**: Complex scheduling environments where queue management should be offloaded from worker threads.
   * **Pros**: Offloads timer management and worker wakeup triggers to a dedicated scheduler thread, isolating worker execution pools from timer overhead.
   * **Cons**: Requires an additional active thread, increasing system resource usage.
+* **CooperativeShardedPollingSchedulerDp (Sharded Polling)**:
+  * **Workload**: Multi-threaded scheduling environments with multiple active doers.
+  * **Pros**: Partitions scheduling heaps per worker thread to avoid global queue lock contention.
+  * **Cons**: Requires synchronization locks on the worker's monitor for scheduling, canceling, and polling operations.
+* **CooperativeLocalPollingSchedulerDp (Local Polling)**:
+  * **Workload**: High-frequency scheduling environments where queue contention and lock overhead must be completely eliminated.
+  * **Pros**: Keeps scheduling priority queues strictly thread-local to each worker, requiring zero locks or synchronization. Cancellation (`cancel` and `cancelAll`) is optimized to $O(1)$ lazy evaluation.
+  * **Cons**: Canceled schedules are cleaned up lazily when they expire, meaning they occupy memory in the priority queue until their scheduled time is reached.
 * **StandardSchedulingDp (Dedicated Thread)**:
   * **Workload**: Testing or extremely small-scale production with very few doers where independent thread behavior is required.
   * **Pros**: Bypasses shared worker pools; every doer has its own private `ScheduledExecutorService` (1 thread per doer), eliminating scheduling interference or global queue locks.
@@ -115,7 +123,7 @@ When configuring execution environments, select the `DoerProvider` implementatio
 * **Zero-Allocation Pipelines**: Monadic combinators on `Capturer` are implemented using inline custom anonymous classes extending `Subscription` with `MonoObserver` (or `AbstractTask`) directly, bypassing intermediate wrapping steps.
   Combinators returning a `Capturer` are implemented via lightweight anonymous subclasses extending `DefaultCaptor[B] with MonoObserver[A]`, leveraging `fulfillSync` and `breakSync` to handle state propagation with zero intermediate
   allocations.
-* **Testing Exception Suppression**: When testing thread pool execution components (e.g., `CooperativeWorkersWithPollingSchedulerDp`), unhandled exceptions thrown by asynchronous tasks terminate worker threads and propagate to the default
+* **Testing Exception Suppression**: When testing thread pool execution components (e.g., `CooperativeFlatPollingSchedulerDp`), unhandled exceptions thrown by asynchronous tasks terminate worker threads and propagate to the default
   uncaught exception handler (printing to stderr). To keep build logs clean, pass a custom `ThreadFactory` that intercepts the thread's uncaught exception handler to suppress simulated/expected test exceptions (such as `FaultyValue` and
   test-generated random throwables) while preserving printing of unexpected test environment bugs. Modifying the signature of `onUnhandledException` (e.g., to return a boolean indicating suppression status) should be avoided because it
   breaks binary/source compatibility across many provider subclasses and mixes log reporting with thread-pool lifecycle/recovery responsibilities.

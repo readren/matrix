@@ -84,7 +84,7 @@ class DoerProvidersFenceTest extends ScalaCheckEffectSuite {
 	}
 	test("SchedulingDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 
-		testVisibility(new CooperativeWorkersWithThreadDrivenSchedulerDp.Impl(false), NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER / 20)
+		testVisibility(new CooperativeThreadDrivenSchedulerDp.Impl(false), NUMBER_OF_RUNNABLES_ENQUEUED_PER_DOER / 20)
 	}
 	test("LeastLoadedFixedWorkerDp: Runnables should see updates made by previous runnables enqueued into the same doer") {
 

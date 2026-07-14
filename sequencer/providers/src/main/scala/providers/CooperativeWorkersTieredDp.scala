@@ -52,7 +52,7 @@ abstract class CooperativeWorkersTieredDp(
 		}
 	}
 
-	override protected def pollNextDoer(): DoerImpl | Null = {
+	override protected def pollNextDoer(worker: Worker): DoerImpl | Null = {
 		val next = queuedPriorityDoers.poll()
 		if next ne null then next
 		else queuedDoers.poll()

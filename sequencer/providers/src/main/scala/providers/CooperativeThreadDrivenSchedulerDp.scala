@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersWithThreadDrivenSchedulerDp.*
+import providers.CooperativeThreadDrivenSchedulerDp.*
 
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
@@ -10,14 +10,14 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicLong
 import scala.language.adhocExtensions
 
-object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
+object CooperativeThreadDrivenSchedulerDp extends CooperativeSchedulerDpCompanion {
 
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-	) extends CooperativeWorkersWithThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+	) extends CooperativeThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text
@@ -34,7 +34,7 @@ object CooperativeWorkersWithThreadDrivenSchedulerDp extends CooperativeWorkersD
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
  */
-abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
+abstract class CooperativeThreadDrivenSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
@@ -129,7 +129,7 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 
 
 	/**
-	 * Makes this [[CooperativeWorkersWithThreadDrivenSchedulerDp]] to shut down when all the workers are sleeping.
+	 * Makes this [[CooperativeThreadDrivenSchedulerDp]] to shut down when all the workers are sleeping.
 	 * Invocation has no additional effect if already shut down.
 	 *
 	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
@@ -142,7 +142,7 @@ abstract class CooperativeWorkersWithThreadDrivenSchedulerDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[CooperativeWorkersWithThreadDrivenSchedulerDp]).append('\n')
+		sb.append(getTypeName[CooperativeThreadDrivenSchedulerDp]).append('\n')
 		sb.append("\tscheduler:\n")
 		scheduler.diagnose(sb)
 		super.diagnose(sb)

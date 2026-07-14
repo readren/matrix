@@ -6,9 +6,9 @@ import core.*
 import factories.{RegularAf, SequentialInqueueAf}
 
 import readren.sequencer.Doer
-import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultHierarchicalPollingSchedulingDpd, DefaultPollingSchedulingDpd, DefaultRoundRobinDpd, DefaultThreadDrivenSchedulingDpd}
+import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultFlatPollingSchedulingDpd, DefaultHierarchicalPollingSchedulingDpd, DefaultLocalPollingSchedulingDpd, DefaultRoundRobinDpd, DefaultShardedPollingSchedulingDpd, DefaultThreadDrivenSchedulingDpd}
 import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager, ShutdownAbleDpm}
-import readren.sequencer.providers.{CooperativeWorkersDp, CooperativeWorkersWithPollingSchedulerDp, CooperativeWorkersWithThreadDrivenSchedulerDp, RoundRobinDp}
+import readren.sequencer.providers.{CooperativeFlatPollingSchedulerDp, CooperativeThreadDrivenSchedulerDp, CooperativeWorkersDp, RoundRobinDp}
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -21,7 +21,7 @@ object Prueba {
 
 	private inline val A_MEGA = 1024 * 1024
 
-	private type TestedDoerProvider = CooperativeWorkersWithThreadDrivenSchedulerDp
+	private type TestedDoerProvider = CooperativeThreadDrivenSchedulerDp
 
 	private sealed trait Report
 
@@ -39,7 +39,7 @@ object Prueba {
 	private case class Consumable(producerIndex: Int, value: Int, questionId: Inquisitive.QuestionId = 0L, replyTo: Receptor[Acknowledge] = null) extends Inquisitive.Question[Acknowledge]
 
 	private val NUMBER_OF_WARM_UP_REPETITIONS = 4
-	private val NUMBER_OF_MEASURE_REPETITIONS = 20
+	private val NUMBER_OF_MEASURE_REPETITIONS = 12
 
 	private inline val NUMBER_OF_PRODUCERS = 100
 	private inline val NUMBER_OF_CONSUMERS = 100
@@ -59,14 +59,18 @@ object Prueba {
 	private val probes: Seq[Probe[?]] = List(
 		Probe("RoundRobin and RegularRf", DefaultRoundRobinDpd, RegularAf),
 		Probe("CooperativeWorkers and RegularRf", DefaultCooperativeWorkersDpd, RegularAf),
-		Probe("CooperativeWorkersWithThreadDrivenScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
-		Probe("CooperativeWorkersWithPollingScheduler and RegularRf", DefaultPollingSchedulingDpd, RegularAf),
-		Probe("CooperativeWorkersWithHierarchicalSchedulerDp and RegularRf", DefaultHierarchicalPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeThreadDrivenScheduler and RegularRf", DefaultThreadDrivenSchedulingDpd, RegularAf),
+		Probe("CooperativeFlatPollingScheduler and RegularRf", DefaultFlatPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeHierarchicalPollingSchedulerDp and RegularRf", DefaultHierarchicalPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeLocalPollingSchedulerDp and RegularRf", DefaultLocalPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeShardedPollingSchedulerDp and RegularRf", DefaultShardedPollingSchedulingDpd, RegularAf),
 		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithThreadDrivenScheduler and SequentialRf", DefaultThreadDrivenSchedulingDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithPollingScheduler and SequentialRf", DefaultPollingSchedulingDpd, SequentialInqueueAf),
-		Probe("CooperativeWorkersWithHierarchicalPollingScheduler and SequentialRf", DefaultHierarchicalPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeThreadDrivenScheduler and SequentialRf", DefaultThreadDrivenSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeFlatPollingScheduler and SequentialRf", DefaultFlatPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeHierarchicalPollingScheduler and SequentialRf", DefaultHierarchicalPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeLocalPollingScheduler and SequentialRf", DefaultLocalPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeShardedPollingScheduler and SequentialRf", DefaultShardedPollingSchedulingDpd, SequentialInqueueAf),
 	)
 
 	private class Probe[D <: Doer](name: String, descriptor: DoerProviderDescriptor[D], factory: ActantFactory) {

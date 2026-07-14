@@ -1,7 +1,7 @@
 package readren.sequencer
 package providers
 
-import providers.CooperativeWorkersWithHierarchicalPollingSchedulerDp.{NOT_ACTIVATED, ScheduleFacade, SchedulingDoerFacade}
+import providers.CooperativeHierarchicalPollingSchedulerDp.{NOT_ACTIVATED, ScheduleFacade, SchedulingDoerFacade}
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
@@ -10,14 +10,14 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.{Executors, ThreadFactory}
 import scala.annotation.threadUnsafe
 
-object CooperativeWorkersWithHierarchicalPollingSchedulerDp extends CooperativeWorkersDpWithSchedulerCompanion {
+object CooperativeHierarchicalPollingSchedulerDp extends CooperativeSchedulerDpCompanion {
 	final class Impl(
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeWorkersWithHierarchicalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+	) extends CooperativeHierarchicalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
 
 		override type Tag = String
 
@@ -43,7 +43,7 @@ object CooperativeWorkersWithHierarchicalPollingSchedulerDp extends CooperativeW
  *
  * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
  */
-abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
+abstract class CooperativeHierarchicalPollingSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
@@ -220,18 +220,18 @@ abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
 		}
 	}
 
-	override def pollNextDoer(): DoerImpl | Null = {
+	override def pollNextDoer(worker: Worker): DoerImpl | Null = {
 		val currentMilliTime = clock.currentTimeRoundedDown
 		if earliestScheduledTime - currentMilliTime > 0 then queuedDoers.poll()
 		else {
-			val urgedDoer = pollEmptyDoerWithEarliestElapsedSchedule(currentMilliTime)
+			val urgedDoer = pollDoerWithEarliestElapsedSchedule(currentMilliTime)
 			if urgedDoer ne null then urgedDoer
 			else queuedDoers.poll()
 		}
 	}
 
 	/** Polls the [[SchedulingDoerImpl]] instance that both, its [[SchedulingDoerImpl.runnablesQueue]] was empty, and has the [[ScheduleImpl]] with the earliest elapsed schedule-time. */
-	private def pollEmptyDoerWithEarliestElapsedSchedule(currentTime: MilliTime): DoerImpl | Null = {
+	private def pollDoerWithEarliestElapsedSchedule(currentTime: MilliTime): DoerImpl | Null = {
 		var maybeAwakenedDoer: SchedulingDoerImpl | Null = null
 		while maybeAwakenedDoer eq null do { // outer loop
 			val firstDoer = thisProvider.synchronized {
@@ -282,7 +282,7 @@ abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
 						firstDoer.doerPriorityQueue.finishPoll(firstDoerFirstSchedule)
 						// Enqueue the elapsed schedule's runnable into the runnables-queue of the doer that owns it (the `firstDoer`); and, if it is awakened (the queue transitions from empty to non-empty), memorize it in `maybeAwakenedDoer`.
 						if firstDoer.enqueueRunnable(firstDoerFirstSchedule.runnable) then {
-							// This point is reached at most a single time per each call to this method (`pollEmptyDoerWithEarliestElapsedSchedule`).
+							// This point is reached at most a single time per each call to this method (`pollDoerWithEarliestElapsedSchedule`).
 							maybeAwakenedDoer = firstDoer
 						}
 						true // do inner loop again to consume other elapsed schedules owned by the same doer.
@@ -294,7 +294,7 @@ abstract class CooperativeWorkersWithHierarchicalPollingSchedulerDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		sb.append(getTypeName[CooperativeWorkersWithHierarchicalPollingSchedulerDp]).append('\n')
+		sb.append(getTypeName[CooperativeHierarchicalPollingSchedulerDp]).append('\n')
 		sb.append(s"\tskippedLullsCounter = $skippedLullsCounter\n")
 		thisProvider synchronized {
 			sb.append(s"\tearliestScheduledTime = $earliestScheduledTime\n")

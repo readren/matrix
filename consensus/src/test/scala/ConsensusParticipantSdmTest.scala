@@ -7,7 +7,7 @@ import org.scalacheck.Gen
 import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
-import readren.sequencer.providers.CooperativeWorkersWithPollingSchedulerDp
+import readren.sequencer.providers.CooperativeFlatPollingSchedulerDp
 import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
 import scribe.modify.LogModifier
 import scribe.throwable.TraceLoggableMessage
@@ -62,7 +62,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	private type Id = String
 
 
-	private type ScheduSequen = CooperativeWorkersWithPollingSchedulerDp.SchedulingDoerFacade
+	private type ScheduSequen = CooperativeFlatPollingSchedulerDp.SchedulingDoerFacade
 
 	/** Simulates the network environment in which the consensus participants operate.
 	 * @param clusterSize the total number of [[Node]] instances involved.
@@ -141,7 +141,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		//// The Provider of Doer instances. Will produce one Doer for the Net and one for each of the nodes. ////
 
 		/** The provider of all the [[Doer]] instances used by this testing infrastructure. */
-		val doerProvider = new CooperativeWorkersWithPollingSchedulerDp.Impl(
+		val doerProvider = new CooperativeFlatPollingSchedulerDp.Impl(
 			threadPoolSize = threadPoolSize,
 			unhandledExceptionReporter = (doer, e) => scribe.error(s"Unhandled exception an operation executed by the sequencer tagged with ${doer.tag}", e),
 			clock = clock
@@ -224,7 +224,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				suspend(lockObject, 0)
 			}
 
-			/** Called from [[CooperativeWorkersWithPollingSchedulerDp.lull]], within the [[Thread]] of the last worker (lockObject) that entered the sleep zone, when it sees all other workers are sleeping and there is a pending schedule. */
+			/** Called from [[CooperativeFlatPollingSchedulerDp.lull]], within the [[Thread]] of the last worker (lockObject) that entered the sleep zone, when it sees all other workers are sleeping and there is a pending schedule. */
 			override def suspend(lockObject: Object, duration: MilliDuration): Unit = {
 				// scribe.trace(s"Net: clock.suspend($lockObject, $duration)")
 				val callSerial = suspendCallSerial.incrementAndGet()
@@ -243,7 +243,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						onSystemSettled()
 						// If messages are still traveling, dispatch one of them.
 						if numberOfTravelingMessages > 0 then chooseAChannel().dispatchNext()
-						// Else, if there is no message still traveling, advance the time up to the end of the suspension period. This causes the `CooperativeWorkersWithPollingSchedulerDp.pollNextDoer` that will be called later by a worker, to poll the next scheduled task instead of entering the sleep zone again.
+						// Else, if there is no message still traveling, advance the time up to the end of the suspension period. This causes the `CooperativeFlatPollingSchedulerDp.pollNextDoer` that will be called later by a worker, to poll the next scheduled task instead of entering the sleep zone again.
 						else if duration > 0 then tickTime.addAndGet(duration * TICKS_PER_MILLI)
 					}
 				} // else print(".")

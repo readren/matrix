@@ -67,7 +67,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	// override def scalaCheckInitialSeed = "VGtbAPL-x8B3LNaFTqrChP5DoBPGiOpWnmcpQoAYzhN="
 
-	override val munitTimeout: Duration = scala.concurrent.duration.Duration(30, "seconds")
+	override val munitTimeout: Duration = scala.concurrent.duration.Duration(15, "seconds")
 
 	/** Creates the shared instances that depend on the abstract methods of this class in a deferred way to ensure the concrete subclass is fully constructed before said methods are invoked. */
 	override def beforeAll(): Unit = {

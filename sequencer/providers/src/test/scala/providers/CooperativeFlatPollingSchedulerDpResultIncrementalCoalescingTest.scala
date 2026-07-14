@@ -3,14 +3,14 @@ package providers
 
 import readren.sequencer.ResultIncrementalCoalescingTest
 
-/** Tests if the [[ResultIncrementalCoalescing]] works correctly using the [[Doer]] provided by [[CooperativeWorkersWithPollingSchedulerDp]].
+/** Tests if the [[ResultIncrementalCoalescing]] works correctly using the [[Doer]] provided by [[CooperativeFlatPollingSchedulerDp]].
  */
-class CooperativeWorkersWithPollingSchedulerDpResultIncrementalCoalescingTest extends ResultIncrementalCoalescingTest[CooperativeWorkersWithPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+class CooperativeFlatPollingSchedulerDpResultIncrementalCoalescingTest extends ResultIncrementalCoalescingTest[CooperativeFlatPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
 
-	override type DP = CooperativeWorkersWithPollingSchedulerDp
+	override type DP = CooperativeFlatPollingSchedulerDp
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
-	override protected def buildDoerProvider: DP = new CooperativeWorkersWithPollingSchedulerDp(applyMemoryFence = false) {
+	override protected def buildDoerProvider: DP = new CooperativeFlatPollingSchedulerDp(applyMemoryFence = false) {
 		override type Tag = String
 
 		override def tagFromText(text: String): String = text
