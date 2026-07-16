@@ -3,10 +3,26 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-14T02:56:00Z"
+timestamp: "2026-07-15T04:35:00Z"
 ---
 
 # Change Log
+
+## [2026-07-15T04:35:00Z]
+
+- Added high-level architecture documentation for the `ThreadDrivenScheduler` component to `okf/sequencer-core.md`.
+
+## [2026-07-15T04:15:00Z]
+
+- Documented the optional `trackSleepTime` constructor parameter and telemetry-overhead design toggle in `okf/sequencer-core.md`.
+
+## [2026-07-14T23:12:00Z]
+
+- Added the design goal, execution model, and mathematical correctness proof for Timer Timing Precision and millisecond rounding to `okf/sequencer-core.md`.
+
+## [2026-07-14T19:30:00Z]
+
+- Updated Hierarchical Polling scheduler cons in `okf/sequencer-core.md` to reflect lazy initialization of its private priority queue.
 
 ## [2026-07-14T02:56:00Z]
 

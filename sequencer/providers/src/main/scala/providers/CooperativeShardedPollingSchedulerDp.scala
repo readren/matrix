@@ -15,8 +15,9 @@ object CooperativeShardedPollingSchedulerDp extends CooperativeSchedulerDpCompan
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeShardedPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+		clock: MonotonicClock = new NanoTimeBasedMilliClock,
+		trackSleepTime: Boolean = false
+	) extends CooperativeShardedPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock, trackSleepTime) {
 
 		override type Tag = String
 
@@ -35,7 +36,8 @@ abstract class CooperativeShardedPollingSchedulerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisProvider =>
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	/** Schedule representation managed by the sharded priority queues of this provider. */
 	private class ScheduleImpl(val owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {

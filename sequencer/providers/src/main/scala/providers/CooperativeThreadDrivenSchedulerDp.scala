@@ -16,8 +16,9 @@ object CooperativeThreadDrivenSchedulerDp extends CooperativeSchedulerDpCompanio
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
-		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-	) extends CooperativeThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		trackSleepTime: Boolean = false
+	) extends CooperativeThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text
@@ -37,8 +38,9 @@ object CooperativeThreadDrivenSchedulerDp extends CooperativeSchedulerDpCompanio
 abstract class CooperativeThreadDrivenSchedulerDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
 
 	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
 	private class ScheduleImpl(owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](owner), ScheduleFacade {
@@ -50,7 +52,7 @@ abstract class CooperativeThreadDrivenSchedulerDp(
 			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
 	}
 
-	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, ScheduleImpl](threadFactory)
+	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, ScheduleImpl](threadFactory, trackSleepTime)
 
 	override def provide(tag: Tag): SchedulingDoerFacade = {
 		startAllWorkersIfNotAlready()
@@ -58,6 +60,8 @@ abstract class CooperativeThreadDrivenSchedulerDp(
 	}
 
 	override def currentDoer: Maybe[SchedulingDoerFacade] = super.currentDoer.asInstanceOf[Maybe[SchedulingDoerFacade]]
+
+	def schedulerSleepTimeNanos: Long = scheduler.totalSleepTimeNanos
 
 	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
 

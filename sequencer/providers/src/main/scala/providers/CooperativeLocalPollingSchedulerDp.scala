@@ -15,8 +15,9 @@ object CooperativeLocalPollingSchedulerDp extends CooperativeSchedulerDpCompanio
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeLocalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+		clock: MonotonicClock = new NanoTimeBasedMilliClock,
+		trackSleepTime: Boolean = false
+	) extends CooperativeLocalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock, trackSleepTime) {
 
 		override type Tag = String
 
@@ -35,7 +36,8 @@ abstract class CooperativeLocalPollingSchedulerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisProvider =>
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	/** Schedule representation managed by the thread-local priority queues of this provider. */
 	private class ScheduleImpl(val owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends MinHeapPriorityQueue.Element, ScheduleFacade {
@@ -110,8 +112,7 @@ abstract class CooperativeLocalPollingSchedulerDp(
 			if !schedule.activationSerial.compareAndSet(NOT_ACTIVATED, activationSerial) then
 				throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 
-			val w = currentWorker
-			if w != null then {
+			if currentWorker ne null then {
 				scheduleSequentiallyInternal(schedule, routine, activationSerial)
 			} else {
 				thisDoer.executeSequentially { () =>
@@ -164,59 +165,53 @@ abstract class CooperativeLocalPollingSchedulerDp(
 	}
 
 	override def lull(worker: Worker): Unit = {
-		val myIndex = worker.index
-		val est = earliestScheduledTimes(myIndex)
-		if est == clock.MaxValue then {
-			clock.suspend(worker)
-		} else {
+		val est = earliestScheduledTimes(worker.index)
+		if est == clock.MaxValue then clock.suspend(worker)
+		else {
 			val duration = est - clock.currentTimeRoundedDown
 			if duration > 0 then clock.suspend(worker, duration)
 		}
 	}
 
 	override def pollNextDoer(worker: Worker): DoerImpl | Null = {
-		val myIndex = worker.index
-		val myQueue = workerPriorityQueues(myIndex)
-		val currentMilliTime = clock.currentTimeRoundedDown
+		val currentTime = clock.currentTimeRoundedDown
+		val workerIndex = worker.index
+		val workerQueue = workerPriorityQueues(workerIndex)
 
-		val earliest = myQueue.peek
-		if earliest eq null then {
-			earliestScheduledTimes(myIndex) = clock.MaxValue
-		} else if earliest.scheduledTime - currentMilliTime > 0 then {
-			earliestScheduledTimes(myIndex) = earliest.scheduledTime
-		}
-
-		val resDoer = if earliest eq null then {
+		val earliestSchedule = workerQueue.peek
+		if earliestSchedule eq null then {
+			earliestScheduledTimes(workerIndex) = clock.MaxValue
 			queuedDoers.poll()
-		} else if earliest.scheduledTime - currentMilliTime > 0 then {
+		} else if earliestSchedule.scheduledTime - currentTime > 0 then {
+			earliestScheduledTimes(workerIndex) = earliestSchedule.scheduledTime
 			queuedDoers.poll()
 		} else {
-			val urgedDoer = pollExpiredSchedules(myIndex, currentMilliTime)
+			val urgedDoer = pollExpiredSchedules(workerIndex, workerQueue, currentTime)
 			if urgedDoer ne null then urgedDoer
 			else queuedDoers.poll()
 		}
-		resDoer
 	}
 
-	/** Removes and enqueues all expired schedules in the worker's priority queue. \
-	 * Returns the first awakened [[DoerImpl]] if any. */
-	private def pollExpiredSchedules(workerIndex: Int, currentTime: MilliTime): DoerImpl | Null = {
-		val myQueue = workerPriorityQueues(workerIndex)
+	/** Removes and enqueues the [[ScheduleImpl.runnable]] of expired schedules in the worker's priority queue, until a [[ScheduleImpl.owner]] is awakened and a succeeding schedule does not belong to it. \
+	 * @return the awakened [[DoerImpl]] if any. */
+	private def pollExpiredSchedules(workerIndex: Int, workerQueue: MinHeapPriorityQueue[ScheduleImpl], currentTime: MilliTime): DoerImpl | Null = {
 		var maybeAwakenedDoer: DoerImpl | Null = null
 
-		var earliest = myQueue.peek
-		while (earliest ne null) && earliest.scheduledTime - currentTime <= 0 && ((maybeAwakenedDoer eq null) || (earliest.owner eq maybeAwakenedDoer)) do {
-			myQueue.finishPoll(earliest)
-			val owner = earliest.owner
-			val enqueued = owner.enqueueRunnable(earliest.runnable)
-			if enqueued then {
-				maybeAwakenedDoer = owner
+		var earliestSchedule = workerQueue.peek
+		while true do {
+			workerQueue.finishPoll(earliestSchedule)
+			val scheduleOwner = earliestSchedule.owner
+			if scheduleOwner.enqueueRunnable(earliestSchedule.runnable) then maybeAwakenedDoer = scheduleOwner
+			earliestSchedule = workerQueue.peek
+			if earliestSchedule eq null then {
+				earliestScheduledTimes(workerIndex) = clock.MaxValue
+				return maybeAwakenedDoer
 			}
-			earliest = myQueue.peek
+			if earliestSchedule.scheduledTime - currentTime > 0 || (maybeAwakenedDoer ne null) && (earliestSchedule.owner ne maybeAwakenedDoer) then {
+				earliestScheduledTimes(workerIndex) = earliestSchedule.scheduledTime
+				return maybeAwakenedDoer
+			}
 		}
-		val next = myQueue.peek
-		earliestScheduledTimes(workerIndex) = if next eq null then clock.MaxValue else next.scheduledTime
-
 		maybeAwakenedDoer
 	}
 }

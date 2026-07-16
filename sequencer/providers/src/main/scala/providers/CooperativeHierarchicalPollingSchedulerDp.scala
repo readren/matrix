@@ -16,8 +16,9 @@ object CooperativeHierarchicalPollingSchedulerDp extends CooperativeSchedulerDpC
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeHierarchicalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+		clock: MonotonicClock = new NanoTimeBasedMilliClock,
+		trackSleepTime: Boolean = false
+	) extends CooperativeHierarchicalPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock, trackSleepTime) {
 
 		override type Tag = String
 
@@ -48,7 +49,8 @@ abstract class CooperativeHierarchicalPollingSchedulerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisProvider =>
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	/**
 	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed.
@@ -71,8 +73,8 @@ abstract class CooperativeHierarchicalPollingSchedulerDp(
 		/** Adds this [[ScheduleImpl]] instance to the [[owner]]'s private queue, and if needed, updates the [[owner]]'s position in the global [[headsPriorityQueue]]. */
 		def program(scheduledTime: MilliTime): Unit = {
 			this.scheduledTime = scheduledTime
-			val owerPriorityQueue = owner.doerPriorityQueue
 			owner.synchronized {
+				val owerPriorityQueue = owner.doerPriorityQueue
 				if isCanceled then return
 				val oldEarliestSchedule = owerPriorityQueue.peek
 				owerPriorityQueue.add(this)
@@ -116,6 +118,7 @@ abstract class CooperativeHierarchicalPollingSchedulerDp(
 		override type Schedule = ScheduleImpl
 		override type Delay = ScheduleImpl
 
+		/** This [[@threadUnsafe]] is safe as long the [[doerPriorityQueue]] is always accessed within a `this.synchronized` section. */
 		@threadUnsafe lazy val doerPriorityQueue = new MinHeapPriorityQueue[ScheduleImpl]()
 		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
 		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
@@ -158,16 +161,19 @@ abstract class CooperativeHierarchicalPollingSchedulerDp(
 			schedule.isCanceled = true
 			thisDoer.synchronized {
 				if doerPriorityQueue.remove(schedule) then {
-					val earliest = doerPriorityQueue.peek
-					thisProvider synchronized {
-						if thisDoer.heapIndex >= 0 then {
-							headsPriorityQueue.remove(thisDoer)
-							if earliest ne null then {
-								thisDoer.scheduledTime = earliest.scheduledTime
+					val newEarliestSchedule = doerPriorityQueue.peek
+					val newEarliestScheduledTime = if newEarliestSchedule eq null then clock.MaxValue else newEarliestSchedule.scheduledTime
+					if newEarliestScheduledTime != thisDoer.scheduledTime then {
+						thisProvider synchronized {
+							if thisDoer.heapIndex >= 0 then {
+								headsPriorityQueue.remove(thisDoer)
+							}
+							if newEarliestSchedule ne null then {
+								thisDoer.scheduledTime = newEarliestScheduledTime
 								headsPriorityQueue.add(thisDoer)
 							}
-							val next = headsPriorityQueue.peek
-							earliestScheduledTime = if next eq null then clock.MaxValue else next.scheduledTime
+							val newEarliestDoer = headsPriorityQueue.peek
+							earliestScheduledTime = if newEarliestDoer eq null then clock.MaxValue else newEarliestDoer.scheduledTime
 						}
 					}
 				}

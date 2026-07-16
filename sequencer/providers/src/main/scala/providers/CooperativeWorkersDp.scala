@@ -34,8 +34,9 @@ object CooperativeWorkersDp {
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
-		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		trackSleepTime: Boolean = false
+	) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text
@@ -60,7 +61,8 @@ object CooperativeWorkersDp {
 abstract class CooperativeWorkersDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	trackSleepTime: Boolean
 ) extends DoerProvider[DoerFacade], ShutdownAble { thisProvider =>
 
 	private val state: AtomicInteger = new AtomicInteger(State.notStarted.ordinal)
@@ -231,6 +233,7 @@ abstract class CooperativeWorkersDp(
 		/** Set to `true` just before calling [[ReentrantLock.wait]] and to `false` just after (the second only if [[keepRunning]] is `true`).
 		 * This field is updated within a synchronized block on this [[Worker]]'s intrinsic lock. */
 		@volatile private var isSleeping: Boolean = false
+		@volatile var totalSleepTimeNanos: Long = 0
 
 		/** Usually equal to [[isSleeping]] but may be temporarily true when [[isSleeping]] is false. Not the opposite.
 		 * This field is updated exclusively within this worker [[thread]]. */
@@ -292,6 +295,7 @@ abstract class CooperativeWorkersDp(
 			val sleepZonePopulationAtEntry = sleepZonePopulation.incrementAndGet() // Sleep zone begin
 			potentiallySleeping = true
 			val salientDoer = pollNextDoer(thisWorker) // Is necessary, and must be called after setting potentiallySleeping to true, to solve a race condition in which the worker goes to sleep with a pending task.
+			val sleepStart = if trackSleepTime then System.nanoTime() else 0L
 			if salientDoer == null then thisWorker.synchronized {
 				if hasBeenSignaled then hasBeenSignaled = false
 				else {
@@ -305,6 +309,7 @@ abstract class CooperativeWorkersDp(
 					hasBeenSignaled = false
 				}
 			}
+			if trackSleepTime then totalSleepTimeNanos += (System.nanoTime() - sleepStart)
 			if keepRunning then {
 				potentiallySleeping = false
 				sleepZonePopulation.getAndDecrement() // Sleep zone end
@@ -424,6 +429,8 @@ abstract class CooperativeWorkersDp(
 	override def awaitTermination(timeout: Long, unit: TimeUnit): Boolean = {
 		runningWorkersLatch.await(timeout, unit)
 	}
+
+	def workersSleepTimeNanos: Array[Long] = workers.map(_.totalSleepTimeNanos)
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
 		sb.append(getTypeName[CooperativeWorkersDp])

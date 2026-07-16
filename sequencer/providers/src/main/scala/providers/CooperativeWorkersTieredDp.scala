@@ -18,8 +18,9 @@ object CooperativeWorkersTieredDp {
 		applyMemoryFence: Boolean = true,
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
-		threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-	) extends CooperativeWorkersTieredDp(applyMemoryFence, threadPoolSize, threadFactory) {
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		trackSleepTime: Boolean = false
+	) extends CooperativeWorkersTieredDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text
@@ -35,8 +36,9 @@ object CooperativeWorkersTieredDp {
 abstract class CooperativeWorkersTieredDp(
 	applyMemoryFence: Boolean = true,
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-	threadFactory: ThreadFactory = Executors.defaultThreadFactory()
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[TieredDoerFacade] {
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	trackSleepTime: Boolean
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[TieredDoerFacade] {
 
 	/** Queue of [[TieredDoerImpl]] with pending tasks (are waiting to be assigned to a [[Worker]] in order to process them.
 	 *

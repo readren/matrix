@@ -60,7 +60,7 @@ object ThreadDrivenScheduler {
  *
  * @tparam D the type of [[Doer]] that executes the scheduled routines.
  * @tparam P the type of the [[Plan]] instances that this scheduler accepts. */
-class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactory)(using ctP: ClassTag[P | Null]) extends Runnable { thisScheduler =>
+class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactory, trackSleepTime: Boolean = false)(using ctP: ClassTag[P | Null]) extends Runnable { thisScheduler =>
 
 	sealed trait Command {
 		/** Executed by the scheduling thread to apply state modifications. */
@@ -103,20 +103,16 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 
 	final class CancelAll(doer: D) extends Command {
 		override def execute(): Unit = {
+			// Note: We do not maintain a separate registry of triggered-but-not-yet-executed tasks. Instead, cancellation of already triggered tasks is handled lazily/safely via activationSerial checks inside the execution runnables.
 			var index = priorityQueue.size
 			while index > 0 do {
 				index -= 1
 				val schedule = priorityQueue(index).asInstanceOf[P]
 				if schedule.owner eq doer then {
 					schedule.isCanceled = true
+					// Removing an element from the min-heap replaces it with the last element of the heap and bubbles it. If the replacement bubbles down, it stays at or below `index` (handled by repeating the check at `index`). If it bubbles up, it moves to a parent index < `index` (handled by the backward iteration of the loop). Therefore, incrementing the index cursor when the removed element was not the last element is sufficient to visit and check all elements without missing any and without allocating temporary lists.
 					if priorityQueue.remove(schedule) && index < priorityQueue.size then index += 1
 				}
-			}
-
-			val enabledSchedules = triggeredSchedulesByDoer.remove(doer)
-			if enabledSchedules ne null then enabledSchedules.foreach { schedule =>
-				schedule.isCanceled = true
-				schedule.isTriggered = false
 			}
 		}
 	}
@@ -132,7 +128,8 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	private val commandsQueue = new util.ArrayDeque[Command]()
 
 	private val priorityQueue = new MinHeapPriorityQueue[Plan[D]](INITIAL_HEAP_QUEUE_CAPACITY)
-	private var triggeredSchedulesByDoer = new util.HashMap[D, mutable.HashSet[P]]()
+
+	@volatile var totalSleepTimeNanos: Long = 0L
 
 	private var isRunning = true
 
@@ -179,9 +176,6 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	private def removeFromRegister(schedule: P): Boolean = {
 		if schedule.isTriggered then {
 			schedule.isTriggered = false
-			val triggeredSchedules = triggeredSchedulesByDoer.get(schedule.owner)
-			if triggeredSchedules ne null then triggeredSchedules.remove(schedule)
-			if triggeredSchedules.isEmpty then triggeredSchedulesByDoer.remove(schedule.owner)
 			true
 		} else false
 	}
@@ -189,9 +183,6 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 	/** Triggers the execution of the routine corresponding to the specified [[Plan]], and registers that the [[Plan]] was triggered and still not rescheduled. */
 	private def triggerExecutionOf(plan: P): Unit = {
 		plan.isTriggered = true
-		val triggeredSchedules = triggeredSchedulesByDoer.get(plan.owner)
-		if triggeredSchedules eq null then triggeredSchedulesByDoer.put(plan.owner, mutable.HashSet(plan))
-		else triggeredSchedules.addOne(plan)
 		plan.owner.executeSequentially(plan.runnable)
 	}
 
@@ -222,6 +213,7 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 				triggerExecutionOf(plan)
 				earlierSchedule = priorityQueue.peek
 			}
+			val sleepStart = if trackSleepTime then System.nanoTime() else 0L
 			this.synchronized {
 				if isRunning && commandsQueue.isEmpty then {
 					if earlierSchedule eq null then this.wait()
@@ -232,18 +224,12 @@ class ThreadDrivenScheduler[D <: Doer, P <: Plan[D]](threadFactory: ThreadFactor
 					}
 				}
 			}
+			if trackSleepTime then totalSleepTimeNanos += (System.nanoTime() - sleepStart)
 		}
 		// Reached when stopped.
 		this.synchronized(commandsQueue.clear()) // do not keep unnecessary references after stopped to avoid unnecessary memory retention
 		for i <- 0 until priorityQueue.size do priorityQueue(i).isCanceled = true
 		priorityQueue.clear() // do not keep unnecessary references after stopped to avoid unnecessary memory retention
-		triggeredSchedulesByDoer.forEach { (_, enabledSchedules) =>
-			enabledSchedules.foreach { schedule =>
-				schedule.isCanceled = true
-				schedule.isTriggered = false
-			}
-		}
-		triggeredSchedulesByDoer = null // do not keep unnecessary references while waiting to avoid unnecessary memory retention
 	}
 
 	def diagnose(sb: StringBuilder): StringBuilder = {

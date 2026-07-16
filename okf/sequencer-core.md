@@ -3,7 +3,7 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-14T02:56:00Z"
+timestamp: "2026-07-15T04:35:00Z"
 ---
 
 # Sequencer Core Component
@@ -67,6 +67,23 @@ structured as follows:
       of active doers) instead of $O(\log N)$ (total schedules), drastically reducing lock contention on `thisProvider`.
     * **Ordering & Linearization**: Chronological execution order of schedules across different doers is guaranteed up to the serialization point of the queue pop (the `thisProvider.synchronized` block in
       `pollEmptyDoerWithEarliestElapsedSchedule`). Concurrent updates to schedules programmed after a worker thread has popped a doer are subject to standard race conditions (i.e. they do not preempt a popped doer's dispatched runnables).
+* **Timer Timing Precision & Rounding Proof**:
+  To ensure that a scheduled task is never executed earlier than expected (i.e. actual execution delay is $\ge$ requested delay), matrix uses a strict combination of rounding up during scheduling and rounding down during polling:
+    * **Design Goal**: The actual execution time $T_{\text{actual}}$ must satisfy $T_{\text{actual}} \ge T_{\text{expected}}$ where $T_{\text{expected}} = T_{\text{start}} + D$ ($T_{\text{start}}$ is the request time, $D$ is the delay). The
+      overshoot error $T_{\text{actual}} - T_{\text{expected}}$ should be as small as possible but never negative.
+    * **Scheduling Rounding**: Target time is scheduled using `currentTimeRoundedUp` ($\lceil T \rceil$):
+      $$T_{\text{scheduled}} = \lceil T_{\text{start}} \rceil + D$$
+    * **Polling & Sleeping Rounding**: Worker threads check for expiration and sleep duration using `currentTimeRoundedDown` ($\lfloor T \rfloor$):
+      $$\lfloor T_{\text{actual}} \rfloor \ge T_{\text{scheduled}} \iff T_{\text{actual}} \ge T_{\text{scheduled}}$$
+    * **Mathematical Proof**:
+      Since $T_{\text{actual}} \ge T_{\text{scheduled}}$, substituting the formula yields:
+      $$T_{\text{actual}} \ge \lceil T_{\text{start}} \rceil + D$$
+      Since the ceiling of any real number is greater than or equal to the number itself ($\lceil T \rceil \ge T$), we have:
+      $$T_{\text{actual}} \ge T_{\text{start}} + D = T_{\text{expected}}$$
+      $$T_{\text{actual}} - T_{\text{expected}} \ge 0 \quad (\text{Never negative})$$
+      Moreover, the maximum overshoot is bounded by the ceiling rounding error:
+      $$T_{\text{actual}} - T_{\text{expected}} \le \lceil T_{\text{start}} \rceil - T_{\text{start}} < 1\text{ ms}$$
+      Thus, the overshoot is strictly bounded to $< 1$ millisecond, representing the absolute minimum possible error within the constraints of a millisecond-resolution timer.
 
 ## DoerProvider Selection Guide
 
@@ -81,7 +98,8 @@ When configuring execution environments, select the `DoerProvider` implementatio
 * **CooperativeHierarchicalPollingSchedulerDp (Hierarchical Polling)**:
   * **Workload**: High timer density (many concurrent active timers grouped under each active doer/actor).
   * **Pros**: Decouples global schedule management into a two-level queue, scaling at $O(\log D)$ (where $D$ is the number of active doers) instead of $O(\log N)$.
-  * **Cons**: Higher memory footprint (allocates a private priority queue per doer) and nested lock complexity (locks both `owner` and `thisProvider` during schedule modification).
+  * **Cons**: Nested lock complexity (locks both `owner` and `thisProvider` during schedule modification) and potential allocation overhead, though the private priority queue is initialized lazily on demand only for doers that actually use
+    scheduling.
 * **CooperativeThreadDrivenSchedulerDp (Thread-Driven)**:
   * **Workload**: Complex scheduling environments where queue management should be offloaded from worker threads.
   * **Pros**: Offloads timer management and worker wakeup triggers to a dedicated scheduler thread, isolating worker execution pools from timer overhead.
@@ -127,3 +145,8 @@ When configuring execution environments, select the `DoerProvider` implementatio
   uncaught exception handler (printing to stderr). To keep build logs clean, pass a custom `ThreadFactory` that intercepts the thread's uncaught exception handler to suppress simulated/expected test exceptions (such as `FaultyValue` and
   test-generated random throwables) while preserving printing of unexpected test environment bugs. Modifying the signature of `onUnhandledException` (e.g., to return a boolean indicating suppression status) should be avoided because it
   breaks binary/source compatibility across many provider subclasses and mixes log reporting with thread-pool lifecycle/recovery responsibilities.
+* **Sleep-Time Tracking Toggle**: Cooperative worker-pool based providers (`CooperativeWorkersDp` and subclasses) accept a `trackSleepTime: Boolean` constructor parameter. When set to `false` (default), worker threads bypass high-frequency
+  `System.nanoTime()` measurements and atomic/volatile metrics updates during worker loop sleep transitions. This eliminates telemetry-related CPU and system timer overhead in latency-sensitive production environments.
+* **ThreadDrivenScheduler Component**: The `ThreadDrivenScheduler` manages task scheduling and periodic/one-shot executions using a dedicated background thread and an array-based binary min-heap, while executing task runnables cooperatively
+  on the worker thread pool.
+

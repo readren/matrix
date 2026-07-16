@@ -16,8 +16,9 @@ object CooperativeFlatPollingSchedulerDp extends CooperativeSchedulerDpCompanion
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
-		clock: MonotonicClock = new NanoTimeBasedMilliClock
-	) extends CooperativeFlatPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock) {
+		clock: MonotonicClock = new NanoTimeBasedMilliClock,
+		trackSleepTime: Boolean = false
+	) extends CooperativeFlatPollingSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, clock, trackSleepTime) {
 
 		override type Tag = String
 
@@ -42,7 +43,8 @@ abstract class CooperativeFlatPollingSchedulerDp(
 	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
 	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 	clock: MonotonicClock = new NanoTimeBasedMilliClock,
-) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory), DoerProvider[SchedulingDoerFacade] { thisProvider =>
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisProvider =>
 
 	/**
 	 * Note that the scheduled-time is initialized to the first time point when the timer is activated, and updated to the next time point every time the routine is executed.
