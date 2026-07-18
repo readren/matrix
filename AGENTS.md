@@ -19,7 +19,7 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 1. **Never edit code unless the user explicitly says to edit code.** Describing a problem, pasting logs, or asking for analysis is NOT permission to edit. The user must use words like "fix", "change", "implement", "edit", "refactor", or equivalent direct imperatives targeting code.
 2. **Never run tests or compile code unless the user explicitly says to do so.** Analyzing output or reasoning about behavior does NOT require execution. Default to static analysis.
 3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
-
+4. **Never suggest, prompt, or ask the user to compile, run tests, or execute commands.** Do not follow generic validation templates that prompt for execution. Wait for the user to explicitly initiate execution or request it.
 
 ## Environment
 - Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).

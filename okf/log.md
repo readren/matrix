@@ -3,10 +3,22 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-15T04:35:00Z"
+timestamp: "2026-07-18T02:12:36Z"
 ---
 
 # Change Log
+
+## [2026-07-18T02:12:36Z]
+
+- Added the complete empirical benchmark results table to the bottom of `okf/sequencer-core.md`.
+
+## [2026-07-18T02:04:31Z]
+
+- Corrected Sharded Polling scheduler performance affirmations in `okf/sequencer-core.md` based on empirical benchmark results showing that Local Polling consistently outperforms Sharded Polling due to its lock-free execution model.
+
+## [2026-07-16T22:05:00Z]
+
+- Updated `okf/sequencer-core.md` with performance characteristics and trade-offs of Hierarchical, Sharded, and Local Polling schedulers discovered during benchmarking under load.
 
 ## [2026-07-15T04:35:00Z]
 
