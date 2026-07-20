@@ -4,10 +4,11 @@ package providers
 import readren.sequencer.*
 import providers.*
 
-import java.nio.file.{Files, Paths, Path}
+import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.{CountDownLatch, ThreadLocalRandom}
+import java.util.concurrent.{CountDownLatch, ThreadLocalRandom, TimeUnit}
 import scala.jdk.CollectionConverters.*
+import scala.collection.mutable
 
 /** Case classes to model execution workloads and results without using generic Tuples. */
 
@@ -34,15 +35,11 @@ case class ProviderScenario(
 /** Represents settings cached in the settings cache file.
  *
  * @param calibratedFrequency Calibrated feeding frequency (Hz).
- * @param adjustedCanceledSchedulesFraction Actual adjusted cancellation fraction.
- * @param adjustedScheduledVsRegularRatio Actual adjusted scheduled-to-regular task ratio.
  * @param throughput Measured execution throughput (ops/sec).
  * @param cpuUtilization Measured CPU utilization (fraction).
  * @param doerCount Total number of doers provisioned during execution. */
 case class CachedSettings(
 	calibratedFrequency: Double,
-	adjustedCanceledSchedulesFraction: Double,
-	adjustedScheduledVsRegularRatio: Double,
 	throughput: Double,
 	cpuUtilization: Double,
 	doerCount: Int
@@ -50,15 +47,9 @@ case class CachedSettings(
 
 /** Holds the final calibration and metric results of an experiment. */
 case class CalibrationResult(
-	throughput: Double,
-	actualActiveSchedulesPerDoer: Double,
-	actualCanceledSchedulesFraction: Double,
-	actualScheduledVsRegularTaskRatio: Double,
-	cpuUtilization: Double,
+	experimentResult: ExperimentRunResult,
 	retries: Int,
-	calibratedFrequency: Double,
-	adjustedCanceledFraction: Double,
-	adjustedScheduledVsRegularRatio: Double
+	calibratedFrequency: Double
 )
 
 /** Holds the metric results returned from a single experiment execution run. */
@@ -77,69 +68,66 @@ case class ExperimentRunResult(
  * and regular tasks. */
 object SchedulingDoerBenchmark {
 	type Sequencer = Doer & SchedulingExtension
-	type SequencerProvider = DoerProvider[Sequencer] {type Tag = String} & ShutdownAble
+	type SequencerProvider = DoerProvider[Sequencer] {type Tag = String} & CooperativeWorkersDp
 
-	private val INITIAL_TARGET_ACTIVATION_SCHEDULES = 20000
+	private val INITIAL_TARGET_ACTIVE_SCHEDULES = 100000
 	private val ENABLE_SLEEP_TRACKING = true
-	private val TARGET_EXPERIMENT_DURATION = 800 // milliseconds
+	private val TARGET_EXPERIMENT_DURATION = 500 // milliseconds
 	private val MAX_JITTER_MS = 16.0
+	private val POOL_SIZE = 8
+	private inline val CACHE_FILE_NAME = "selection_benchmark_cache.txt"
+	private inline val MINIMUM_STEPS = 4
+
+	private val activeSchedulesPerDoerTargets = List(0.1, 1.0, 10.0)
+	private val cancelledSchedulesFractionTargets = List(0.0, 0.1, 0.5, 0.9)
+	private val scheduledVsRegularTasksRatioTargets = List(0.1, 1.0, 10.0)
+	private val providerNames = List("Local", "Contained", "Sharded", "Flat", "Hierarchical", "ThreadDriven")
 
 	def main(args: Array[String]): Unit = {
 		println("======================================================================")
 		println("STARTING PROVIDER SELECTION BENCHMARK (REFACTORED)")
 		println("======================================================================")
-		println(s"Initial target active schedules in queue: $INITIAL_TARGET_ACTIVATION_SCHEDULES")
+		println(s"Initial target active schedules in queue: $INITIAL_TARGET_ACTIVE_SCHEDULES")
 		println("======================================================================")
 
 		val onlyTable = args.contains("--only-table") || args.contains("table")
-		val cachePath = Paths.get("selection_benchmark_cache.txt")
-		val cache = scala.collection.mutable.Map[ProviderScenario, CachedSettings]()
-		val doerCounts = scala.collection.mutable.Map[Scenario, Int]()
+		val cachePath = Paths.get(CACHE_FILE_NAME)
+		val cache = mutable.Map[ProviderScenario, CachedSettings]()
 
 		loadCache(cachePath, cache)
 
-		val activeSchedulesPerDoerTargets = List(0.1, 1.0, 10.0)
-		val cancelledSchedulesFractionTargets = List(0.0, 0.1, 0.5, 0.9)
-		val scheduledVsRegularTasksRatioTargets = List(0.1, 1.0, 10.0)
-		val poolSize = 4
-
 		def createProvider(providerName: String): SequencerProvider = {
 			providerName match {
-				case "Flat" => new CooperativeFlatPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize, trackSleepTime = ENABLE_SLEEP_TRACKING)
-				case "Hier" => new CooperativeHierarchicalPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize, trackSleepTime = ENABLE_SLEEP_TRACKING)
-				case "Thread" => new CooperativeThreadDrivenSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize, trackSleepTime = ENABLE_SLEEP_TRACKING)
-				case "Shard" => new CooperativeShardedPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize, trackSleepTime = ENABLE_SLEEP_TRACKING)
-				case "Local" => new CooperativeLocalPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = poolSize, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "Flat" => new CooperativeFlatPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "Hierarchical" => new CooperativeHierarchicalPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "ThreadDriven" => new CooperativeThreadDrivenSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "Sharded" => new CooperativeShardedPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "Local" => new CooperativeLocalPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
+				case "Contained" => new CooperativeContainedPollingSchedulerDp.Impl(applyMemoryFence = false, threadPoolSize = POOL_SIZE, trackSleepTime = ENABLE_SLEEP_TRACKING)
 				case _ => throw new IllegalArgumentException(s"Unknown provider: $providerName")
 			}
 		}
 
-		val providerNames = List("Local", "Shard", "Flat", "Hier", "Thread")
-		val results = scala.collection.mutable.Map[ProviderScenario, Double]()
-		val sleepMap = scala.collection.mutable.Map[ProviderScenario, Double]()
+		val results = mutable.Map[ProviderScenario, Double]()
+		val sleepMap = mutable.Map[ProviderScenario, Double]()
+		val doerCounts = scala.collection.mutable.Map[Scenario, Int]()
 
-		if onlyTable then {
-			println("Running in Table-Only mode. Drawing results from cache file...")
-			for ((ProviderScenario(scenario, providerName), cachedSettings) <- cache) {
-				results(ProviderScenario(scenario, providerName)) = cachedSettings.throughput
-				sleepMap(ProviderScenario(scenario, providerName)) = 1.0 - cachedSettings.cpuUtilization
-				doerCounts(scenario) = cachedSettings.doerCount
-			}
-		} else {
+		if onlyTable then drawTable(cache)
+		else {
 			println("Performing warm-up...")
 			for (providerName <- providerNames) {
 				val doerProvider = createProvider(providerName)
 				try {
 					val warmUpExperiment = new Experiment(
 						doerProvider = doerProvider,
-						doerCount = 1000,
+						numberOfDoers = 1000,
 						scenario = Scenario(
 							targetActiveSchedulesPerDoer = 1.0,
 							targetCanceledSchedulesFraction = 0.1,
 							targetScheduledVsRegularTasksRatio = 1.0
 						),
-						timerDelayMs = 50,
-						durationMs = 300
+						feedingPeriodMillis = 50,
+						experimentDurationMillis = 300
 					)
 					warmUpExperiment.run()
 				} finally {
@@ -160,12 +148,12 @@ object SchedulingDoerBenchmark {
 			}
 
 			for (scenario <- sortedConfigs) {
-				var targetActiveSchedules = INITIAL_TARGET_ACTIVATION_SCHEDULES.toDouble
+				var targetActiveSchedules = INITIAL_TARGET_ACTIVE_SCHEDULES
 				var completedConfig = false
 
 				while !completedConfig do {
 					val numberOfDoers = (targetActiveSchedules / scenario.targetActiveSchedulesPerDoer).round.toInt.max(1)
-					println(s"\nBenchmarking configuration: active schedules/doer=${scenario.targetActiveSchedulesPerDoer} | cancels%=${scenario.targetCanceledSchedulesFraction * 100}%3.0f%% | scheduled/immediate=${scenario.targetScheduledVsRegularTasksRatio} | doers=$numberOfDoers | queueSize=$targetActiveSchedules")
+					println(s"\nBenchmarking configuration: active schedules/doer=${scenario.targetActiveSchedulesPerDoer} | canceledSchedules/total=${scenario.targetCanceledSchedulesFraction * 100}% | scheduled/immediate=${scenario.targetScheduledVsRegularTasksRatio} | doers=$numberOfDoers | queueSize=$targetActiveSchedules")
 					var needRedo = false
 					val tempResults = scala.collection.mutable.Map[String, CalibrationResult]()
 
@@ -176,10 +164,10 @@ object SchedulingDoerBenchmark {
 						try {
 							val pilotExperiment = new Experiment(
 								doerProvider = doerProvider,
-								doerCount = numberOfDoers,
+								numberOfDoers = numberOfDoers,
 								scenario = scenario,
-								timerDelayMs = 1,
-								durationMs = 200
+								feedingPeriodMillis = 1,
+								experimentDurationMillis = 200
 							)
 							val runResult = pilotExperiment.run()
 							pilotThroughputs(providerName) = runResult.throughput
@@ -197,37 +185,21 @@ object SchedulingDoerBenchmark {
 						val key = ProviderScenario(scenario, providerName)
 						val cachedSettings = cache.get(key)
 						val doerProvider = createProvider(providerName)
-						try {
-							val calibrationResult = calibrateAndRunExperiment(
-								providerName = providerName,
-								doerProvider = doerProvider,
-								numberOfDoers = numberOfDoers,
-								scenario = scenario,
-								cachedSettings = cachedSettings
-							)
-							val finalFreq = calibrationResult.calibratedFrequency
-							val finalUtilization = calibrationResult.cpuUtilization
-
-							val finalTimerDelayMs = math.max(1, (1000.0 / finalFreq).toInt)
-							val utilizationThreshold = providerName match {
-								case "Thread" => 0.70
-								case "Hier" => 0.80
-								case _ => 0.90
-							}
-
-							if finalTimerDelayMs == 1 && finalUtilization < utilizationThreshold then {
-								// Double queue size and trigger redo
-								targetActiveSchedules *= 2.0
-								needRedo = true
-								println(s"\n[WARNING] $providerName failed to saturate CPU at 1000Hz limit (utilization=${finalUtilization * 100}%2.1f%%). Doubling targetActiveSchedules to $targetActiveSchedules and restarting configuration...")
-							} else {
-								tempResults(providerName) = calibrationResult
-							}
-						} finally {
-							doerProvider.shutdown()
+						val calibrationResult = calibrateAndRunExperiment(
+							providerName = providerName,
+							doerProvider = doerProvider,
+							numberOfDoers = numberOfDoers,
+							scenario = scenario,
+							cachedSettings = cachedSettings
+						)
+						if calibrationResult eq null then {
+							targetActiveSchedules *= 2
+							needRedo = true
+							println(s"\n[WARNING] $providerName failed to saturate CPU. Doubling targetActiveSchedules to $targetActiveSchedules and restarting configuration...")
+						} else {
+							tempResults(providerName) = calibrationResult
+							providerIndex += 1
 						}
-						System.gc()
-						providerIndex += 1
 					}
 
 					if !needRedo then {
@@ -236,20 +208,18 @@ object SchedulingDoerBenchmark {
 						for (providerName <- orderedProviders) {
 							val calibrationResult = tempResults(providerName)
 							val key = ProviderScenario(scenario, providerName)
-							results(key) = calibrationResult.throughput
-							sleepMap(key) = 1.0 - calibrationResult.cpuUtilization
+							results(key) = calibrationResult.experimentResult.throughput
+							sleepMap(key) = 1.0 - calibrationResult.experimentResult.actualCpuUtilization
 							cache(key) = CachedSettings(
 								calibratedFrequency = calibrationResult.calibratedFrequency,
-								adjustedCanceledSchedulesFraction = calibrationResult.adjustedCanceledFraction,
-								adjustedScheduledVsRegularRatio = calibrationResult.adjustedScheduledVsRegularRatio,
-								throughput = calibrationResult.throughput,
-								cpuUtilization = calibrationResult.cpuUtilization,
+								throughput = calibrationResult.experimentResult.throughput,
+								cpuUtilization = calibrationResult.experimentResult.actualCpuUtilization,
 								doerCount = numberOfDoers
 							)
 
-							val sleepPct = (1.0 - calibrationResult.cpuUtilization) * 100.0
-							printf("  %-7s -> Calibrated Freq=%-5.1f Hz | Actual S=%5.2f, C=%5.1f%%, R=%5.2f | Sleep=%5.1f%% | Retries=%d | Throughput=%s\n",
-								providerName, calibrationResult.calibratedFrequency, calibrationResult.actualActiveSchedulesPerDoer, calibrationResult.actualCanceledSchedulesFraction * 100, calibrationResult.actualScheduledVsRegularTaskRatio, sleepPct, calibrationResult.retries, formatThroughput(calibrationResult.throughput))
+							val sleepPct = (1.0 - calibrationResult.experimentResult.actualCpuUtilization) * 100.0
+							printf("  %-7s -> Calibrated Freq=%-5.4f Hz | active schecules/doer=%5.2f, canceledSchedules=%5.1f%%, scheduled/regular=%5.2f | Sleep=%5.1f%% | Retries=%d | Throughput=%s\n",
+								providerName, calibrationResult.calibratedFrequency, calibrationResult.experimentResult.actualActiveSchedulesPerDoer, calibrationResult.experimentResult.actualCanceledSchedulesFraction * 100, calibrationResult.experimentResult.actualScheduledVsRegularTaskRatio, sleepPct, calibrationResult.retries, formatThroughput(calibrationResult.experimentResult.throughput))
 						}
 
 						saveCache(cache, cachePath, onlyTable)
@@ -258,13 +228,27 @@ object SchedulingDoerBenchmark {
 			}
 
 			saveCache(cache, cachePath, onlyTable)
-			println("\nCalibrated settings saved to selection_benchmark_cache.txt.")
+			println(s"""\nCalibrated settings saved to "$CACHE_FILE_NAME".""")
+			drawTable(cache)
 		}
+	}
 
+	def drawTable(cache: mutable.Map[ProviderScenario, CachedSettings]): Unit = {
 		val separator = "=" * 125
 		println("\n" + separator)
 		println(" " * 35 + "FLATTENED MULTIDIMENSIONAL SELECTION SUMMARY")
 		println(separator)
+
+		val results = mutable.Map[ProviderScenario, Double]()
+		val sleepMap = mutable.Map[ProviderScenario, Double]()
+		val doerCounts = scala.collection.mutable.Map[Scenario, Int]()
+
+		println("Running in Table-Only mode. Drawing results from cache file...")
+		for ((ProviderScenario(scenario, providerName), cachedSettings) <- cache) {
+			results(ProviderScenario(scenario, providerName)) = cachedSettings.throughput
+			sleepMap(ProviderScenario(scenario, providerName)) = 1.0 - cachedSettings.cpuUtilization
+			doerCounts(scenario) = cachedSettings.doerCount
+		}
 
 		for (targetCanceledSchedulesFraction <- cancelledSchedulesFractionTargets) {
 			for (targetActiveSchedulesPerDoer <- activeSchedulesPerDoerTargets) {
@@ -281,7 +265,7 @@ object SchedulingDoerBenchmark {
 						targetCanceledSchedulesFraction = targetCanceledSchedulesFraction,
 						targetScheduledVsRegularTasksRatio = targetScheduledVsRegularTasksRatio
 					)
-					val doerCount = doerCounts.getOrElse(scenario, (INITIAL_TARGET_ACTIVATION_SCHEDULES / targetActiveSchedulesPerDoer).round.toInt.max(1))
+					val doerCount = doerCounts(scenario)
 					headerArgs.append(f"Sched/Regul= $targetScheduledVsRegularTasksRatio (${doerCount / 1000}%,dk doers)")
 				}
 
@@ -332,7 +316,7 @@ object SchedulingDoerBenchmark {
 		if !onlyTable then {
 			val writer = Files.newBufferedWriter(cachePath)
 			try {
-				writer.write("# S,C,R,ProviderName,Freq(Hz),adjC,adjR,throughput,utilization,doers\n")
+				writer.write("# activeSchedulesPerDoer, canceledSchedulesFraction, scheduledVsRegularTasksRatio, ProviderName, Freq(Hz), throughput, utilization, doers\n")
 				val sortedCache = cache.toSeq.sortBy { case (providerScenario, cachedSettings) =>
 					(
 						providerScenario.scenario.targetActiveSchedulesPerDoer,
@@ -342,7 +326,7 @@ object SchedulingDoerBenchmark {
 					)
 				}
 				for ((providerScenario, cachedSettings) <- sortedCache) {
-					writer.write(s"${providerScenario.scenario.targetActiveSchedulesPerDoer},${providerScenario.scenario.targetCanceledSchedulesFraction},${providerScenario.scenario.targetScheduledVsRegularTasksRatio},${providerScenario.providerName},${cachedSettings.calibratedFrequency},${cachedSettings.adjustedCanceledSchedulesFraction},${cachedSettings.adjustedScheduledVsRegularRatio},${cachedSettings.throughput},${cachedSettings.cpuUtilization},${cachedSettings.doerCount}\n")
+					writer.write(s"${providerScenario.scenario.targetActiveSchedulesPerDoer},${providerScenario.scenario.targetCanceledSchedulesFraction},${providerScenario.scenario.targetScheduledVsRegularTasksRatio},${providerScenario.providerName},${cachedSettings.calibratedFrequency},${cachedSettings.throughput},${cachedSettings.cpuUtilization},${cachedSettings.doerCount}\n")
 				}
 			} finally {
 				writer.close()
@@ -364,14 +348,12 @@ object SchedulingDoerBenchmark {
 					val targetScheduledVsRegularTasksRatio = parts(2).toDouble
 					val providerName = parts(3)
 					val calibratedFrequency = parts(4).toDouble
-					val adjustedCanceledFraction = parts(5).toDouble
-					val adjustedScheduledVsRegularRatio = parts(6).toDouble
-					val throughput = parts(7).toDouble
-					val cpuUtilization = parts(8).toDouble
-					val doerCount = parts(9).toInt
+					val throughput = parts(5).toDouble
+					val cpuUtilization = parts(6).toDouble
+					val doerCount = parts(7).toInt
 
 					val key = ProviderScenario(Scenario(targetActiveSchedulesPerDoer, targetCanceledSchedulesFraction, targetScheduledVsRegularTasksRatio), providerName)
-					cache(key) = CachedSettings(calibratedFrequency, adjustedCanceledFraction, adjustedScheduledVsRegularRatio, throughput, cpuUtilization, doerCount)
+					cache(key) = CachedSettings(calibratedFrequency, throughput, cpuUtilization, doerCount)
 				}
 			}
 			println(s"Loaded ${cache.size} calibrated settings from cache file.\n")
@@ -392,121 +374,79 @@ object SchedulingDoerBenchmark {
 		numberOfDoers: Int,
 		scenario: Scenario,
 		cachedSettings: Option[CachedSettings]
-	): CalibrationResult = {
+	): CalibrationResult | Null = {
 		val targetActiveSchedulesPerDoer = scenario.targetActiveSchedulesPerDoer
 		val targetCanceledSchedulesFraction = scenario.targetCanceledSchedulesFraction
 		val targetScheduledVsRegularTasksRatio = scenario.targetScheduledVsRegularTasksRatio
 
-		val minimumFeedingFrequency = 1.0
-		val maximumFeedingFrequency = 1000.0
+		inline val FEEDING_PERIOD_MINIMUM_LOWER_BOUND = 4
+		inline val FEEDING_PERIOD_MAXIMUM_UPPER_BOUND = 10_000
+		var feedingPeriodMillisPilotLowerBound = FEEDING_PERIOD_MINIMUM_LOWER_BOUND
+		var feedingPeriodMillisPilotUpperBound = FEEDING_PERIOD_MAXIMUM_UPPER_BOUND
+		var feedingPeriodMillisFinalLowerBound = FEEDING_PERIOD_MINIMUM_LOWER_BOUND
+		var feedingPeriodMillisFinalUpperBound = FEEDING_PERIOD_MAXIMUM_UPPER_BOUND
+		var experimentResultAtFeedingPeriodMillisLowerBound: ExperimentRunResult | Null = null
 
-		val initialEstimation = math.sqrt(minimumFeedingFrequency * maximumFeedingFrequency) // ~31.6 Hz
-		val maxFrequencyCap = maximumFeedingFrequency
+		inline val MILLIS_PER_SECOND = 1000
 
-		var feedingFreq = cachedSettings.map(_.calibratedFrequency).getOrElse(initialEstimation)
-		var feedingPeriodMillis = (1000.0 / feedingFreq).round.toInt.max(1)
-		feedingFreq = 1000.0 / feedingPeriodMillis
+		/** gives the geometric mean of feedingPeriodMillisUpperBound and feedingPeriodMillisLowerBound */
+		def nextPilotFeedingPeriodMillis: Int = math.sqrt((feedingPeriodMillisPilotLowerBound + 1) * feedingPeriodMillisPilotUpperBound).round.toInt
+		def nextFinalFeedingPeriodMillis: Int = math.sqrt((feedingPeriodMillisFinalLowerBound + 1) * feedingPeriodMillisFinalUpperBound).round.toInt
 
-		var calibrated = false
-		var previousRunWasFullAndSaturated = false
-		var finalThroughput = 0.0
-		var finalActualActiveSchedulesPerDoer = 0.0
-		var finalActualCanceledSchedulesFraction = 0.0
-		var finalActualScheduledVsRegularTaskRatio = 0.0
-		var finalUtilization = 0.0
-		var retries = 0
+		var feedingPeriodMillis = cachedSettings.fold(nextPilotFeedingPeriodMillis) { settings =>
+			((MILLIS_PER_SECOND * numberOfDoers) / (settings.doerCount * settings.calibratedFrequency)).round.toInt
+		}
 
-		var pilotDurationMs = TARGET_EXPERIMENT_DURATION / 10
-
-		while !calibrated do {
-			val currentExperimentDuration = math.min(TARGET_EXPERIMENT_DURATION, pilotDurationMs)
-			val experiment = new Experiment(doerProvider, numberOfDoers, scenario, feedingPeriodMillis, currentExperimentDuration)
+		var experimentDuration = (feedingPeriodMillis * 2).max(TARGET_EXPERIMENT_DURATION / 10)
+		var attemptNumber = 0
+		var calibrationResult: CalibrationResult | Null = null
+		while calibrationResult eq null do {
+			attemptNumber += 1
+			val experiment = new Experiment(doerProvider, numberOfDoers, scenario, feedingPeriodMillis, experimentDuration)
 			val runResult = experiment.run()
+			val feedingFreq = MILLIS_PER_SECOND.toFloat / feedingPeriodMillis
+			println(f"  $providerName%-15s ... Calibrating (S=${runResult.actualActiveSchedulesPerDoer}%5.2f, C=${runResult.actualCanceledSchedulesFraction}%5.2f, R=${runResult.actualScheduledVsRegularTaskRatio}%5.2f, CPU=${runResult.actualCpuUtilization*100}%4.0f%%) | Freq=$feedingFreq%6.3f Hz | Attempt=$attemptNumber%-2d")
 
-			val activeSchedulesPerDoerError = math.abs(runResult.actualActiveSchedulesPerDoer - targetActiveSchedulesPerDoer) / targetActiveSchedulesPerDoer
-			val canceledFractionError = if targetCanceledSchedulesFraction == 0.0 then runResult.actualCanceledSchedulesFraction else math.abs(runResult.actualCanceledSchedulesFraction - targetCanceledSchedulesFraction)
-			val ratioError = if runResult.actualScheduledVsRegularTaskRatio.isInfinite then 1.0 else math.abs(runResult.actualScheduledVsRegularTaskRatio - targetScheduledVsRegularTasksRatio) / targetScheduledVsRegularTasksRatio
-
-			val parametersAccurate = (activeSchedulesPerDoerError < 0.05) && (canceledFractionError < 0.05) && (ratioError < 0.05)
-
-			val cpuUtilizationError = math.max(0.0, 0.98 - runResult.actualCpuUtilization)
 			val cpuSaturated = runResult.actualCpuUtilization >= 0.98
-
-			val schedulesPerDoerErrorPercentage = activeSchedulesPerDoerError * 100.0
-			val cancellationPercentageErrorPercentage = canceledFractionError * 100.0
-			val scheduledVersusRegularTasksRatioErrorPercentage = ratioError * 100.0
-			val cpuUtilizationErrorPercentage = cpuUtilizationError * 100.0
-			println(f"  $providerName%-7s ... Calibrating (Errors: S=$schedulesPerDoerErrorPercentage%5.1f%%, C=$cancellationPercentageErrorPercentage%5.1f%%, R=$scheduledVersusRegularTasksRatioErrorPercentage%5.1f%%, CPU=$cpuUtilizationErrorPercentage%5.1f%%) | Freq=$feedingFreq%6.1f Hz | Retry=$retries%-2d")
-
-			val repeatRun = previousRunWasFullAndSaturated && cpuSaturated && (currentExperimentDuration == TARGET_EXPERIMENT_DURATION)
-			val atFreqCap = feedingFreq >= maxFrequencyCap
-			if (parametersAccurate && cpuSaturated && currentExperimentDuration == TARGET_EXPERIMENT_DURATION) || repeatRun || atFreqCap || retries >= 45 then {
-				calibrated = true
-				finalThroughput = runResult.throughput
-				finalActualActiveSchedulesPerDoer = runResult.actualActiveSchedulesPerDoer
-				finalActualCanceledSchedulesFraction = runResult.actualCanceledSchedulesFraction
-				finalActualScheduledVsRegularTaskRatio = runResult.actualScheduledVsRegularTaskRatio
-				finalUtilization = runResult.actualCpuUtilization
+			if cpuSaturated then {
+				if experimentDuration >= TARGET_EXPERIMENT_DURATION then {
+					feedingPeriodMillisFinalLowerBound = feedingPeriodMillis
+					experimentResultAtFeedingPeriodMillisLowerBound = runResult
+				} else feedingPeriodMillisPilotLowerBound = feedingPeriodMillis
 			} else {
-				if cpuSaturated && currentExperimentDuration == TARGET_EXPERIMENT_DURATION then {
-					previousRunWasFullAndSaturated = true
-				} else {
-					previousRunWasFullAndSaturated = false
-				}
-				if !cpuSaturated then {
-					val ratio = 0.98 / math.max(0.05, runResult.actualCpuUtilization)
-					val scaleFactor = math.max(1.2, math.min(3.0, ratio))
-					val dampedScaleFactor = 1.0 + 0.5 * (scaleFactor - 1.0)
-					val proposedFreq = math.min(maxFrequencyCap, feedingFreq * dampedScaleFactor)
-					var proposedDelay = (1000.0 / proposedFreq).round.toInt.max(1)
+				if experimentDuration >= TARGET_EXPERIMENT_DURATION then feedingPeriodMillisFinalUpperBound = feedingPeriodMillis else feedingPeriodMillisPilotUpperBound = feedingPeriodMillis
+			}
 
-					if proposedDelay == feedingPeriodMillis then {
-						if dampedScaleFactor > 1.0 then {
-							proposedDelay = (feedingPeriodMillis - 1).max(1)
-						} else if dampedScaleFactor < 1.0 then {
-							proposedDelay = feedingPeriodMillis + 1
-						}
+			if experimentDuration >= TARGET_EXPERIMENT_DURATION then {
+				if feedingPeriodMillisFinalUpperBound - feedingPeriodMillisFinalLowerBound <= 1 then {
+					if experimentResultAtFeedingPeriodMillisLowerBound ne null then {
+						calibrationResult = CalibrationResult(
+							experimentResult = experimentResultAtFeedingPeriodMillisLowerBound,
+							retries = attemptNumber - 1,
+							calibratedFrequency = MILLIS_PER_SECOND.toDouble / feedingPeriodMillisFinalLowerBound
+						)
+					} else if feedingPeriodMillisFinalLowerBound > FEEDING_PERIOD_MINIMUM_LOWER_BOUND then {
+						feedingPeriodMillisFinalLowerBound -= 1
+						feedingPeriodMillis = feedingPeriodMillisFinalLowerBound
+					} else return null
+				} else feedingPeriodMillis = nextFinalFeedingPeriodMillis
+			} else {
+				experimentDuration =
+					if cpuSaturated then TARGET_EXPERIMENT_DURATION.max(feedingPeriodMillis * MINIMUM_STEPS)
+					else {
+						val cpuUtilizationError = math.max(0.0, 0.98 - runResult.actualCpuUtilization)
+						val dampingScaleFactor = 1.0 / (1.0 + 4.0 * cpuUtilizationError)
+						math.max(TARGET_EXPERIMENT_DURATION / 10, (TARGET_EXPERIMENT_DURATION * dampingScaleFactor).round.toInt)
 					}
-
-					feedingPeriodMillis = proposedDelay
-					feedingFreq = 1000.0 / feedingPeriodMillis
-				}
-
-				if cpuSaturated then {
-					pilotDurationMs = TARGET_EXPERIMENT_DURATION
-				} else {
-					val maxError = math.max(math.max(activeSchedulesPerDoerError, canceledFractionError), math.max(ratioError, cpuUtilizationError))
-					val dampingScaleFactor = 1.0 / (1.0 + 4.0 * maxError)
-					pilotDurationMs = math.max(TARGET_EXPERIMENT_DURATION / 10, (TARGET_EXPERIMENT_DURATION * dampingScaleFactor).toInt)
-				}
-
-				retries += 1
-				System.gc()
+				feedingPeriodMillis =
+					if experimentDuration == TARGET_EXPERIMENT_DURATION then {
+						feedingPeriodMillisFinalLowerBound = 1.max(feedingPeriodMillisPilotLowerBound - 1 - feedingPeriodMillisPilotLowerBound / 5)
+						feedingPeriodMillisFinalUpperBound = feedingPeriodMillisPilotUpperBound + 1 + feedingPeriodMillisPilotUpperBound / 4
+						nextFinalFeedingPeriodMillis
+					} else nextPilotFeedingPeriodMillis
 			}
 		}
-
-		if finalThroughput == 0.0 then {
-			val finalTimerDelayMs = (1000.0 / feedingFreq).round.toInt.max(1)
-			val finalExperiment = new Experiment(doerProvider, numberOfDoers, scenario, finalTimerDelayMs, durationMs = TARGET_EXPERIMENT_DURATION)
-			val runResult = finalExperiment.run()
-			finalThroughput = runResult.throughput
-			finalActualActiveSchedulesPerDoer = runResult.actualActiveSchedulesPerDoer
-			finalActualCanceledSchedulesFraction = runResult.actualCanceledSchedulesFraction
-			finalActualScheduledVsRegularTaskRatio = runResult.actualScheduledVsRegularTaskRatio
-			finalUtilization = runResult.actualCpuUtilization
-		}
-
-		CalibrationResult(
-			throughput = finalThroughput,
-			actualActiveSchedulesPerDoer = finalActualActiveSchedulesPerDoer,
-			actualCanceledSchedulesFraction = finalActualCanceledSchedulesFraction,
-			actualScheduledVsRegularTaskRatio = finalActualScheduledVsRegularTaskRatio,
-			cpuUtilization = finalUtilization,
-			retries = retries,
-			calibratedFrequency = feedingFreq,
-			adjustedCanceledFraction = targetCanceledSchedulesFraction,
-			adjustedScheduledVsRegularRatio = targetScheduledVsRegularTasksRatio
-		)
+		calibrationResult
 	}
 
 	/** Represents a single isolated benchmark execution run.
@@ -514,111 +454,110 @@ object SchedulingDoerBenchmark {
 	 * Owns the lifecycle of the doers, tokens, and verification parameters.
 	 *
 	 * @param doerProvider The DoerProvider instance.
-	 * @param doerCount Total number of doers to provision.
+	 * @param numberOfDoers Total number of doers to provision.
 	 * @param scenario The execution target parameters (density, cancel fraction, relation ratio).
-	 * @param timerDelayMs Delay in milliseconds for scheduled timer tasks.
-	 * @param durationMs Run duration in milliseconds. */
+	 * @param feedingPeriodMillis Delay in milliseconds for scheduled timer tasks.
+	 * @param experimentDurationMillis Run duration in milliseconds. */
 	private class Experiment(
-		private val doerProvider: SchedulingDoerBenchmark.SequencerProvider,
-		private val doerCount: Int,
+		private val doerProvider: SequencerProvider,
+		private val numberOfDoers: Int,
 		private val scenario: Scenario,
-		private val timerDelayMs: Int,
-		private val durationMs: Int
+		private val feedingPeriodMillis: Int,
+		private val experimentDurationMillis: Int
 	) {
-		private val doers: Array[SchedulingDoerBenchmark.Sequencer] = Array.tabulate(doerCount)(i => doerProvider.provide(s"sel-doer-$i"))
-		private val completedScheduledTasks = new AtomicLong(0)
-		private val completedNormalTasks = new AtomicLong(0)
+		private val doers: Array[SchedulingDoerBenchmark.Sequencer] = Array.tabulate(numberOfDoers)(i => doerProvider.provide(s"sel-doer-$i"))
+		// Global accumulators for final metrics
+		private val globalSchedulesCreated = new AtomicLong(0)
+		private val globalRegularsCreated = new AtomicLong(0)
+		private val globalSchedulesCanceled = new AtomicLong(0)
+		private val globalSchedulesCompleted = new AtomicLong(0)
+		private val globalRegularsCompleted = new AtomicLong(0)
 
-		@volatile private var running = true
+		private val activeSchedulesTarget = (numberOfDoers * scenario.targetActiveSchedulesPerDoer).round.toInt.max(1)
+		private val completedTokens = new CountDownLatch(activeSchedulesTarget)
+		@volatile private var experimentTimerElapsed = false
 
-		private val activeSchedulesTarget = (doerCount * scenario.targetActiveSchedulesPerDoer).round.toInt.max(1)
-
-		// Flat arrays to store the final counts for each token slot
-		private val scheduledTasksCreated = new Array[Long](activeSchedulesTarget)
-		private val scheduledTasksCanceled = new Array[Long](activeSchedulesTarget)
-		private val normalTasksCreated = new Array[Long](activeSchedulesTarget)
-
-		/** Executes the experiment run and returns the calculated metrics. */
+		/** Executes a benchmark run and returns the result upon completion.
+		 *
+		 * Goal: Minimize distortion by reducing benchmark overhead, especially thread contention.
+		 *
+		 * How: Subdivide the generated load into independent tokens, each of which guarantees its portion of the load satisfies the scenario parameters.
+		 *
+		 * Execution: The main thread initiates the experiment by pre-populating the queue with the target active schedules. It then sleeps for the configured duration before setting the `@volatile` flag `experimentTimerElapsed` to `true`. Worker threads in the cooperative pool (and the background scheduler thread under the `ThreadDriven` scheduler) execute the token steps. When a token step detects `experimentTimerElapsed` is `true`, it halts further scheduling, adds its local progress counters to the global atomic variables, and counts down the `completedTokens` [[java.util.concurrent.CountDownLatch]]. Once all tokens have terminated, the main thread drains any remaining enqueued normal tasks and compiles the final [[ExperimentRunResult]].
+		 * @return The metrics of the completed experiment run. */
 		def run(): ExperimentRunResult = {
-			val workersDp = doerProvider match {
-				case w: CooperativeWorkersDp => w
-				case _ => throw new RuntimeException("Expected a worker-based doer provider")
-			}
+			val cooperativeWorkersDp = doerProvider.asInstanceOf[CooperativeWorkersDp]
 
 			val prepopulationLatch = new CountDownLatch(activeSchedulesTarget)
 
 			// Pre-populate schedules to start token timer loops
 			for (i <- 0 until activeSchedulesTarget) {
-				val doer = doers(i % doerCount)
+				val doer = doers(i % numberOfDoers)
 
-				doer.executeSequentially(new Runnable {
-					override def run(): Unit = {
-						doStep(tokenId = i, scheduledTasksCreatedCount = 0L, normalTaskCreatedCount = 0L, scheduledTasksCanceledCount = 0L)
-						prepopulationLatch.countDown()
-					}
+				doer.executeSequentially(() => {
+					val token = new Token(i)
+					token.start()
+					if i + 1 == activeSchedulesTarget then System.gc()
+					prepopulationLatch.countDown()
 				})
 			}
 
 			prepopulationLatch.await()
-			val t2 = System.nanoTime()
-			val sleepStartTimes = if ENABLE_SLEEP_TRACKING then workersDp.workersSleepTimeNanos else Array.empty[Long]
-			val schedulerSleepStart = if ENABLE_SLEEP_TRACKING then {
+			val nanoTimeAtStart = System.nanoTime()
+			val workersSleepTimeAtStart = if ENABLE_SLEEP_TRACKING then cooperativeWorkersDp.workersSleepTimeNanos else Array.empty[Long]
+			val schedulingThreadSleepTimeAtStart = if ENABLE_SLEEP_TRACKING then {
 				doerProvider match {
 					case t: CooperativeThreadDrivenSchedulerDp => t.schedulerSleepTimeNanos
 					case _ => -1L
 				}
 			} else -1L
 
-			Thread.sleep(durationMs)
-			running = false
-			val t3 = System.nanoTime()
+			Thread.sleep(experimentDurationMillis)
+			experimentTimerElapsed = true
+			val nanoTimeAtEnd = System.nanoTime()
+			completedTokens.await()
 
-			val sleepEndTimes = if ENABLE_SLEEP_TRACKING then workersDp.workersSleepTimeNanos else Array.empty[Long]
-			val schedulerSleepEnd = if ENABLE_SLEEP_TRACKING then {
+			val workersSleepTimeAtEnd = if ENABLE_SLEEP_TRACKING then cooperativeWorkersDp.workersSleepTimeNanos else Array.empty[Long]
+			val schedulingThreadSleepTimeAtEnd = if ENABLE_SLEEP_TRACKING then {
 				doerProvider match {
 					case t: CooperativeThreadDrivenSchedulerDp => t.schedulerSleepTimeNanos
 					case _ => -1L
 				}
 			} else -1L
-			val endTime = t3
 
-			var totalNormalTasksCreatedCount = 0L
-			var idxSum = 0
-			while idxSum < activeSchedulesTarget do {
-				totalNormalTasksCreatedCount += normalTasksCreated(idxSum)
-				idxSum += 1
-			}
+			val totalNormalTasksCreatedCount = globalRegularsCreated.get()
 
 			// Drain phase: wait until all enqueued normal tasks have been completed
 			val drainStart = System.currentTimeMillis()
-			while completedNormalTasks.get() < totalNormalTasksCreatedCount && (System.currentTimeMillis() - drainStart) < 500 do {
+			while doerProvider.currentLoad > 0 do {
 				Thread.sleep(1)
+				val drainDuration = System.currentTimeMillis() - drainStart
+				if (drainDuration % 1000) == 0 then println(s"${doerProvider.getClass.getSimpleName} is shutting down. ${drainDuration}ms have elapsed.\n${doerProvider.diagnose(new StringBuilder)}")
 			}
-			val t4 = System.nanoTime()
 
-			val totalDurationNanos = endTime - t2
+			val totalDurationNanos = nanoTimeAtEnd - nanoTimeAtStart
 			val utilization = if SchedulingDoerBenchmark.ENABLE_SLEEP_TRACKING then {
-				val poolSize = sleepStartTimes.length
+				val poolSize = workersSleepTimeAtStart.length
 				var totalSleepNanos = 0L
 				var idx = 0
 				while idx < poolSize do {
-					totalSleepNanos += (sleepEndTimes(idx) - sleepStartTimes(idx))
+					totalSleepNanos += (workersSleepTimeAtEnd(idx) - workersSleepTimeAtStart(idx))
 					idx += 1
 				}
 
-				val startupDelayNanos = timerDelayMs.toLong * 1000000L
+				val startupDelayNanos = feedingPeriodMillis.toLong * 1000000L
 				val activeDurationNanos = totalDurationNanos - startupDelayNanos
 
-				val jitterMarginNanos = math.max(0.0, SchedulingDoerBenchmark.MAX_JITTER_MS * (1.0 - durationMs.toDouble / SchedulingDoerBenchmark.TARGET_EXPERIMENT_DURATION.toDouble)) * 1000000.0
+				val jitterMarginNanos = math.max(0.0, SchedulingDoerBenchmark.MAX_JITTER_MS * (1.0 - experimentDurationMillis.toDouble / SchedulingDoerBenchmark.TARGET_EXPERIMENT_DURATION.toDouble)) * 1000000.0
 
 				val workersUtilization = if activeDurationNanos <= 0 then 0.0 else {
-					val inevitableSleep = poolSize * startupDelayNanos + jitterMarginNanos.toLong
+					val inevitableSleep = poolSize * startupDelayNanos + jitterMarginNanos
 					val activeSleep = math.max(0L, totalSleepNanos - inevitableSleep)
 					1.0 - (activeSleep.toDouble / (activeDurationNanos.toDouble * poolSize))
 				}
 
-				val schedulerUtilization = if schedulerSleepStart >= 0L && activeDurationNanos > 0 then {
-					val schedSleep = schedulerSleepEnd - schedulerSleepStart
+				val schedulerUtilization = if schedulingThreadSleepTimeAtStart >= 0L && activeDurationNanos > 0 then {
+					val schedSleep = schedulingThreadSleepTimeAtEnd - schedulingThreadSleepTimeAtStart
 					val inevitableSleep = startupDelayNanos + jitterMarginNanos.toLong
 					val activeSleep = math.max(0L, schedSleep - inevitableSleep)
 					1.0 - (activeSleep.toDouble / activeDurationNanos.toDouble)
@@ -629,23 +568,17 @@ object SchedulingDoerBenchmark {
 				1.0
 			}
 
-			val completedScheduledTasksCount = completedScheduledTasks.get()
-			val completedNormalTasksCount = completedNormalTasks.get()
-			var totalScheduledTasksCreatedCount = 0L
-			var totalScheduledTasksCanceledCount = 0L
-			var idx = 0
-			while idx < activeSchedulesTarget do {
-				totalScheduledTasksCreatedCount += scheduledTasksCreated(idx)
-				totalScheduledTasksCanceledCount += scheduledTasksCanceled(idx)
-				idx += 1
-			}
+			val completedScheduledTasksCount = globalSchedulesCompleted.get()
+			val completedNormalTasksCount = globalRegularsCompleted.get()
+			val totalScheduledTasksCreatedCount = globalSchedulesCreated.get()
+			val totalScheduledTasksCanceledCount = globalSchedulesCanceled.get()
 
-			val actualActiveSchedulesPerDoer = (totalScheduledTasksCreatedCount - completedScheduledTasksCount - totalScheduledTasksCanceledCount).toDouble / doerCount.toDouble
+			val actualActiveSchedulesPerDoer = (totalScheduledTasksCreatedCount - completedScheduledTasksCount - totalScheduledTasksCanceledCount).toDouble / numberOfDoers.toDouble
 			val actualCanceledSchedulesFraction = if totalScheduledTasksCreatedCount > 0 then totalScheduledTasksCanceledCount.toDouble / totalScheduledTasksCreatedCount.toDouble else 0.0
 			val actualScheduledVsRegularTaskRatio = if completedNormalTasksCount > 0 then totalScheduledTasksCreatedCount.toDouble / completedNormalTasksCount.toDouble else Double.PositiveInfinity
 
 			val totalOps = completedScheduledTasksCount + totalScheduledTasksCanceledCount + completedNormalTasksCount
-			val throughput = totalOps.toDouble / (durationMs.toDouble / 1000.0)
+			val throughput = totalOps.toDouble / (experimentDurationMillis.toDouble / 1000.0)
 
 			ExperimentRunResult(
 				throughput = throughput,
@@ -656,67 +589,67 @@ object SchedulingDoerBenchmark {
 			)
 		}
 
-		private def doStep(
-			tokenId: Int,
-			scheduledTasksCreatedCount: Long,
-			normalTaskCreatedCount: Long,
-			scheduledTasksCanceledCount: Long
-		): Unit = {
-			val initialCreatedCount = scheduledTasksCreatedCount + 1
+		private class Token(id: Int) {
+			private val regularCompletedCount: AtomicLong = AtomicLong(0)
 
-			// 1. Do cancellations first (eliminates lag)
-			val completedScheduled = scheduledTasksCreatedCount - scheduledTasksCanceledCount
-			val requiredCanceled = (scenario.targetCanceledSchedulesFraction * completedScheduled / (1.0 - scenario.targetCanceledSchedulesFraction)).round
-			val toCancel = requiredCanceled - scheduledTasksCanceledCount
-			val nextCanceled = scheduledTasksCanceledCount + toCancel
-			val nextCreated = initialCreatedCount + toCancel
+			def start(): Unit = doStep(0, 0, 0, 0)
 
-			// 2. Submit normal tasks second
-			val requiredNormals = (nextCreated / scenario.targetScheduledVsRegularTasksRatio).round
-			val toSubmit = requiredNormals - normalTaskCreatedCount
-			val nextNormals = normalTaskCreatedCount + toSubmit
+			private def doStep(
+				schedulesCreatedCount0: Long,
+				regularsCreatedCount0: Long,
+				schedulesCanceledCount0: Long,
+				schedulesCompletedCount0: Long
+			): Unit = {
+				if experimentTimerElapsed then {
+					globalSchedulesCreated.addAndGet(schedulesCreatedCount0)
+					globalRegularsCreated.addAndGet(regularsCreatedCount0)
+					globalSchedulesCanceled.addAndGet(schedulesCanceledCount0)
+					globalSchedulesCompleted.addAndGet(schedulesCompletedCount0 - 1)
+					globalRegularsCompleted.addAndGet(regularCompletedCount.get)
+					completedTokens.countDown()
+				} else {
+					// 1. Determine now many of each tasks to create in this step
+					// Given:
+					// targetCanceledSchedulesFraction == schedulesCanceledCount1/schedulesCreatedCount1
+					// schedulesCreatedCount1 == schedulesCreatedCount0 + 1 + schedulesCreatedAndCanceledInThisStep
+					// schedulesCanceledCount1 == schedulesCanceledCount0 + schedulesCreatedAndCanceledInThisStep
+					// targetScheduledVsRegularRatio == schedulesCreatedCount1/regularsCreatedCount1
+					// regularsCreatedCount1 == regularsCreatedCount0 + regularsCreatedInThisStep
+					// Then:
+					val schedulesCreatedCount1 = ((schedulesCreatedCount0 - schedulesCanceledCount0 + 1) / (1 - scenario.targetCanceledSchedulesFraction)).round
+					val schedulesCreatedAndCanceledInThisStep = schedulesCreatedCount1 - schedulesCreatedCount0 - 1
+					val schedulesCanceledCount1 = schedulesCanceledCount0 + schedulesCreatedAndCanceledInThisStep
+					val regularsCreatedCount1 = (schedulesCreatedCount1 / scenario.targetScheduledVsRegularTasksRatio).round
 
-			var loop = 0
-			while loop < toSubmit do {
-				val randomDoer = doers(ThreadLocalRandom.current().nextInt(doerCount))
-				randomDoer.executeSequentially(() => completedNormalTasks.incrementAndGet())
-				loop += 1
-			}
+					// 1. Schedule and immediately cancel the required portion to cancel
+					var remaining = schedulesCreatedAndCanceledInThisStep
+					while remaining > 0 do {
+						remaining -= 1
+						val randomDoer = doers(ThreadLocalRandom.current().nextInt(numberOfDoers))
+						val toCancelSchedule = randomDoer.newDelaySchedule(1000)
+						randomDoer.schedule(toCancelSchedule)(_ => ())
+						randomDoer.cancel(toCancelSchedule)
+					}
 
-			loop = 0
-			while loop < toCancel do {
-				val randomDoer = doers(ThreadLocalRandom.current().nextInt(doerCount))
-				val toCancelSchedule = randomDoer.newDelaySchedule(10000)
-				randomDoer.scheduleSequentially(toCancelSchedule, _ => ())
-				randomDoer.cancel(toCancelSchedule)
-				loop += 1
-			}
+					// 2. Submit normal tasks second
+					remaining = regularsCreatedCount1 - regularsCreatedCount0
+					while remaining > 0 do {
+						remaining -= 1
+						val randomDoer = doers(ThreadLocalRandom.current().nextInt(numberOfDoers))
+						randomDoer.executeSequentially { () =>
+							if !experimentTimerElapsed then {
+								regularCompletedCount.incrementAndGet()
+							}
+						}
+					}
 
-			// Store counts in flat arrays for final metric collection
-			scheduledTasksCreated(tokenId) = nextCreated
-			scheduledTasksCanceled(tokenId) = nextCanceled
-			normalTasksCreated(tokenId) = nextNormals
-
-			scheduleNextStep(tokenId, nextCreated, nextNormals, nextCanceled)
-		}
-
-		private def scheduleNextStep(
-			tokenId: Int,
-			scheduledTasksCreatedCount: Long,
-			normalTaskCreatedCount: Long,
-			scheduledTasksCanceledCount: Long
-		): Unit = {
-			val randomDoer = doers(ThreadLocalRandom.current().nextInt(doerCount))
-			val schedule = randomDoer.newDelaySchedule(timerDelayMs)
-			randomDoer.scheduleSequentially(
-				schedule,
-				_ => {
-					if running then {
-						completedScheduledTasks.incrementAndGet()
-						doStep(tokenId, scheduledTasksCreatedCount, normalTaskCreatedCount, scheduledTasksCanceledCount)
+					// 3. Schedule the single non-canceled scheduled task that, which also propagates this token.
+					val nextStepDoer = doers(ThreadLocalRandom.current().nextInt(numberOfDoers))
+					nextStepDoer.schedule(nextStepDoer.newDelaySchedule(feedingPeriodMillis)) { _ =>
+						doStep(schedulesCreatedCount1, regularsCreatedCount1, schedulesCanceledCount1, schedulesCompletedCount0 + 1)
 					}
 				}
-			)
+			}
 		}
 	}
 }

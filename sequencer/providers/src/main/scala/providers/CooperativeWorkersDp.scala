@@ -81,19 +81,23 @@ abstract class CooperativeWorkersDp(
 	 * Invariant: {{{ workers.count(_.isSleeping) <= sleepZonePopulation.get <= workers.length }}} */
 	private val sleepZonePopulation = AtomicInteger(0)
 
-	private val workerThreadLocal: ThreadLocal[Runnable] = new ThreadLocal()
+	private val workerThreadLocal: ThreadLocal[Worker] = new ThreadLocal()
 	private val doerThreadLocal: ThreadLocal[DoerFacade | Null] = new ThreadLocal()
 
 	protected def buildWorker(index: Int): Worker = new Worker(index)
 
 	/** @return the [[CooperativeWorkersDp.Worker]] that owns the current [[Thread]], if any.
 	 *  Exposed for testing only. */
-	protected def currentWorker: Runnable | Null = workerThreadLocal.get
+	protected def currentWorker: Worker | Null = workerThreadLocal.get
 
 	/** @return the [[DoerFacade]] that is currently associated to the current [[Thread]], if any.
 	 *
 	 * @note Extensions may down-cast the return type provided the conditions mentioned in the [[DoerProvider.provide]]'s note are met. */
 	override def currentDoer: Maybe[DoerFacade] = Maybe(doerThreadLocal.get)
+
+	def idleWorkers: Int = sleepZonePopulation.get
+
+	def currentLoad: Int = (100 * (workers.length - sleepZonePopulation.get)) / workers.length
 
 	protected open class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
 
