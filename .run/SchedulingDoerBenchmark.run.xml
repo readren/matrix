@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+    <configuration default="false" name="SchedulingDoerBenchmark" type="Application" factoryName="Application">
+        <option name="MAIN_CLASS_NAME" value="readren.sequencer.providers.SchedulingDoerBenchmark"/>
+        <module name="matrix.sequencer_providers.test"/>
+        <option name="VM_PARAMETERS" value="-Xms8g -Xmx8g -XX:+AlwaysPreTouch -XX:+UseZGC"/>
+        <method v="2">
+            <option name="Make" enabled="true"/>
+        </method>
+    </configuration>
+</component>

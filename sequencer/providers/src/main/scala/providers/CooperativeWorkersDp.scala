@@ -237,7 +237,8 @@ abstract class CooperativeWorkersDp(
 		/** Set to `true` just before calling [[ReentrantLock.wait]] and to `false` just after (the second only if [[keepRunning]] is `true`).
 		 * This field is updated within a synchronized block on this [[Worker]]'s intrinsic lock. */
 		@volatile private var isSleeping: Boolean = false
-		@volatile var totalSleepTimeNanos: Long = 0
+		@volatile var totalSleepTimeNanos: Long = 0L
+		@volatile var currentSleepStartNanos: Long = 0L
 
 		/** Usually equal to [[isSleeping]] but may be temporarily true when [[isSleeping]] is false. Not the opposite.
 		 * This field is updated exclusively within this worker [[thread]]. */
@@ -246,7 +247,7 @@ abstract class CooperativeWorkersDp(
 		/** Prevents lost wake-ups while avoiding lock-ordering deadlocks during worker sleep transitions in [[SchedulingExtension]] implementations. \
 		 * This flag acts as a latch indicating whether a concurrent wakeup attempt was made. \
 		 * By checking this flag instead of calling [[pollNextDoer]] inside `thisWorker.synchronized` as in the previous version, the worker thread does not acquire the provider-level lock ([[thisProvider.synchronized]]) while holding the worker-level lock in scheduling extensions (like [[CooperativeHierarchicalPollingSchedulerDp]]), breaking the circular wait condition with client threads calling [[SchedulingExtension.scheduleSequentially]] or [[SchedulingExtension.cancel]]. */
-		@volatile private[providers] var hasBeenSignaled: Boolean = false
+		@volatile private var hasBeenSignaled: Boolean = false
 
 		/** Tracks the number of times the [[tryToSleep]] method was called but returned without putting the worker to sleep due to a salient [[Doer]].
 		 * This field is updated exclusively within this worker [[thread]]. */
@@ -299,25 +300,30 @@ abstract class CooperativeWorkersDp(
 			val sleepZonePopulationAtEntry = sleepZonePopulation.incrementAndGet() // Sleep zone begin
 			potentiallySleeping = true
 			val salientDoer = pollNextDoer(thisWorker) // Is necessary, and must be called after setting potentiallySleeping to true, to solve a race condition in which the worker goes to sleep with a pending task.
-			val sleepStart = if trackSleepTime then System.nanoTime() else 0L
-			if salientDoer == null then thisWorker.synchronized {
-				if hasBeenSignaled then hasBeenSignaled = false
-				else {
-					isSleeping = true
-					// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
-					// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
-					if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
-					else if sleepZonePopulationAtEntry < workers.length && shouldSleepIndefinitely(thisWorker) then thisWorker.wait()
-					else lull(thisWorker)
-					isSleeping = !keepRunning
-					hasBeenSignaled = false
+			if salientDoer == null then {
+				if trackSleepTime then currentSleepStartNanos = System.nanoTime()
+				thisWorker.synchronized {
+					if hasBeenSignaled then hasBeenSignaled = false
+					else {
+						isSleeping = true
+						// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
+						// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
+						if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
+						else if sleepZonePopulationAtEntry < workers.length && shouldSleepIndefinitely(thisWorker) then thisWorker.wait()
+						else lull(thisWorker)
+						isSleeping = !keepRunning
+						hasBeenSignaled = false
+					}
 				}
 			}
-			if trackSleepTime then totalSleepTimeNanos += (System.nanoTime() - sleepStart)
+			if trackSleepTime && (salientDoer eq null) then {
+				totalSleepTimeNanos += (System.nanoTime() - currentSleepStartNanos)
+				currentSleepStartNanos = 0L
+			}
 			if keepRunning then {
 				potentiallySleeping = false
 				sleepZonePopulation.getAndDecrement() // Sleep zone end
-				if salientDoer == null then awakeningCounter += 1 else salientDoerCounter += 1
+				if salientDoer ne null then salientDoerCounter += 1 else awakeningCounter += 1
 			} else stopAllWorkers(index)
 			salientDoer
 		}
@@ -434,7 +440,16 @@ abstract class CooperativeWorkersDp(
 		runningWorkersLatch.await(timeout, unit)
 	}
 
-	def workersSleepTimeNanos: Array[Long] = workers.map(_.totalSleepTimeNanos)
+	def workersSleepTimeNanos: Array[Long] = {
+		for worker <- workers yield {
+			val cst = worker.currentSleepStartNanos
+			if cst == 0 then worker.totalSleepTimeNanos
+			else {
+				val tst = worker.totalSleepTimeNanos
+				System.nanoTime() - cst + tst
+			}
+		}
+	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
 		sb.append(getTypeName[CooperativeWorkersDp])
