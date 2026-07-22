@@ -216,13 +216,16 @@ abstract class CooperativeHierarchicalPollingSchedulerDp(
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
-	override def lull(worker: Worker): Unit = {
-		val est = earliestScheduledTime
-		if est == clock.MaxValue then clock.suspend(worker)
+	override def lull(worker: Worker, numberOfWorkersOusideTheSleepZone: Int): Unit = {
+		if numberOfWorkersOusideTheSleepZone > 0 then clock.suspend(worker)
 		else {
-			val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
-			if durationUntilEarliestScheduledTime > 0 then clock.suspend(worker, durationUntilEarliestScheduledTime)
-			else skippedLullsCounter += 1
+			val est = earliestScheduledTime
+			if est == clock.MaxValue then clock.suspend(worker)
+			else {
+				val durationUntilEarliestScheduledTime = est - clock.currentTimeRoundedDown
+				if durationUntilEarliestScheduledTime > 0 then clock.suspend(worker, durationUntilEarliestScheduledTime)
+				else skippedLullsCounter += 1
+			}
 		}
 	}
 

@@ -309,8 +309,7 @@ abstract class CooperativeWorkersDp(
 						// TODO Consider having a single worker for state checks and shutdowns. There would be two kinds of Worker: leader and peon. The leader could be determined at inception, in which case it should be notified by the shutdown command if it is sleeping; or once the shutdown command is called. The intention of this is to improve efficiency by avoiding state checks in most workers and perhaps allowing to remove the volatile modifier of `isSleeping`.
 						// Shutdown is a terminal action. We use the exact, O(N) `allOtherWorkersAreSleeping` check to avoid false positives. If a worker mistakenly terminates, thread capacity is permanently lost.
 						if state.get() != State.keepRunning.ordinal && allOtherWorkersAreSleeping(index) then keepRunning = false
-						else if sleepZonePopulationAtEntry < workers.length && shouldSleepIndefinitely(thisWorker) then thisWorker.wait()
-						else lull(thisWorker)
+						else lull(thisWorker, workers.length - sleepZonePopulationAtEntry)
 						isSleeping = !keepRunning
 						hasBeenSignaled = false
 					}
@@ -357,19 +356,14 @@ abstract class CooperativeWorkersDp(
 		override def toString: String = s"${getTypeName[Worker]}(index=$index, threadId=${thread.threadId()})"
 	}
 
-	protected def shouldSleepIndefinitely(worker: Worker): Boolean = true
-
-	/** Puts the current [[Thread]] to sleep, assuming it is the [[Worker.thread]] of the provided worker and the owner of its monitor.
-	 * Called when the last [[Worker]] to enter the sleep zone (where workers go after finding the [[queuedDoers]] queue empty) must be put to sleep.
-	 * 
-	 * Note: The condition used to determine the "last" worker (`sleepZonePopulationAtEntry == workers.length`) is an O(1) approximation. 
-	 * If a false positive occurs (i.e., a worker calls `lull` while another is still active), it safely degrades to a timed wait instead of an infinite wait, ensuring scheduled tasks are monitored without incurring the O(N) cost of checking all workers' precise states.
-	 *
-	 * The default implementation puts the specified [[Worker]] to wait without timeout until it is awakened.
+	/** Puts the current [[Thread]] to sleep, assuming it is the [[Worker.thread]] of the provided worker and the owner of its monitor. \
+	 * Called when the provided [[Worker]] entered the sleep zone (where workers go after finding that the [[queuedDoers]] queue is empty). \
+	 * This method is responsible for suspending the [[Worker]]. \
+	 * The default implementation suspends the specified [[Worker]] indefinitely until it is awakened. \
 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeFlatPollingSchedulerDp.determineWaitDurationFor]] for an example.
 	 * @param worker the last [[Worker]] to enter the sleep zone.
-	 */
-	protected def lull(worker: Worker): Unit = worker.wait()
+	 * @param numberOfWorkersOutsideTheSleepZone The pool size minus the number of workers inside the sleep zone immediately after this worker entered it. A value of zero means that, when the provided [[Worker]] entered the sleep zone, there was no other [[Worker]] outside it, meaning that the provided [[Worker]] is **potentially** the only non-sleeping one. */
+	protected def lull(worker: Worker, numberOfWorkersOutsideTheSleepZone: Int): Unit = worker.wait()
 
 	/** Polls the next [[Doer]] from the [[queuedDoers]]. */
 	protected def pollNextDoer(worker: Worker): DoerImpl | Null = queuedDoers.poll()

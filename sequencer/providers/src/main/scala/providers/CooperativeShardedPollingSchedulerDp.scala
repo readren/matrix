@@ -180,19 +180,10 @@ abstract class CooperativeShardedPollingSchedulerDp(
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
-	override protected def shouldSleepIndefinitely(worker: Worker): Boolean = {
-		val queue = workerPriorityQueues(worker.index)
-		worker.synchronized {
-			queue.size == 0
-		}
-	}
-
-	override def lull(worker: Worker): Unit = {
-		val myIndex = worker.index
-		val est = earliestScheduledTimes(myIndex)
-		if est == clock.MaxValue then {
-			clock.suspend(worker)
-		} else {
+	override def lull(worker: Worker, numberOfWorkersOutsideTheSleepZone: Int): Unit = {
+		val est = earliestScheduledTimes(worker.index)
+		if est == clock.MaxValue then clock.suspend(worker)
+		else {
 			val duration = est - clock.currentTimeRoundedDown
 			if duration > 0 then clock.suspend(worker, duration)
 		}

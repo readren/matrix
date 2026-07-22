@@ -1,14 +1,13 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.*
 import providers.*
 
 import java.nio.file.{Files, Path, Paths}
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.{CountDownLatch, ThreadLocalRandom, TimeUnit}
-import scala.jdk.CollectionConverters.*
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 import scala.collection.mutable
+import scala.jdk.CollectionConverters.*
 
 /** Case classes to model execution workloads and results without using generic Tuples. */
 
@@ -72,16 +71,17 @@ object SchedulingDoerBenchmark {
 	type Sequencer = Doer & SchedulingExtension
 	type SequencerProvider = DoerProvider[Sequencer] {type Tag = String} & CooperativeWorkersDp
 
-	private val INITIAL_TARGET_ACTIVE_SCHEDULES = 25_000
+	private val INITIAL_TARGET_ACTIVE_SCHEDULES = 30_000
 	private val ENABLE_SLEEP_TRACKING = true
-	private val TARGET_EXPERIMENT_DURATION = 2_000 // milliseconds
+	private inline val EXPERIMENT_TARGET_ABSOLUTE_DURATION_MILLIS = 4000L // milliseconds
+	private inline val EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MILLIS = EXPERIMENT_TARGET_ABSOLUTE_DURATION_MILLIS / 7
+	private inline val EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MEASURED_IN_FEEDING_PERIODS = 4.5
 	private val MAX_JITTER_MS = 16.0
 	private val POOL_SIZE = 8
 	private inline val CACHE_FILE_NAME = "selection_benchmark_cache.txt"
-	private inline val MINIMUM_STEPS = 4
 
 	private val activeSchedulesPerDoerTargets = List(0.1, 1.0, 10.0)
-	private val cancelledSchedulesFractionTargets = List(0.0, 0.1, 0.5, 0.9)
+	private val cancelledSchedulesFractionTargets = List(0.1, 0.5, 0.9)
 	private val scheduledVsRegularTasksRatioTargets = List(0.1, 1.0, 10.0)
 	private val providerNames = List("Local", "Contained", "Sharded", "Flat", "Hierarchical", "ThreadDriven")
 
@@ -134,7 +134,9 @@ object SchedulingDoerBenchmark {
 					warmUpExperiment.run()
 				} finally {
 					doerProvider.shutdown()
-					doerProvider.awaitTermination(1, TimeUnit.SECONDS)
+					if !doerProvider.awaitTermination(1, TimeUnit.SECONDS) then {
+						println(s"$providerName's shutdown has not terminated.\n${doerProvider.diagnose(StringBuilder())}")
+					}
 				}
 			}
 			println("Warm-up complete.\n")
@@ -169,14 +171,16 @@ object SchedulingDoerBenchmark {
 								doerProvider = doerProvider,
 								numberOfDoers = numberOfDoers,
 								scenario = scenario,
-								feedingPeriodMillis = 1,
-								experimentDurationMillis = 200
+								feedingPeriodMillis = 100,
+								experimentDurationMillis = 400
 							)
 							val runResult = pilotExperiment.run()
 							pilotThroughputs(providerName) = runResult.throughput
 						} finally {
 							doerProvider.shutdown()
-							doerProvider.awaitTermination(9, TimeUnit.SECONDS)
+							if !doerProvider.awaitTermination(9, TimeUnit.SECONDS) then {
+								println(s"$providerName's shutdown has not terminated.\n${doerProvider.diagnose(StringBuilder())}")
+							}
 						}
 					}
 
@@ -198,7 +202,9 @@ object SchedulingDoerBenchmark {
 						)
 						finally {
 							doerProvider.shutdown()
-							doerProvider.awaitTermination(9, TimeUnit.SECONDS)
+							if !doerProvider.awaitTermination(9, TimeUnit.SECONDS) then {
+								println(s"$providerName's shutdown has not terminated.\n${doerProvider.diagnose(StringBuilder())}")
+							}
 						}
 						if calibrationResult eq null then {
 							targetActiveSchedules *= 2
@@ -389,26 +395,33 @@ object SchedulingDoerBenchmark {
 		val targetCanceledSchedulesFraction = scenario.targetCanceledSchedulesFraction
 		val targetScheduledVsRegularTasksRatio = scenario.targetScheduledVsRegularTasksRatio
 
-		inline val FEEDING_PERIOD_MINIMUM_LOWER_BOUND = 1.0
-		inline val FEEDING_PERIOD_MAXIMUM_UPPER_BOUND = 10_000.0
-		var feedingPeriodMillisPilotLowerBound: Double = FEEDING_PERIOD_MINIMUM_LOWER_BOUND
-		var feedingPeriodMillisPilotUpperBound: Double = FEEDING_PERIOD_MAXIMUM_UPPER_BOUND
-		var feedingPeriodMillisFinalLowerBound: Double = FEEDING_PERIOD_MINIMUM_LOWER_BOUND
-		var feedingPeriodMillisFinalUpperBound: Double = FEEDING_PERIOD_MAXIMUM_UPPER_BOUND
+		inline val MILLIS_PER_SECOND = 1000
+		inline val FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND = 1.0
+		inline val FEEDING_PERIOD_MILLIS_MAXIMUM_UPPER_BOUND = 1000.0
+		inline val PERIOD_TOLERANCE_MILLIS_NEAR_MINIMUM_LOWER_BOUND = 0.05
+		inline val LOW_CPU_UTILIZATION_THRESHOLD = 0.02
+		inline val PILOT_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE = 0.1
+		inline val FINAL_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE = 0.01
+
+		var feedingPeriodMillisPilotLowerBound: Double = FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND
+		var feedingPeriodMillisPilotUpperBound: Double = FEEDING_PERIOD_MILLIS_MAXIMUM_UPPER_BOUND
+		var feedingPeriodMillisFinalLowerBound: Double = FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND
+		var feedingPeriodMillisFinalUpperBound: Double = FEEDING_PERIOD_MILLIS_MAXIMUM_UPPER_BOUND
 		var experimentResultAtFeedingPeriodMillisLowerBound: ExperimentRunResult | Null = null
 
-		inline val MILLIS_PER_SECOND = 1000
 
 		/** gives the geometric mean of feedingPeriodMillisUpperBound and feedingPeriodMillisLowerBound */
-		def nextPilotFeedingPeriodMillis: Double = MILLIS_PER_SECOND / math.sqrt(MILLIS_PER_SECOND * MILLIS_PER_SECOND / (feedingPeriodMillisPilotLowerBound * feedingPeriodMillisPilotUpperBound))
+		def nextPilotFeedingPeriodMillis: Double = 1.0 / math.sqrt(1.0 / (feedingPeriodMillisPilotLowerBound * feedingPeriodMillisPilotUpperBound))
 
-		def nextFinalFeedingPeriodMillis: Double = MILLIS_PER_SECOND / math.sqrt(MILLIS_PER_SECOND * MILLIS_PER_SECOND / (feedingPeriodMillisFinalLowerBound * feedingPeriodMillisFinalUpperBound))
+		def nextFinalFeedingPeriodMillis: Double = 1.0 / math.sqrt(1.0 / (feedingPeriodMillisFinalLowerBound * feedingPeriodMillisFinalUpperBound))
 
 		var feedingPeriodMillis: Double = cachedSettings.fold(nextPilotFeedingPeriodMillis) { settings =>
 			(MILLIS_PER_SECOND * numberOfDoers).toDouble / (settings.doerCount * settings.calibratedFrequency)
 		}
 
-		var experimentDuration = (feedingPeriodMillis * 3.5).round.max(TARGET_EXPERIMENT_DURATION / 7)
+		var consecutiveIterationsOutsideBounds = 0
+		var isFinalExperiment = false
+		var experimentDuration = (feedingPeriodMillis * EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MEASURED_IN_FEEDING_PERIODS).round.max(EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MILLIS)
 		var attemptNumber = 0
 		var calibrationResult: CalibrationResult | Null = null
 		while calibrationResult eq null do {
@@ -416,46 +429,104 @@ object SchedulingDoerBenchmark {
 			val experiment = new Experiment(doerProvider, numberOfDoers, scenario, feedingPeriodMillis, experimentDuration)
 			val runResult = experiment.run()
 			val feedingFreq = MILLIS_PER_SECOND.toDouble / feedingPeriodMillis
-			println(f"  $providerName%-15s ... Calibrating (S=${runResult.actualActiveSchedulesPerDoer}%5.2f, C=${runResult.actualCanceledSchedulesFraction}%5.2f, R=${runResult.actualScheduledVsRegularTaskRatio}%5.2f, CPU=${runResult.actualCpuUtilization * 100}%4.0f%%) | Freq=$feedingFreq%6.3f Hz | Attempt=$attemptNumber%-2d")
+			println(f"  $providerName%-15s ... Calibrating ${if isFinalExperiment then "final" else "pilot"} (S=${runResult.actualActiveSchedulesPerDoer}%5.2f, C=${runResult.actualCanceledSchedulesFraction}%5.2f, R=${runResult.actualScheduledVsRegularTaskRatio}%8.2f, CPU=${runResult.actualCpuUtilization * 100}%6.1f%%) | Freq=${if isFinalExperiment then MILLIS_PER_SECOND / feedingPeriodMillisFinalUpperBound else MILLIS_PER_SECOND / feedingPeriodMillisPilotUpperBound}%9.3f <$feedingFreq%9.3f Hz <${if isFinalExperiment then MILLIS_PER_SECOND / feedingPeriodMillisFinalLowerBound else MILLIS_PER_SECOND / feedingPeriodMillisPilotLowerBound}%9.3f | Throughput=${runResult.throughput / 1000}%9.1fk | Attempt=$attemptNumber%-2d")
 
-			val cpuSaturated = runResult.actualCpuUtilization >= 0.98
+			val cpuSaturated = runResult.actualCpuUtilization >= 0.999
 			if cpuSaturated then {
-				if experimentDuration >= TARGET_EXPERIMENT_DURATION then {
+				if isFinalExperiment then {
 					feedingPeriodMillisFinalLowerBound = feedingPeriodMillis
 					experimentResultAtFeedingPeriodMillisLowerBound = runResult
 				} else feedingPeriodMillisPilotLowerBound = feedingPeriodMillis
 			} else {
-				if experimentDuration >= TARGET_EXPERIMENT_DURATION then feedingPeriodMillisFinalUpperBound = feedingPeriodMillis else feedingPeriodMillisPilotUpperBound = feedingPeriodMillis
+				if isFinalExperiment then feedingPeriodMillisFinalUpperBound = feedingPeriodMillis else feedingPeriodMillisPilotUpperBound = feedingPeriodMillis
 			}
 
-			if experimentDuration >= TARGET_EXPERIMENT_DURATION then {
-				if feedingPeriodMillisFinalUpperBound - feedingPeriodMillisFinalLowerBound <= feedingPeriodMillisFinalLowerBound / 1000 then {
+			if isFinalExperiment then {
+				val frequencyTolerance = FINAL_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE * MILLIS_PER_SECOND / feedingPeriodMillisFinalUpperBound
+				val periodToleranceMillis = FINAL_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE * feedingPeriodMillisFinalLowerBound
+
+				if MILLIS_PER_SECOND / feedingPeriodMillisFinalLowerBound - MILLIS_PER_SECOND / feedingPeriodMillisFinalUpperBound <= frequencyTolerance then {
 					if experimentResultAtFeedingPeriodMillisLowerBound ne null then {
 						calibrationResult = CalibrationResult(
 							experimentResult = experimentResultAtFeedingPeriodMillisLowerBound,
 							retries = attemptNumber - 1,
 							calibratedFrequency = MILLIS_PER_SECOND.toDouble / feedingPeriodMillisFinalLowerBound
 						)
-					} else if feedingPeriodMillisFinalLowerBound - FEEDING_PERIOD_MINIMUM_LOWER_BOUND > 0.05 then {
-						feedingPeriodMillisFinalLowerBound = (feedingPeriodMillisFinalLowerBound - 0.05).max(FEEDING_PERIOD_MINIMUM_LOWER_BOUND)
-						feedingPeriodMillis = feedingPeriodMillisFinalLowerBound
-					} else return null
-				} else feedingPeriodMillis = nextFinalFeedingPeriodMillis
-			} else {
-				experimentDuration =
-					if cpuSaturated then TARGET_EXPERIMENT_DURATION.max(feedingPeriodMillis.round.toInt * MINIMUM_STEPS)
+					} else if feedingPeriodMillisFinalLowerBound - FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND < PERIOD_TOLERANCE_MILLIS_NEAR_MINIMUM_LOWER_BOUND then return null
 					else {
-						val cpuUtilizationError = math.max(0.0, 0.98 - runResult.actualCpuUtilization)
-						val dampingScaleFactor = 1.0 / (1.0 + 4.0 * cpuUtilizationError)
-						math.max(TARGET_EXPERIMENT_DURATION / 10, (TARGET_EXPERIMENT_DURATION * dampingScaleFactor).round.toInt)
+						feedingPeriodMillisFinalLowerBound = (feedingPeriodMillisFinalLowerBound - periodToleranceMillis * math.pow(2, consecutiveIterationsOutsideBounds)).max(FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND)
+						consecutiveIterationsOutsideBounds += 1
+						feedingPeriodMillis = feedingPeriodMillisFinalLowerBound
 					}
-				feedingPeriodMillis =
-					if experimentDuration >= TARGET_EXPERIMENT_DURATION then {
-						feedingPeriodMillisFinalLowerBound = 1.0.max(feedingPeriodMillisPilotLowerBound - feedingPeriodMillisPilotLowerBound / 5.0)
-						feedingPeriodMillisFinalUpperBound = feedingPeriodMillisPilotUpperBound + feedingPeriodMillisPilotUpperBound / 4.0
-						nextFinalFeedingPeriodMillis
-					} else if feedingPeriodMillis - FEEDING_PERIOD_MINIMUM_LOWER_BOUND > 0.05 then nextPilotFeedingPeriodMillis
-					else return null
+				} else {
+					consecutiveIterationsOutsideBounds = 0
+					feedingPeriodMillis =
+						if cpuSaturated || runResult.actualCpuUtilization < LOW_CPU_UTILIZATION_THRESHOLD then nextFinalFeedingPeriodMillis // fallback to binary search if utilization is near 0%
+						else {
+							// Given:
+							//   currentCpuUtilizationFraction = k / currentFeedingPeriod
+							//   1 = fullCpuUtilizationFraction = k / feedingPeriodForFullCpuUtilizationThreshold
+							// Then:
+							//   feedingPeriodForFullCpuUtilizationThreshold = k / fullCpuUtilizationFraction = currentCpuUtilizationFraction * currentFeedingPeriod
+							val predictedFeedingPeriodForFullCpuUtilizationThreshold = runResult.actualCpuUtilization * feedingPeriodMillis
+							// If the predicted period is lower than the lower bound, probably the lower bound is fake, so push it downward.
+							if predictedFeedingPeriodForFullCpuUtilizationThreshold < feedingPeriodMillisFinalLowerBound then {
+								feedingPeriodMillisFinalLowerBound = predictedFeedingPeriodForFullCpuUtilizationThreshold - periodToleranceMillis
+								experimentResultAtFeedingPeriodMillisLowerBound = null
+								predictedFeedingPeriodForFullCpuUtilizationThreshold
+							} else {
+								val lowerBoundNarrowed = feedingPeriodMillisFinalLowerBound + periodToleranceMillis
+								val upperBoundNarrowed = feedingPeriodMillisFinalUpperBound - periodToleranceMillis
+								if upperBoundNarrowed <= lowerBoundNarrowed then nextFinalFeedingPeriodMillis // fallback to binary search if utilization is near 0%
+								else {
+									// Clamp predicted period with binary search bounds.
+									predictedFeedingPeriodForFullCpuUtilizationThreshold
+										.max(lowerBoundNarrowed)
+										.min(upperBoundNarrowed)
+								}
+							}
+						}
+				}
+			} else {
+				val frequencyTolerance = PILOT_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE * MILLIS_PER_SECOND / feedingPeriodMillisPilotUpperBound
+				isFinalExperiment = MILLIS_PER_SECOND / feedingPeriodMillisPilotLowerBound - MILLIS_PER_SECOND / feedingPeriodMillisPilotUpperBound < frequencyTolerance
+
+				if isFinalExperiment then {
+					feedingPeriodMillisFinalLowerBound = (feedingPeriodMillisPilotLowerBound - feedingPeriodMillisPilotLowerBound / 5.0).max(FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND)
+					feedingPeriodMillisFinalUpperBound = feedingPeriodMillisPilotUpperBound + feedingPeriodMillisPilotUpperBound / 4.0
+					feedingPeriodMillis = nextPilotFeedingPeriodMillis
+				} else if feedingPeriodMillis - FEEDING_PERIOD_MILLIS_MINIMUM_LOWER_BOUND < PERIOD_TOLERANCE_MILLIS_NEAR_MINIMUM_LOWER_BOUND then return null
+				else {
+					val periodToleranceMillis = PILOT_EXPERIMENT_FREQUENCY_RELATIVE_TOLERANCE * feedingPeriodMillisPilotLowerBound
+					val lowerBoundNarrowed = feedingPeriodMillisPilotLowerBound + periodToleranceMillis
+					val upperBoundNarrowed = feedingPeriodMillisPilotUpperBound - periodToleranceMillis
+
+					feedingPeriodMillis = if cpuSaturated || upperBoundNarrowed <= lowerBoundNarrowed then nextPilotFeedingPeriodMillis // fallback to binary search if utilization is near 0%
+					else {
+						// Given:
+						//   currentCpuUtilizationFraction = k / currentFeedingPeriod
+						//   1 = fullCpuUtilizationFraction = k / feedingPeriodForFullCpuUtilizationThreshold
+						// Then:
+						//   feedingPeriodForFullCpuUtilizationThreshold = k / fullCpuUtilizationFraction = currentCpuUtilizationFraction * currentFeedingPeriod
+						val predictedFeedingPeriodForFullCpuUtilizationThreshold = runResult.actualCpuUtilization * feedingPeriodMillis
+						// If the predicted period is lower than the lower bound, probably the lower bound is fake, so push it downward.
+						if predictedFeedingPeriodForFullCpuUtilizationThreshold < feedingPeriodMillisPilotLowerBound then {
+							feedingPeriodMillisPilotLowerBound = predictedFeedingPeriodForFullCpuUtilizationThreshold - periodToleranceMillis
+							predictedFeedingPeriodForFullCpuUtilizationThreshold
+						} else {
+							// Clamp predicted period with binary search bounds.
+							predictedFeedingPeriodForFullCpuUtilizationThreshold
+								.max(lowerBoundNarrowed)
+								.min(upperBoundNarrowed)
+						}
+					}
+				}
+
+				val nextExperimentDuration =
+					if isFinalExperiment then EXPERIMENT_TARGET_ABSOLUTE_DURATION_MILLIS
+					else EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MILLIS
+				experimentDuration = nextExperimentDuration.max((feedingPeriodMillis * EXPERIMENT_MINIMUM_ABSOLUTE_DURATION_MEASURED_IN_FEEDING_PERIODS).round)
+
 			}
 		}
 		calibrationResult
@@ -587,7 +658,7 @@ object SchedulingDoerBenchmark {
 				val startupDelayNanos = (feedingPeriodMillis * 1000000.0).toLong
 				val activeDurationNanos = totalDurationNanos - startupDelayNanos
 
-				val jitterMarginNanos = math.max(0.0, SchedulingDoerBenchmark.MAX_JITTER_MS * (1.0 - experimentDurationMillis.toDouble / SchedulingDoerBenchmark.TARGET_EXPERIMENT_DURATION.toDouble)) * 1000000.0
+				val jitterMarginNanos = math.max(0.0, SchedulingDoerBenchmark.MAX_JITTER_MS * (1.0 - experimentDurationMillis.toDouble / SchedulingDoerBenchmark.EXPERIMENT_TARGET_ABSOLUTE_DURATION_MILLIS.toDouble)) * 1000000.0
 
 				val workersUtilization = if activeDurationNanos <= 0 then 0.0 else {
 					val inevitableSleep = poolSize * startupDelayNanos + jitterMarginNanos

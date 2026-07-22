@@ -171,11 +171,7 @@ abstract class CooperativeContainedPollingSchedulerDp(
 			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 	}
 
-	override protected def shouldSleepIndefinitely(worker: Worker): Boolean = {
-		workerPriorityQueues(worker.index).size == 0
-	}
-
-	override def lull(worker: Worker): Unit = {
+	override def lull(worker: Worker, numberOfWorkersOutsideTheSleepZone: Int): Unit = {
 		val est = earliestScheduledTimes(worker.index)
 		if est == clock.MaxValue then clock.suspend(worker)
 		else {
