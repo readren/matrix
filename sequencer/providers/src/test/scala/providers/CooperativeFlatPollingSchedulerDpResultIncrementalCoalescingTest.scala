@@ -9,7 +9,6 @@ class CooperativeFlatPollingSchedulerDpResultIncrementalCoalescingTest extends R
 
 	override type DP = CooperativeFlatPollingSchedulerDp
 
-	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	override protected def buildDoerProvider: DP = new CooperativeFlatPollingSchedulerDp(applyMemoryFence = false) {
 		override type Tag = String
 
@@ -22,7 +21,6 @@ class CooperativeFlatPollingSchedulerDpResultIncrementalCoalescingTest extends R
 		}
 	}
 
-	/** The implementation should release the specified [[DoerProvider]]. */
 	override protected def releaseDoerProvider(doerProvider: DP): Unit = {
 		doerProvider.shutdown()
 	}

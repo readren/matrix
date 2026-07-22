@@ -9,7 +9,6 @@ class CooperativeThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[
 
 	override type DP = CooperativeThreadDrivenSchedulerDp
 
-	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
 	override protected def buildDoerProvider: DP = new CooperativeThreadDrivenSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
@@ -21,8 +20,6 @@ class CooperativeThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[
 	override def scalaCheckTestParameters: org.scalacheck.Test.Parameters =
 		super.scalaCheckTestParameters.withMinSuccessfulTests(100)
 
-	/** The implementation should release the specified [[DoerProvider]].
-	 * The implementation may assume that the provided instance was created calling [[buildDoerProvider]]. */
 	override protected def releaseDoerProvider(doerProvider: DP): Unit =
 		doerProvider.shutdown()
 }

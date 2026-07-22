@@ -361,6 +361,7 @@ abstract class CooperativeWorkersDp(
 	 * This method is responsible for suspending the [[Worker]]. \
 	 * The default implementation suspends the specified [[Worker]] indefinitely until it is awakened. \
 	 * The intention of this method is to allow extensions to add scheduling support. See [[CooperativeFlatPollingSchedulerDp.determineWaitDurationFor]] for an example.
+	 * @note Implementations must not prevent shutdown convergence. The shutdown protocol relies on a last-man-standing check that occurs ''before'' this method is called: each worker sets [[Worker.isSleeping]] to `true`, then checks whether all other workers are also sleeping. Only the truly last worker triggers termination. If an implementation causes workers to wake up and re-enter the sleep zone indefinitely after [[shutdown]] has been called (e.g., via recurring timers that never cease), no worker will ever observe all others as simultaneously sleeping, and termination will be delayed indefinitely (livelock). Therefore, after [[shutdown]] is called, implementations should ensure that spurious or timer-driven wakeups eventually stop, allowing all workers to stabilize in the sleeping state.
 	 * @param worker the last [[Worker]] to enter the sleep zone.
 	 * @param numberOfWorkersOutsideTheSleepZone The pool size minus the number of workers inside the sleep zone immediately after this worker entered it. A value of zero means that, when the provided [[Worker]] entered the sleep zone, there was no other [[Worker]] outside it, meaning that the provided [[Worker]] is **potentially** the only non-sleeping one. */
 	protected def lull(worker: Worker, numberOfWorkersOutsideTheSleepZone: Int): Unit = worker.wait()
@@ -413,6 +414,13 @@ abstract class CooperativeWorkersDp(
 	 */
 	override def shutdown(): Unit = {
 		if state.compareAndSet(State.keepRunning.ordinal, State.shutdownWhenAllWorkersSleep.ordinal) && workers.forall(_.isAsleep) then stopAllWorkers(0)
+		else if state.compareAndSet(State.notStarted.ordinal, State.terminated.ordinal) then {
+			var i = workers.length
+			while i > 0 do {
+				runningWorkersLatch.countDown();
+				i -= 1
+			}
+		}
 	}
 
 	def shutdownNow(timeout: Long, unit: TimeUnit): (Boolean, Map[Tag, java.util.Iterator[Runnable]]) = {

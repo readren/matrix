@@ -6,7 +6,7 @@ import core.*
 import factories.{RegularAf, SequentialInqueueAf}
 
 import readren.sequencer.Doer
-import readren.sequencer.manager.descriptors.{DefaultCooperativeWorkersDpd, DefaultFlatPollingSchedulingDpd, DefaultHierarchicalPollingSchedulingDpd, DefaultLocalPollingSchedulingDpd, DefaultRoundRobinDpd, DefaultShardedPollingSchedulingDpd, DefaultThreadDrivenSchedulingDpd}
+import readren.sequencer.manager.descriptors.{DefaultContainedPollingSchedulingDpd, DefaultCooperativeWorkersDpd, DefaultFlatPollingSchedulingDpd, DefaultHierarchicalPollingSchedulingDpd, DefaultLocalPollingSchedulingDpd, DefaultRoundRobinDpd, DefaultShardedPollingSchedulingDpd, DefaultThreadDrivenSchedulingDpd}
 import readren.sequencer.manager.{DoerProviderDescriptor, DoerProvidersManager, ShutdownAbleDpm}
 import readren.sequencer.providers.{CooperativeFlatPollingSchedulerDp, CooperativeThreadDrivenSchedulerDp, CooperativeWorkersDp, RoundRobinDp}
 
@@ -63,6 +63,7 @@ object Prueba {
 		Probe("CooperativeFlatPollingScheduler and RegularRf", DefaultFlatPollingSchedulingDpd, RegularAf),
 		Probe("CooperativeHierarchicalPollingSchedulerDp and RegularRf", DefaultHierarchicalPollingSchedulingDpd, RegularAf),
 		Probe("CooperativeLocalPollingSchedulerDp and RegularRf", DefaultLocalPollingSchedulingDpd, RegularAf),
+		Probe("CooperativeContainedPollingSchedulerDp and RegularRf", DefaultContainedPollingSchedulingDpd, RegularAf),
 		Probe("CooperativeShardedPollingSchedulerDp and RegularRf", DefaultShardedPollingSchedulingDpd, RegularAf),
 		Probe("RoundRobin and SequentialRf", DefaultRoundRobinDpd, SequentialInqueueAf),
 		Probe("CooperativeWorkers and SequentialRf", DefaultCooperativeWorkersDpd, SequentialInqueueAf),
@@ -70,6 +71,7 @@ object Prueba {
 		Probe("CooperativeFlatPollingScheduler and SequentialRf", DefaultFlatPollingSchedulingDpd, SequentialInqueueAf),
 		Probe("CooperativeHierarchicalPollingScheduler and SequentialRf", DefaultHierarchicalPollingSchedulingDpd, SequentialInqueueAf),
 		Probe("CooperativeLocalPollingScheduler and SequentialRf", DefaultLocalPollingSchedulingDpd, SequentialInqueueAf),
+		Probe("CooperativeContainedPollingScheduler and SequentialRf", DefaultContainedPollingSchedulingDpd, SequentialInqueueAf),
 		Probe("CooperativeShardedPollingScheduler and SequentialRf", DefaultShardedPollingSchedulingDpd, SequentialInqueueAf),
 	)
 

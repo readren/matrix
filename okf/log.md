@@ -3,10 +3,29 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-18T02:12:36Z"
+timestamp: "2026-07-22T15:35:00Z"
 ---
 
 # Change Log
+
+## [2026-07-22T15:35:00Z]
+
+- Refined the DoerProvider selection guide in `okf/sequencer-core.md` by integrating structural "like/unlike" comparative points directly into every scheduler item description, removing redundant shared traits, and simplifying the workload
+  descriptions.
+
+## [2026-07-22T15:15:00Z]
+
+- Aligned `CooperativeLocalPollingSchedulerDp` and `CooperativeContainedPollingSchedulerDp` descriptions in `okf/sequencer-core.md` using identical phrasing for shared features, highlighting memory reclamation behavior as their primary
+  differentiator.
+
+## [2026-07-22T15:00:00Z]
+
+- Refactored the DoerProvider selection guide in `okf/sequencer-core.md` to sort all seven scheduling implementations in descending order of utility probability (with Local and Contained Polling first) and added comparative "like/unlike"
+  analysis.
+
+## [2026-07-22T14:30:00Z]
+
+- Added documentation for the `CooperativeContainedPollingSchedulerDp` contained scheduler implementation in the DoerProvider selection guide in `okf/sequencer-core.md`.
 
 ## [2026-07-18T02:12:36Z]
 

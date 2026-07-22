@@ -3,7 +3,7 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-18T02:12:36Z"
+timestamp: "2026-07-22T14:30:00Z"
 ---
 
 # Sequencer Core Component
@@ -91,35 +91,50 @@ When configuring execution environments, select the `DoerProvider` implementatio
 
 ### 1. Schedulers (Support for `SchedulingExtension` / Timer tasks)
 
-* **CooperativeFlatPollingSchedulerDp (Flat Polling)**:
-  * **Workload**: Low to moderate schedule density (few active timers overall) or sparse timers (at most one schedule per doer).
-  * **Pros**: Low constant overhead, minimal GC footprint, and simpler lock structure (no nested doer-local locks in `program`/`cancel`).
-  * **Cons**: Global schedule management scales at $O(\log N)$ (where $N$ is total schedules), increasing lock contention under massive numbers of timers.
-* **CooperativeHierarchicalPollingSchedulerDp (Hierarchical Polling)**:
-  * **Workload**: High timer density (many concurrent active timers grouped under each active doer/actor).
-  * **Pros**: Decouples global schedule management into a two-level queue, scaling at $O(\log D)$ (where $D$ is the number of active doers) instead of $O(\log N)$.
-  * **Cons**: Nested lock complexity (locks both `owner` and `thisProvider` during schedule modification). Global lock contention on the provider can bottleneck throughput when active schedules count per doer ($S$) is $\approx 1.0$ (since
-    every timer expiration modifies the global queue's earliest time). However, contention drops under higher active schedules density ($S \ge 10.0$) because additional timers are queued locally without altering the global queue's earliest
-    time.
-* **CooperativeThreadDrivenSchedulerDp (Thread-Driven)**:
-  * **Workload**: Complex scheduling environments where queue management should be offloaded from worker threads.
-  * **Pros**: Offloads timer management and worker wakeup triggers to a dedicated scheduler thread, isolating worker execution pools from timer overhead.
-  * **Cons**: Requires an additional active thread, increasing system resource usage.
-* **CooperativeShardedPollingSchedulerDp (Sharded Polling)**:
-  * **Workload**: Multi-threaded scheduling environments with multiple active doers.
-  * **Pros**: Partitions scheduling heaps per worker thread to avoid global queue lock contention. Uses static hash partitioning of schedules across worker queues (`hashCode % threadPoolSize`) to guarantee perfect load balancing, preventing
-    thread-local scheduling drift and load imbalance under skewed scheduling patterns.
-  * **Cons**: Requires synchronization locks on the worker's monitor for scheduling, canceling, and polling operations. Consequently, it generally achieves lower throughput than `Local` (which is completely lock-free) across all benchmarked
-    loads.
 * **CooperativeLocalPollingSchedulerDp (Local Polling)**:
-  * **Workload**: High-frequency scheduling environments where queue contention and lock overhead must be completely eliminated.
-  * **Pros**: Keeps scheduling priority queues strictly thread-local to each worker, requiring zero locks or synchronization. Cancellation (`cancel` and `cancelAll`) is optimized to $O(1)$ lazy evaluation.
-  * **Cons**: Canceled schedules are cleaned up lazily when they expire, meaning they occupy memory in the priority queue until their scheduled time is reached. Because schedules are queued dynamically on the currently executing worker
-    thread, they can drift and accumulate unevenly, causing runtime load imbalance (since worker threads cannot steal/share schedules from other workers' local queues).
+  * **Workload**: Like `Contained`, it is suited for general-use cooperative scheduling. Unlike `Contained`, it is optimal when timer cancellations are rare or memory footprint from canceled timers is not a constraint.
+  * **Pros**: Like `Contained` (and unlike `Sharded`, `Flat`, and `Hierarchical`), it partitions priority heaps thread-locally per worker to eliminate global lock contention. Like `Contained`, it avoids cross-thread queue synchronization by
+    scheduling directly on the worker thread currently executing the doer.
+  * **Cons**: Unlike `Contained` (and `Sharded`, `Flat`, `Hierarchical`, and `ThreadDriven`), cancellation is always lazy; canceled schedules remain in the priority queue until their timer expires. Unlike `Sharded`, worker queues are
+    populated dynamically, which can lead to queue-load drift across workers.
+  * **Comparison**: Like `Contained`, it maintains thread-local priority queues per worker to eliminate global lock contention. Unlike `Contained`, it does not restrict doers to a single worker's scheduling queue, which allows doer
+    schedules to drift across workers and necessitates lazy memory reclamation for canceled timers.
+* **CooperativeContainedPollingSchedulerDp (Contained Polling)**:
+  * **Workload**: Like `Local`, it is suited for general-use cooperative scheduling. Unlike `Local`, it is optimal when timers are frequently canceled and memory must be reclaimed immediately.
+  * **Pros**: Like `Local` (and unlike `Sharded`, `Flat`, and `Hierarchical`), it partitions priority heaps thread-locally per worker to eliminate global lock contention. Like `Local`, it avoids cross-thread queue synchronization by
+    scheduling directly on the worker thread currently executing the doer. Unlike `Local`, it reclaims memory from canceled schedules immediately ($O (1)$ cleanup) when canceled on the worker executing the parent doer.
+  * **Cons**: Like `Local`, worker queues are populated dynamically, which can lead to queue-load drift across workers. Like `Local`, scheduling from non-worker threads requires delegating the operation through the doer's execution queue.
+  * **Comparison**: Like `Local`, it partitions scheduling heaps per worker thread and uses identical internal delegation for scheduling from non-worker threads. Unlike `Local`, cancellation immediately removes the schedule from the
+    priority queue if called from the worker thread that owns it.
+* **CooperativeShardedPollingSchedulerDp (Sharded Polling)**:
+  * **Workload**: Unlike `Local` and `Contained`, it is suited for workloads where queue-load drift must be avoided and scheduling balance across workers is critical.
+  * **Pros**: Like `Local` and `Contained`, it partitions priority heaps per worker thread to avoid global queue lock contention. Unlike `Local` and `Contained`, it uses static hash partitioning of schedules across worker queues
+    (`hashCode % threadPoolSize`) to guarantee perfect load balancing.
+  * **Cons**: Unlike `Local` and `Contained`, it requires synchronization locks on the worker's monitor for scheduling, canceling, and polling. Unlike `Contained`, canceled timers are reclaimed lazily when they expire.
+  * **Comparison**: Like `Local` and `Contained`, it partitions scheduling queues across worker threads to avoid a single global bottleneck. Unlike `Local` and `Contained`, it enforces strict queue assignment via hashing and requires
+    synchronization locks to access worker queues.
+* **CooperativeFlatPollingSchedulerDp (Flat Polling)**:
+  * **Workload**: Unlike `Hierarchical`, it is suited for workloads with low schedule density (few active timers overall) or sparse timers (at most one schedule per doer).
+  * **Pros**: Unlike `Hierarchical`, it uses a single flat priority queue rather than nesting doer-local heaps, resulting in lower constant overhead and simpler lock structure (no nested doer-local locks in `program` or `cancel`).
+  * **Cons**: Like `Hierarchical` (and unlike `Local`, `Contained`, and `Sharded`), it coordinates all schedules under a single global provider lock, causing lock contention under high timer counts.
+  * **Comparison**: Like `Hierarchical`, it coordinates all schedules under a single global provider lock. Unlike `Hierarchical`, it maintains a single flat priority queue rather than nesting doer-local timer heaps.
+* **CooperativeHierarchicalPollingSchedulerDp (Hierarchical Polling)**:
+  * **Workload**: Unlike `Flat`, it is suited for workloads with high timer density per doer (many concurrent active timers grouped under each active doer).
+  * **Pros**: Unlike `Flat`, it decouples global queue size into a two-level queue structure (global queue of active doers, local queue of schedules per doer) to reduce global heap operations.
+  * **Cons**: Like `Flat` (and unlike `Local`, `Contained`, and `Sharded`), it coordinates all schedules under a single global provider lock. Unlike `Flat`, it introduces nested lock complexity (locks both `owner` and `thisProvider` during
+    schedule modification).
+  * **Comparison**: Like `Flat`, it manages timers using centralized global coordination. Unlike `Flat`, it delegates timer detail ordering to doer-local priority heaps to reduce global heap operations.
+* **CooperativeThreadDrivenSchedulerDp (Thread-Driven)**:
+  * **Workload**: Unlike all other cooperative schedulers, it is suited for workloads where timer management overhead must be completely offloaded from execution worker threads.
+  * **Pros**: Unlike all other cooperative schedulers, it offloads timer management and worker wakeup triggers to a dedicated background scheduler thread.
+  * **Cons**: Unlike all other cooperative schedulers, it requires an additional active thread, introducing thread coordination and context switching overhead.
+  * **Comparison**: Like `Flat` and `Hierarchical`, it manages timers in a centralized structure. Unlike all other cooperative schedulers, it uses a dedicated background thread to trigger wakeups rather than cooperatively executing timer
+    evaluations within the worker pool.
 * **StandardSchedulingDp (Dedicated Thread)**:
-  * **Workload**: Testing or extremely small-scale production with very few doers where independent thread behavior is required.
-  * **Pros**: Bypasses shared worker pools; every doer has its own private `ScheduledExecutorService` (1 thread per doer), eliminating scheduling interference or global queue locks.
-  * **Cons**: Extremely high thread overhead; does not scale to large numbers of doers.
+  * **Workload**: Unlike all other schedulers, it is suited for testing or extremely small-scale isolation where cooperative execution is not desired.
+  * **Pros**: Unlike all other schedulers, every doer has its own private `ScheduledExecutorService` (1 thread per doer), eliminating scheduling interference or global queue locks.
+  * **Cons**: Unlike all other schedulers, it has extremely high thread overhead and does not scale to large numbers of doers.
+  * **Comparison**: Unlike all other schedulers, it does not use a shared cooperative worker pool, allocating a private thread per doer instead.
 
 ### 2. General Executors (Asynchronous task execution only)
 
