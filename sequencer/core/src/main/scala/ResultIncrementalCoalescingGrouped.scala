@@ -30,7 +30,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 	 *
 	 * The [[doer.Capturer]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]].
 	 */
-	private final class Competition extends doer.DefaultCaptor[R] {
+	private final class Competition extends doer.Captor[R] {
 		/** The [[doer.Capturer]] that yields the result of the execution currently authorized to fulfill the [[finalResult]] of this [[Competition]]. */
 		var incumbent: doer.Capturer[R] | Null = null
 		/** The [[Subscription]] to the [[incumbent]]. */
@@ -117,7 +117,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 			competition
 		} else {
 			// If called from outside the doer, marshal the request into the sequence
-			new doer.DefaultCaptor[R] with doer.MonoObserver[R] with Runnable {
+			new doer.Captor[R] with doer.MonoObserver[R] with Runnable {
 				doer.run(this)
 
 				override def run(): Unit = contend(parameter, arbitrator, true).triggerSync(this)

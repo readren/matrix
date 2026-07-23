@@ -198,27 +198,27 @@ trait Doer { thisDoer =>
 
 		override inline def wireFlat(supplier: () => Task[A]): Task[A] = new Task_Defers(supplier)
 
-		override inline def wireGuarded(supplier: () => A): Task[A] = ??? // TODO
+		override inline def wireGuarded(supplier: () => A): Task[A] = new Task_ApplyGuarded(supplier)
 
-		override inline def wireFlatGuarded(suplier: () => Task[A]): Task[A] = ??? // TODO
+		override inline def wireFlatGuarded(supplier: () => Task[A]): Task[A] = new Task_DefersGuarded(supplier)
 	}
 
 	inline given [A] =>Wirable[A, Capturer] {
-		override inline def wire(supplier: () => A): Capturer[A] = Captor_from(supplier)
+		override inline def wire(supplier: () => A): Capturer[A] = Captor_apply(supplier, false)
 
-		override inline def wireFlat(supplier: () => Capturer[A]): Capturer[A] = Captor_defer(supplier)
+		override inline def wireFlat(supplier: () => Capturer[A]): Capturer[A] = Captor_defer(supplier, false)
 
-		override inline def wireGuarded(supplier: () => A): Capturer[A] = ??? // TODO
+		override inline def wireGuarded(supplier: () => A): Capturer[A] = Captor_apply(supplier, true)
 
-		override inline def wireFlatGuarded(suplier: () => Capturer[A]): Capturer[A] = ??? // TODO
+		override inline def wireFlatGuarded(supplier: () => Capturer[A]): Capturer[A] = Captor_defer(supplier, true)
 	}
 
 	//// EXCEPTION HANDLING ////
 
-	/** An [[ExecutionContext]] that executes in sequence with this [[Doer]].\
-	 * Useful to execute [[Future]] operations within this [[Doer]]'s DoSerEx.\
+	/** An [[ExecutionContext]] that executes within this [[Doer]]'s serial executor.\
+	 * Useful to execute the functional operands of [[Future]] operations serially with this [[Doer]] primitives' operations.\
 	 * Internally, it is used by operations that handle a [[Future]]. */
-	@threadUnsafe lazy val ownSingleThreadExecutionContext: ExecutionContext = new ExecutionContext {
+	@threadUnsafe lazy val ownSerialExecutionContext: ExecutionContext = new ExecutionContext {
 		def execute(runnable: Runnable): Unit = thisDoer.executeSequentially(runnable)
 
 		override def reportFailure(cause: Throwable): Unit = throw cause
@@ -653,7 +653,7 @@ trait Doer { thisDoer =>
 	 * @param supplier the supplier of the result. $isExecutedByDoSerEx $notGuarded
 	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Task_apply[A](supplier: () => A): Task[A] = new Task_Apply(supplier)
+	inline def Task_apply[A](supplier: () => A, isGuarded: Boolean = false): Task[A] = if isGuarded then new Task_ApplyGuarded(supplier) else new Task_Apply(supplier)
 
 	/** Creates a [[Task]] that lazily executes the provided [[Task]] supplier and yields whatever the produced [[Task]] yields.
 	 * Is equivalent to: {{{Task_apply(supplier).flatMap(identity)}}} but slightly more efficient
@@ -668,7 +668,7 @@ trait Doer { thisDoer =>
 	 * @param supplier the supplier of the task whose execution will give the result. $isExecutedByDoSerEx $notGuarded
 	 * @return the task described in the method description.
 	 */
-	inline def Task_defers[A](supplier: () => Task[A]): Task[A] = new Task_Defers(supplier)
+	inline def Task_defers[A](supplier: () => Task[A], isGuarded: Boolean = false): Task[A] = if isGuarded then new Task_DefersGuarded(supplier) else new Task_Defers(supplier)
 
 	/** Creates a [[Task]] that wraps a [[Mono]]. */
 	def Task_from[A](mono: Mono[A]): Task[A] = {
@@ -726,7 +726,7 @@ trait Doer { thisDoer =>
 	 * @param f the function that combines the results of the two [[Task]] instances. $isExecutedByDoSerEx
 	 * @return the [[Task]] described in the method description.
 	 */
-	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B])(f: (A, B) => C): Task[C] = new Task_Combined(taskA, taskB, f)
+	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B], isGuarded: Boolean = false)(f: (A, B) => C): Task[C] = new Task_Combined(taskA, taskB, f, isGuarded)
 
 	/**
 	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the received iterable, and completes with a collection containing their results in the same order.
@@ -921,7 +921,7 @@ trait Doer { thisDoer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_FlatMap(trap: Nothing): Any = trap
 
-	/** TODO This class is very similar to [[DefaultCaptor_FlatMap]]. Consider removing duplication by extending a common super class. */
+	/** TODO This class is very similar to [[Captor_FlatMap]]. Consider removing duplication by extending a common super class. */
 	final class Task_FlatMap[+A, +B](upChainMono: Mono[A], f: A => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription with MonoObserver[A] {
@@ -935,6 +935,7 @@ trait Doer { thisDoer =>
 
 				override def onSuccess(a: A): Unit = {
 					if isActive then {
+						isActive = false
 						maybeUpChainSubscription = Maybe.empty
 						val maybeInnerMonoB =
 							if isGuarded then {
@@ -1134,7 +1135,6 @@ trait Doer { thisDoer =>
 
 	final class Task_Apply[+A](supplier: () => A) extends AbstractTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
-			// Completes immediately, so returns empty subscription
 			downChainObserver.onSuccess(supplier())
 			Subscription_empty
 		}
@@ -1143,15 +1143,48 @@ trait Doer { thisDoer =>
 	}
 
 	/** $suppressSyntheticCompanionObject */
+	private inline def Task_ApplyGuarded(trap: Nothing): Any = trap
+
+	final class Task_ApplyGuarded[+A](supplier: () => A) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			val maybeA = try Maybe(supplier()) catch {
+				case NonFatal(e) =>
+					downChainObserver.onError(e)
+					Maybe.empty
+			}
+			maybeA.foreach(downChainObserver.onSuccess)
+			Subscription_empty
+		}
+
+		override def toString: String = deriveToString[Task_ApplyGuarded[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Defers(trap: Nothing): Any = trap
 
 	final class Task_Defers[+A](supplier: () => Task[A]) extends AbstractTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
-			// Propagates the inner subscription directly
+			// Propagate the inner subscription directly
 			supplier().subscribeSync(downChainObserver)
 		}
 
 		override def toString: String = deriveToString[Task_Defers[A]](this)
+	}
+
+	/** $suppressSyntheticCompanionObject */
+	private inline def Task_DefersGuarded(trap: Nothing): Any = trap
+
+	final class Task_DefersGuarded[+A](supplier: () => Task[A]) extends AbstractTask[A] {
+		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
+			val maybeTaskA = try Maybe(supplier()) catch {
+				case NonFatal(e) =>
+					downChainObserver.onError(e)
+					Maybe.empty
+			}
+			maybeTaskA.fold(Subscription_empty)(_.subscribeSync(downChainObserver))
+		}
+
+		override def toString: String = deriveToString[Task_DefersGuarded[A]](this)
 	}
 
 	/** $suppressSyntheticCompanionObject */
@@ -1168,9 +1201,9 @@ trait Doer { thisDoer =>
 
 	final class Task_FromForeign[+A](foreignDoer: Doer, foreignMono: foreignDoer.Mono[A]) extends AbstractTask[A] {
 		override def subscribeSync(downChainSubscripton: MonoObserver[A]): Subscription = {
-			new Subscription with MonoObserver[A] with Runnable {
+			new Subscription with foreignDoer.MonoObserver[A] with Runnable {
 				@volatile private var isActive = true
-				private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
+				@volatile private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
 
 				{ // Constructor
 					foreignDoer.executeSequentially(this)
@@ -1178,7 +1211,7 @@ trait Doer { thisDoer =>
 
 				override def run(): Unit = {
 					if isActive then {
-						val foreignSubscription = foreignMono.subscribeSync(this.asInstanceOf[foreignDoer.MonoObserver[A]])
+						val foreignSubscription = foreignMono.subscribeSync(this)
 						// Note: Unlike single-threaded tasks (such as [[Task_FlatMap]]), we do not perform defensive checks to guarantee the clearing of maybeForeignSubscription because a failure to clear the reference is very rare and only results in a transient, minor memory leak (which is reclaimed once the delegating subscription is garbage collected), the performance and complexity cost of such optimization is not justified here.
 						maybeForeignSubscription = Maybe(foreignSubscription)
 					}
@@ -1232,7 +1265,7 @@ trait Doer { thisDoer =>
 			new Subscription with (Try[A] => Unit) {
 				private var active = true
 				{ // Constructor
-					future.onComplete(this)(using ownSingleThreadExecutionContext)
+					future.onComplete(this)(using ownSerialExecutionContext)
 				}
 
 				override def apply(tryA: Try[A]): Unit = {
@@ -1260,11 +1293,13 @@ trait Doer { thisDoer =>
 			new Subscription with (Try[A] => Unit) {
 				private var active = true
 				{ // Constructor
-					val future =
-						if isGuarded then try supplier() catch {
-							case NonFatal(e) => Future.failed(e)
-						} else supplier()
-					future.onComplete(this)(using ownSingleThreadExecutionContext)
+					val maybeFuture =
+						if isGuarded then try Maybe(supplier()) catch {
+							case NonFatal(e) =>
+								downChainObserver.onError(e)
+								Maybe.empty
+						} else Maybe(supplier())
+					maybeFuture.foreach(_.onComplete(this)(using ownSerialExecutionContext))
 				}
 
 				override def apply(tryA: Try[A]): Unit = {
@@ -1288,7 +1323,7 @@ trait Doer { thisDoer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Combined(trap: Nothing): Any = trap
 
-	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C) extends AbstractTask[C] {
+	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C, isGuarded: Boolean) extends AbstractTask[C] {
 		override def subscribeSync(downChainObserver: MonoObserver[C]): Subscription = new Subscription with MonoObserver[A] {
 			private var isActive = true
 			private var maybeA: Maybe[A] = Maybe.empty
@@ -1307,10 +1342,7 @@ trait Doer { thisDoer =>
 								maybeSubscriptionB = Maybe.empty
 								maybeA.fold {
 									maybeB = Maybe(b)
-								} { a =>
-									isActive = false
-									downChainObserver.onSuccess(f(a, b))
-								}
+								} { a => zip(a, b) }
 							}
 						}
 
@@ -1332,10 +1364,7 @@ trait Doer { thisDoer =>
 					maybeSubscriptionA = Maybe.empty
 					maybeB.fold {
 						maybeA = Maybe(a)
-					} { b =>
-						isActive = false
-						downChainObserver.onSuccess(f(a, b))
-					}
+					} { b => zip(a, b) }
 				}
 			}
 
@@ -1346,6 +1375,17 @@ trait Doer { thisDoer =>
 					downChainObserver.onError(e)
 					maybeSubscriptionB.foreach(_.unsubscribe())
 				}
+			}
+
+			private def zip(a: A, b: B): Unit = {
+				isActive = false
+				val maybeC =
+					if isGuarded then try Maybe(f(a, b)) catch {
+						case NonFatal(e) =>
+							downChainObserver.onError(e)
+							Maybe.empty
+					} else Maybe(f(a, b))
+				maybeC.foreach(downChainObserver.onSuccess)
 			}
 
 			override def unsubscribe(): Unit = {
@@ -1677,7 +1717,7 @@ trait Doer { thisDoer =>
 
 		override def reconcile: Capturer[Try[A]] = {
 			state.fold {
-				new DefaultCaptor[Try[A]] with MonoObserver[A] {
+				new Captor[Try[A]] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = this.captureSync(Success(a))
@@ -1692,7 +1732,7 @@ trait Doer { thisDoer =>
 		override def withFilter(predicate: A => Boolean): Capturer[A] = {
 			checkWithin()
 			state.fold[Capturer[A]] {
-				new DefaultCaptor[A] with MonoObserver[A] {
+				new Captor[A] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1711,7 +1751,7 @@ trait Doer { thisDoer =>
 		override def withFilterGuarded(predicate: A => Boolean): Capturer[A] = {
 			checkWithin()
 			state.fold[Capturer[A]] {
-				new DefaultCaptor[A] with MonoObserver[A] {
+				new Captor[A] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1730,7 +1770,7 @@ trait Doer { thisDoer =>
 		override def map[B](f: A => B): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = captureSync(f(a))
@@ -1743,7 +1783,7 @@ trait Doer { thisDoer =>
 		override def mapGuarded[B](f: A => B): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1769,7 +1809,7 @@ trait Doer { thisDoer =>
 		override def flatMap[B](f: A => Mono[B]): Mono[B] = {
 			checkWithin()
 			state.fold {
-				new DefaultCaptor_FlatMap[A, B](this, f, false)
+				new Captor_FlatMap[A, B](this, f, false)
 			} { ex => Task_fail(ex) } { a => f(a) }
 		}
 
@@ -1777,7 +1817,7 @@ trait Doer { thisDoer =>
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1797,14 +1837,14 @@ trait Doer { thisDoer =>
 		override def flatMap[B](f: A => Task[B]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new DefaultCaptor_FlatMap[A, B](this, f, false)
+				new Captor_FlatMap[A, B](this, f, false)
 			} { ex => Task_fail(ex) } { a => f(a) }
 		}
 
 		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
-				new DefaultCaptor_FlatMap[A, B](this, f, true)
+				new Captor_FlatMap[A, B](this, f, true)
 			} { ex => Task_fail(ex) } { a =>
 				try {
 					f(a)
@@ -1818,7 +1858,7 @@ trait Doer { thisDoer =>
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1849,7 +1889,7 @@ trait Doer { thisDoer =>
 		override def flatMapGuarded[B](f: A => Task[B]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new DefaultCaptor_FlatMap[A, B](this, f, true)
+				new Captor_FlatMap[A, B](this, f, true)
 			} { ex => Task_fail(ex) } { a =>
 				try {
 					f(a)
@@ -1862,7 +1902,7 @@ trait Doer { thisDoer =>
 		override def transform[B](f: Try[A] => Try[B]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
@@ -1911,7 +1951,7 @@ trait Doer { thisDoer =>
 		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
-				new DefaultCaptor_TransformWith[A, B](this, f)
+				new Captor_TransformWith[A, B](this, f)
 			} { ex =>
 				/*try*/ f(Failure(ex)) /*catch {
 					case NonFatal(e) => new Failed(e)
@@ -1927,7 +1967,7 @@ trait Doer { thisDoer =>
 		override def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.subscribeSync(this)
 
 					override def onSuccess(a: A): Unit = handle(Success(a))
@@ -1961,7 +2001,7 @@ trait Doer { thisDoer =>
 		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new DefaultCaptor_TransformWith[A, B](this, f)
+				new Captor_TransformWith[A, B](this, f)
 			} { ex =>
 				f(Failure(ex))
 			} { a =>
@@ -1972,7 +2012,7 @@ trait Doer { thisDoer =>
 		override def recover[B >: A](pf: Throwable => Maybe[B]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = captureSync(a)
@@ -1995,7 +2035,7 @@ trait Doer { thisDoer =>
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
-				new DefaultCaptor_RecoverWith[A, B](thisCaptor, pf)
+				new Captor_RecoverWith[A, B](thisCaptor, pf)
 			} { ex =>
 				/*try*/ pf(ex).fold[Mono[B]](new Failed(ex))(identity) /*catch {
 					case NonFatal(e) => new Failed(e)
@@ -2007,7 +2047,7 @@ trait Doer { thisDoer =>
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = {
 			checkWithin()
 			state.fold[Capturer[B]] {
-				new DefaultCaptor[B] with MonoObserver[A] {
+				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = captureSync(a)
@@ -2033,7 +2073,7 @@ trait Doer { thisDoer =>
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new DefaultCaptor_RecoverWith[A, B](thisCaptor, pf)
+				new Captor_RecoverWith[A, B](thisCaptor, pf)
 			} { ex =>
 				pf(ex).fold[Task[B]](Task_fail(ex))(identity)
 			} { a =>
@@ -2092,7 +2132,7 @@ trait Doer { thisDoer =>
 		mono match {
 			case capturer: Capturer[A] => capturer
 			case _ =>
-				new DefaultCaptor[A]() with MonoObserver[A] {
+				new Captor[A]() with MonoObserver[A] {
 					mono.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = captureSync(a)
@@ -2102,24 +2142,44 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	def Capturer_apply[A](supplier: () => A): Capturer[A] = {
-		new DefaultCaptor[A] with Runnable {
+	inline def Capturer_apply[A](inline supplier: () => A, inline isGuarded: Boolean = false): Capturer[A] = {
+		class CR extends Captor[A] with Runnable {
 			executeSequentially(this)
 
-			override def run(): Unit = captureSync(supplier())
+			override def run(): Unit = {
+				if isGuarded then {
+					val maybeA = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							trapSync(e)
+							Maybe.empty
+					}
+					maybeA.foreach(capture(_))
+				} else captureSync(supplier())
+			}
 		}
+		new CR
 	}
 
-	def Capturer_defer[A](supplier: () => Capturer[A]): Capturer[A] = {
-		new DefaultCaptor[A] with MonoObserver[A] with Runnable {
+	inline def Capturer_defer[A](inline supplier: () => Capturer[A], inline isGuarded: Boolean = false): Capturer[A] = {
+		class COR extends Captor[A] with MonoObserver[A] with Runnable {
 			executeSequentially(this)
 
-			override def run(): Unit = supplier().triggerSync(this)
+			override def run(): Unit = {
+				if isGuarded then {
+					val maybeCapturerA = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							trapSync(e)
+							Maybe.empty
+					}
+					maybeCapturerA.foreach(_.triggerSync(this))
+				} else supplier().triggerSync(this)
+			}
 
 			override def onSuccess(a: A): Unit = captureSync(a)
 
 			override def onError(e: Throwable): Unit = trapSync(e)
 		}
+		new COR
 	}
 
 	/** Creates a [[Capturer]] that subscribes to an [[Mono]] of another [[Doer]].
@@ -2130,7 +2190,7 @@ trait Doer { thisDoer =>
 	 * @return a [[Task]] that produces what the `foreignMono` produces, but the result is yielded in sequence with this [[Doer]]. */
 	def Capturer_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Mono[A]): Capturer[A] = {
 		if foreignDoer ne thisDoer then {
-			new DefaultCaptor[A] with foreignDoer.MonoObserver[A] with Runnable {
+			new Captor[A] with foreignDoer.MonoObserver[A] with Runnable {
 				foreignDoer.executeSequentially(this)
 
 				override def run(): Unit = foreignMono.triggerSync(this)
@@ -2151,8 +2211,8 @@ trait Doer { thisDoer =>
 	 * @param future the future to wait for.
 	 * @return the [[Capturer]] described in the method description. */
 	final def Capturer_from[A](future: Future[A]): Capturer[A] = {
-		new DefaultCaptor[A] with (Try[A] => Unit) {
-			future.onComplete(this)(using ownSingleThreadExecutionContext)
+		new Captor[A] with (Try[A] => Unit) {
+			future.onComplete(this)(using ownSerialExecutionContext)
 
 			override def apply(tryA: Try[A]): Unit = tryA match {
 				case Success(a) => captureSync(a)
@@ -2168,8 +2228,8 @@ trait Doer { thisDoer =>
 	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx
 	 * @return the [[Capturer]] described in the method description. */
 	final def Capturer_from[A](supplier: () => Future[A]): Capturer[A] = {
-		new DefaultCaptor[A] with (Try[A] => Unit) {
-			run(supplier().onComplete(this)(using ownSingleThreadExecutionContext))
+		new Captor[A] with (Try[A] => Unit) {
+			run(supplier().onComplete(this)(using ownSerialExecutionContext))
 
 			override def apply(tryA: Try[A]): Unit = tryA match {
 				case Success(a) => captureSync(a)
@@ -2422,21 +2482,25 @@ trait Doer { thisDoer =>
 
 	//// CAPTOR /////
 
-	/** A non-instantiable complete implementation of [[Capturer]]. */
-	abstract class DefaultCaptor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
+	/** A [[Capturer]] with dynamic control of its completion (the execution of the subscribed consumers).
+	 *
+	 * It exposes methods such as [[capture]] and [[seizeWith]] to allow external code to complete it.
+	 *
+	 * [[Captor]] is to [[Capturer]] as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]] */
+	class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
 		protected var theState: Trial[A] = initialState
 
 		override protected def state: Trial[A] = theState
 
-		/** Sets this [[DefaultCaptor]] captured value with the given successful `result`, unless it has already been set.
+		/** Sets this [[Captor]] captured value with the given successful `result`, unless it has already been set.
 		 *
-		 * If this [[DefaultCaptor]] captured value is not yet set, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If this [[Captor]] captured value is not yet set, the provided `result` becomes its final value and is made immediately visible to all subscribers.
 		 * If it is already set, the provided `result` is ignored.
 		 *
 		 * CAUTION: This method must be called within this [[Doer]].
 		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capturer]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. This could be avoided in the library but is not worth. The user can prevent it easily with the help of [[Doer.currentExecutionSerial]].
 		 *
-		 * @param result the value to set this [[DefaultCaptor]] capture value with.
+		 * @param result the value to set this [[Captor]] capture value with.
 		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
 		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
 		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
@@ -2455,15 +2519,15 @@ trait Doer { thisDoer =>
 			this
 		}
 
-		/** Sets this [[DefaultCaptor]] captured value with the given failure `excuse`, unless it has already been set.
+		/** Sets this [[Captor]] captured value with the given failure `excuse`, unless it has already been set.
 		 *
-		 * If this [[DefaultCaptor]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If this [[Captor]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
 		 * If it is already fulfilled, the provided `result` is ignored.
 		 *
 		 * CAUTION: This method must be called within this [[Doer]].
 		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capturer]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
 		 *
-		 * @param excuse the value to fulfill this [[DefaultCaptor]] with.
+		 * @param excuse the value to fulfill this [[Captor]] with.
 		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
 		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
 		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
@@ -2481,7 +2545,7 @@ trait Doer { thisDoer =>
 			this
 		}
 
-		def seizeWithSync(completingMono: Mono[A], completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
+		final def seizeWithSync(completingMono: Mono[A], completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
 			if completingMono eq this then throw IllegalArgumentException("A Captor can't be fulfilled with itself.")
 			state.fold {
 				completingMono.triggerSync(new MonoObserver[A] {
@@ -2518,14 +2582,6 @@ trait Doer { thisDoer =>
 			}
 			this
 		}
-	}
-
-	/** A [[Capturer]] with dynamic control of its completion (the execution of the subscribed consumers).
-	 *
-	 * It exposes methods such as [[capture]] and [[seizeWith]] to allow external code to complete it.
-	 *
-	 * [[Captor]] is to [[Capturer]] as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]] */
-	final class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCaptor[A](initialState) {
 
 		/** @param completionObserver optional synchronous observer of the actual completion result and origin. The `originId` parameter indicates the [[ImmediateResultOrigin]]. */
 		inline def capture(result: A, inline isWithinDoSerEx: Boolean = isInSequence, completionObserver: CompletionObserver[A] = CompletionIgnorer): this.type = {
@@ -2582,7 +2638,7 @@ trait Doer { thisDoer =>
 	}
 
 	/** TODO This class is very similar to [[Task_FlatMap]]. Consider removing duplication by extending a common super class. */
-	final class DefaultCaptor_FlatMap[+A, B](upChainMono: Mono[A], f: A => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
+	final class Captor_FlatMap[+A, B](upChainMono: Mono[A], f: A => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
 		private var monoBMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
@@ -2643,7 +2699,7 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	final class DefaultCaptor_TransformWith[A, B](upChainMono: Mono[A], f: Try[A] => Mono[B]) extends AbstractTask[B] {
+	final class Captor_TransformWith[A, B](upChainMono: Mono[A], f: Try[A] => Mono[B]) extends AbstractTask[B] {
 		private var monoBMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
@@ -2691,7 +2747,7 @@ trait Doer { thisDoer =>
 		}
 	}
 
-	final class DefaultCaptor_RecoverWith[A, B >: A](upChainMono: Mono[A], pf: Throwable => Maybe[Mono[B]]) extends AbstractTask[B] {
+	final class Captor_RecoverWith[A, B >: A](upChainMono: Mono[A], pf: Throwable => Maybe[Mono[B]]) extends AbstractTask[B] {
 		private var maybeMonoBMemory: Maybe[Maybe[Mono[B]]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
@@ -2757,26 +2813,54 @@ trait Doer { thisDoer =>
 
 	/** Creates a [[Captor]] that will fulfill with the result of executing the provided supplier within the $DoSerEx.
 	 * @param supplier a supplier function that is executed within the $DoSerEx and returns the value to fulfill the created [[Captor]] with. */
-	def Captor_from[A](supplier: () => A): Captor[A] = {
-		val captor = new Captor[A] // TODO optimize
-		run {
-			captor.captureSync(supplier())
+	inline def Captor_apply[A](inline supplier: () => A, inline isGuarded: Boolean = false): Captor[A] = {
+		class CR extends Captor[A]() with Runnable {
+			{ // Constructor
+				executeSequentially(this)
+			}
+
+			override def run(): Unit = {
+				if isGuarded then {
+					val maybeA = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							trapSync(e)
+							Maybe.empty
+					}
+					maybeA.foreach(captureSync(_))
+				} else {
+					captureSync(supplier())
+				}
+			}
 		}
-		captor
+		new CR
 	}
 
 	/** Creates a [[Captor]] that is wired to the [[Capturer]] resulting of executing the provided supplier within the $DoSerEx.
 	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[Capturer]] to which the created [[Captor]] is wired. */
-	def Captor_defer[A](supplier: () => Capturer[A]): Captor[A] = {
-		val captor = new Captor[A] // TODO optimize
-		run {
-			supplier().subscribeSync(new MonoObserver[A] {
-				override def onSuccess(a: A): Unit = captor.captureSync(a)
+	inline def Captor_defer[A](inline supplier: () => Capturer[A], inline isGuarded: Boolean = false): Captor[A] = {
+		class CRO extends Captor[A] with Runnable with MonoObserver[A] {
+			{ // Constructor
+				executeSequentially(this)
+			}
 
-				override def onError(ex: Throwable): Unit = ()
-			})
+			override def run(): Unit = {
+				if isGuarded then {
+					val maybeCapturerA = try Maybe(supplier()) catch {
+						case NonFatal(e) =>
+							trapSync(e)
+							Maybe.empty
+					}
+					maybeCapturerA.foreach(_.triggerSync(this))
+				} else {
+					supplier().triggerSync(this)
+				}
+			}
+
+			override def onSuccess(a: A): Unit = captureSync(a)
+
+			override def onError(e: Throwable): Unit = trapSync(e)
 		}
-		captor
+		new CRO
 	}
 
 	/** Triggers an execution of the given [[Task]] and returns a [[Captor]] that will be completed with the result of the triggered execution if it completes before this [[Captor]] is completed by other means.
@@ -2790,12 +2874,20 @@ trait Doer { thisDoer =>
 	 * @return a [[Captor]] that will be completed with the result of the execution triggered by this method.
 	 */
 	inline def Captor_triggerAndWire[A](
-		task: Task[A], inline isWithinDoSerEx: Boolean = isInSequence,
+		task: Task[A],
+		inline isWithinDoSerEx: Boolean = isInSequence,
 		completionObserver: CompletionObserver[A] = CompletionIgnorer,
 	): Captor[A] = {
-		val captor = new Captor[A]() // TODO optimize
-		task.subscribeCallbacks(isWithinDoSerEx)(a => captor.captureSync(a, completionObserver), e => captor.trapSync(e, completionObserver))
-		captor
+		class CO extends Captor[A] with MonoObserver[A] {
+			{ // Constructor
+				task.trigger(isWithinDoSerEx)(this)
+			}
+
+			override def onSuccess(a: A): Unit = captureSync(a, completionObserver)
+
+			override def onError(e: Throwable): Unit = trapSync(e, completionObserver)
+		}
+		new CO
 	}
 
 

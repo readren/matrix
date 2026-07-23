@@ -1100,7 +1100,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		type PrimaryState = (pathId: Int, serial: Int)
 		val initialState: PrimaryState = (0, 0)
-		val topSerial = 99 // Note that incrementing this number causes stack overflow when syncOnly == true. See note in `DefaultCaptor.captureSync`.
+		val topSerial = 99 // Note that incrementing this number causes stack overflow when syncOnly == true. See note in `Captor.captureSync`.
 		PropF.forAllF(Gen.choose(1, 9), Gen.oneOf(true, false)) { (swarmSize: Int, syncOnly: Boolean) =>
 			// println(s"Begin: swarmSize=$swarmSize, syncOnly=$syncOnly")
 

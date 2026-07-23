@@ -405,7 +405,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param delay the schedule delay that determines when the supplier function will be executed.
 	 * @param supplier the function that produces a value of type [[A]] after the delay.
 	 * @return a [[Capturer]] that yields the supplier’s result. */
-	def Capturer_delay[A](delay: Delay)(supplier: Schedule => A): Capturer[A] = new DefaultCaptor[A] with (Schedule => Unit) {
+	def Capturer_delay[A](delay: Delay)(supplier: Schedule => A): Capturer[A] = new Captor[A] with (Schedule => Unit) {
 		schedule(delay)(this)
 
 		override def apply(schedule: Schedule): Unit = {
@@ -425,7 +425,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param delay the schedule delay that determines when the [[Capturer]] builder will be executed.
 	 * @param builder the function that produces a new [[Capturer[A]]] after the delay.
 	 * @return a [[Capturer]] that yields the result of the [[Capturer]] produced by the builder. */
-	def Capturer_delayFlat[A](delay: Delay)(builder: Schedule => Capturer[A]): Capturer[A] = new DefaultCaptor[A] with (Schedule => Unit) {
+	def Capturer_delayFlat[A](delay: Delay)(builder: Schedule => Capturer[A]): Capturer[A] = new Captor[A] with (Schedule => Unit) {
 		schedule(delay)(this)
 
 		override def apply(schedule: Schedule): Unit = {
@@ -443,7 +443,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Capturer_Delayed(trap: Nothing): Any = trap
 
-	final class Capturer_Delayed[A](capturer: Capturer[A], delay: Delay) extends DefaultCaptor[A] with (Schedule => Unit) with MonoObserver[A] {
+	final class Capturer_Delayed[A](capturer: Capturer[A], delay: Delay) extends Captor[A] with (Schedule => Unit) with MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -474,7 +474,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Capturer_TimeLimited(trap: Nothing): Any = trap
 
-	final class Capturer_TimeLimited[A](capturer: Capturer[A], delay: Delay) extends DefaultCaptor[Maybe[A]] with (Schedule => Unit) with MonoObserver[A] {
+	final class Capturer_TimeLimited[A](capturer: Capturer[A], delay: Delay) extends Captor[Maybe[A]] with (Schedule => Unit) with MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 

@@ -114,7 +114,8 @@ When configuring execution environments, select the `DoerProvider` implementatio
   * **Comparison**: Like `Local` and `Contained`, it partitions scheduling queues across worker threads to avoid a single global bottleneck. Unlike `Local` and `Contained`, it enforces strict queue assignment via hashing and requires
     synchronization locks to access worker queues.
 * **CooperativeFlatPollingSchedulerDp (Flat Polling)**:
-  * **Workload**: Unlike `Hierarchical`, it is suited for workloads with low schedule density (few active timers overall) or sparse timers (at most one schedule per doer).
+    * **Workload**: Unlike `Hierarchical`, it is suited for workloads with very small pool size (<=2), low schedules cancellation percentage, and both: low schedule density (few active timers overall) or sparse timers (at most one schedule
+      per doer).
   * **Pros**: Unlike `Hierarchical`, it uses a single flat priority queue rather than nesting doer-local heaps, resulting in lower constant overhead and simpler lock structure (no nested doer-local locks in `program` or `cancel`).
   * **Cons**: Like `Hierarchical` (and unlike `Local`, `Contained`, and `Sharded`), it coordinates all schedules under a single global provider lock, causing lock contention under high timer counts.
   * **Comparison**: Like `Hierarchical`, it coordinates all schedules under a single global provider lock. Unlike `Hierarchical`, it maintains a single flat priority queue rather than nesting doer-local timer heaps.
@@ -171,132 +172,105 @@ When configuring execution environments, select the `DoerProvider` implementatio
 
 ## Scheduling DoerProvider Benchmark Results
 
-The following tables show empirical throughput measurements (operations per second) and worker thread sleep percentages for each scheduler under various target active schedules densities ($S$), cancellation fractions ($C$), and
-scheduled-to-regular task ratios ($R$). All benchmarks were executed with a thread pool size of 4.
+The following tables show empirical throughput measurements (operations per second) for each scheduler under various target active schedules densities, cancellation fractions, and scheduled-to-regular task ratios. All benchmarks were
+executed with a thread pool size of 8. Note that, given the benchmark cancels schedules immediately within the same doer with which it created it, the `contained` variant is heavily favored. Otherwise, its throughput would be very slightly
+slower than the `local` variant.
 
-### Active Schedules per Doer: 0.1 | Canceled Percentage: 0%
+### Active schedules per Doer: 0.1 | Canceled percentage: 10%
 
-| Provider   | Sched/Regul = 0.1 (200k doers) | Sched/Regul = 1.0 (200k doers) | Sched/Regul = 10.0 (200k doers) |
-|:-----------|:-------------------------------|:-------------------------------|:--------------------------------|
-| **Local**  | 6.30M (0% sleep)               | 4.26M (0% sleep)               | 3.46M (1% sleep)                |
-| **Shard**  | 5.99M (0% sleep)               | 3.57M (0% sleep)               | 2.65M (0% sleep)                |
-| **Flat**   | 4.79M (0% sleep)               | 1.53M (0% sleep)               | 1.56M (0% sleep)                |
-| **Hier**   | 3.76M (0% sleep)               | 1.14M (2% sleep)               | 0.764M (0% sleep)               |
-| **Thread** | 5.95M (0% sleep)               | 1.14M (0% sleep)               | 0.651M (0% sleep)               |
+| Provider     | Sched/Regul= 0.1 (300.0k doers) | Sched/Regul= 1.0 (300.0k doers) | Sched/Regul= 10.0 (500.0k doers) |
+|:-------------|:--------------------------------|:--------------------------------|:---------------------------------|
+| Local        | 17.5M                           | 7.45M                           | 4.97M                            |
+| Contained    | 19.6M                           | 9.38M                           | 8.14M                            |
+| Sharded      | 20.3M                           | 9.27M                           | 6.69M                            |
+| Flat         | 8.04M                           | 1.74M                           | 0.896M                           |
+| Hierarchical | 8.53M                           | 1.86M                           | 0.921M                           |
+| ThreadDriven | 6.97M                           | 0.889M                          | 0.371M                           |
 
-### Active Schedules per Doer: 1.0 | Canceled Percentage: 0%
+### Active schedules per Doer: 1.0 | Canceled percentage: 10%
 
-| Provider   | Sched/Regul = 0.1 (20k doers) | Sched/Regul = 1.0 (20k doers) | Sched/Regul = 10.0 (20k doers) |
-|:-----------|:------------------------------|:------------------------------|:-------------------------------|
-| **Local**  | 10.9M (0% sleep)              | 5.09M (0% sleep)              | 5.51M (0% sleep)               |
-| **Shard**  | 11.3M (0% sleep)              | 5.16M (1% sleep)              | 3.84M (0% sleep)               |
-| **Flat**   | 6.51M (0% sleep)              | 1.99M (1% sleep)              | 0.348M (0% sleep)              |
-| **Hier**   | 5.99M (0% sleep)              | 1.72M (0% sleep)              | 0.938M (1% sleep)              |
-| **Thread** | 10.1M (0% sleep)              | 1.78M (0% sleep)              | 0.600M (0% sleep)              |
+| Provider     | Sched/Regul= 0.1 (30.0k doers) | Sched/Regul= 1.0 (30.0k doers) | Sched/Regul= 10.0 (50.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 18.1M                          | 6.03M                          | 5.13M                           |
+| Contained    | 18.7M                          | 7.74M                          | 7.80M                           |
+| Sharded      | 20.0M                          | 6.22M                          | 6.61M                           |
+| Flat         | 8.00M                          | 1.48M                          | 0.918M                          |
+| Hierarchical | 8.65M                          | 1.57M                          | 0.888M                          |
+| ThreadDriven | 7.05M                          | 0.749M                         | 0.369M                          |
 
-### Active Schedules per Doer: 10.0 | Canceled Percentage: 0%
+### Active schedules per Doer: 10.0 | Canceled percentage: 10%
 
-| Provider   | Sched/Regul = 0.1 (2k doers) | Sched/Regul = 1.0 (2k doers) | Sched/Regul = 10.0 (2k doers) |
-|:-----------|:-----------------------------|:-----------------------------|:------------------------------|
-| **Local**  | 21.8M (0% sleep)             | 9.01M (0% sleep)             | 7.03M (0% sleep)              |
-| **Shard**  | 12.9M (2% sleep)             | 8.97M (0% sleep)             | 4.27M (0% sleep)              |
-| **Flat**   | 13.8M (0% sleep)             | 4.54M (0% sleep)             | 1.97M (2% sleep)              |
-| **Hier**   | 11.3M (2% sleep)             | 7.52M (0% sleep)             | 3.14M (0% sleep)              |
-| **Thread** | 11.2M (1% sleep)             | 1.34M (2% sleep)             | 0.685M (0% sleep)             |
+| Provider     | Sched/Regul= 0.1 ( 3.0k doers) | Sched/Regul= 1.0 ( 3.0k doers) | Sched/Regul= 10.0 ( 5.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 28.0M                          | 11.7M                          | 7.19M                           |
+| Contained    | 33.8M                          | 18.0M                          | 3.94M                           |
+| Sharded      | 29.5M                          | 13.9M                          | 8.61M                           |
+| Flat         | 11.0M                          | 1.83M                          | 1.03M                           |
+| Hierarchical | 27.2M                          | 9.96M                          | 5.20M                           |
+| ThreadDriven | 6.67M                          | 0.807M                         | 0.376M                          |
 
----
+### Active schedules per Doer: 0.1 | Canceled percentage: 50%
 
-### Active Schedules per Doer: 0.1 | Canceled Percentage: 10%
+| Provider     | Sched/Regul= 0.1 (300.0k doers) | Sched/Regul= 1.0 (300.0k doers) | Sched/Regul= 10.0 (300.0k doers) |
+|:-------------|:--------------------------------|:--------------------------------|:---------------------------------|
+| Local        | 20.5M                           | 6.16M                           | 4.44M                            |
+| Contained    | 27.6M                           | 11.3M                           | 10.2M                            |
+| Sharded      | 24.0M                           | 9.74M                           | 7.76M                            |
+| Flat         | 9.79M                           | 2.17M                           | 1.36M                            |
+| Hierarchical | 11.3M                           | 2.71M                           | 1.68M                            |
+| ThreadDriven | 15.9M                           | 1.61M                           | 0.678M                           |
 
-| Provider   | Sched/Regul = 0.1 (200k doers) | Sched/Regul = 1.0 (200k doers) | Sched/Regul = 10.0 (200k doers) |
-|:-----------|:-------------------------------|:-------------------------------|:--------------------------------|
-| **Local**  | 6.40M (0% sleep)               | 3.81M (0% sleep)               | 2.95M (0% sleep)                |
-| **Shard**  | 6.34M (0% sleep)               | 3.97M (0% sleep)               | 2.51M (0% sleep)                |
-| **Flat**   | 5.23M (0% sleep)               | 1.89M (0% sleep)               | 1.54M (0% sleep)                |
-| **Hier**   | 4.05M (0% sleep)               | 1.35M (0% sleep)               | 0.791M (0% sleep)               |
-| **Thread** | 6.12M (2% sleep)               | 1.62M (0% sleep)               | 0.642M (0% sleep)               |
+### Active schedules per Doer: 1.0 | Canceled percentage: 50%
 
-### Active Schedules per Doer: 1.0 | Canceled Percentage: 10%
+| Provider     | Sched/Regul= 0.1 (30.0k doers) | Sched/Regul= 1.0 (30.0k doers) | Sched/Regul= 10.0 (30.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 23.6M                          | 6.15M                          | 4.47M                           |
+| Contained    | 26.2M                          | 10.6M                          | 6.15M                           |
+| Sharded      | 24.9M                          | 10.1M                          | 7.59M                           |
+| Flat         | 9.04M                          | 2.46M                          | 1.24M                           |
+| Hierarchical | 11.6M                          | 2.70M                          | 1.65M                           |
+| ThreadDriven | 15.9M                          | 1.83M                          | 0.668M                          |
 
-| Provider   | Sched/Regul = 0.1 (20k doers) | Sched/Regul = 1.0 (20k doers) | Sched/Regul = 10.0 (20k doers) |
-|:-----------|:------------------------------|:------------------------------|:-------------------------------|
-| **Local**  | 13.6M (0% sleep)              | 5.46M (0% sleep)              | 4.17M (0% sleep)               |
-| **Shard**  | 12.0M (0% sleep)              | 4.69M (0% sleep)              | 3.83M (0% sleep)               |
-| **Flat**   | 8.81M (1% sleep)              | 2.71M (2% sleep)              | 1.69M (2% sleep)               |
-| **Hier**   | 5.44M (1% sleep)              | 1.37M (0% sleep)              | 0.993M (2% sleep)              |
-| **Thread** | 11.9M (0% sleep)              | 1.96M (1% sleep)              | 0.576M (0% sleep)              |
+### Active schedules per Doer: 10.0 | Canceled percentage: 50%
 
-### Active Schedules per Doer: 10.0 | Canceled Percentage: 10%
+| Provider     | Sched/Regul= 0.1 ( 3.0k doers) | Sched/Regul= 1.0 ( 3.0k doers) | Sched/Regul= 10.0 ( 3.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 16.9M                          | 9.07M                          | 5.90M                           |
+| Contained    | 36.5M                          | 25.7M                          | 16.2M                           |
+| Sharded      | 31.1M                          | 14.0M                          | 8.88M                           |
+| Flat         | 13.1M                          | 3.63M                          | 1.72M                           |
+| Hierarchical | 33.0M                          | 10.1M                          | 7.35M                           |
+| ThreadDriven | 22.4M                          | 1.68M                          | 0.740M                          |
 
-| Provider   | Sched/Regul = 0.1 (2k doers) | Sched/Regul = 1.0 (2k doers) | Sched/Regul = 10.0 (2k doers) |
-|:-----------|:-----------------------------|:-----------------------------|:------------------------------|
-| **Local**  | 14.6M (0% sleep)             | 6.55M (0% sleep)             | 4.24M (0% sleep)              |
-| **Shard**  | 13.1M (0% sleep)             | 5.63M (1% sleep)             | 4.43M (0% sleep)              |
-| **Flat**   | 13.9M (0% sleep)             | 4.25M (0% sleep)             | 1.99M (2% sleep)              |
-| **Hier**   | 11.1M (1% sleep)             | 5.31M (1% sleep)             | 3.39M (1% sleep)              |
-| **Thread** | 9.55M (0% sleep)             | 1.09M (0% sleep)             | 0.764M (0% sleep)             |
+### Active schedules per Doer: 0.1 | Canceled percentage: 90%
 
----
+| Provider     | Sched/Regul= 0.1 (250.0k doers) | Sched/Regul= 1.0 (300.0k doers) | Sched/Regul= 10.0 (300.0k doers) |
+|:-------------|:--------------------------------|:--------------------------------|:---------------------------------|
+| Local        | 27.2M                           | 8.42M                           | 6.44M                            |
+| Contained    | 42.4M                           | 23.7M                           | 21.3M                            |
+| Sharded      | 34.6M                           | 13.0M                           | 8.92M                            |
+| Flat         | 18.7M                           | 4.88M                           | 2.83M                            |
+| Hierarchical | 27.3M                           | 7.42M                           | 3.69M                            |
+| ThreadDriven | 25.5M                           | 6.92M                           | 4.43M                            |
 
-### Active Schedules per Doer: 0.1 | Canceled Percentage: 50%
+### Active schedules per Doer: 1.0 | Canceled percentage: 90%
 
-| Provider   | Sched/Regul = 0.1 (200k doers) | Sched/Regul = 1.0 (200k doers) | Sched/Regul = 10.0 (200k doers) |
-|:-----------|:-------------------------------|:-------------------------------|:--------------------------------|
-| **Local**  | 6.60M (0% sleep)               | 3.89M (0% sleep)               | 3.93M (0% sleep)                |
-| **Shard**  | 6.90M (0% sleep)               | 3.50M (0% sleep)               | 3.56M (0% sleep)                |
-| **Flat**   | 5.85M (0% sleep)               | 2.18M (0% sleep)               | 1.53M (2% sleep)                |
-| **Hier**   | 4.95M (0% sleep)               | 1.56M (0% sleep)               | 1.09M (0% sleep)                |
-| **Thread** | 6.69M (0% sleep)               | 1.97M (0% sleep)               | 1.30M (1% sleep)                |
+| Provider     | Sched/Regul= 0.1 (30.0k doers) | Sched/Regul= 1.0 (30.0k doers) | Sched/Regul= 10.0 (30.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 25.1M                          | 8.58M                          | 5.97M                           |
+| Contained    | 38.5M                          | 22.2M                          | 20.4M                           |
+| Sharded      | 29.8M                          | 12.3M                          | 8.36M                           |
+| Flat         | 18.3M                          | 4.76M                          | 2.76M                           |
+| Hierarchical | 28.0M                          | 8.46M                          | 3.94M                           |
+| ThreadDriven | 24.6M                          | 7.37M                          | 4.16M                           |
 
-### Active Schedules per Doer: 1.0 | Canceled Percentage: 50%
+### Active schedules per Doer: 10.0 | Canceled percentage: 90%
 
-| Provider   | Sched/Regul = 0.1 (20k doers) | Sched/Regul = 1.0 (20k doers) | Sched/Regul = 10.0 (20k doers) |
-|:-----------|:------------------------------|:------------------------------|:-------------------------------|
-| **Local**  | 10.8M (2% sleep)              | 6.20M (1% sleep)              | 5.83M (1% sleep)               |
-| **Shard**  | 11.7M (0% sleep)              | 4.77M (0% sleep)              | 4.25M (0% sleep)               |
-| **Flat**   | 10.1M (0% sleep)              | 2.88M (0% sleep)              | 2.00M (1% sleep)               |
-| **Hier**   | 7.48M (0% sleep)              | 2.53M (2% sleep)              | 1.54M (1% sleep)               |
-| **Thread** | 12.7M (2% sleep)              | 2.24M (0% sleep)              | 1.06M (0% sleep)               |
-
-### Active Schedules per Doer: 10.0 | Canceled Percentage: 50%
-
-| Provider   | Sched/Regul = 0.1 (2k doers) | Sched/Regul = 1.0 (2k doers) | Sched/Regul = 10.0 (2k doers) |
-|:-----------|:-----------------------------|:-----------------------------|:------------------------------|
-| **Local**  | 16.0M (0% sleep)             | 8.50M (1% sleep)             | 5.54M (2% sleep)              |
-| **Shard**  | 15.3M (0% sleep)             | 7.13M (0% sleep)             | 4.78M (1% sleep)              |
-| **Flat**   | 14.9M (0% sleep)             | 4.23M (1% sleep)             | 2.39M (1% sleep)              |
-| **Hier**   | 12.4M (0% sleep)             | 6.50M (1% sleep)             | 4.88M (1% sleep)              |
-| **Thread** | 22.3M (0% sleep)             | 3.18M (0% sleep)             | 2.04M (1% sleep)              |
-
----
-
-### Active Schedules per Doer: 0.1 | Canceled Percentage: 90%
-
-| Provider   | Sched/Regul = 0.1 (200k doers) | Sched/Regul = 1.0 (200k doers) | Sched/Regul = 10.0 (200k doers) |
-|:-----------|:-------------------------------|:-------------------------------|:--------------------------------|
-| **Local**  | 7.76M (0% sleep)               | 6.01M (1% sleep)               | 5.26M (1% sleep)                |
-| **Shard**  | 7.91M (0% sleep)               | 5.91M (1% sleep)               | 4.81M (1% sleep)                |
-| **Flat**   | 7.79M (0% sleep)               | 3.86M (1% sleep)               | 2.37M (0% sleep)                |
-| **Hier**   | 7.70M (0% sleep)               | 2.42M (0% sleep)               | 1.92M (0% sleep)                |
-| **Thread** | 7.43M (0% sleep)               | 3.74M (0% sleep)               | 2.68M (0% sleep)                |
-
-### Active Schedules per Doer: 1.0 | Canceled Percentage: 90%
-
-| Provider   | Sched/Regul = 0.1 (20k doers) | Sched/Regul = 1.0 (20k doers) | Sched/Regul = 10.0 (20k doers) |
-|:-----------|:------------------------------|:------------------------------|:-------------------------------|
-| **Local**  | 13.4M (0% sleep)              | 11.6M (1% sleep)              | 5.64M (1% sleep)               |
-| **Shard**  | 13.9M (0% sleep)              | 8.06M (1% sleep)              | 4.78M (1% sleep)               |
-| **Flat**   | 13.4M (0% sleep)              | 4.66M (1% sleep)              | 2.24M (0% sleep)               |
-| **Hier**   | 11.7M (0% sleep)              | 4.12M (1% sleep)              | 2.32M (1% sleep)               |
-| **Thread** | 13.8M (0% sleep)              | 4.40M (1% sleep)              | 2.94M (1% sleep)               |
-
-### Active Schedules per Doer: 10.0 | Canceled Percentage: 90%
-
-| Provider   | Sched/Regul = 0.1 (2k doers) | Sched/Regul = 1.0 (2k doers) | Sched/Regul = 10.0 (2k doers) |
-|:-----------|:-----------------------------|:-----------------------------|:------------------------------|
-| **Local**  | 15.4M (1% sleep)             | 11.4M (1% sleep)             | 7.32M (1% sleep)              |
-| **Shard**  | 16.7M (0% sleep)             | 8.12M (2% sleep)             | 5.10M (1% sleep)              |
-| **Flat**   | 17.2M (1% sleep)             | 6.00M (1% sleep)             | 3.31M (0% sleep)              |
-| **Hier**   | 17.8M (0% sleep)             | 11.3M (0% sleep)             | 8.42M (2% sleep)              |
-| **Thread** | 17.6M (0% sleep)             | 5.66M (1% sleep)             | 3.76M (1% sleep)              |
-
+| Provider     | Sched/Regul= 0.1 ( 3.0k doers) | Sched/Regul= 1.0 ( 3.0k doers) | Sched/Regul= 10.0 ( 3.0k doers) |
+|:-------------|:-------------------------------|:-------------------------------|:--------------------------------|
+| Local        | 26.0M                          | 8.62M                          | 5.29M                           |
+| Contained    | 34.6M                          | 33.2M                          | 27.4M                           |
+| Sharded      | 36.5M                          | 13.8M                          | 9.28M                           |
+| Flat         | 21.5M                          | 6.29M                          | 3.60M                           |
+| Hierarchical | 35.5M                          | 9.55M                          | 5.37M                           |
+| ThreadDriven | 27.9M                          | 8.05M                          | 4.71M                           |

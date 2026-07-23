@@ -86,7 +86,7 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 				finalResult
 			}
 		} else {
-			new doer.DefaultCaptor[R] with doer.MonoObserver[R] with Runnable {
+			new doer.Captor[R] with doer.MonoObserver[R] with Runnable {
 				doer.run(this)
 
 				override def run(): Unit = contend(arbitrator, true).triggerSync(this)

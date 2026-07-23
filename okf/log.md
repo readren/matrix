@@ -8,6 +8,10 @@ timestamp: "2026-07-22T15:35:00Z"
 
 # Change Log
 
+# [2026-07-22T17:45:00Z]
+
+- Added architectural decision record `okf/adr-spare-slot-pattern-evaluation.md` evaluating the spare-slot zero-allocation pattern in `sequencer/core` primitives.
+
 ## [2026-07-22T15:35:00Z]
 
 - Refined the DoerProvider selection guide in `okf/sequencer-core.md` by integrating structural "like/unlike" comparative points directly into every scheduler item description, removing redundant shared traits, and simplifying the workload

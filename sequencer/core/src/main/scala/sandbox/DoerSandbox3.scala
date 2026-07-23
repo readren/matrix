@@ -1,19 +1,18 @@
 package readren.sequencer
 package sandbox
 
-import sandbox.DoerSandbox2.{ExecutionSerial, ResultOrigin, THE_PROVIDED, ANOTHER_BEFORE, ANOTHER_AFTER}
+import sandbox.DoerSandbox3.*
 
 import readren.common.{Maybe, Trial, foreachWithIndex, mapWithIndex}
 
-import scala.annotation.{targetName, threadUnsafe}
 import scala.annotation.unchecked.uncheckedVariance
-import scala.compiletime.uninitialized
+import scala.annotation.{targetName, threadUnsafe}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
-object DoerSandbox2 {
+object DoerSandbox3 {
 	type ExecutionSerial = Int
 	val assertionsEnabled = true
 
@@ -25,7 +24,7 @@ object DoerSandbox2 {
 
 }
 
-trait DoerSandbox2 { thisDoer =>
+trait DoerSandbox3 { thisDoer =>
 
 	///////////////////////////////////
 	//// SERIAL EXECUTION BACKBONE ////
@@ -38,12 +37,12 @@ trait DoerSandbox2 { thisDoer =>
 
 	def currentExecutionSerial: ExecutionSerial
 
-	def currentlyRunningDoer: Maybe[DoerSandbox2]
+	def currentlyRunningDoer: Maybe[DoerSandbox3]
 
 	inline def isInSequence: Boolean = currentlyRunningDoer.value eq thisDoer
 
 	inline def checkWithin(): Unit = {
-		if DoerSandbox2.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg())
+		if DoerSandbox3.assertionsEnabled && !isInSequence then throw new AssertionError(checkWithinMsg())
 	}
 
 	final def checkWithinMsg(): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${currentlyRunningDoer.fold("unknown")(_.tag)}."
@@ -203,7 +202,7 @@ trait DoerSandbox2 { thisDoer =>
 		 *   override def onSuccess(value: A): Unit = monoObserverB.onSuccess(f(value))
 		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
 		 * })
-		 * ```   */
+		 * ```    */
 		override def map[B](f: A => B): Task[B] = new Task_Map(thisTask, f, isGuarded = false)
 
 		/** Equivalent to: ```scala
@@ -211,7 +210,7 @@ trait DoerSandbox2 { thisDoer =>
 		 * 	 override def onSuccess(value: A): Unit = f(value).subscribe(monoObserverB)
 		 * 	 override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
 		 * })
-		 * ```    */
+		 * ```     */
 		override def flatMap[B](f: A => Mono[B]): Task[B] = new Task_FlatMap(thisTask, f, isGuarded = false)
 
 		/** Equivalent to: ```scala
@@ -226,7 +225,7 @@ trait DoerSandbox2 { thisDoer =>
 		 *   }
 		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
 		 * })
-		 * ```   */
+		 * ```    */
 		def mapGuarded[B](f: A => B): Task[B] = new Task_Map(thisTask, f, isGuarded = true)
 
 		/** Equivalent to: ```scala
@@ -241,7 +240,7 @@ trait DoerSandbox2 { thisDoer =>
 		 *   }
 		 *   override def onError(ex: Throwable): Unit = monoObserverB.onError(ex)
 		 * })
-		 * ```   */
+		 * ```    */
 		def flatMapGuarded[B](f: A => Mono[B]): Task[B] = new Task_FlatMap(thisTask, f, isGuarded = true)
 
 		def guarded: Task[A] = new GuardedTask(thisTask)
@@ -311,13 +310,13 @@ trait DoerSandbox2 { thisDoer =>
 		}
 	}
 
-	def Task_from[A](foreignDoer: DoerSandbox2)(foreignMono: foreignDoer.Mono[A]): Task[A] = {
+	def Task_from[A](foreignDoer: DoerSandbox3)(foreignMono: foreignDoer.Mono[A]): Task[A] = {
 		if foreignDoer eq thisDoer then {
 			foreignMono match {
 				case ft: foreignDoer.Task[A] @unchecked => ft.asInstanceOf[Task[A]]
 				case fc: foreignDoer.Capturer[A] @unchecked => Task_from(fc.asInstanceOf[Capturer[A]])
 			}
-		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription with Runnable {
+		} else (thisDoerMonoObserver: MonoObserver[A]) => new Subscription with foreignDoer.MonoObserver[A] with Runnable {
 			@volatile private var isActive = true
 			@volatile private var maybeForeignSubscription: Maybe[foreignDoer.Subscription] = Maybe.empty
 
@@ -327,29 +326,29 @@ trait DoerSandbox2 { thisDoer =>
 
 			override def run(): Unit = {
 				if isActive then {
-					val foreignSubscription = foreignMono.subscribeSync(new foreignDoer.MonoObserver[A] {
-						override def onSuccess(a: A): Unit = {
-							if isActive then thisDoer.run {
-								if isActive then {
-									isActive = false
-									maybeForeignSubscription = Maybe.empty
-									thisDoerMonoObserver.onSuccess(a)
-								}
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							if isActive then thisDoer.run {
-								if isActive then {
-									isActive = false
-									maybeForeignSubscription = Maybe.empty
-									thisDoerMonoObserver.onError(ex)
-								}
-							}
-						}
-					})
+					val foreignSubscription = foreignMono.subscribeSync(this)
 					// Note: Unlike single-threaded tasks (such as [[Task_FlatMap]]), we do not perform defensive checks to guarantee the clearing of maybeForeignSubscription because a failure to clear the reference is very rare and only results in a transient, minor memory leak (which is reclaimed once the delegating subscription is garbage collected), the performance and complexity cost of such optimization is not justified here.
 					maybeForeignSubscription = Maybe(foreignSubscription)
+				}
+			}
+
+			override def onSuccess(a: A): Unit = {
+				if isActive then thisDoer.run {
+					if isActive then {
+						isActive = false
+						maybeForeignSubscription = Maybe.empty
+						thisDoerMonoObserver.onSuccess(a)
+					}
+				}
+			}
+
+			override def onError(ex: Throwable): Unit = {
+				if isActive then thisDoer.run {
+					if isActive then {
+						isActive = false
+						maybeForeignSubscription = Maybe.empty
+						thisDoerMonoObserver.onError(ex)
+					}
 				}
 			}
 
@@ -401,76 +400,18 @@ trait DoerSandbox2 { thisDoer =>
 
 	/** Base trait for [[Task]] operations that use the spare-slot pattern: saves the allocation of the Subscription for the first subscriber by implementing [[Subscription]] and returning itself.\
 	 * Contract: Subclasses must clear [[upChainSubscriptionSlot]] inside both their [[onSuccess]] and [[onError]] methods. */
-	trait SpareSlotTaskOp[A, +B] extends Task[B] with MonoObserver[A] with Subscription {
-		protected val source: Task[A]
-
-		protected var downChainObserverSlot: MonoObserver[B] @uncheckedVariance = uninitialized
-		protected var upChainSubscriptionSlot: Subscription | Null = null
-
-		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
-			if downChainObserverSlot ne null then subscribeDelegate(downChainObserver)
-			else {
-				downChainObserverSlot = downChainObserver
-				upChainSubscriptionSlot = this // Note: 'this' is used as a sentinel to detect synchronous completion. If `source.subscribeSync(this)` completes `source` synchronously, it invokes `onSuccess`/`onError` which clears `upChainSubscriptionSlot` (see contract). In that case, we must discard the up-chain subscription.
-				val ucs = source.subscribeSync(this)
-				if upChainSubscriptionSlot eq this then {
-					upChainSubscriptionSlot = ucs
-				}
-				this
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val ucs = upChainSubscriptionSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			// Only unsubscribe if the subscription is not the 'this' sentinel to prevent infinite recursion.
-			if ucs != null && (ucs ne this) then ucs.unsubscribe()
-		}
-
-		protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription
-	}
-
 	/////////////////////////
 	//// Task operations ////
 	/////////////////////////
 
-	final class Task_Map[A, B](override val source: Task[A], val f: A => B, isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
-
-		override def onSuccess(a: A): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			if obs != null then {
-				if isGuarded then {
-					val maybeB = try Maybe(f(a)) catch {
-						case NonFatal(e) =>
-							obs.onError(e)
-							Maybe.empty
-					}
-					maybeB.foreach(obs.onSuccess)
-				} else {
-					obs.onSuccess(f(a))
-				}
-			}
-		}
-
-		override def onError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			if obs != null then {
-				obs.onError(ex)
-			}
-		}
-
-		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = {
+	final class Task_Map[A, B](val upChainMono: Mono[A], val f: A => B, isGuarded: Boolean) extends Task[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new MonoObserver[A] with Subscription {
 				private var isActive: Boolean = true
 				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
 				{ // Constructor
-					val upChainSubscription = source.subscribeSync(this)
+					val upChainSubscription = upChainMono.subscribeSync(this)
 					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
 				}
 
@@ -507,130 +448,71 @@ trait DoerSandbox2 { thisDoer =>
 		}
 	}
 
-	final class Task_FlatMap[A, B](override val source: Task[A], val f: A => Mono[B], isGuarded: Boolean) extends SpareSlotTaskOp[A, B] {
-		private var innerSubscriptionSlot: Subscription | Null = null
+	final class Task_FlatMap[A, B](val upChainMono: Mono[A], val f: A => Mono[B], isGuarded: Boolean) extends Task[B] {
+		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
+			new MonoObserver[A] with Subscription {
+				private var upChainSubscription: Subscription | Null = null
+				private var innerSubscription: Subscription | Null = null
+				private var isActive: Boolean = true
 
-		override def onSuccess(a: A): Unit = {
-			upChainSubscriptionSlot = null
-			val dos = downChainObserverSlot
-			if dos != null then {
-
-				def subscribeInner(monoB: Mono[B]): Unit = {
-					innerSubscriptionSlot = monoB.subscribeSync(new MonoObserver[B] {
-						override def onSuccess(b: B): Unit = {
-							val obsDyn = downChainObserverSlot
-							downChainObserverSlot = null
-							innerSubscriptionSlot = null
-							if obsDyn != null then {
-								obsDyn.onSuccess(b)
-							}
-						}
-
-						override def onError(ex: Throwable): Unit = {
-							val obsDyn = downChainObserverSlot
-							downChainObserverSlot = null
-							innerSubscriptionSlot = null
-							if obsDyn != null then {
-								obsDyn.onError(ex)
-							}
-						}
-					})
+				{ // Constructor
+					val ucs = upChainMono.subscribeSync(this)
+					if isActive then upChainSubscription = ucs
 				}
 
-				if isGuarded then {
-					val maybeObs = try Maybe(f(a)) catch {
-						case NonFatal(e) =>
-							downChainObserverSlot = null
-							dos.onError(e)
-							Maybe.empty
-					}
-					maybeObs.foreach(subscribeInner)
-				} else subscribeInner(f(a))
-			}
-		}
-
-		override def onError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			if obs != null then {
-				obs.onError(ex)
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val inner = innerSubscriptionSlot
-			innerSubscriptionSlot = null
-			if inner != null then {
-				inner.unsubscribe()
-			}
-			super.unsubscribe()
-		}
-
-		override protected def subscribeDelegate(downChainObserver: MonoObserver[B]): Subscription = new FlatMapDelegate(downChainObserver)
-
-		private class FlatMapDelegate(down: MonoObserver[B]) extends MonoObserver[A] with Subscription {
-			private var upChainSubscription: Subscription | Null = null
-			private var innerSubscription: Subscription | Null = null
-			private var isActive: Boolean = true
-
-			{ // Constructor
-				val ucs = source.subscribeSync(this)
-				if isActive then upChainSubscription = ucs
-			}
-
-			override def onSuccess(a: A): Unit = {
-				upChainSubscription = null
-				if isActive then {
-
-					def applyInner(monoB: Mono[B]): Unit = {
-						innerSubscription = monoB.subscribeSync(new MonoObserver[B] {
-							override def onSuccess(b: B): Unit = {
-								innerSubscription = null
-								if isActive then {
-									isActive = false
-									down.onSuccess(b)
+				override def onSuccess(a: A): Unit = {
+					upChainSubscription = null
+					if isActive then {
+						def applyInner(monoB: Mono[B]): Unit = {
+							innerSubscription = monoB.subscribeSync(new MonoObserver[B] {
+								override def onSuccess(b: B): Unit = {
+									innerSubscription = null
+									if isActive then {
+										isActive = false
+										downChainObserver.onSuccess(b)
+									}
 								}
-							}
 
-							override def onError(ex: Throwable): Unit = {
-								innerSubscription = null
-								if isActive then {
-									isActive = false
-									down.onError(ex)
+								override def onError(ex: Throwable): Unit = {
+									innerSubscription = null
+									if isActive then {
+										isActive = false
+										downChainObserver.onError(ex)
+									}
 								}
-							}
-						})
-					}
-
-					if isGuarded then {
-						val maybeMonoB = try Maybe(f(a)) catch {
-							case NonFatal(e) =>
-								isActive = false
-								down.onError(e)
-								Maybe.empty
+							})
 						}
-						maybeMonoB.foreach(applyInner)
-					} else applyInner(f(a))
-				}
-			}
 
-			override def onError(ex: Throwable): Unit = {
-				upChainSubscription = null
-				if isActive then {
+						if isGuarded then {
+							val maybeMonoB = try Maybe(f(a)) catch {
+								case NonFatal(e) =>
+									isActive = false
+									downChainObserver.onError(e)
+									Maybe.empty
+							}
+							maybeMonoB.foreach(applyInner)
+						} else applyInner(f(a))
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					upChainSubscription = null
+					if isActive then {
+						isActive = false
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def unsubscribe(): Unit = {
+					checkWithin()
 					isActive = false
-					down.onError(ex)
+					val up = upChainSubscription
+					val inner = innerSubscription
+					upChainSubscription = null
+					innerSubscription = null
+					if up != null then up.unsubscribe()
+					if inner != null then inner.unsubscribe()
 				}
-			}
-
-			override def unsubscribe(): Unit = {
-				isActive = false
-				val up = upChainSubscription
-				val inner = innerSubscription
-				upChainSubscription = null
-				innerSubscription = null
-				if up != null then up.unsubscribe()
-				if inner != null then inner.unsubscribe()
 			}
 		}
 	}
@@ -651,6 +533,7 @@ trait DoerSandbox2 { thisDoer =>
 		override def map[B](f: A => B): Capturer[B]
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B]
+
 		@targetName("flatMapCapturer")
 		def flatMap[B](f: A => Capturer[B]): Capturer[B]
 
@@ -660,6 +543,7 @@ trait DoerSandbox2 { thisDoer =>
 		def mapGuarded[B](f: A => B): Capturer[B]
 
 		def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
+
 		@targetName("flatMapCapturerGuarded")
 		def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B]
 
@@ -796,6 +680,7 @@ trait DoerSandbox2 { thisDoer =>
 		private var downChainObserverSlot: MonoObserver[A] | Null = null
 
 		override def trial: Trial[A] = state
+
 		override def isCompleted: Boolean = state.isDefined
 
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
@@ -1107,33 +992,20 @@ trait DoerSandbox2 { thisDoer =>
 	//// Capturer operations' helper classes ////
 	////////////////////////////////////////////
 
-	abstract class SpareSlotCaptorOp[A, B](source: Capturer[A]) extends AbstractCaptor[B] with MonoObserver[A] {
-		private var upChainSubscriptionSlot: Subscription | Null = null
+	////////////////////////////////////////////
+	//// Capturer operations' helper classes ////
+	////////////////////////////////////////////
 
-		protected def startEagerly(): Unit = {
+	final class Captor_Map[A, B](source: Capturer[A], f: A => B, isGuarded: Boolean) extends AbstractCaptor[B] with MonoObserver[A] {
+		private var upChainSubscription: Subscription | Null = null
+
+		{
 			val ucs = source.subscribeSync(this)
-			if state.isEmpty then upChainSubscriptionSlot = ucs
+			if isPending then upChainSubscription = ucs
 		}
-
-		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
-			if upSub != null then {
-				upChainSubscriptionSlot = null
-				upSub.unsubscribe()
-			}
-			super.unsubscribe()
-		}
-
-		override protected def clearRegistry(): Unit = {
-			super.clearRegistry()
-			upChainSubscriptionSlot = null
-		}
-	}
-
-	final class Captor_Map[A, B](source: Capturer[A], f: A => B, isGuarded: Boolean) extends SpareSlotCaptorOp[A, B](source) {
-		startEagerly()
 
 		override def onSuccess(a: A): Unit = {
+			upChainSubscription = null
 			if isGuarded then {
 				val maybeB = try Maybe(f(a)) catch {
 					case NonFatal(e) =>
@@ -1146,7 +1018,24 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
-		override def onError(ex: Throwable): Unit = forwardError(ex)
+		override def onError(ex: Throwable): Unit = {
+			upChainSubscription = null
+			forwardError(ex)
+		}
+
+		override def unsubscribe(): Unit = {
+			val upSub = upChainSubscription
+			if upSub != null then {
+				upChainSubscription = null
+				upSub.unsubscribe()
+			}
+			super.unsubscribe()
+		}
+
+		override protected def clearRegistry(): Unit = {
+			super.clearRegistry()
+			upChainSubscription = null
+		}
 	}
 
 	final class Captor_FlatMap[A, B](source: Capturer[A], f: A => Mono[B], isGuarded: Boolean) extends Muxer[B, MonoObserver], ObservingSubscription[B, MonoObserver], Mono[B], MonoObserver[A] { thisCaptor =>
@@ -1171,6 +1060,7 @@ trait DoerSandbox2 { thisDoer =>
 				} else {
 					val nest = new ObservingSubscription[B, MonoObserver] {
 						override def target: MonoObserver[B] = monoObserver
+
 						override def unsubscribe(): Unit = {
 							removeAllMatching(this)
 							thisCaptor.checkCancel()
@@ -1272,12 +1162,17 @@ trait DoerSandbox2 { thisDoer =>
 		}
 	}
 
-	final class Captor_FlatMapCapturer[A, B](source: Capturer[A], f: A => Capturer[B], isGuarded: Boolean) extends SpareSlotCaptorOp[A, B](source) {
+	final class Captor_FlatMapCapturer[A, B](source: Capturer[A], f: A => Capturer[B], isGuarded: Boolean) extends AbstractCaptor[B] with MonoObserver[A] {
+		private var upChainSubscription: Subscription | Null = null
 		private var innerSubscription: Subscription | Null = null
 
-		startEagerly()
+		{
+			val ucs = source.subscribeSync(this)
+			if isPending then upChainSubscription = ucs
+		}
 
 		override def onSuccess(a: A): Unit = {
+			upChainSubscription = null
 			if isGuarded then {
 				val maybeCap = try Maybe(f(a)) catch {
 					case NonFatal(e) =>
@@ -1292,23 +1187,36 @@ trait DoerSandbox2 { thisDoer =>
 
 		private def subscribeInner(cap: Capturer[B]): Unit = {
 			innerSubscription = cap.subscribeSync(new MonoObserver[B] {
-				override def onSuccess(b: B): Unit = forwardSuccess(b)
+				override def onSuccess(b: B): Unit = {
+					innerSubscription = null
+					forwardSuccess(b)
+				}
 
-				override def onError(ex: Throwable): Unit = forwardError(ex)
+				override def onError(ex: Throwable): Unit = {
+					innerSubscription = null
+					forwardError(ex)
+				}
 			})
 		}
 
-		override def onError(ex: Throwable): Unit = forwardError(ex)
+		override def onError(ex: Throwable): Unit = {
+			upChainSubscription = null
+			forwardError(ex)
+		}
 
 		override def unsubscribe(): Unit = {
-			super.unsubscribe()
-			val inner = innerSubscription
+			val upSub = upChainSubscription
+			val innerSub = innerSubscription
+			upChainSubscription = null
 			innerSubscription = null
-			if inner != null then inner.unsubscribe()
+			if upSub != null then upSub.unsubscribe()
+			if innerSub != null then innerSub.unsubscribe()
+			super.unsubscribe()
 		}
 
 		override protected def clearRegistry(): Unit = {
 			super.clearRegistry()
+			upChainSubscription = null
 			innerSubscription = null
 		}
 	}
@@ -1933,56 +1841,6 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 
-	abstract class SpareSlotFluxOp[A, +B](source: Flux[A]) extends DefaultFlux[B] with FluxObserver[A] with Subscription {
-
-		private var downChainObserverSlot: FluxObserver[B] @uncheckedVariance = uninitialized
-		private var upChainSubscriptionSlot: Subscription | Null = null
-
-		override def subscribeSync(downChainObserver: FluxObserver[B]): Subscription = {
-			if downChainObserverSlot eq null then {
-				downChainObserverSlot = downChainObserver
-				upChainSubscriptionSlot = source.subscribeSync(this)
-				this
-			} else {
-				val delegate = createDelegate(downChainObserver)
-				source.subscribeSync(delegate)
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			resetState()
-			if upSub != null then upSub.unsubscribe()
-		}
-
-		protected def createDelegate(downChainObserver: FluxObserver[B]): FluxObserver[A]
-
-		protected def resetState(): Unit
-
-		protected def forwardNext(value: B @uncheckedVariance, index: Int): Unit = {
-			val obs = downChainObserverSlot
-			if obs != null then obs.onNext(value, index)
-		}
-
-		protected def forwardError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			resetState()
-			if obs != null then obs.onError(ex)
-		}
-
-		protected def forwardComplete(): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			resetState()
-			if obs != null then obs.onComplete()
-		}
-	}
-
 	/////////////////////////
 	//// Concrete Fluxes ////
 	/////////////////////////
@@ -2039,332 +1897,265 @@ trait DoerSandbox2 { thisDoer =>
 	//// Concrete fluxes returned by Flux operations ////
 	/////////////////////////////////////////////////////
 
-	final class Flux_Map[A, B](source: Flux[A], val f: A => B) extends SpareSlotFluxOp[A, B](source) {
-		override def onNext(a: A, index: Int): Unit = forwardNext(f(a), index)
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def resetState(): Unit = ()
-
-		override protected def createDelegate(observer: FluxObserver[B]): FluxObserver[A] = new FluxObserver[A] {
-			override def onNext(a: A, index: Int): Unit = observer.onNext(f(a), index)
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Flux_MapWithIndex[A, B](source: Flux[A], val f: (A, Int) => B) extends SpareSlotFluxOp[A, B](source) {
-		override def onNext(a: A, index: Int): Unit = forwardNext(f(a, index), index)
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def resetState(): Unit = ()
-
-		override protected def createDelegate(observer: FluxObserver[B]): FluxObserver[A] = new FluxObserver[A] {
-			override def onNext(a: A, index: Int): Unit = observer.onNext(f(a, index), index)
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Flux_Scan[A, B](source: Flux[A], val initial: B, val f: (B, A, Int) => B) extends SpareSlotFluxOp[A, B](source) {
-
-		private var state = initial
-
-		override protected def resetState(): Unit = state = initial
-
-		override def onNext(a: A, index: Int): Unit = {
-			state = f(state, a, index)
-			forwardNext(state, index)
-		}
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def createDelegate(observer: FluxObserver[B]): FluxObserver[A] = new FluxObserver[A] {
-			private var state = initial
-
-			override def onNext(a: A, index: Int): Unit = {
-				state = f(state, a, index)
-				observer.onNext(state, index)
-			}
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Flux_Buffer[A, T >: A : ClassTag](source: Flux[A], val size: Int) extends SpareSlotFluxOp[A, IArray[T]](source) {
-
-		private var buffer = new Array[T](size)
-		private var count = 0
-		private var chunkIndex = 0
-		private var active = true
-
-		override protected def resetState(): Unit = {
-			count = 0
-			chunkIndex = 0
-			active = true
-		}
-
-		override def onNext(a: A, index: Int): Unit = {
-			if active then {
-				buffer(count) = a
-				count += 1
-				if count == size then {
-					val chunk = IArray.unsafeFromArray(buffer)
-					buffer = new Array[T](size)
-					count = 0
-					val idx = chunkIndex
-					chunkIndex += 1
-					forwardNext(chunk, index)
+	final class Flux_Map[A, B](val source: Flux[A], val f: A => B) extends DefaultFlux[B] {
+		override def subscribeSync(downChainObserver: FluxObserver[B]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
 				}
-			}
-		}
 
-		override def onError(ex: Throwable): Unit = {
-			if active then {
-				active = false
-				forwardError(ex)
-			}
-		}
+				override def onNext(a: A, index: Int): Unit = downChainObserver.onNext(f(a), index)
 
-		override def onComplete(): Unit = {
-			if active then {
-				active = false
-				if count > 0 then {
-					val partial = IArray.unsafeFromArray(buffer.take(count))
-					forwardNext(partial, chunkIndex)
-				}
-				forwardComplete()
-			}
-		}
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
 
-		override protected def createDelegate(observer: FluxObserver[IArray[T]]): FluxObserver[A] = new FluxObserver[A] {
-			private var buffer = new Array[T](size)
-			private var count = 0
-			private var chunkIndex = 0
-			private var active = true
+				override def onComplete(): Unit = downChainObserver.onComplete()
 
-			override def onNext(a: A, originalIndex: Int): Unit = {
-				if active then {
-					buffer(count) = a
-					count += 1
-					if count == size then {
-						val chunk = IArray.unsafeFromArray(buffer)
-						buffer = new Array[T](size)
-						count = 0
-						val idx = chunkIndex
-						chunkIndex += 1
-						observer.onNext(chunk, idx)
-					}
-				}
-			}
-
-			override def onError(ex: Throwable): Unit = {
-				if active then {
-					active = false
-					observer.onError(ex)
-				}
-			}
-
-			override def onComplete(): Unit = {
-				if active then {
-					active = false
-					if count > 0 then {
-						val partial = IArray.unsafeFromArray(buffer.take(count))
-						observer.onNext(partial, chunkIndex)
-					}
-					observer.onComplete()
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
 				}
 			}
 		}
 	}
 
-	final class Flux_Take[A](source: Flux[A], val n: Int) extends SpareSlotFluxOp[A, A](source) {
-		private var count = 0
-		private var active = true
+	final class Flux_MapWithIndex[A, B](val source: Flux[A], val f: (A, Int) => B) extends DefaultFlux[B] {
+		override def subscribeSync(downChainObserver: FluxObserver[B]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
+				}
 
-		override protected def resetState(): Unit = {
-			count = 0
-			active = true
-		}
+				override def onNext(a: A, index: Int): Unit = downChainObserver.onNext(f(a, index), index)
 
-		override def onNext(a: A, index: Int): Unit = {
-			if active then {
-				if count < n then {
-					val currentCount = count
-					count += 1
-					forwardNext(a, index)
-					if count == n then {
-						active = false
-						forwardComplete()
-					}
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+
+				override def onComplete(): Unit = downChainObserver.onComplete()
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
 				}
 			}
 		}
+	}
 
-		override def onError(ex: Throwable): Unit = {
-			if active then {
-				active = false
-				forwardError(ex)
+	final class Flux_Scan[A, B](val source: Flux[A], val initial: B, val f: (B, A, Int) => B) extends DefaultFlux[B] {
+		override def subscribeSync(downChainObserver: FluxObserver[B]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var state = initial
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
+				}
+
+				override def onNext(a: A, index: Int): Unit = {
+					state = f(state, a, index)
+					downChainObserver.onNext(state, index)
+				}
+
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+
+				override def onComplete(): Unit = downChainObserver.onComplete()
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
 			}
 		}
+	}
 
-		override def onComplete(): Unit = {
-			if active then {
-				active = false
-				forwardComplete()
-			}
-		}
+	final class Flux_Buffer[A, T >: A : ClassTag](val source: Flux[A], val size: Int) extends DefaultFlux[IArray[T]] {
+		override def subscribeSync(downChainObserver: FluxObserver[IArray[T]]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var buffer = new Array[T](size)
+				private var count = 0
+				private var chunkIndex = 0
+				private var active = true
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
+				}
 
-		override protected def createDelegate(observer: FluxObserver[A]): FluxObserver[A] = new FluxObserver[A] {
-			private var count = 0
-			private var active = true
-
-			override def onNext(a: A, index: Int): Unit = {
-				if active then {
-					if count < n then {
-						val currentCount = count
+				override def onNext(a: A, originalIndex: Int): Unit = {
+					if active then {
+						buffer(count) = a
 						count += 1
-						observer.onNext(a, index)
-						if count == n then {
-							active = false
-							observer.onComplete()
+						if count == size then {
+							val chunk = IArray.unsafeFromArray(buffer)
+							buffer = new Array[T](size)
+							count = 0
+							val idx = chunkIndex
+							chunkIndex += 1
+							downChainObserver.onNext(chunk, idx)
 						}
 					}
 				}
-			}
 
-			override def onError(ex: Throwable): Unit = {
-				if active then {
-					active = false
-					observer.onError(ex)
+				override def onError(ex: Throwable): Unit = {
+					if active then {
+						active = false
+						downChainObserver.onError(ex)
+					}
 				}
-			}
 
-			override def onComplete(): Unit = {
-				if active then {
+				override def onComplete(): Unit = {
+					if active then {
+						active = false
+						if count > 0 then {
+							val partial = IArray.unsafeFromArray(buffer.take(count))
+							downChainObserver.onNext(partial, chunkIndex)
+						}
+						downChainObserver.onComplete()
+					}
+				}
+
+				override def unsubscribe(): Unit = {
 					active = false
-					observer.onComplete()
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
 				}
 			}
 		}
 	}
 
-	final class Flux_TakeWhile[A](source: Flux[A], val p: (a: A, index: Int, count: Int) => Boolean, flattenToCount: Boolean = true) extends SpareSlotFluxOp[A, A](source) {
-		private var active = true
-		private var counter = 0
-
-		override protected def resetState(): Unit = {
-			active = true
-			counter = 0
-		}
-
-		override def onNext(a: A, index: Int): Unit = {
-			if active then {
-				if p(a, index, counter) then {
-					val currentCounter = counter
-					counter += 1
-					forwardNext(a, if flattenToCount then currentCounter else index)
-				} else {
-					active = false
-					forwardComplete()
+	final class Flux_Take[A](val source: Flux[A], val n: Int) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var count = 0
+				private var active = true
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
 				}
-			}
-		}
 
-		override def onError(ex: Throwable): Unit = {
-			if active then {
-				active = false
-				forwardError(ex)
-			}
-		}
-
-		override def onComplete(): Unit = {
-			if active then {
-				active = false
-				forwardComplete()
-			}
-		}
-
-		override protected def createDelegate(observer: FluxObserver[A]): FluxObserver[A] = new FluxObserver[A] {
-			private var active = true
-			private var counter = 0
-
-			override def onNext(a: A, index: Int): Unit = {
-				if active then {
-					if p(a, index, counter) then {
-						val currentCounter = counter
-						counter += 1
-						observer.onNext(a, if flattenToCount then currentCounter else index)
-					} else {
-						active = false
-						observer.onComplete()
+				override def onNext(a: A, index: Int): Unit = {
+					if active then {
+						if count < n then {
+							count += 1
+							downChainObserver.onNext(a, index)
+							if count == n then {
+								active = false
+								downChainObserver.onComplete()
+							}
+						}
 					}
 				}
-			}
 
-			override def onError(ex: Throwable): Unit = {
-				if active then {
+				override def onError(ex: Throwable): Unit = {
+					if active then {
+						active = false
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def onComplete(): Unit = {
+					if active then {
+						active = false
+						downChainObserver.onComplete()
+					}
+				}
+
+				override def unsubscribe(): Unit = {
 					active = false
-					observer.onError(ex)
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
 				}
 			}
+		}
+	}
 
-			override def onComplete(): Unit = {
-				if active then {
+	final class Flux_TakeWhile[A](val source: Flux[A], val p: (a: A, index: Int, count: Int) => Boolean, flattenToCount: Boolean = true) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new FluxObserver[A] with Subscription {
+				private var active = true
+				private var counter = 0
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribeSync(this)
+				}
+
+				override def onNext(a: A, index: Int): Unit = {
+					if active then {
+						if p(a, index, counter) then {
+							val currentCounter = counter
+							counter += 1
+							downChainObserver.onNext(a, if flattenToCount then currentCounter else index)
+						} else {
+							active = false
+							downChainObserver.onComplete()
+						}
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					if active then {
+						active = false
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def onComplete(): Unit = {
+					if active then {
+						active = false
+						downChainObserver.onComplete()
+					}
+				}
+
+				override def unsubscribe(): Unit = {
 					active = false
-					observer.onComplete()
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
 				}
 			}
 		}
 	}
 
 	private final class Flux_Zip[A, B, C](val left: Flux[A], val right: Flux[B], val f: (A, B, Int) => C) extends DefaultFlux[C] {
-		override def subscribeSync(observer: FluxObserver[C]): Subscription = {
-			new ZipObservation(observer).start()
-		}
+		override def subscribeSync(downChainObserver: FluxObserver[C]): Subscription = {
+			new Subscription with FluxObserver[A] {
+				private val leftValues = scala.collection.mutable.Map[Int, A]()
+				private val rightValues = scala.collection.mutable.Map[Int, B]()
+				private var leftCompleted = false
+				private var rightCompleted = false
+				private var errorFired = false
+				private var upChainSubscriptionLeft: Subscription | Null = null
+				private var upChainSubscriptionRight: Subscription | Null = null
 
-		private final class ZipObservation(observer: FluxObserver[C]) {
-			private val leftValues = scala.collection.mutable.Map[Int, A]()
-			private val rightValues = scala.collection.mutable.Map[Int, B]()
-			private var leftCompleted = false
-			private var rightCompleted = false
-			private var errorFired = false
-			private var leftSub: Subscription | Null = null
-			private var rightSub: Subscription | Null = null
+				{ // Constructor
+					upChainSubscriptionLeft = left.subscribeSync(this)
+					upChainSubscriptionRight = right.subscribeSync(new FluxObserver[B] {
+						override def onNext(b: B, rightIndex: Int): Unit = {
+							leftValues.remove(rightIndex) match {
+								case Some(a) =>
+									downChainObserver.onNext(f(a, b, rightIndex), rightIndex)
+									checkComplete()
+								case None =>
+									rightValues(rightIndex) = b
+							}
+						}
 
-			def start(): Subscription = {
-				leftSub = left.subscribeSync(new LeftObserver)
-				rightSub = right.subscribeSync(new RightObserver)
-				new Subscription {
-					override def unsubscribe(): Unit = {
-						val l = leftSub
-						val r = rightSub
-						leftSub = null
-						rightSub = null
-						if l != null then l.unsubscribe()
-						if r != null then r.unsubscribe()
-					}
+						override def onError(ex: Throwable): Unit = fireError(ex)
+
+						override def onComplete(): Unit = {
+							rightCompleted = true
+							checkComplete()
+						}
+					})
 				}
-			}
 
-			private final class LeftObserver extends FluxObserver[A] {
 				override def onNext(a: A, leftIndex: Int): Unit = {
 					rightValues.remove(leftIndex) match {
 						case Some(b) =>
-							observer.onNext(f(a, b, leftIndex), leftIndex)
+							downChainObserver.onNext(f(a, b, leftIndex), leftIndex)
 							checkComplete()
 						case None =>
 							leftValues(leftIndex) = a
@@ -2377,33 +2168,25 @@ trait DoerSandbox2 { thisDoer =>
 					leftCompleted = true
 					checkComplete()
 				}
-			}
 
-			private final class RightObserver extends FluxObserver[B] {
-				override def onNext(b: B, rightIndex: Int): Unit = {
-					leftValues.remove(rightIndex) match {
-						case Some(a) =>
-							observer.onNext(f(a, b, rightIndex), rightIndex)
-							checkComplete()
-						case None =>
-							rightValues(rightIndex) = b
+				private def checkComplete(): Unit = {
+					if (leftCompleted && leftValues.isEmpty) || (rightCompleted && rightValues.isEmpty) || (leftCompleted && rightCompleted) then downChainObserver.onComplete()
+				}
+
+				private def fireError(ex: Throwable): Unit = {
+					if !errorFired then {
+						errorFired = true
+						downChainObserver.onError(ex)
 					}
 				}
 
-				override def onError(ex: Throwable): Unit = fireError(ex)
-
-				override def onComplete(): Unit = {
-					rightCompleted = true
-					checkComplete()
-				}
-			}
-
-			private def checkComplete(): Unit = if (leftCompleted && leftValues.isEmpty) || (rightCompleted && rightValues.isEmpty) || (leftCompleted && rightCompleted) then observer.onComplete()
-
-			private def fireError(ex: Throwable): Unit = {
-				if !errorFired then {
-					errorFired = true
-					observer.onError(ex)
+				override def unsubscribe(): Unit = {
+					val l = upChainSubscriptionLeft
+					val r = upChainSubscriptionRight
+					upChainSubscriptionLeft = null
+					upChainSubscriptionRight = null
+					if l != null then l.unsubscribe()
+					if r != null then r.unsubscribe()
 				}
 			}
 		}
@@ -2412,7 +2195,6 @@ trait DoerSandbox2 { thisDoer =>
 	/////////////////////////////////////////////////////
 	//// Classes for operations that return a Tensor ////
 	/////////////////////////////////////////////////////
-
 
 	trait InnerSubscriptionsTracker {
 		private var innerSubscriptions = new Array[Subscription | Null](8)
@@ -2454,295 +2236,137 @@ trait DoerSandbox2 { thisDoer =>
 		}
 	}
 
-	final class Flux_FlatMap[A, B](val outerFlux: Flux[A], val f: A => Flux[B]) extends DefaultTensor[B] with FluxObserver[A] with Subscription with InnerSubscriptionsTracker {
+	final class Flux_FlatMap[A, B](val outerFlux: Flux[A], val f: A => Flux[B]) extends DefaultTensor[B] {
+		override def subscribe(downChainObserver: TensorObserver[B]): Subscription = {
+			new FluxObserver[A] with Subscription with InnerSubscriptionsTracker { selfObserver =>
+				private var outerFluxCompleted = false
+				private var activeInnerFluxesCount = 0
+				private var allCompleted = false
+				private var upChainSubscription: Subscription | Null = null
 
-		private var downChainObserverSlot: TensorObserver[B] | Null = null
-		private var upChainSubscriptionSlot: Subscription | Null = null
-		private var outerFluxCompleted = false
-		private var activeInnerFluxesCount = 0
-
-		private def resetState(): Unit = {
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			unsubscribeAndClear()
-			outerFluxCompleted = false
-			activeInnerFluxesCount = 0
-		}
-
-		override def subscribe(tensorObserver: TensorObserver[B]): Subscription = {
-			if downChainObserverSlot ne null then {
-				val observer = new FlatMapObserver(tensorObserver)
-				observer.start(outerFlux)
-			} else {
-				downChainObserverSlot = tensorObserver
-				upChainSubscriptionSlot = outerFlux.subscribeSync(this)
-				this
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
-			resetState()
-			if upSub != null then upSub.unsubscribe()
-		}
-
-		override def onNext(a: A, outer: Int): Unit = {
-			val localSeq = nextSeq()
-			activeInnerFluxesCount += 1
-			val innerSubscription = f(a).subscribeSync(new InnerObserver(outer, localSeq))
-			if downChainObserverSlot ne null then {
-				storeInnerSubscription(localSeq, innerSubscription)
-			} else {
-				innerSubscription.unsubscribe()
-			}
-		}
-
-		override def onError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			resetState()
-			if obs != null then obs.onError(ex)
-		}
-
-		override def onComplete(): Unit = {
-			outerFluxCompleted = true
-			val obs = downChainObserverSlot
-			if obs != null then obs.onOuterComplete()
-			tryComplete()
-		}
-
-		private final class InnerObserver(outer: Int, localSeq: Int) extends FluxObserver[B] {
-			override def onNext(b: B, inner: Int): Unit = {
-				val obs = downChainObserverSlot
-				if obs != null then obs.onNext(b, inner, outer)
-			}
-
-			override def onError(ex: Throwable): Unit = Flux_FlatMap.this.onError(ex)
-
-			override def onComplete(): Unit = {
-				activeInnerFluxesCount -= 1
-				clearSubscription(localSeq)
-				val obs = downChainObserverSlot
-				if obs != null then obs.onInnerComplete(outer)
-				tryComplete()
-			}
-		}
-
-		private def tryComplete(): Unit = {
-			if outerFluxCompleted && activeInnerFluxesCount == 0 then {
-				val obs = downChainObserverSlot
-				resetState()
-				if obs != null then obs.onComplete()
-			}
-		}
-
-		private final class FlatMapObserver(tensorObserver: TensorObserver[B]) extends FluxObserver[A] with Subscription with InnerSubscriptionsTracker {
-			private var outerFluxCompleted = false
-			private var activeInnerFluxesCount = 0
-			private var allCompleted = false
-			private var upChainSubscription: Subscription | Null = null
-
-			def start(outerFlux: Flux[A]): Subscription = {
-				upChainSubscription = outerFlux.subscribeSync(this)
-				this
-			}
-
-			override def unsubscribe(): Unit = {
-				allCompleted = true
-				val upSub = upChainSubscription
-				upChainSubscription = null
-				if upSub != null then upSub.unsubscribe()
-				unsubscribeAndClear()
-			}
-
-			override def onNext(a: A, outerIndex: Int): Unit = {
-				val localSeq = nextSeq()
-				activeInnerFluxesCount += 1
-				val sub = f(a).subscribeSync(new FluxObserver[B] {
-					override def onNext(b: B, innerIndex: Int): Unit = if !allCompleted then tensorObserver.onNext(b, innerIndex, outerIndex)
-
-					override def onError(ex: Throwable): Unit = FlatMapObserver.this.onError(ex)
-
-					override def onComplete(): Unit = {
-						activeInnerFluxesCount -= 1
-						clearSubscription(localSeq)
-						tensorObserver.onInnerComplete(outerIndex)
-						tryComplete()
-					}
-				})
-				if !allCompleted then {
-					storeInnerSubscription(localSeq, sub)
-				} else {
-					sub.unsubscribe()
+				{ // Constructor
+					upChainSubscription = outerFlux.subscribeSync(this)
 				}
-			}
 
-			override def onError(ex: Throwable): Unit = {
-				if !allCompleted then {
+				override def unsubscribe(): Unit = {
 					allCompleted = true
+					val upSub = upChainSubscription
 					upChainSubscription = null
+					if upSub != null then upSub.unsubscribe()
 					unsubscribeAndClear()
-					tensorObserver.onError(ex)
 				}
-			}
 
-			override def onComplete(): Unit = {
-				outerFluxCompleted = true
-				tensorObserver.onOuterComplete()
-				tryComplete()
-			}
+				override def onNext(a: A, outerIndex: Int): Unit = {
+					val localSeq = nextSeq()
+					activeInnerFluxesCount += 1
+					val sub = f(a).subscribeSync(new FluxObserver[B] {
+						override def onNext(b: B, innerIndex: Int): Unit = if !allCompleted then downChainObserver.onNext(b, innerIndex, outerIndex)
 
-			inline def tryComplete(): Unit = {
-				if outerFluxCompleted && activeInnerFluxesCount == 0 && !allCompleted then {
-					allCompleted = true
-					upChainSubscription = null
-					tensorObserver.onComplete()
+						override def onError(ex: Throwable): Unit = selfObserver.onError(ex)
+
+						override def onComplete(): Unit = {
+							activeInnerFluxesCount -= 1
+							clearSubscription(localSeq)
+							downChainObserver.onInnerComplete(outerIndex)
+							tryComplete()
+						}
+					})
+					if !allCompleted then {
+						storeInnerSubscription(localSeq, sub)
+					} else {
+						sub.unsubscribe()
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					if !allCompleted then {
+						allCompleted = true
+						upChainSubscription = null
+						unsubscribeAndClear()
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def onComplete(): Unit = {
+					outerFluxCompleted = true
+					downChainObserver.onOuterComplete()
+					tryComplete()
+				}
+
+				inline def tryComplete(): Unit = {
+					if outerFluxCompleted && activeInnerFluxesCount == 0 && !allCompleted then {
+						allCompleted = true
+						upChainSubscription = null
+						downChainObserver.onComplete()
+					}
 				}
 			}
 		}
 	}
 
-	final class Flux_FlatMapWithIndex[A, B](val outerFlux: Flux[A], val f: (A, Int) => Flux[B]) extends DefaultTensor[B] with FluxObserver[A] with Subscription with InnerSubscriptionsTracker {
+	final class Flux_FlatMapWithIndex[A, B](val outerFlux: Flux[A], val f: (A, Int) => Flux[B]) extends DefaultTensor[B] {
+		override def subscribe(downChainObserver: TensorObserver[B]): Subscription = {
+			new FluxObserver[A] with Subscription with InnerSubscriptionsTracker { selfObserver =>
+				private var outerFluxCompleted = false
+				private var activeInnerFluxesCount = 0
+				private var allCompleted = false
+				private var upChainSubscription: Subscription | Null = null
 
-		private var downChainObserverSlot: TensorObserver[B] | Null = null
-		private var upChainSubscriptionSlot: Subscription | Null = null
-		private var outerFluxCompleted = false
-		private var activeInnerFluxesCount = 0
-
-		private def resetState(): Unit = {
-			downChainObserverSlot = null
-			upChainSubscriptionSlot = null
-			unsubscribeAndClear()
-			outerFluxCompleted = false
-			activeInnerFluxesCount = 0
-		}
-
-		override def subscribe(observer: TensorObserver[B]): Subscription = {
-			if downChainObserverSlot ne null then {
-				val flatMapObserver = new FlatMapWithIndexObserver(observer)
-				flatMapObserver.start(outerFlux)
-			} else {
-				downChainObserverSlot = observer
-				upChainSubscriptionSlot = outerFlux.subscribeSync(this)
-				this
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
-			resetState()
-			if upSub != null then upSub.unsubscribe()
-		}
-
-		override def onNext(a: A, outer: Int): Unit = {
-			val localSeq = nextSeq()
-			activeInnerFluxesCount += 1
-			val sub = f(a, outer).subscribeSync(new InnerObserver(outer, localSeq))
-			if downChainObserverSlot ne null then {
-				storeInnerSubscription(localSeq, sub)
-			} else {
-				sub.unsubscribe()
-			}
-		}
-
-		override def onError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			resetState()
-			if obs != null then obs.onError(ex)
-		}
-
-		override def onComplete(): Unit = {
-			outerFluxCompleted = true
-			val obs = downChainObserverSlot
-			if obs != null then obs.onOuterComplete()
-			tryComplete()
-		}
-
-		private final class InnerObserver(outer: Int, localSeq: Int) extends FluxObserver[B] {
-			override def onNext(b: B, inner: Int): Unit = {
-				val obs = downChainObserverSlot
-				if obs != null then obs.onNext(b, inner, outer)
-			}
-
-			override def onError(ex: Throwable): Unit = Flux_FlatMapWithIndex.this.onError(ex)
-
-			override def onComplete(): Unit = {
-				activeInnerFluxesCount -= 1
-				clearSubscription(localSeq)
-				val obs = downChainObserverSlot
-				if obs != null then obs.onInnerComplete(outer)
-				tryComplete()
-			}
-		}
-
-		private def tryComplete(): Unit = {
-			if outerFluxCompleted && activeInnerFluxesCount == 0 then {
-				val obs = downChainObserverSlot
-				resetState()
-				if obs != null then obs.onComplete()
-			}
-		}
-
-		private final class FlatMapWithIndexObserver(tensorObserver: TensorObserver[B]) extends FluxObserver[A] with Subscription with InnerSubscriptionsTracker {
-			private var outerFluxCompleted = false
-			private var activeInnerFluxesCount = 0
-			private var allCompleted = false
-			private var upstreamSubscription: Subscription | Null = null
-
-			def start(outerFlux: Flux[A]): Subscription = {
-				upstreamSubscription = outerFlux.subscribeSync(this)
-				this
-			}
-
-			override def unsubscribe(): Unit = {
-				allCompleted = true
-				val upSub = upstreamSubscription
-				upstreamSubscription = null
-				if upSub != null then upSub.unsubscribe()
-				unsubscribeAndClear()
-			}
-
-			override def onNext(a: A, outerIndex: Int): Unit = {
-				val localSeq = nextSeq()
-				activeInnerFluxesCount += 1
-				val sub = f(a, outerIndex).subscribeSync(new FluxObserver[B] {
-					override def onNext(b: B, innerIndex: Int): Unit = if !allCompleted then tensorObserver.onNext(b, innerIndex, outerIndex)
-
-					override def onError(ex: Throwable): Unit = FlatMapWithIndexObserver.this.onError(ex)
-
-					override def onComplete(): Unit = {
-						activeInnerFluxesCount -= 1
-						clearSubscription(localSeq)
-						tensorObserver.onInnerComplete(outerIndex)
-						tryComplete()
-					}
-				})
-				if !allCompleted then {
-					storeInnerSubscription(localSeq, sub)
-				} else {
-					sub.unsubscribe()
+				{ // Constructor
+					upChainSubscription = outerFlux.subscribeSync(this)
 				}
-			}
 
-			override def onError(ex: Throwable): Unit = {
-				if !allCompleted then {
+				override def unsubscribe(): Unit = {
 					allCompleted = true
-					upstreamSubscription = null
+					val upSub = upChainSubscription
+					upChainSubscription = null
+					if upSub != null then upSub.unsubscribe()
 					unsubscribeAndClear()
-					tensorObserver.onError(ex)
 				}
-			}
 
-			override def onComplete(): Unit = {
-				outerFluxCompleted = true
-				tensorObserver.onOuterComplete()
-				tryComplete()
-			}
+				override def onNext(a: A, outerIndex: Int): Unit = {
+					val localSeq = nextSeq()
+					activeInnerFluxesCount += 1
+					val sub = f(a, outerIndex).subscribeSync(new FluxObserver[B] {
+						override def onNext(b: B, innerIndex: Int): Unit = if !allCompleted then downChainObserver.onNext(b, innerIndex, outerIndex)
 
-			inline def tryComplete(): Unit = {
-				if outerFluxCompleted && activeInnerFluxesCount == 0 && !allCompleted then {
-					allCompleted = true
-					upstreamSubscription = null
-					tensorObserver.onComplete()
+						override def onError(ex: Throwable): Unit = selfObserver.onError(ex)
+
+						override def onComplete(): Unit = {
+							activeInnerFluxesCount -= 1
+							clearSubscription(localSeq)
+							downChainObserver.onInnerComplete(outerIndex)
+							tryComplete()
+						}
+					})
+					if !allCompleted then {
+						storeInnerSubscription(localSeq, sub)
+					} else {
+						sub.unsubscribe()
+					}
+				}
+
+				override def onError(ex: Throwable): Unit = {
+					if !allCompleted then {
+						allCompleted = true
+						upChainSubscription = null
+						unsubscribeAndClear()
+						downChainObserver.onError(ex)
+					}
+				}
+
+				override def onComplete(): Unit = {
+					outerFluxCompleted = true
+					downChainObserver.onOuterComplete()
+					tryComplete()
+				}
+
+				inline def tryComplete(): Unit = {
+					if outerFluxCompleted && activeInnerFluxesCount == 0 && !allCompleted then {
+						allCompleted = true
+						upChainSubscription = null
+						downChainObserver.onComplete()
+					}
 				}
 			}
 		}
@@ -2821,257 +2445,153 @@ trait DoerSandbox2 { thisDoer =>
 		override def flattenStatefully[B: ClassTag](flattenerBuilder: () => TensorFlattener[A, B]): Flux[B] = new Tensor_FlattenStatefully(this, flattenerBuilder)
 	}
 
-	trait SpareSlotTensorOp[A, +B] extends DefaultFlux[B] with TensorObserver[A] with Subscription {
-		protected val source: Tensor[A]
-
-		private var downChainObserverSlot: FluxObserver[B] @uncheckedVariance | Null = null
-		private var upstreamSubscription: Subscription | Null = null
-
-		protected def resetState(): Unit
-
-		override def subscribeSync(observer: FluxObserver[B]): Subscription = {
-			if downChainObserverSlot ne null then source.subscribe(createDelegate(observer))
-			else {
-				downChainObserverSlot = observer
-				upstreamSubscription = source.subscribe(this)
-				this
-			}
-		}
-
-		override def unsubscribe(): Unit = {
-			val upSub = upstreamSubscription
-			downChainObserverSlot = null
-			upstreamSubscription = null
-			resetState()
-			if upSub != null then upSub.unsubscribe()
-		}
-
-		protected def createDelegate(observer: FluxObserver[B]): TensorObserver[A]
-
-		protected def forwardNext(value: B @uncheckedVariance, index: Int): Unit = {
-			val obs = downChainObserverSlot
-			if obs != null then obs.onNext(value, index)
-		}
-
-		protected def forwardError(ex: Throwable): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upstreamSubscription = null
-			resetState()
-			if obs != null then obs.onError(ex)
-		}
-
-		protected def forwardComplete(): Unit = {
-			val obs = downChainObserverSlot
-			downChainObserverSlot = null
-			upstreamSubscription = null
-			resetState()
-			if obs != null then obs.onComplete()
-		}
-	}
-
 	///////////////////////////////////////
 	//// Classes for Tensor operations ////
 	///////////////////////////////////////
 
-	final class Tensor_FlattenInner[A](override protected val source: Tensor[A]) extends SpareSlotTensorOp[A, A] {
-		override def resetState(): Unit = ()
+	final class Tensor_FlattenInner[A](val source: Tensor[A]) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new TensorObserver[A] with Subscription {
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribe(this)
+				}
 
-		override def onNext(a: A, inner: Int, outer: Int): Unit = forwardNext(a, inner)
+				override def onNext(a: A, inner: Int, outer: Int): Unit = downChainObserver.onNext(a, inner)
 
-		override def onOuterComplete(): Unit = ()
+				override def onOuterComplete(): Unit = ()
 
-		override def onInnerComplete(outerIndex: Int): Unit = ()
+				override def onInnerComplete(outerIndex: Int): Unit = ()
 
-		override def onError(ex: Throwable): Unit = forwardError(ex)
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
 
-		override def onComplete(): Unit = forwardComplete()
+				override def onComplete(): Unit = downChainObserver.onComplete()
 
-		override protected def createDelegate(observer: FluxObserver[A]): TensorObserver[A] = new TensorObserver[A] {
-			override def onNext(a: A, inner: Int, outer: Int): Unit = observer.onNext(a, inner)
-
-			override def onOuterComplete(): Unit = ()
-
-			override def onInnerComplete(outerIndex: Int): Unit = ()
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Tensor_FlattenOuter[A](override protected val source: Tensor[A]) extends SpareSlotTensorOp[A, A] {
-		override def resetState(): Unit = ()
-
-		override def onNext(a: A, inner: Int, outer: Int): Unit = forwardNext(a, outer)
-
-		override def onOuterComplete(): Unit = ()
-
-		override def onInnerComplete(outerIndex: Int): Unit = ()
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def createDelegate(observer: FluxObserver[A]): TensorObserver[A] = new TensorObserver[A] {
-			override def onNext(a: A, inner: Int, outer: Int): Unit = observer.onNext(a, outer)
-
-			override def onOuterComplete(): Unit = ()
-
-			override def onInnerComplete(outerIndex: Int): Unit = ()
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Tensor_FlattenSequential[A](override protected val source: Tensor[A]) extends SpareSlotTensorOp[A, A] {
-		private var counter = 0
-
-		override protected def resetState(): Unit = counter = 0
-
-		override def onNext(a: A, inner: Int, outer: Int): Unit = {
-			val idx = counter
-			counter += 1
-			forwardNext(a, idx)
-		}
-
-		override def onOuterComplete(): Unit = ()
-
-		override def onInnerComplete(outerIndex: Int): Unit = ()
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def createDelegate(observer: FluxObserver[A]): TensorObserver[A] = new TensorObserver {
-			private var counter = 0
-
-			override def onNext(a: A, up: Int, down: Int): Unit = {
-				val index = counter
-				counter += 1
-				observer.onNext(a, index)
-			}
-
-			override def onOuterComplete(): Unit = ()
-
-			override def onInnerComplete(outerIndex: Int): Unit = ()
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Tensor_FlattenWith[A](override protected val source: Tensor[A], val f: (A, Int, Int, Int) => Int) extends SpareSlotTensorOp[A, A] { // TODO add sequential index to the signature
-		private var counter = 0
-
-		override protected def resetState(): Unit = counter = 0
-
-		override def onNext(a: A, inner: Int, outer: Int): Unit = {
-			val count = counter
-			counter += 1
-			forwardNext(a, f(a, inner, outer, count))
-		}
-
-		override def onOuterComplete(): Unit = ()
-
-		override def onInnerComplete(outerIndex: Int): Unit = ()
-
-		override def onError(ex: Throwable): Unit = forwardError(ex)
-
-		override def onComplete(): Unit = forwardComplete()
-
-		override protected def createDelegate(observer: FluxObserver[A]): TensorObserver[A] = new TensorObserver[A] {
-			private var counter = 0
-
-			override def onNext(a: A, inner: Int, outer: Int): Unit = {
-				val count = counter
-				counter += 1
-				observer.onNext(a, f(a, inner, outer, count))
-			}
-
-			override def onOuterComplete(): Unit = ()
-
-			override def onInnerComplete(outerIndex: Int): Unit = ()
-
-			override def onError(ex: Throwable): Unit = observer.onError(ex)
-
-			override def onComplete(): Unit = observer.onComplete()
-		}
-	}
-
-	final class Tensor_FlattenStatefully[A, B](source: Tensor[A], flattenerBuilder: () => TensorFlattener[A, B]) extends DefaultFlux[B] with TensorObserver[A] with Subscription {
-		private var downChainObserverSlot: FluxObserver[B] | Null = null
-		private var flattenerSlot: TensorFlattener[A, B] | Null = null
-		private var upChainSubscriptionSlot: Subscription | Null = null
-
-		override def subscribeSync(observer: FluxObserver[B]): Subscription = {
-			val flattener = flattenerBuilder()
-			if downChainObserverSlot ne null then source.subscribe(createDelegate(observer, flattener))
-			else {
-				downChainObserverSlot = observer
-				flattenerSlot = flattener
-				upChainSubscriptionSlot = source.subscribe(this)
-				this
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
 			}
 		}
+	}
 
-		override def unsubscribe(): Unit = {
-			val upSub = upChainSubscriptionSlot
-			downChainObserverSlot = null
-			flattenerSlot = null
-			upChainSubscriptionSlot = null
-			if upSub != null then upSub.unsubscribe()
+	final class Tensor_FlattenOuter[A](val source: Tensor[A]) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new TensorObserver[A] with Subscription {
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribe(this)
+				}
+
+				override def onNext(a: A, inner: Int, outer: Int): Unit = downChainObserver.onNext(a, outer)
+
+				override def onOuterComplete(): Unit = ()
+
+				override def onInnerComplete(outerIndex: Int): Unit = ()
+
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+
+				override def onComplete(): Unit = downChainObserver.onComplete()
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
+			}
 		}
+	}
 
-		private def createDelegate(observer: FluxObserver[B], flattener: TensorFlattener[A, B]): TensorObserver[A] = new TensorObserver[A] {
-			override def onNext(a: A, innerIndex: Int, outerIndex: Int): Unit = flattener.onNext(observer)(a, innerIndex, outerIndex)
+	final class Tensor_FlattenSequential[A](val source: Tensor[A]) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new TensorObserver[A] with Subscription {
+				private var counter = 0
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribe(this)
+				}
 
-			override def onOuterComplete(): Unit = flattener.onOuterComplete(observer)
+				override def onNext(a: A, inner: Int, outer: Int): Unit = {
+					val index = counter
+					counter += 1
+					downChainObserver.onNext(a, index)
+				}
 
-			override def onInnerComplete(outerIndex: Int): Unit = flattener.onInnerComplete(observer)(outerIndex)
+				override def onOuterComplete(): Unit = ()
 
-			override def onError(ex: Throwable): Unit = flattener.onError(observer)(ex)
+				override def onInnerComplete(outerIndex: Int): Unit = ()
 
-			override def onComplete(): Unit = flattener.onComplete(observer)
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+
+				override def onComplete(): Unit = downChainObserver.onComplete()
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
+			}
 		}
+	}
 
-		override def onNext(a: A, innerIndex: Int, outerIndex: Int): Unit = {
-			val dco = downChainObserverSlot
-			val flat = flattenerSlot
-			if dco != null && flat != null then flat.onNext(dco)(a, innerIndex, outerIndex)
+	final class Tensor_FlattenWith[A](val source: Tensor[A], val f: (A, Int, Int, Int) => Int) extends DefaultFlux[A] {
+		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
+			new TensorObserver[A] with Subscription {
+				private var counter = 0
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribe(this)
+				}
+
+				override def onNext(a: A, inner: Int, outer: Int): Unit = {
+					val count = counter
+					counter += 1
+					downChainObserver.onNext(a, f(a, inner, outer, count))
+				}
+
+				override def onOuterComplete(): Unit = ()
+
+				override def onInnerComplete(outerIndex: Int): Unit = ()
+
+				override def onError(ex: Throwable): Unit = downChainObserver.onError(ex)
+
+				override def onComplete(): Unit = downChainObserver.onComplete()
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
+			}
 		}
+	}
 
-		override def onOuterComplete(): Unit = {
-			val dco = downChainObserverSlot
-			val flat = flattenerSlot
-			if dco != null && flat != null then flat.onOuterComplete(dco)
-		}
+	final class Tensor_FlattenStatefully[A, B](val source: Tensor[A], val flattenerBuilder: () => TensorFlattener[A, B]) extends DefaultFlux[B] {
+		override def subscribeSync(downChainObserver: FluxObserver[B]): Subscription = {
+			new TensorObserver[A] with Subscription {
+				private val flattener = flattenerBuilder()
+				private var upChainSubscription: Subscription | Null = null
+				{
+					upChainSubscription = source.subscribe(this)
+				}
 
-		override def onInnerComplete(outerIndex: Int): Unit = {
-			val dco = downChainObserverSlot
-			val flat = flattenerSlot
-			if dco != null && flat != null then flat.onInnerComplete(dco)(outerIndex)
-		}
+				override def onNext(a: A, innerIndex: Int, outerIndex: Int): Unit = flattener.onNext(downChainObserver)(a, innerIndex, outerIndex)
 
-		override def onError(ex: Throwable): Unit = {
-			val dco = downChainObserverSlot
-			val flat = flattenerSlot
-			downChainObserverSlot = null
-			flattenerSlot = null
-			upChainSubscriptionSlot = null
-			if dco != null && flat != null then flat.onError(dco)(ex)
-		}
+				override def onOuterComplete(): Unit = flattener.onOuterComplete(downChainObserver)
 
-		override def onComplete(): Unit = {
-			val dco = downChainObserverSlot
-			val flat = flattenerSlot
-			downChainObserverSlot = null
-			flattenerSlot = null
-			upChainSubscriptionSlot = null
-			if dco != null && flat != null then flat.onComplete(dco)
+				override def onInnerComplete(outerIndex: Int): Unit = flattener.onInnerComplete(downChainObserver)(outerIndex)
+
+				override def onError(ex: Throwable): Unit = flattener.onError(downChainObserver)(ex)
+
+				override def onComplete(): Unit = flattener.onComplete(downChainObserver)
+
+				override def unsubscribe(): Unit = {
+					val sub = upChainSubscription
+					upChainSubscription = null
+					if sub != null then sub.unsubscribe()
+				}
+			}
 		}
 	}
 

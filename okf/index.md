@@ -27,6 +27,7 @@ timestamp: "2026-07-09T14:30:00Z"
 - [Design of Scheduling and Timing Extensions](adr-scheduling-subscription-design.md)
 - [Design Discussion Transcript: Lazy Multi-Raft](transcript-lazy-multi-raft-design.md)
 - [Simplify Sequencer Error Handling](adr-simplify-error-handling.md)
+- [Evaluation of Spare-Slot Pattern](adr-spare-slot-pattern-evaluation.md)
 
 
 
