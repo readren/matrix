@@ -746,8 +746,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				_ <- check("repeatedWhileEmpty1", successfulTask.repeatedWhileEmpty(Success(0), f2))
 				_ <- check("repeatedWhileEmpty2", failingTask.repeatedWhileEmpty(Success(0), f2))
 
-				_ <- check("repeatedWhileUndefined1", successfulTask.repeatedWhileUndefined(Success(0), { case (a, b) => f2(a, b) }))
-				_ <- check("repeatedWhileUndefined2", failingTask.repeatedWhileUndefined(Success(0), { case (a, b) => f2(a, b) }))
+				_ <- check("repeatedWhileUndefined1", successfulTask.repeatedWhileUndefined(0, { case (a, b) => f2[Int, Int, Int](a, b) }))
+				_ <- check("repeatedWhileUndefined2", failingTask.repeatedWhileUndefined(0, { case (a, b) => f2[Int, Int, Int](a, b) }))
 			} yield ()
 		}
 	}
@@ -1439,7 +1439,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 					// println(s"supplierResult = $supplierResult/$repetitions")
 					if !doer.wasActivated(timedSub.schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
 					if supplierResult == repetitions then {
-						timedSub.unsubscribe()
+						timedSub.unsubscribeSync()
 						promise.trySuccess((timedSub, supplierResult))
 					} else if supplierResult > repetitions then {
 						promise.tryFailure(new AssertionError("The supplier was execute despite the schedule was canceled in the previous supplier's execution."))
@@ -1502,7 +1502,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
 				if counter == repetitions then {
 					testCompletion.capture(())
-					maybeCheckSubscription.foreach(_.unsubscribe())
+					maybeCheckSubscription.foreach(_.unsubscribeSync())
 				} else counter += 1
 			}
 			maybeCheckSubscription = Maybe(check.subscribeAndForget())

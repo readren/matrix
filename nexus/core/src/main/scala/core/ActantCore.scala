@@ -197,10 +197,10 @@ abstract class ActantCore[U, D <: Doer](
 				override def run(): Unit = {
 					val was = watchedActant.stopCapturer.subscribeSync(thisEye)
 					if watchedActant.doer eq thisActant.doer then {
-						if stopWasStarted then was.unsubscribe() else watchedActantStoppedSubscription = was
+						if stopWasStarted then was.unsubscribeSync() else watchedActantStoppedSubscription = was
 						maybeSubscriptionCompletedCapturer.foreach(_.captureSync(()))
 					} else thisActant.doer.run {
-						if stopWasStarted then was.unsubscribe() else watchedActantStoppedSubscription = was
+						if stopWasStarted then was.unsubscribeSync() else watchedActantStoppedSubscription = was
 						maybeSubscriptionCompletedCapturer.foreach(_.captureSync(()))
 					}
 				}
@@ -240,8 +240,8 @@ abstract class ActantCore[U, D <: Doer](
 					// Then, undo the subscription to the watched actant's stopped-capturer.
 					val was = watchedActantStoppedSubscription
 					if was != null then {
-						if watchedActant.doer eq thisActant.doer then was.unsubscribe()
-						else watchedActant.doer.run(was.unsubscribe())
+						if watchedActant.doer eq thisActant.doer then was.unsubscribeSync()
+						else watchedActant.doer.run(was.unsubscribeSync())
 					}
 				}
 

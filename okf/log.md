@@ -8,7 +8,15 @@ timestamp: "2026-07-22T15:35:00Z"
 
 # Change Log
 
-# [2026-07-22T17:45:00Z]
+## [2026-07-26T15:51:15Z]
+
+- Updated `okf/common-primitives.md` to document how `Maybe`'s opaque type scope prevents macro `OrType` matching on nested `Maybe[T]` instances.
+
+## [2026-07-25T13:28:00Z]
+
+- Updated `okf/common-primitives.md` to reflect `Maybe`'s refactored `opaque type` definition and compile-time macro anti-nesting guards.
+
+## [2026-07-22T17:45:00Z]
 
 - Added architectural decision record `okf/adr-spare-slot-pattern-evaluation.md` evaluating the spare-slot zero-allocation pattern in `sequencer/core` primitives.
 

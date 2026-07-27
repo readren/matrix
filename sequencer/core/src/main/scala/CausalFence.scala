@@ -1,11 +1,10 @@
 package readren.sequencer
 
-import CausalFence.{ARRIVED_AFTER, ARRIVED_BEFORE, ROLLBACK_APPLIED, ROLLBACK_IGNORED, CausalAnchorArrival, RollbackApplication}
-import Doer.{ANOTHER_AFTER, ANOTHER_BEFORE, THE_PROVIDED}
+import CausalFence.{ARRIVED_AFTER, ARRIVED_BEFORE, ROLLBACK_APPLIED, ROLLBACK_IGNORED}
+import Doer.{ANOTHER_BEFORE, THE_PROVIDED}
 
 import readren.common.{Maybe, Trial}
 
-import scala.util.Failure
 import scala.util.control.NonFatal
 
 

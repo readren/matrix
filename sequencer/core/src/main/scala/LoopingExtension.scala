@@ -232,13 +232,13 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 
@@ -293,13 +293,13 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 
@@ -366,13 +366,13 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 
@@ -438,13 +438,13 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 
@@ -510,13 +510,13 @@ trait LoopingExtension { thisDoer: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 

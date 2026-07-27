@@ -167,7 +167,7 @@ class AspirantBehavior(override val host: ParticipantService) extends Membership
 	private def sendAClusterCreatorProposalTo(targetDelegate: CommunicableDelegate, proposedAspirantAddress: ContactAddress | Null): Unit = {
 		if proposedAspirantAddress != targetDelegate.lastClusterCreatorProposalSentToPeer then {
 			targetDelegate.lastClusterCreatorProposalSentToPeer = proposedAspirantAddress
-			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(Maybe.apply(proposedAspirantAddress)))
+			targetDelegate.transmitToPeerOrRestartChannel(ClusterCreatorProposal(Maybe(proposedAspirantAddress)))
 		}
 	}
 

@@ -3,20 +3,22 @@ type: "Concept"
 title: "Common Primitive Wrappers"
 description: "Semantics and invariants of low-level wrapper primitives in the common module, including Maybe and Trial."
 tags: ["common", "primitives", "maybe", "trial"]
-timestamp: "2026-06-26T01:42:00Z"
+timestamp: "2026-07-25T13:28:00Z"
 ---
 
 # Common Primitive Wrappers
 
-This document outlines the semantics, design constraints, and known limitations of the low-level value class wrapper primitives defined in the `common` module.
+This document outlines the semantics, design constraints, and known limitations of the low-level wrapper primitives defined in the `common` module.
 
 ## Maybe[+A]
 
-`Maybe` is a value class representation of `A | Null` that avoids allocating wrapper objects for non-empty values at runtime.
+`Maybe` is an `opaque type Maybe[+A] = A | Null` representation that avoids allocating wrapper objects for non-empty values at runtime.
 
-- **Empty State**: Represented internally by wrapping a `null`.
+- **Empty State**: Represented internally as `null`.
 - **Defined State**: Any non-null value of type `A`.
-- **Allocation**: Zero allocation when wrapping reference types, though primitive types will box.
+- **Allocation**: Zero allocation for reference types.
+- **Anti-Nesting Guards**: Uses Scala 3 Quote Macros (`MaybeMacros`) to statically block nullable union types (`T | Null`) and nested `Maybe` types at compile time. Because `Maybe` is an `opaque type`, its underlying union representation
+  (`A | Null`) is hidden outside `object Maybe`, meaning macro pattern matching on `OrType` does not automatically match `Maybe[T]` terms unless subtype checks against `Maybe[?]` are explicitly performed.
 
 ## Trial[+A]
 

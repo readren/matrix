@@ -80,7 +80,7 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 				if chosenWinner ne incumbent then {
 					val mis = maybeIncumbentSubscription
 					maybeIncumbentSubscription = Maybe.empty
-					mis.foreach(_.unsubscribe())
+					mis.foreach(_.unsubscribeSync())
 					supersedeWith(chosenWinner, finalResult)
 				}
 				finalResult

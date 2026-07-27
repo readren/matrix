@@ -1467,7 +1467,7 @@ trait DoerSandbox2 { thisDoer =>
 					// else, remove it from the array and make it be the first target
 					else {
 						followingTargets(index) = null
-						Maybe(targetAtIndex)
+						Maybe(targetAtIndex.asInstanceOf[Target])
 					}
 				}
 			}

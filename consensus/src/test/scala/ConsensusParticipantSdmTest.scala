@@ -692,7 +692,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				} yield maybeError
 			}
 
-			net.netSequencer.Capturer_defer(() =>
+			net.netSequencer.Capturer_defer[Maybe[String]](() =>
 				sendCommandLoop(1, 0, FIRST_ATTEMPT)
 			)
 		}

@@ -75,7 +75,7 @@ final class ResultIncrementalCoalescingGrouped[P, R, D <: Doer](val doer: D) {
 					// Unsubscribe the unseated contender.
 					val mis = competition.maybeIncumbentSubscription
 					competition.maybeIncumbentSubscription = Maybe.empty
-					mis.foreach(_.unsubscribe())
+					mis.foreach(_.unsubscribeSync())
 					true
 				}
 			}

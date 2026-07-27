@@ -230,7 +230,7 @@ trait Doer { thisDoer =>
 	 * Added as part of the bi-convergent convergence plan to support safe cancellation.
 	 * @note CAUTION: Must be called within the single-thread Execution Context of the owning Doer (DoSerEx). */
 	trait Subscription {
-		def unsubscribe(): Unit
+		def unsubscribeSync(): Unit
 	}
 
 	/** An empty subscription that performs no action upon unsubscription. */
@@ -287,14 +287,14 @@ trait Doer { thisDoer =>
 						if isActive then {
 							val upChainSubscription = subscribeSync(downChainObserver)
 							if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
-							else upChainSubscription.unsubscribe()
+							else upChainSubscription.unsubscribeSync()
 						}
 					}
 
-					override def unsubscribe(): Unit = {
+					override def unsubscribeSync(): Unit = {
 						checkWithin()
 						isActive = false
-						maybeUpChainSubscription.foreach(_.unsubscribe())
+						maybeUpChainSubscription.foreach(_.unsubscribeSync())
 					}
 				}
 				new Junction
@@ -310,7 +310,7 @@ trait Doer { thisDoer =>
 					if isActive then {
 						val upChainSubscription = subscribeSync(this)
 						if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
-						else upChainSubscription.unsubscribe()
+						else upChainSubscription.unsubscribeSync()
 					}
 				}
 
@@ -318,10 +318,10 @@ trait Doer { thisDoer =>
 
 				override def onError(e: Throwable): Unit = onComplete(e)
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					isActive = false
-					maybeUpChainSubscription.foreach(_.unsubscribe())
+					maybeUpChainSubscription.foreach(_.unsubscribeSync())
 				}
 			}
 			val junction = new AdaptedJunction
@@ -465,16 +465,16 @@ trait Doer { thisDoer =>
 
 	trait GuardedMono[+A] {
 		def withFilter(p: A => Boolean): Mono[A]
-
 		def map[B](f: A => B): Mono[B]
-
 		def flatMap[B](f: A => Mono[B]): Mono[B]
-		/*
-		def recover[B >: A](pf: Throwable => Maybe[B]): Observable[B]
-		def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B]
-		def transform[B](f: Try[A] => Try[B]): Observable[B]
-		def transformWith[B](f: Try[A] => Observable[B]): Observable[B]
-		*/
+
+		def recover[B >: A](pf: Throwable => Maybe[B]): Mono[B]
+
+		def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B]
+
+		def transform[B](f: Try[A] => Try[B]): Mono[B]
+
+		def transformWith[B](f: Try[A] => Mono[B]): Mono[B]
 	}
 
 	/////////////// TASK ///////////////
@@ -879,12 +879,18 @@ trait Doer { thisDoer =>
 				override def onSuccess(a: A): Unit = downChainObserver.onSuccess(a)
 
 				override def onError(e1: Throwable): Unit = {
-					val maybeMaybeB = if isGuarded then try Maybe(pf(e1)) catch {
-						case NonFatal(e2) =>
-							downChainObserver.onError(e2)
-							Maybe.empty
-					} else Maybe(pf(e1))
-					maybeMaybeB.foreach(_.fold(downChainObserver.onError(e1))(downChainObserver.onSuccess))
+					if isGuarded then {
+						var isActive = true
+						val maybeB = try pf(e1) catch {
+							case NonFatal(e2) =>
+								isActive = false
+								downChainObserver.onError(e2)
+								Maybe.empty
+						}
+						if isActive then maybeB.fold(downChainObserver.onError(e1))(downChainObserver.onSuccess)
+					} else {
+						pf(e1).fold(downChainObserver.onError(e1))(downChainObserver.onSuccess)
+					}
 				}
 			})
 		}
@@ -960,15 +966,15 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					isActive = false
 					val mus = maybeUpChainSubscription
 					val mis = maybeInnerSubscription
 					maybeUpChainSubscription = Maybe.empty
 					maybeInnerSubscription = Maybe.empty
-					mus.foreach(_.unsubscribe())
-					mis.foreach(_.unsubscribe())
+					mus.foreach(_.unsubscribeSync())
+					mis.foreach(_.unsubscribeSync())
 				}
 			}
 		}
@@ -1001,33 +1007,31 @@ trait Doer { thisDoer =>
 				override def onError(e1: Throwable): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
-						val maybeMaybeMonoB =
+						val maybeMonoB =
 							if isGuarded then {
-								try Maybe(pf(e1)) catch {
+								try pf(e1) catch {
 									case NonFatal(e2) =>
+										isActive = false
 										downChainObserver.onError(e2)
 										Maybe.empty
 								}
-							} else Maybe(pf(e1))
+							} else pf(e1)
 
-						if isActive then maybeMaybeMonoB.foreach { maybeMonoB =>
-							maybeMonoB.fold(downChainObserver.onError(e1)) { monoB =>
-								val innerSubscription = monoB.subscribeSync(downChainObserver)
-								if isActive then maybeInnerSubscription = Maybe(innerSubscription)
-							}
+						if isActive then maybeMonoB.fold(downChainObserver.onError(e1)) { monoB =>
+							val innerSubscription = monoB.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
 				}
 
-				override def unsubscribe(): Unit = {
-					checkWithin()
+				override def unsubscribeSync(): Unit = {
 					isActive = false
 					val up = maybeUpChainSubscription
 					val inner = maybeInnerSubscription
 					maybeUpChainSubscription = Maybe.empty
 					maybeInnerSubscription = Maybe.empty
-					up.foreach(_.unsubscribe())
-					inner.foreach(_.unsubscribe())
+					up.foreach(_.unsubscribeSync())
+					inner.foreach(_.unsubscribeSync())
 				}
 			}
 		}
@@ -1071,15 +1075,15 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					isActive = false
 					val mus = maybeUpChainSubscription
 					maybeUpChainSubscription = Maybe.empty
-					mus.foreach(_.unsubscribe())
+					mus.foreach(_.unsubscribeSync())
 					val mis = maybeInnerSubscription
 					maybeInnerSubscription = Maybe.empty
-					mis.foreach(_.unsubscribe())
+					mis.foreach(_.unsubscribeSync())
 				}
 			}
 		}
@@ -1241,13 +1245,13 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					if isActive then {
 						isActive = false
 						foreignDoer.run {
 							val mfs = maybeForeignSubscription
 							maybeForeignSubscription = Maybe.empty
-							mfs.foreach(_.unsubscribe())
+							mfs.foreach(_.unsubscribeSync())
 						}
 					}
 				}
@@ -1275,7 +1279,7 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					active = false
 				}
@@ -1309,7 +1313,7 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					active = false
 				}
@@ -1351,7 +1355,7 @@ trait Doer { thisDoer =>
 								isActive = false
 								maybeSubscriptionB = Maybe.empty
 								downChainObserver.onError(e)
-								maybeSubscriptionA.foreach(_.unsubscribe())
+								maybeSubscriptionA.foreach(_.unsubscribeSync())
 							}
 						}
 					})
@@ -1373,7 +1377,7 @@ trait Doer { thisDoer =>
 					isActive = false
 					maybeSubscriptionA = Maybe.empty
 					downChainObserver.onError(e)
-					maybeSubscriptionB.foreach(_.unsubscribe())
+					maybeSubscriptionB.foreach(_.unsubscribeSync())
 				}
 			}
 
@@ -1388,7 +1392,7 @@ trait Doer { thisDoer =>
 				maybeC.foreach(downChainObserver.onSuccess)
 			}
 
-			override def unsubscribe(): Unit = {
+			override def unsubscribeSync(): Unit = {
 				checkWithin()
 				if isActive then {
 					isActive = false
@@ -1396,8 +1400,8 @@ trait Doer { thisDoer =>
 					val msb = maybeSubscriptionB
 					maybeSubscriptionA = Maybe.empty
 					maybeSubscriptionB = Maybe.empty
-					msa.foreach(_.unsubscribe())
-					msb.foreach(_.unsubscribe())
+					msa.foreach(_.unsubscribeSync())
+					msb.foreach(_.unsubscribeSync())
 				}
 			}
 		}
@@ -1458,13 +1462,13 @@ trait Doer { thisDoer =>
 						val sub = subscriptions(index)
 						if sub != null then {
 							subscriptions(index) = null
-							sub.unsubscribe()
+							sub.unsubscribeSync()
 						}
 						index += 1
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
@@ -1519,9 +1523,9 @@ trait Doer { thisDoer =>
 								})
 							}
 
-							override def unsubscribe(): Unit = {
+							override def unsubscribeSync(): Unit = {
 								active = false
-								innerSub.unsubscribe()
+								innerSub.unsubscribeSync()
 							}
 						}
 						monosSubscriptions(index) = monoSubscription
@@ -1529,11 +1533,11 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					var i = 0
 					while i < size do {
 						val s = monosSubscriptions(i)
-						if s != null then s.unsubscribe()
+						if s != null then s.unsubscribeSync()
 						i += 1
 					}
 				}
@@ -1647,10 +1651,10 @@ trait Doer { thisDoer =>
 		@targetName("flatMapTask")
 		def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
 
-		/*
+
 		override def transform[B](f: Try[A] => Try[B]): Capturer[B] = ???
 
-		override def transformWith[B](f: Try[A] => Observable[B]): Observable[B] = ???
+		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = ???
 
 		@targetName("transformWithCapturer")
 		def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B] = ???
@@ -1660,14 +1664,14 @@ trait Doer { thisDoer =>
 
 		override def recover[B >: A](pf: Throwable => Maybe[B]): Capturer[B] = ???
 
-		override def recoverWith[B >: A](pf: Throwable => Maybe[Observable[B]]): Observable[B] = ???
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B] = ???
 
 		@targetName("recoverWithCapturer")
 		def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = ???
 
 		@targetName("recoverWithTask")
 		def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = ???
-		*/
+
 	}
 
 	/** A partial implementation of [[Capturer]]. Implements everything except [[state]].
@@ -1679,7 +1683,7 @@ trait Doer { thisDoer =>
 			state.fold {
 				addTarget(monoObserver)
 				new Subscription {
-					override def unsubscribe(): Unit = {
+					override def unsubscribeSync(): Unit = {
 						checkWithin()
 						removeAllMatching(monoObserver)
 					}
@@ -1951,7 +1955,7 @@ trait Doer { thisDoer =>
 		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
-				new Captor_TransformWith[A, B](this, f)
+				new Captor_TransformWith[A, B](this, f, false)
 			} { ex =>
 				/*try*/ f(Failure(ex)) /*catch {
 					case NonFatal(e) => new Failed(e)
@@ -2001,7 +2005,7 @@ trait Doer { thisDoer =>
 		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new Captor_TransformWith[A, B](this, f)
+				new Captor_TransformWith[A, B](this, f, false)
 			} { ex =>
 				f(Failure(ex))
 			} { a =>
@@ -2035,7 +2039,7 @@ trait Doer { thisDoer =>
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
-				new Captor_RecoverWith[A, B](thisCaptor, pf)
+				new Captor_RecoverWith[A, B](thisCaptor, pf, false)
 			} { ex =>
 				/*try*/ pf(ex).fold[Mono[B]](new Failed(ex))(identity) /*catch {
 					case NonFatal(e) => new Failed(e)
@@ -2073,7 +2077,7 @@ trait Doer { thisDoer =>
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
-				new Captor_RecoverWith[A, B](thisCaptor, pf)
+				new Captor_RecoverWith[A, B](thisCaptor, pf, false)
 			} { ex =>
 				pf(ex).fold[Task[B]](Task_fail(ex))(identity)
 			} { a =>
@@ -2639,7 +2643,7 @@ trait Doer { thisDoer =>
 
 	/** TODO This class is very similar to [[Task_FlatMap]]. Consider removing duplication by extending a common super class. */
 	final class Captor_FlatMap[+A, B](upChainMono: Mono[A], f: A => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
-		private var monoBMemory: Maybe[Mono[B]] = Maybe.empty
+		private var fResultMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription with MonoObserver[A] {
@@ -2655,22 +2659,18 @@ trait Doer { thisDoer =>
 				override def onSuccess(a: A): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
-						monoBMemory.fold {
-							val maybeInnerMonoB = if isGuarded then try Maybe(f(a)) catch {
-								case NonFatal(e) =>
-									isActive = false
-									downChainObserver.onError(e)
-									Maybe.empty
-							} else Maybe(f(a))
-							maybeInnerMonoB.foreach { mb =>
-								monoBMemory = Maybe(mb)
-								if isActive then {
-									val innerSubscription = mb.subscribeSync(downChainObserver)
-									if isActive then maybeInnerSubscription = Maybe(innerSubscription)
-								}
-							}
-						} { mb =>
-							val innerSubscription = mb.subscribeSync(downChainObserver)
+						if fResultMemory.isEmpty then {
+							val maybeInnerMonoB =
+								if isGuarded then try Maybe(f(a)) catch {
+									case NonFatal(e) =>
+										isActive = false
+										downChainObserver.onError(e)
+										Maybe.empty
+								} else Maybe(f(a))
+							fResultMemory = maybeInnerMonoB
+						}
+						if isActive then fResultMemory.foreach { innerMono =>
+							val innerSubscription = innerMono.subscribeSync(downChainObserver)
 							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
@@ -2684,23 +2684,23 @@ trait Doer { thisDoer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					if isActive then {
 						isActive = false
 						val mus = maybeUpChainSubscription
 						val mis = maybeInnerSubscription
 						maybeUpChainSubscription = Maybe.empty
 						maybeInnerSubscription = Maybe.empty
-						mus.foreach(_.unsubscribe())
-						mis.foreach(_.unsubscribe())
+						mus.foreach(_.unsubscribeSync())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 			}
 		}
 	}
 
-	final class Captor_TransformWith[A, B](upChainMono: Mono[A], f: Try[A] => Mono[B]) extends AbstractTask[B] {
-		private var monoBMemory: Maybe[Mono[B]] = Maybe.empty
+	final class Captor_TransformWith[A, B](upChainMono: Mono[A], f: Try[A] => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
+		private var fResultMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription with MonoObserver[A] {
@@ -2720,35 +2720,42 @@ trait Doer { thisDoer =>
 				private def handle(tryA: Try[A]): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
-						val monoB = monoBMemory.getOrElse {
-							val monoB = f(tryA)
-							monoBMemory = Maybe(monoB)
-							monoB
+						if fResultMemory.isEmpty then {
+							val maybeInnerMono =
+								if isGuarded then try Maybe(f(tryA)) catch {
+									case NonFatal(e) =>
+										isActive = false
+										downChainObserver.onError(e)
+										Maybe.empty
+								} else Maybe(f(tryA))
+							fResultMemory = maybeInnerMono
 						}
-						if isActive then {
-							val innerSubscription = monoB.subscribeSync(downChainObserver)
+
+						if isActive then fResultMemory.foreach { innerMono =>
+							val innerSubscription = innerMono.subscribeSync(downChainObserver)
 							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					if isActive then {
 						isActive = false
 						val mus = maybeUpChainSubscription
 						val mis = maybeInnerSubscription
 						maybeUpChainSubscription = Maybe.empty
 						maybeInnerSubscription = Maybe.empty
-						mus.foreach(_.unsubscribe())
-						mis.foreach(_.unsubscribe())
+						mus.foreach(_.unsubscribeSync())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 			}
 		}
 	}
 
-	final class Captor_RecoverWith[A, B >: A](upChainMono: Mono[A], pf: Throwable => Maybe[Mono[B]]) extends AbstractTask[B] {
-		private var maybeMonoBMemory: Maybe[Maybe[Mono[B]]] = Maybe.empty
+	final class Captor_RecoverWith[A, B >: A](upChainMono: Mono[A], pf: Throwable => Maybe[Mono[B]], isGuarded: Boolean) extends AbstractTask[B] {
+		private var pfResultIsEmpty: Boolean = true
+		private var pfResultMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription with MonoObserver[A] {
@@ -2771,35 +2778,35 @@ trait Doer { thisDoer =>
 				override def onError(ex: Throwable): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
-						val maybeMonoB = maybeMonoBMemory.getOrElse {
-							val maybeMonoB = pf(ex)
-							maybeMonoBMemory = Maybe(maybeMonoB)
-							maybeMonoB
-						}
-						if isActive then {
-							maybeMonoB.fold {
-								isActive = false
-								downChainObserver.onError(ex)
-							} { monoB =>
-								if isActive then {
-									val innerSubscription = monoB.subscribeSync(downChainObserver)
-									if isActive then maybeInnerSubscription = Maybe(innerSubscription)
-								}
+						if pfResultIsEmpty then {
+							if isGuarded then try {
+								pfResultMemory = pf(ex)
+								pfResultIsEmpty = false
+							} catch {
+								case NonFatal(e) =>
+									isActive = false
+									downChainObserver.onError(e)
+									Maybe.empty
+							} else {
+								pfResultMemory = pf(ex)
+								pfResultIsEmpty = false
 							}
+						}
+						if isActive then pfResultMemory.fold(downChainObserver.onError(ex)) { innerMono =>
+							val innerSubscription = innerMono.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
 				}
 
-				override def unsubscribe(): Unit = {
-					if isActive then {
-						isActive = false
-						val mus = maybeUpChainSubscription
-						val mis = maybeInnerSubscription
-						maybeUpChainSubscription = Maybe.empty
-						maybeInnerSubscription = Maybe.empty
-						mus.foreach(_.unsubscribe())
-						mis.foreach(_.unsubscribe())
-					}
+				override def unsubscribeSync(): Unit = {
+					isActive = false
+					val mus = maybeUpChainSubscription
+					val mis = maybeInnerSubscription
+					maybeUpChainSubscription = Maybe.empty
+					maybeInnerSubscription = Maybe.empty
+					mus.foreach(_.unsubscribeSync())
+					mis.foreach(_.unsubscribeSync())
 				}
 			}
 		}
@@ -3084,7 +3091,7 @@ trait Doer { thisDoer =>
 					// else, remove it from the array and make it be the first target
 					else {
 						followingTargets(index) = null
-						Maybe(targetAtIndex)
+						Maybe(targetAtIndex.asInstanceOf[Target])
 					}
 				}
 			}

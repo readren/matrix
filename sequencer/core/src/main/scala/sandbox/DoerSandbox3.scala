@@ -1368,14 +1368,14 @@ trait DoerSandbox3 { thisDoer =>
 					var targetAtIndex: Target | Null = null
 					while index < followingTargetsSize && {
 						targetAtIndex = followingTargets(index)
-						(targetAtIndex eq null)
+						targetAtIndex eq null
 					} do index += 1
 					// If none found then the registry is empty
 					if index == followingTargetsSize then Maybe.empty
 					// else, remove it from the array and make it be the first target
 					else {
 						followingTargets(index) = null
-						Maybe(targetAtIndex)
+						Maybe(targetAtIndex.asInstanceOf[Target])
 					}
 				}
 			}

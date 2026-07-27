@@ -288,14 +288,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(aSchedule)
 						val ucs = maybeUpChainSubscription
 						maybeUpChainSubscription = Maybe.empty
-						ucs.foreach(_.unsubscribe())
+						ucs.foreach(_.unsubscribeSync())
 					}
 				}
 			}
@@ -326,7 +326,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					if isActive then {
 						isActive = false
 						downChainObserver.onSuccess(Maybe.empty)
-						maybeUpChainSubscription.foreach(_.unsubscribe())
+						maybeUpChainSubscription.foreach(_.unsubscribeSync())
 					}
 				}
 
@@ -346,14 +346,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(timer)
 						val ucs = maybeUpChainSubscription
 						maybeUpChainSubscription = Maybe.empty
-						ucs.foreach(_.unsubscribe())
+						ucs.foreach(_.unsubscribeSync())
 					}
 				}
 			}
@@ -372,7 +372,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 				upChainSubscription
 			} catch {
 				case scala.util.control.NonFatal(e) =>
-					upChainSubscription.unsubscribe()
+					upChainSubscription.unsubscribeSync()
 					throw e
 			}
 		}
@@ -489,7 +489,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		override def apply(schedule: Schedule): Unit = {
 			if isActive then {
 				isActive = false
-				maybeUpChainSubscription.foreach(_.unsubscribe())
+				maybeUpChainSubscription.foreach(_.unsubscribeSync())
 				captureSync(Maybe.empty)
 			}
 		}
@@ -542,7 +542,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					isActive = false
 					cancel(aSchedule)
@@ -573,7 +573,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 						val maybeTaskA = try Maybe(supplier(this)) catch {
 							case NonFatal(e) =>
 								if isActive then {
-									unsubscribe()
+									unsubscribeSync()
 									downChainObserver.onError(e)
 								}
 								Maybe.empty
@@ -585,14 +585,14 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					}
 				}
 
-				override def unsubscribe(): Unit = {
+				override def unsubscribeSync(): Unit = {
 					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(aSchedule)
 						val mis = maybeInnerSubscription
 						maybeInnerSubscription = Maybe.empty
-						mis.foreach(_.unsubscribe())
+						mis.foreach(_.unsubscribeSync())
 					}
 				}
 			}
