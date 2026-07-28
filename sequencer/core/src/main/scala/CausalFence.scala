@@ -50,7 +50,7 @@ object CausalFence {
  * - Idempotence/compensation invariant: Any derived side effect that can be re-run or rolled back must be idempotent or have a compensating action to preserve causal correctness under retries or rollback.
  *
  * Invariants inherited from [[doer.Captor]]:
- * - Sequential consumer invariant: The [[doer.Capturer]] returned by [[advanceIf]] and [[causalAnchor]] is a [[doer.Commitment]] and therefore the subscribed consumers are invoked in registration order. The synchronous part of each consumer runs to completion before the next begins.\
+ * - Sequential consumer invariant: The [[doer.Capturer]] returned by [[advanceIf]] and [[causalAnchor]] is a [[doer.Captor]] and therefore the subscribed consumers are invoked in registration order. The synchronous part of each consumer runs to completion before the next begins.\
  * @param initialState the initial state, already visible and committed. Can not be failure. */
 class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	private var lastCommittedCovenant: doer.Captor[A] = new doer.Captor(Trial.success(initialState))
@@ -102,7 +102,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 
 	/** Returns a [[Capturer]] that yields the same state an updater would see if [[advance]] were invoked at this moment.\
 	 * This provides a causal checkpoint suitable for synchronous consumers that need to derive state deterministically.\
-	 * The returned [[Capturer]] is backed by a fresh [[Commitment]] that forwards from the current tail [[Commitment]].\
+	 * The returned [[Capturer]] is backed by a fresh [[Captor]] that forwards from the current tail [[Captor]].\
 	 * This ensures that immediate synchronous subscriptions to the returned [[Capturer]] are registered before completion, making them the first subscribers on the fresh [[Captor]] and guaranteeing deterministic observation of the up‑to‑date state.\
 	 * Temporal window of causal safety: The causal guarantee holds only during the synchronous execution of a consumer synchronously subscribed to the returned [[Capturer]]. Code that rely on causal visibility is safe only within the body of that consumer. Once the consumer has returned, deferred or later code is no longer causally anchored.\
 	 * @param completionObserver optional observer of the actual primary state when the anchored link is successfully reached. This observer is notified within this [[Doer]]’s sequential executor before any consumer subscribed to the returned [[Capturer]]. The first parameter is the primary state; the second indicates whether the link was already reached when this method was invoked: [[ARRIVED_BEFORE]] if so, or [[ARRIVED_AFTER]] if not.

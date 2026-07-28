@@ -7,6 +7,8 @@ import org.scalacheck.{Arbitrary, Gen}
 import java.util.concurrent.Executors
 import scala.annotation.tailrec
 import scala.concurrent.{ExecutionContext, ExecutionException, Future}
+import readren.common.Maybe
+import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
 object GeneratorsForDoerTests {
@@ -153,7 +155,7 @@ object GeneratorsForDoerTests {
 	}
 }
 
-/** Offers generators of [[doer.Task]] and [[doer.Venture]] instances.
+/** Offers generators of [[doer.Mono]] instances.
  * Useful for suites that test their behavior. */
 class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[Doer], recursionLevel: Int = 0) {
 
@@ -166,7 +168,7 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** A doer with a dedicated single-thread-executor that no other [[Doer]] instance can share. */
 	val foreignDoer: Doer = doerProvider.provide(doerProvider.tagFromText(s"foreign-doer-$recursionLevel"))
 
-	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Task]] and [[foreignDoer.Venture]] instances. */
+	/** @return a [[GeneratorsForDoerTest]] instance that offers generators for [[foreignDoer.Mono]] instances. */
 	def foreignDoerGenerators(enableRecursiveForeign: Boolean = false): GeneratorsForDoerTests[foreignDoer.type] = new GeneratorsForDoerTests[foreignDoer.type](foreignDoer, doerProvider, recursionLevel + 1)
 
 	/** @return a generator of [[doer.Task]] instances that yield the provided value. */
@@ -310,5 +312,121 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	}
 
 	given monoArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Mono[A]] = Arbitrary(genMono())
+
+	def genSuccessfulFluxFrom[A: ClassTag](elements: Seq[A], syncExecutionOnly: Boolean = false): Gen[FluxExtension#Flux[A]] = {
+		val d = doer.asInstanceOf[D & FluxExtension]
+		import d.*
+
+		val applyGen: Gen[Flux[A]] = Gen.const(Flux_apply(elements *))
+		val iterableGen: Gen[Flux[A]] = Gen.const(Flux_fromIterable(elements))
+		val iterableGuardedGen: Gen[Flux[A]] = Gen.const(Flux_fromIterableGuarded(elements))
+
+		val generateGen: Gen[Flux[A]] = Gen.const(Flux_generate[A] { idx =>
+			if idx < elements.length then Maybe(elements(idx)) else Maybe.empty
+		})
+
+		val generateStatefullyGen: Gen[Flux[A]] = Gen.const(Flux_generateStatefully[A] { () =>
+			var count = 0
+			idx => {
+				if count < elements.length then {
+					val v = elements(count)
+					count += 1
+					Maybe(v)
+				} else Maybe.empty
+			}
+		})
+
+		val emitterGen: Gen[Flux[A]] = Gen.const {
+			new DefaultFlux[A] {
+				override def subscribeSync(downChainObserver: FluxObserver[A]): d.Subscription = {
+					val emitter = new StreamEmitter[A]
+					val sub = emitter.subscribeSync(downChainObserver)
+					elements.foreach(emitter.emit)
+					emitter.end()
+					sub
+				}
+			}
+		}
+
+		val monosSeqGen: Gen[Flux[A]] = {
+			val monos = IArray.from(elements.map(a => d.Task_ready(a)))
+			Gen.const(Flux_fromMonosSequentially(monos))
+		}
+
+		val monosGen: Gen[Flux[A]] = {
+			val monos = IArray.from(elements.map(a => d.Task_ready(a)))
+			Gen.const(Flux_fromMonos(monos))
+		}
+
+		Gen.oneOf(applyGen, iterableGen, iterableGuardedGen, generateGen, generateStatefullyGen, emitterGen, monosSeqGen, monosGen)
+	}
+
+	def genFailingFluxFrom[A: ClassTag](elementsBeforeFailure: Seq[A], ex: Throwable, syncExecutionOnly: Boolean = false): Gen[FluxExtension#Flux[A]] = {
+		val d = doer.asInstanceOf[D & FluxExtension]
+		import d.*
+
+		val emitterGen: Gen[Flux[A]] = Gen.const {
+			new DefaultFlux[A] {
+				override def subscribeSync(downChainObserver: FluxObserver[A]): d.Subscription = {
+					val emitter = new StreamEmitter[A]
+					val sub = emitter.subscribeSync(downChainObserver)
+					elementsBeforeFailure.foreach(emitter.emit)
+					emitter.fail(ex)
+					sub
+				}
+			}
+		}
+
+		val iterableGuardedGen: Gen[Flux[A]] = Gen.const {
+			val faultyIterable = new Iterable[A] {
+				override def iterator: Iterator[A] = new Iterator[A] {
+					private var idx = 0
+
+					override def hasNext: Boolean = true
+
+					override def next(): A = {
+						if idx < elementsBeforeFailure.length then {
+							val res = elementsBeforeFailure(idx)
+							idx += 1
+							res
+						} else throw ex
+					}
+				}
+			}
+			Flux_fromIterableGuarded(faultyIterable)
+		}
+
+		val generateGen: Gen[Flux[A]] = Gen.const {
+			Flux_generate[A] { idx =>
+				if idx < elementsBeforeFailure.length then Maybe(elementsBeforeFailure(idx))
+				else throw ex
+			}
+		}
+
+		val monosGen: Gen[Flux[A]] = Gen.const {
+			val monosList = elementsBeforeFailure.map(a => d.Task_ready(a)) :+ d.Task_fail(ex)
+			Flux_fromMonos(IArray.from(monosList))
+		}
+
+		Gen.oneOf(emitterGen, iterableGuardedGen, generateGen, monosGen)
+	}
+
+	def genFluxFrom[A: ClassTag](elements: Seq[A], failure: Option[Throwable] = None, syncExecutionOnly: Boolean = false): Gen[FluxExtension#Flux[A]] = {
+		failure match {
+			case None => genSuccessfulFluxFrom(elements, syncExecutionOnly)
+			case Some(ex) => genFailingFluxFrom(elements, ex, syncExecutionOnly)
+		}
+	}
+
+	def genFlux[A: ClassTag](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[FluxExtension#Flux[A]] = {
+		for {
+			elems <- Gen.listOfN(3, genA.arbitrary)
+			shouldFail <- Gen.frequency((80, false), (20, true))
+			ex <- GeneratorsForDoerTests.throwableArbitrary.arbitrary
+			flux <- if shouldFail then genFailingFluxFrom[A](elems, ex, syncExecutionOnly) else genSuccessfulFluxFrom[A](elems, syncExecutionOnly)
+		} yield flux
+	}
+
+	given fluxArbitrary: [A: ClassTag] =>Arbitrary[A] => Arbitrary[FluxExtension#Flux[A]] = Arbitrary(genFlux())
 
 }

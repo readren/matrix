@@ -19,12 +19,8 @@ object CooperativeWorkersDp {
 		case notStarted, keepRunning, shutdownWhenAllWorkersSleep, terminated
 	}
 
-	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]].
-	 *
-	 * Design note: to reduce class-metadata of extending classes, this facade was defined as an abstract class that extends [[AbstractDoer]] instead of a trait that extends [[Doer]].
-	 * If this design causes type-hierarchy problems, define it as a trait that extends [[Doer]] instead of [[AbstractDoer]].
-	 * */
-	abstract class DoerFacade extends AbstractDoer {
+	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]]. */
+	trait DoerFacade extends Doer {
 		/** Exposes the number of routines that are waiting to be executed sequentially. */
 		def numOfPendingRunnables: Int
 	}
@@ -99,7 +95,7 @@ abstract class CooperativeWorkersDp(
 
 	def currentLoad: Int = (100 * (workers.length - sleepZonePopulation.get)) / workers.length
 
-	protected open class DoerImpl(override val tag: Tag) extends DoerFacade { thisDoer =>
+	protected open class DoerImpl(override val tag: Tag) extends AbstractDoer, DoerFacade { thisDoer =>
 
 		override type Tag = thisProvider.Tag
 

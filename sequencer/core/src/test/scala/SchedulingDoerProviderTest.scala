@@ -352,8 +352,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			latch.countDown()
 		}
 
-		assert(latch.await(5, TimeUnit.SECONDS), "Venture after exception should still execute")
-		assert(exceptionCaught.get, "Venture after exception should have executed")
+		assert(latch.await(5, TimeUnit.SECONDS), "`Runnable` after exception should still execute")
+		assert(exceptionCaught.get, "`Runnable` after exception should have executed")
 	}
 
 	test("The DoerProvider.onUnhandledException handler should be called immediately when the Runnable passed to executeSequentially throws an exception.") {

@@ -2,8 +2,8 @@
 type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
-tags: ["sequencer", "task", "captor", "captor"]
-timestamp: "2026-07-22T14:30:00Z"
+tags: ["sequencer", "task", "captor", "flux", "testing"]
+timestamp: "2026-07-27T19:52:00Z"
 ---
 
 # Sequencer Core Component
@@ -274,3 +274,11 @@ slower than the `local` variant.
 | Flat         | 21.5M                          | 6.29M                          | 3.60M                           |
 | Hierarchical | 35.5M                          | 9.55M                          | 5.37M                           |
 | ThreadDriven | 27.9M                          | 8.05M                          | 4.71M                           |
+
+## Flux Testing Infrastructure
+
+`FluxExtension` defines push-based multi-element stream primitives (`Flux[A]`), factory methods (`Flux_empty`, `Flux_apply`, `Flux_fromIterable`, `Flux_generate`, `Flux_fromMonos`, `StreamEmitter`), transformations (`map`, `scan`, `buffer`,
+`zip`, `take`, `takeWhile`, `foldWhile`), and matrix flatMap tensors (`flatMap`, `Tensor`).
+
+The abstract `FluxDoerProviderTest[D <: Doer & FluxExtension]` suite provides a provider-agnostic harness ensuring all concrete `DoerProvider` implementations satisfy the invariants of `Flux` streams, execution scoping, cancellation, and
+error handling. `GeneratorsForDoerTests` supports property-based test generation for `Flux` instances.

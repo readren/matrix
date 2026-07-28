@@ -52,7 +52,7 @@ trait DoerSandbox3 { thisDoer =>
 	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
 	 * If the call is executed by the $DoSerEx the [[Runnable]]'s execution will not start until the DoSerEx completes its current execution and gets free to start a new one.
 	 *
-	 * All the deferred actions preformed by the [[Task]]/[[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
+	 * All the deferred actions preformed by the [[Mono]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
 	 * This function only makes sense to call:
 	 *		- from an action that is not executed by this $DoSerEx (the callback of a [[Future]], for example);
 	 *		- or to avoid a stack overflow by continuing the recursion in a new execution.

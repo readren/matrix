@@ -1,0 +1,27 @@
+package readren.sequencer
+package providers
+
+import readren.sequencer.FluxDoerProviderTest
+
+/** Tests if the [[Doer]] with [[FluxExtension]] instances provided by [[CooperativeFlatPollingSchedulerDp]] satisfy the [[FluxExtension]] invariants.
+ */
+class CooperativeFlatPollingSchedulerDpFluxTest extends FluxDoerProviderTest[CooperativeFlatPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+
+	override type DP = CooperativeFlatPollingSchedulerDp
+
+	override protected def buildDoerProvider: DP = new CooperativeFlatPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
+		override type Tag = String
+
+		override def tagFromText(text: String): String = text
+
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
+	}
+
+	override def scalaCheckTestParameters: org.scalacheck.Test.Parameters =
+		super.scalaCheckTestParameters.withMinSuccessfulTests(100)
+
+	override protected def releaseDoerProvider(doerProvider: DP): Unit = {
+		scribe.debug(s"Provider diagnostics:", doerProvider.diagnose(new StringBuilder()).toString())
+		doerProvider.shutdown()
+	}
+}

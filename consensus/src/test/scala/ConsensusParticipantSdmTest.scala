@@ -312,8 +312,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			 * The randomness is deterministic to allow reproducing a scenario.
 			 * The fate of all the stages of an RPC are determined in advance in the first stage.
 			 * @param replierId the identifier of the targeted [[Node]], the one on whose [[Node.sequencer]] is the `call` function is executed.
-			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Venture]]. The function is called within the replier's [[Node.sequencer]].
-			 * @return a [[netSequencer.Venture]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
+			 * @param call a function that takes the replier [[Node]] and returns a `replierNode.sequencer.Task` that yields the value to be yielded by the returned [[readren.sequencer.Doer.Capturer]]. The function is called within the replier's [[Node.sequencer]].
+			 * @return a [[netSequencer.Capturer]] that yields the value yielded by the `replierNode.sequencer.Task` returned by applying the provided function `call` to the replier [[Node]].
 			 * @throws RuntimeException if this [[Net]] does not contain the [[Node]]s identified with `inquirerId` and `replierId`. */
 			def rpc[R](replierId: Id, requestDescription: String)(call: (replierNode: Node) => replierNode.sequencer.Capturer[R]): netSequencer.Capturer[R] = {
 
@@ -803,12 +803,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				sequencer.Keeper(IArray.unsafeFromArray(bytes.toByteArray))
 			}
 
-			override def installSnapshot(data: IArray[Byte]): sequencer.LatchingVenture[Unit] = {
+			override def installSnapshot(data: IArray[Byte]): sequencer.Capturer[Unit] = {
 				sequencer.checkWithin()
 				val in = java.io.ObjectInputStream(java.io.ByteArrayInputStream(data.unsafeArray))
 				highestAppliedCommandSerial = in.readInt()
 				highestAppliedCommandIndex = in.readLong()
-				sequencer.LatchingVenture_ready(Doer.successUnit)
+				sequencer.Capturer_ready(Doer.successUnit)
 			}
 		}
 

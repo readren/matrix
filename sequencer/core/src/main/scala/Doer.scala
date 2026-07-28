@@ -19,7 +19,7 @@ object Doer {
 	val assertionsEnabled: Boolean = classOf[Doer].desiredAssertionStatus()
 
 
-	/** Information about the responsible for the completion and origin of the value with which a [[Captor]]/[[Commitment]] is completed:
+	/** Information about the responsible for the completion and origin of the value with which a [[Captor]] is completed:
 	 *		- [[THE_PROVIDED]] if completed by the invoked completion method with the provided value.
 	 *		- [[ANOTHER_BEFORE]] if completed by other means before the completion method was invoked.
 	 *		- [[ANOTHER_AFTER]] if completed by other menas after the completion method was invoked.
@@ -27,14 +27,14 @@ object Doer {
 	type ResultOrigin = OriginId
 	/** Completed by something else after the [[Doer.Captor.seizeWith]] was invoked. */
 	inline val ANOTHER_AFTER = 0
-	/** Information about the responsible for the completion and origin of the value with which a [[Captor]]/[[Commitment]] is completed with an immediate value.
+	/** Information about the responsible for the completion and origin of the value with which a [[Captor]] is completed with an immediate value.
 	 *		- [[THE_PROVIDED]] if completed by the invoked completion method with the provided value.
 	 *		- [[ANOTHER_BEFORE]] if completed by other means before the completion method was invoked.
 	 * TODO when a new version of scala is released (newer than 3.7.4), check if it supports making these types aliases opaque without causing obscure errors in unrelated code like the [[LoopingExtension]] despite it does not reference them. */
 	type ImmediateResultOrigin = ResultOrigin
-	/** Completed by something else before the [[Doer.Captor]]/[[Doer.Commitment]] completion method was invoked. */
+	/** Completed by something else before the [[Doer.Captor]] completion method was invoked. */
 	final inline val ANOTHER_BEFORE = 1
-	/** Completed by the [[Doer.Captor]]/[[Doer.Commitment]] completion method to which the `onCompleted` call-back that received this constant was provided. */
+	/** Completed by the [[Doer.Captor]] completion method to which the `onCompleted` call-back that received this constant was provided. */
 	final inline val THE_PROVIDED = 2
 
 	final def checkWithinMsg(thisDoer: Doer): String = s"The current thread does not correspond to this Doer: expected=${thisDoer.tag}, current=${thisDoer.currentlyRunningDoer.fold("unknown")(_.tag)}."
@@ -68,8 +68,7 @@ abstract class AbstractDoer extends Doer
  * @define onCompleteExecutedByDoSerEx The `onComplete` callback passed to `subscribe` is always, with no exception, executed by this $DoSerEx. This is part of the contract of the [[Mono]] and [[Flux]] hierachies.
  * @define threadSafe This method is thread-safe.
  * @define isExecutedByDoSerEx This function is executed within the DoSerEx (doer's serial executor).
- * @define unhandledErrorsAreReported The call to this routine is guarded with a try-catch. If the evaluation throws a non-fatal exception it will be caught and reported with [[Doer.reportFailure()]].
- * @define notGuarded CAUTION! The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the task will never complete. The same occurs with all routines received by [[Task]] operations. This is one of the main differences with [[Venture]] operation.
+ * @define notGuarded CAUTION! The call to this function is NOT guarded with a try-catch. If its evaluation terminates abruptly the task will never complete. The same occurs with all routines received by not guarded [[Task]] operations.
  * @define maxRecursionDepthPerExecutor Maximum recursion depth per executor. Once this limit is reached, the recursion continues in a new executor. The result does not depend on this parameter as long as no [[java.lang.StackOverflowError]] occurs.
  * @define isWithinDoSerEx indicates whether the call to this method is within this [[Doer]]'s sequential executor. If there is no such certainty the call site should either, not specify a value in order to use the default (which is the result of [[Doer.isInSequence]]), or specify `false` to force deferred execution.
  * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
@@ -92,7 +91,7 @@ trait Doer { thisDoer =>
 	 * The implementation should not throw non-fatal exceptions.
 	 * The implementation should be thread-safe.
 	 *
-	 * All the deferred actions preformed by the [[Task]] and [[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
+	 * All the deferred actions preformed by the [[Mono]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive.
 	 * @note Implementations must set their associated provider's thread-local to `this` before invoking `body`, and clear it (restore to `null`) once `body` returns or throws. Failure to uphold this contract will cause [[DoerProvider.currentDoer]] to return a value of the wrong type at runtime, as the cast in that method relies on it. */
 	def executeSequentially(runnable: Runnable): Unit
 
@@ -140,7 +139,7 @@ trait Doer { thisDoer =>
 	 * Queues an execution of the specified procedure in the tasks-queue of this $DoSerEx. See [[Doer.executeSequentially]]
 	 * If the call is executed by the $DoSerEx the [[Runnable]]'s execution will not start until the DoSerEx completes its current execution and gets free to start a new one.
 	 *
-	 * All the deferred actions preformed by the [[Task]]/[[Venture]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
+	 * All the deferred actions preformed by the [[Mono]] operations are executed by calling this method unless the particular operation documentation says otherwise. That includes not only the call-back functions like `onComplete` but also all the functions, procedures, predicates, and by-name parameters they receive as.
 	 * This function only makes sense to call:
 	 *		- from an action that is not executed by this $DoSerEx (the callback of a [[Future]], for example);
 	 *		- or to avoid a stack overflow by continuing the recursion in a new execution.
@@ -450,7 +449,7 @@ trait Doer { thisDoer =>
 		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with references to the same [[Doer]] instance but through different type-paths.
 		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Task]].
 		 *
-		 * Design note: It was decided to make [[Task]] (and [[Venture]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Task]] (and [[Venture]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
+		 * Design note: It was decided to make [[Mono]] an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Mono]] operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
 		 * Using type-path checking to detect contract violations is very valuable, but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Task]] instances belong to the same [[Doer]] instance.
 		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
 		 * This operation ([[castTypePath()]]) is intended to handle those cases.
@@ -487,8 +486,8 @@ trait Doer { thisDoer =>
 	 * For example, if the [[Task.subscribeSyncCallbacks]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{task.flatMap(f).flatMap(g) == task.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the task's execution.\
 	 * This does not mean that [[Task.subscribeSyncCallbacks]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Task]] instances.\
 	 * If the goal is just deterministic behavior, it's sufficient that any closed-over mutable variable is only mutated and accessed by actions executed sequentially in a determined order. This is why the contract enforces serialized execution of actions in the order at which the actions were triggered: to maintain determinism, even when closing over mutable variables, provided they are mutated and accessed solely within the actions in said ordered sequence and those actions are deterministic.\
-	 * If you require to ensure monadic laws are followed, use [[Capturer]]/[[LatchingVenture]] instead.\
-	 * Design note: [[Task]] and [[Venture]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Venture]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
+	 * If you require to ensure monadic laws are followed, use [[Capturer]] instead.\
+	 * Design note: [[Task]] and [[Capturer]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Capturer]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
 	 * While path-dependent type checking is valuable for enforcing this contract, it has a drawback: the compiler's type-path checks are overly strict, requiring compatible singleton types for references, whereas we only need to verify that the [[Task]] instances correspond to the same [[Doer]].\
 	 * As a result, the compiler may flag type errors in cases where the contract is not violated, which is undesirable.\
 	 * To bypass these path-dependent restrictions when composing tasks across Doer boundaries (or when types cannot be fully proven stable by the compiler), see the trigger implementations in the macro definition, which projects types using the general projected type `Doer#Task`.\
@@ -568,7 +567,7 @@ trait Doer { thisDoer =>
 		 * ===Detailed behavior===
 		 * Returns a [[Task]] that belongs to the provided [[Doer]]. When it is triggered, it will trigger this task within this [[Doer]] and, when completed, make the returned [[Task]] to yield the result.
 		 * CAUTION: Avoid closing over the same mutable variable from two operand functions applied to [[Task]] instances belonging to different [[Doer]]s.
-		 * Remember that all function operands provided to [[Venture]] methods are executed within the [[Doer]] that owns it.
+		 * Remember that all functional operands passed to [[Mono]] methods are executed within the [[Doer]] that owns it.
 		 * Therefore, calling [[triggerCallbacks]] on the returned [[Task]] will execute the `onComplete` passed to it within the `otherDoer`.
 		 *
 		 * $threadSafe
@@ -582,7 +581,7 @@ trait Doer { thisDoer =>
 		 * This operation does nothing at runtime. It only tricks the compiler to prevent it from complaining when operating with references to the same [[Doer]] instance but through different type-paths.
 		 * CAUTION: Use it only if you are sure that the provided [[Doer]] instance is the one that owns this [[Task]].
 		 *
-		 * Design note: It was decided to make [[Task]] (and [[Venture]]) an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Task]] (and [[Venture]]) operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
+		 * Design note: It was decided to make [[Mono]] an inner class of the [[Doer]] to take advantage of type-path checking to detect when the contract "all operand functions passed to [[Mono]] operations owned by the same [[Doer]] are executed in sequence" might be violated, at compile time.
 		 * Using type-path checking to detect contract violations is very valuable, but it comes at a cost, because the type-path check done by the compiler is stricter than necessary -- it checks that the singleton type of the references involved be compatible, and we only need to check that the involved [[Task]] instances belong to the same [[Doer]] instance.
 		 * Therefore, the compiler will report type errors in situations the contract is not violated, which is not what we want.
 		 * This operation ([[castTypePath()]]) is intended to handle those cases.
@@ -758,14 +757,14 @@ trait Doer { thisDoer =>
 	/** Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, wrapped with [[Try]], in the same order.\
 	 * The result, if any, is always successful.
 	 * $threadSafe \
-	 * @param ventures the [[Iterable]] of [[Venture]]s that the returned [[Task]] will trigger simultaneously to combine their results.
+	 * @param tasks the [[Iterable]] of [[Task]]s that the returned [[Task]] will trigger simultaneously to combine their results.
 	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @tparam A the result type of all the provided [[Venture]]s.
-	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Venture]]s.
+	 * @tparam A the result type of all the provided [[Task]]s.
+	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Task]]s.
 	 * @tparam To the higher-kinded type of the [[Iterable]] that will contain the results.
 	 * @return the successful task described in the method description. */
-	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], ventures: C[Task[A]]): Task[To[Try[A]]] = {
-		Task_sequenceHardyToArray(ventures).map { array =>
+	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], tasks: C[Task[A]]): Task[To[Try[A]]] = {
+		Task_sequenceHardyToArray(tasks).map { array =>
 			val builder = factory.newBuilder[Try[A]]
 			var index = 0
 			while index < array.length do {
@@ -2132,6 +2131,8 @@ trait Doer { thisDoer =>
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy final val Capturer_false: Keeper[Boolean] = Keeper(false)
 
+	inline def Capturer_ready[A](a: A): Keeper[A] = new Keeper(a)
+
 	def Capturer_from[A](mono: Mono[A]): Capturer[A] = {
 		mono match {
 			case capturer: Capturer[A] => capturer
@@ -2247,8 +2248,9 @@ trait Doer { thisDoer =>
 	}
 
 	/** Like [[Task_sequenceHardyToArray]] but eager (instead of lazy). */
-	inline def Capturer_sequenceVenturesToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capturer[Array[Try[A]]] =
-		Captor_triggerAndWire(Task_sequenceHardyToArray(ventures), isWithinDoSerEx)
+	inline def Capturer_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capturer[Array[Try[A]]] = {
+		Captor_triggerAndWire(Task_sequenceHardyToArray(monos), isWithinDoSerEx) // TODO optimize
+	}
 
 	//// Keeper ////
 
@@ -2896,85 +2898,6 @@ trait Doer { thisDoer =>
 		}
 		new CO
 	}
-
-
-
-	///////////// VENTURE //////////////
-
-	/** A hardy and short-circuiting version of [[Task]].\
-	 * Advantages of [[Venture]] compared to [[Task]]:
-	 *		- results are wrapped withing a [[Try]] which allows the support of failed results.
-	 *		- the call to the routines received by the operations are guarded with a try-catch, which allows to propagate failures through [[Venture]] chains.
-	 *		- can encapsulate a [[Future]] making interoperability with them easier.
-	 * @param A the type of the result obtained when executing this [[Venture]]. */
-	@deprecated
-	type Venture[+A] = Task[A]
-	@deprecated
-	type LatchingVenture[+A] = Capturer[A]
-	@deprecated
-	type ReadyVenture[+A] = Keeper[A]
-	@deprecated
-	type Commitment[A] = Captor[A]
-
-	@deprecated
-	inline def ReadyVenture[A](tryA: Try[A]): Keeper[A] = tryA match {
-		case Success(a) => Keeper(a)
-		case Failure(ex) => new Failed(ex).asInstanceOf[Keeper[A]]
-	}
-
-	@deprecated
-	inline def Commitment[A](): Captor[A] = new Captor[A]()
-
-
-
-
-	////////////// EVER ///////////////
-
-	inline final def LatchingVenture[A](fixedResult: Maybe[Try[A]]): Capturer[A] =
-		fixedResult.fold(new Captor[A]())(tryA => LatchingVenture_ready(tryA))
-
-	inline final def LatchingVenture_ready[A](immediateResult: Try[A]): Capturer[A] = immediateResult match {
-		case Success(a) => Keeper(a)
-		case Failure(ex) => new Failed(ex).asInstanceOf[Capturer[A]]
-	}
-
-	@threadUnsafe lazy final val LatchingVenture_unit: Capturer[Unit] = Capturer_unit
-	@threadUnsafe lazy final val LatchingVenture_true: Capturer[Boolean] = Capturer_true
-	@threadUnsafe lazy final val LatchingVenture_false: Capturer[Boolean] = Capturer_false
-
-	inline def Commitment[A](fixedResult: Maybe[Try[A]]): Commitment[A] = {
-		val c = new Captor[A]()
-		fixedResult.foreach(tryA => c.seizeSync(tryA))
-		c
-	}
-
-	def Commitment_own[A](supplier: () => Try[A]): Commitment[A] = {
-		val commitment = new Commitment[A]()
-		run(commitment.seizeSync(supplier()))
-		commitment
-	}
-
-	def Commitment_ownFlat[A](supplier: () => LatchingVenture[A]): Commitment[A] = {
-		val commitment = new Commitment[A]()
-		run(supplier().subscribeSync(new MonoObserver[A] {
-			override def onSuccess(a: A): Unit = commitment.captureSync(a)
-
-			override def onError(ex: Throwable): Unit = commitment.seizeSync(Failure(ex))
-		}))
-		commitment
-	}
-
-	inline def Commitment_triggerAndWire[A](
-		venture: Venture[A],
-		inline isWithinDoSerEx: Boolean = isInSequence,
-		onSuccess: (A, ResultOrigin) => Unit = (_: A, _: ResultOrigin) => (),
-		onError: (Throwable, ResultOrigin) => Unit = (_, _) => ()
-	): Commitment[A] = {
-		val commitment = Commitment[A]()
-		venture.subscribeCallbacks(isWithinDoSerEx)(a => commitment.captureSync(a), e => commitment.trapSync(e))
-		commitment
-	}
-
 
 	//////////////// Flow //////////////////////
 

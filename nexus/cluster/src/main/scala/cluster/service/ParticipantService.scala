@@ -11,7 +11,7 @@ import cluster.service.Protocol.IncommunicabilityReason.IS_CONNECTING_AS_CLIENT
 import cluster.service.behavior.*
 
 import readren.common.Maybe
-import readren.sequencer.{AbstractDoer, MilliDuration, SchedulingExtension}
+import readren.sequencer.{Doer, MilliDuration, SchedulingExtension}
 
 import java.net.SocketOption
 import java.nio.channels.{AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler}
@@ -25,7 +25,7 @@ import scala.util.{Failure, Success, Try}
 
 object ParticipantService {
 
-	type SchedulingDoer = AbstractDoer & SchedulingExtension
+	type SchedulingDoer = Doer & SchedulingExtension
 
 	trait Clock {
 		def getTime: Instant

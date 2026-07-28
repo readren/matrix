@@ -8,6 +8,20 @@ timestamp: "2026-07-22T15:35:00Z"
 
 # Change Log
 
+## [2026-07-27T20:17:00Z]
+
+- Fixed `emitterGen` in `GeneratorsForDoerTests.scala` by deferring `StreamEmitter` emissions to `subscribeSync` invocation.
+- All 17 test cases in `FluxDoerProviderTest` suites now pass across all 7 `DoerProvider` implementations.
+
+## [2026-07-27T20:09:00Z]
+
+- Added concrete `FluxDoerProviderTest` suites for all `DoerProvider` implementations in `sequencer/providers`.
+- Mixed `FluxExtension` into `StandardSchedulingDp.ProvidedDoerFacade` and `CooperativeSchedulerDpCompanion.SchedulingDoerFacade`.
+
+## [2026-07-27T19:52:00Z]
+
+- Documented `FluxExtension` testing infrastructure and abstract `FluxDoerProviderTest` suite specification in `okf/sequencer-core.md`.
+
 ## [2026-07-26T15:51:15Z]
 
 - Updated `okf/common-primitives.md` to document how `Maybe`'s opaque type scope prevents macro `OrType` matching on nested `Maybe[T]` instances.

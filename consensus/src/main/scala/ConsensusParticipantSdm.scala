@@ -492,7 +492,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		/** Installs a snapshot received from the leader, replacing the current state machine state.\
 		 * @param data the serialized state machine state.
 		 * @return a [[sequencer.Capturer]] that completes when the snapshot has been installed. */
-		def installSnapshot(data: IArray[Byte]): sequencer.LatchingVenture[Unit]
+		def installSnapshot(data: IArray[Byte]): sequencer.Capturer[Unit]
 	}
 
 	//// RESPONSE TO CLIENT
@@ -641,7 +641,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * Must be called within the [[sequencer]].
 			 * @param inquirerId The id of the participant that called [[chooseALeader]].
 			 * @param inquirerInfo Information about the state of the participant that called.
-			 * @return A [[sequencer.Venture]] that yields a [[Vote]] indicating the candidate chosen by the listening participant for the specified term.
+			 * @return A [[sequencer.Capturer]] that yields a [[Vote]] indicating the candidate chosen by the listening participant for the specified term.
 			 */
 			def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capturer[Vote[ParticipantId]]
 
@@ -654,7 +654,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param prevRecordTerm The term of the record after which the specified `records` should be appended.
 			 * @param batch The records to append.
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
-			 * @return A [[sequencer.Venture]] that yields the result of the append operation.
+			 * @return A [[sequencer.Capturer]] that yields the result of the append operation.
 			 */
 			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capturer[AppendResult]
 
@@ -712,7 +712,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * The implementation should make, somehow, the destination participant's [[Delegate.onHowAreYou]] to be called, and return what it returns.
 			 * Called within the [[sequencer]] thread.
 			 * @param inquirerInfo The term of the participant that is asking.
-			 * @return A [[sequencer.Venture]] that yields the state information of the destination participant.
+			 * @return A [[sequencer.Capturer]] that yields the state information of the destination participant.
 			 */
 			def howAreYou(inquirerInfo: StateInfo): sequencer.Capturer[StateInfo]
 
@@ -722,7 +722,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * Called within the [[sequencer]] thread.
 			 * @param inquirerId The id of the participant that is asking.
 			 * @param inquirerInfo Information about the state of the participant that is asking.
-			 * @return A [[sequencer.Venture]] that yields a [[Vote]] indicating the candidate chosen by the destination participant.
+			 * @return A [[sequencer.Capturer]] that yields a [[Vote]] indicating the candidate chosen by the destination participant.
 			 */
 			def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capturer[Vote[ParticipantId]]
 
@@ -736,7 +736,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @param prevLogTerm the expected [[Term]] of the [[Record]] at `prevLogIndex`.
 			 * @param batch The records to append.
 			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
-			 * @return A [[sequencer.Venture]] that yields the result of the append operation.
+			 * @return A [[sequencer.Capturer]] that yields the result of the append operation.
 			 */
 			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capturer[AppendResult]
 
@@ -746,7 +746,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * This method is called within the [[sequencer]].
 			 * @param inquirerTerm The term of the participant that is sending the snapshot.
 			 * @param snapshot the snapshot data including state machine state and metadata.
-			 * @return A [[sequencer.Venture]] that yields the result of the installation operation.
+			 * @return A [[sequencer.Capturer]] that yields the result of the installation operation.
 			 */
 			def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capturer[AppendResult]
 
@@ -761,7 +761,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute to the quorum of the old set (by not voting but effectively lowering the required threshold of active votes) until a new, stable majority is functionally proven by a new leader.
 			 *
 			 * @param indexOfGrantedStableConfigChange The index of the [[StableConfigChange]] record for which the authorization is granted, which is the one that excludes the destination participant.
-			 * @return A [[sequencer.Venture]] that completes successfully if either: the permission was successfully delivered, or the participant is already in a post-retirement state ([[QUIESCED]], released, or no longer exists).
+			 * @return A [[sequencer.Capturer]] that completes successfully if either: the permission was successfully delivered, or the participant is already in a post-retirement state ([[QUIESCED]], released, or no longer exists).
 			 */
 			def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Capturer[Unit]
 		}
@@ -975,7 +975,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 		import cluster.*
 
-		/** The [[sequencer.Venture]] returned by a call to [[ClusterParticipant.appendRecords]]. */
+		/** The [[sequencer.Capturer]] returned by a call to [[ClusterParticipant.appendRecords]]. */
 		private type AppendRequest = sequencer.Capturer[AppendResult]
 
 		private type AppendOutcome = Int
@@ -1287,7 +1287,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								val howAreYouQuestions0 = askHowOtherParticipantsAre(config0.peers, stateInfo0b, memorizedPeersInfos)
 								// determine my vote based on the answers to the howAreYou questions
 								for {
-									howAreYouAnswers0 <- sequencer.Capturer_sequenceVenturesToArray(howAreYouQuestions0, true)
+									howAreYouAnswers0 <- sequencer.Capturer_sequenceHardyToArray(howAreYouQuestions0, true)
 									primaryState1 <- {
 										val highestTermSeen = IArray.unsafeFromArray(howAreYouAnswers0).foldLeftWithIndex(accessible0.currentTerm) { (latestTermSeen, answer, _) =>
 											answer match {
@@ -1888,7 +1888,7 @@ trait ConsensusParticipantSdm { thisModule =>
 								val myStateInfoAtChooseALeaderRequest = syncLocalStateInfo(currentState2)
 								val inquires = for replierId <- config2.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
 								for {
-									replies <- sequencer.Capturer_sequenceVenturesToArray(inquires, true)
+									replies <- sequencer.Capturer_sequenceHardyToArray(inquires, true)
 									primaryState3 <- {
 										val latestTermSeen = IArray.unsafeFromArray(replies).foldLeftWithIndex(currentState2.currentTerm)((latestTermSeen, reply, _) => reply match {
 											case Success(replierVote) => if replierVote.term > latestTermSeen then replierVote.term else latestTermSeen
@@ -2032,7 +2032,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			}
 
 			/** Updates the [[Role]] of this [[ConsensusParticipant]] and then returns the [[sequencer.Capturer]] returned by the [[Role.onCommandFromClient]] method applied to the updated [[Role]].
-			 * @return a [[sequencer.Venture]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
+			 * @return a [[sequencer.Capturer]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
 			final def updateRoleAndThenCallsOnCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Context): sequencer.Capturer[ResponseToClient] = {
 				Trace.step("updateRoleAndThenCallsOnCommandFromClient") {
 					Trace.trace(s"Current role=${RoleOrdinal_nameOf(ordinal)}, attemptFlag=$attemptFlag, memorizedInfos=$memorizedPeersInfos.")
@@ -2792,7 +2792,7 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * TODO replace the `initialPrimaryState` parameter with what is obtained from it. Storing an instance of [[Accessible]] is error prone.
 		 */
 		private final class Leader(val leadedTerm: Term, initialPrimaryState: Accessible, initialConfig: Configuration, wsf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(wsf) { thisLeader =>
-			/** The outcome of the [[sequencer.Venture]] returned by a call to [[ClusterParticipant.appendRecords]]. */
+			/** The outcome of the [[sequencer.Capturer]] returned by a call to [[ClusterParticipant.appendRecords]]. */
 			private type AppendResponse = Try[AppendResult]
 
 			override val ordinal: RoleOrdinal = LEADER
@@ -2994,7 +2994,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					def loop(attemptsDone: Int = 0): Unit = {
 						val persmissionsArray = nonAcknowledgedQuiescencePermissions.toArray
 						val calls = for (participantId, indexOfAuthorizedScc) <- persmissionsArray yield participantId.permitQuiescence(indexOfAuthorizedScc)
-						for responses <- sequencer.Capturer_sequenceVenturesToArray(calls) do {
+						for responses <- sequencer.Capturer_sequenceHardyToArray(calls) do {
 							IArray.unsafeFromArray(responses).foreachWithIndex { (response, arrayIndex) =>
 								val permissionEntry = persmissionsArray(arrayIndex)
 								val participantId = permissionEntry._1
@@ -3723,10 +3723,10 @@ trait ConsensusParticipantSdm { thisModule =>
 				isGhost && IArray.unsafeFromArray(highestRecordIndexKnowToBeCommitted_ByParticipantIndex).forallWithIndex((highestRecordIndexKnowToBeCommitted, _) => highestRecordIndexKnowToBeCommitted >= indexOfConfigChangeThatExcludedThisParticipant)
 			}
 
-			/** Consolidates the many [[sequencer.Venture]]s into a single [[sequencer.Capturer]] that yields an array with the results of the [[sequencer.Venture]]s.
+			/** Consolidates the many [[AppendRequest]]s into a single [[sequencer.Capturer]] that yields an array with the [[AppendResponse]]s.
 			 * TODO this is inefficient because the pace is determined by the slowest. Implement it using a stram instead. */
 			private inline def sequenceAppendRequests(appendRequests: scala.collection.IndexedSeq[AppendRequest]): sequencer.Capturer[IArray[AppendResponse]] = {
-				for appendDialog <- sequencer.Capturer_sequenceVenturesToArray(appendRequests, true) yield IArray.unsafeFromArray(appendDialog)
+				for appendDialog <- sequencer.Capturer_sequenceHardyToArray(appendRequests, true) yield IArray.unsafeFromArray(appendDialog)
 			}
 
 			def handoffAndBumpTermIfLessThan(seenTerm: Term)(using Context): Role = {
@@ -4557,13 +4557,13 @@ trait ConsensusParticipantSdm { thisModule =>
 		 * @param participantsIds the [[ParticipantId]]s of the target participants.
 		 * @param stateInfo the [[StateInfo]] to put in the inquires.
 		 * @param forcedAnswerByParticipantId the forced answers indexed by [[ParticipantId]].
-		 * @return An [[IndexedSeq]] containing a [[sequencer.LatchingVenture]] for each [[ParticipantId]] in the provided array. Each [[sequencer.LatchingVenture]] element is the one returned by [[ClusterParticipant.howAreYou]] applied to the corresponding [[ParticipantId]] in the provided array, except the corresponding to the provided `idOfExcludedParticipant`, which yield the provided [[StateInfo]].
+		 * @return An [[IndexedSeq]] containing a [[sequencer.Capturer]] for each [[ParticipantId]] in the provided array. Each [[sequencer.Capturer]] element is the one returned by [[ClusterParticipant.howAreYou]] applied to the corresponding [[ParticipantId]] in the provided array, except the corresponding to the provided `idOfExcludedParticipant`, which yield the provided [[StateInfo]].
 		 */
-		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], stateInfo: StateInfo, forcedAnswerByParticipantId: java.util.Map[ParticipantId, StateInfo]): IArray[sequencer.LatchingVenture[StateInfo]] = {
+		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], stateInfo: StateInfo, forcedAnswerByParticipantId: java.util.Map[ParticipantId, StateInfo]): IArray[sequencer.Capturer[StateInfo]] = {
 			participantsIds.mapWithIndex { (participantId, _) =>
 				forcedAnswerByParticipantId.get(participantId) match {
 					case null => coalescedHowAreYou.getOrStart((participantId, stateInfo), true)
-					case forcedAnswer: StateInfo => sequencer.LatchingVenture_ready(Success(forcedAnswer))
+					case forcedAnswer: StateInfo => sequencer.Capturer_ready(forcedAnswer)
 				}
 			}
 		}

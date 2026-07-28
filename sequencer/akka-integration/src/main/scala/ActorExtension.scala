@@ -15,10 +15,10 @@ trait ActorExtension { thisActorExtension: Doer =>
 	def akkaScheduler: Scheduler
 
 	extension [A](target: ActorRef[A]) {
-		/** Creates a [[Venture]] that sends the provided message to the `target`. */
+		/** Creates a [[Task]] that sends the provided message to the `target`. */
 		def says(message: A): Task[Unit] = Task_apply(() => target ! message)
 
-		/** Note: The type parameter is required for the compiler to know the type parameter of the resulting [[Venture]]. */
+		/** Note: The type parameter is required for the compiler to know the type parameter of the resulting [[Task]]. */
 		def queries[B](messageBuilder: ActorRef[B] => A)(using timeout: Timeout): Task[B] = {
 			import akka.actor.typed.scaladsl.AskPattern.*
 			Task_from(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
