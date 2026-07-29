@@ -159,6 +159,22 @@ When configuring execution environments, select the `DoerProvider` implementatio
   * **Pros**: Dynamically routes new doers to the worker thread with the shortest execution queue at allocation time.
   * **Cons**: Binds doers statically to threads at creation time; no scheduling support.
 
+## Testing Architecture Guidelines
+
+* **Modular Trait-Based Test Hierarchy**: Test cases are partitioned into reusable, capability-focused traits matching `Doer` extensions:
+  - `VanillaDoerTests`: Standard `Doer`, `Task`, `Captor`, and `CausalFence` invariant tests.
+  - `FluxDoerTests`: `FluxExtension` stream factory and operator tests.
+  - `SchedulingDoerTests`: Single-shot `SchedulingExtension` delay tests.
+  - `ScheduledFluxDoerTests`: `ScheduledFluxExtension` periodic push stream tests.
+  - `LoopingDoerTests`: `LoopingExtension` iterative combinator tests.
+* **Abstract Harness (`DoerProviderTestBase`)**: Manages suite lifecycle, logging (`ScribeConfig`), `unhandledExceptionObserver` tracking, and reusable test harness helpers. Property sample generation (`forAllTaskOperandExceptions`,
+  `forAllSubscribeExceptions`) and assertion evaluation (`checkTaskOperandExceptionHandling`, `checkMonoObserverExceptionNotCaught`) are centralized in `DoerProviderTestBase`, while feature traits define their specific test cases cleanly
+  without boilerplate.
+* **Unified Concrete Provider Suites**: Concrete `DoerProvider` implementations extend `DoerProviderTestBase` and mix in only the capability traits matching their supported extensions. This enables a single concrete test suite per provider
+  while running 100% of applicable extension test cases.
+* **Exception Suppression (`TestThreadFactory`)**: When testing worker-pool providers (`CooperativeWorkersDp` and subclasses), pass `threadFactory = new TestThreadFactory` in the provider constructor. `TestThreadFactory` sets a custom
+  `UncaughtExceptionHandler` on worker threads to suppress expected test exceptions (such as `FaultyValue` and `"Simulated..."`) from printing stack traces to stderr, while allowing unexpected environment failures to propagate.
+
 ## Implementation Guidelines
 
 * **Zero-Allocation Pipelines**: Monadic combinators on `Capturer` are implemented using inline custom anonymous classes extending `Subscription` with `MonoObserver` (or `AbstractTask`) directly, bypassing intermediate wrapping steps.

@@ -166,13 +166,13 @@ abstract class CooperativeWorkersDp(
 				}
 			} catch {
 				case uncaught: Throwable =>
-					// Do the runnablesQueueSize update skipped in the while loop due to the exception.
-					runnablesQueueSizeIsPositive = runnablesQueueSize.decrementAndGet() > 0
 					try {
 						// Notify the user about the uncaught exception, protected from exceptions.
 						onUnhandledException(thisDoer, uncaught)
 					} finally {
 						doerThreadLocal.remove()
+						// Do the runnablesQueueSize update skipped in the while loop due to the exception.
+						runnablesQueueSizeIsPositive = runnablesQueueSize.decrementAndGet() > 0
 						// Start the worker in a new thread and exit this method abruptly so that the worker terminates the current one.
 						worker.startInANewThread()
 					}
@@ -346,7 +346,7 @@ abstract class CooperativeWorkersDp(
 		}
 
 		def diagnose(sb: StringBuilder): StringBuilder = {
-			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b,hasBeenSignaled$hasBeenSignaled, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
+			sb.append(f"index=$index%4d, keepRunning=$keepRunning%5b, isStopped=$isStopped%5b, isSleeping=$isSleeping%5b, potentiallySleeping=$potentiallySleeping%5b,hasBeenSignaled=$hasBeenSignaled, awakeningCounter=$awakeningCounter, salientDoer=$salientDoerCounter, completedMainLoopsCounter=$completedMainLoopsCounter")
 		}
 
 		override def toString: String = s"${getTypeName[Worker]}(index=$index, threadId=${thread.threadId()})"

@@ -1,16 +1,21 @@
 package readren.sequencer
 package providers
 
-/** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[StandardSchedulingDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
- */
-class CooperativeFlatPollingSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeFlatPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+import providers.CooperativeFlatPollingSchedulerDp.*
+
+class CooperativeFlatPollingSchedulerDpTest extends DoerProviderTestBase[SchedulingDoerFacade]
+	with VanillaDoerTests[SchedulingDoerFacade]
+	with FluxDoerTests[SchedulingDoerFacade]
+	with SchedulingDoerTests[SchedulingDoerFacade]
+	with ScheduledFluxDoerTests[SchedulingDoerFacade]
+	with LoopingDoerTests[SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeFlatPollingSchedulerDp
 
 	override protected def buildDoerProvider: DP = new CooperativeFlatPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
-		override def tagFromText(text: String): String = text
+		override def tagFromText(text: String): Tag = text
 
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = thisSuite.onUnhandledException(doer, exception)
 	}

@@ -1,9 +1,14 @@
 package readren.sequencer
 package providers
 
-/** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[CooperativeLocalPollingSchedulerDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
- */
-class CooperativeLocalPollingSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeLocalPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+import providers.CooperativeLocalPollingSchedulerDp.*
+
+class CooperativeLocalPollingSchedulerDpTest extends DoerProviderTestBase[SchedulingDoerFacade]
+	with VanillaDoerTests[SchedulingDoerFacade]
+	with FluxDoerTests[SchedulingDoerFacade]
+	with SchedulingDoerTests[SchedulingDoerFacade]
+	with ScheduledFluxDoerTests[SchedulingDoerFacade]
+	with LoopingDoerTests[SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeLocalPollingSchedulerDp
 

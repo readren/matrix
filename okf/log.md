@@ -8,6 +8,14 @@ timestamp: "2026-07-28T17:25:00Z"
 
 # Change Log
 
+## [2026-07-29T17:25:00Z]
+
+- Modularized `DoerProvider` testing framework in `sequencer/core` and `sequencer/providers`:
+  - Centralized suite lifecycle, logging, property sample generators (`forAllTaskOperandExceptions`, `forAllSubscribeExceptions`), and exception assertions in `DoerProviderTestBase`.
+  - Created capability-focused test traits (`VanillaDoerTests`, `FluxDoerTests`, `SchedulingDoerTests`, `ScheduledFluxDoerTests`, `LoopingDoerTests`).
+  - Created single concrete provider test suites (`StandardSchedulingDpTestNew`, `CooperativeContainedPollingSchedulerDpTestNew`, etc.) mixing in supported extension traits.
+  - Documented testing architecture and thread exception suppression in `okf/sequencer-core.md`.
+
 ## [2026-07-28T17:25:00Z]
 
 - Implemented `ScheduledFluxExtension` in `sequencer/core/src/main/scala/ScheduledFluxExtension.scala`.

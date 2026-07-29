@@ -1,9 +1,14 @@
 package readren.sequencer
 package providers
 
-/** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[StandardSchedulingDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants.
- */
-class CooperativeThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[CooperativeThreadDrivenSchedulerDp.SchedulingDoerFacade] { thisSuite =>
+import providers.CooperativeThreadDrivenSchedulerDp.*
+
+class CooperativeThreadDrivenSchedulerDpTest extends DoerProviderTestBase[SchedulingDoerFacade]
+	with VanillaDoerTests[SchedulingDoerFacade]
+	with FluxDoerTests[SchedulingDoerFacade]
+	with SchedulingDoerTests[SchedulingDoerFacade]
+	with ScheduledFluxDoerTests[SchedulingDoerFacade]
+	with LoopingDoerTests[SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeThreadDrivenSchedulerDp
 
@@ -18,6 +23,8 @@ class CooperativeThreadDrivenSchedulerDpTest extends SchedulingDoerProviderTest[
 	override def scalaCheckTestParameters: org.scalacheck.Test.Parameters =
 		super.scalaCheckTestParameters.withMinSuccessfulTests(100)
 
-	override protected def releaseDoerProvider(doerProvider: DP): Unit =
+	override protected def releaseDoerProvider(doerProvider: DP): Unit = {
+		scribe.debug(s"Provider diagnostics:", doerProvider.diagnose(new StringBuilder()).toString())
 		doerProvider.shutdown()
+	}
 }
