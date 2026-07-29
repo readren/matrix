@@ -11,7 +11,7 @@ import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, 
 import java.util.concurrent.atomic.AtomicLong
 
 object StandardSchedulingDp {
-	trait ProvidedDoerFacade extends Doer, SchedulingExtension, LoopingExtension, FluxExtension, ShutdownAble {
+	trait ProvidedDoerFacade extends Doer, SchedulingExtension, LoopingExtension, FluxExtension, ScheduledFluxExtension, ShutdownAble {
 		/** @return true if the provided [[Schedule]] was activated and still not fully canceled. */
 		def isActive(schedule: Schedule): Boolean
 	}

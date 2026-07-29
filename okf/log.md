@@ -3,10 +3,31 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-07-22T15:35:00Z"
+timestamp: "2026-07-28T17:25:00Z"
 ---
 
 # Change Log
+
+## [2026-07-28T17:25:00Z]
+
+- Implemented `ScheduledFluxExtension` in `sequencer/core/src/main/scala/ScheduledFluxExtension.scala`.
+- Moved periodic stream scheduling operations (`task.scheduled`, `Flux_schedules`, `Flux_schedulesFlat`) to `ScheduledFluxExtension`, returning `Flux[A]` / `TimedFlux[A]`.
+- Refactored single-shot delay implementations in `SchedulingExtension` (`Task_Delayed`, `Task_DelaysSupplier`, `Task_DelaysSupplierFlat`) returning `Task[A]` / `TimedTask[A]`.
+- Mixed `ScheduledFluxExtension` into `StandardSchedulingDp.ProvidedDoerFacade` and `CooperativeSchedulerDpCompanion.SchedulingDoerFacade`.
+- Added abstract test suite `ScheduledFluxDoerProviderTest` and updated `SchedulingDoerProviderTest` for single-shot delay assertions.
+- Updated `okf/sequencer-core.md` documentation.
+
+## [2026-07-28T17:20:00Z]
+
+- Clarified public method mapping between `SchedulingExtension` (single-shot `Task`/`Mono` delays) and `ScheduledFluxExtension` (periodic `Flux` stream schedules).
+
+## [2026-07-28T17:15:00Z]
+
+- Evaluated trait naming options (`ScheduledFluxExtension` vs `TimedFluxExtension`) for the proposed Option 3 extension in `sequencer/core`.
+
+## [2026-07-28T17:13:00Z]
+
+- Analyzed architectural design options for integrating periodic scheduling primitives with `FluxExtension` to replace incorrect `Task` return types with `Flux` in `SchedulingExtension`.
 
 ## [2026-07-27T20:17:00Z]
 

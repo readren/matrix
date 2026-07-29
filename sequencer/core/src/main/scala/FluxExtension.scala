@@ -1,7 +1,5 @@
 package readren.sequencer
 
-import Doer.ExecutionSerial
-
 import readren.common.Maybe
 import readren.common.{foreachWithIndex, mapWithIndex}
 
@@ -29,7 +27,7 @@ trait FluxExtension { thisDoer: Doer =>
 	}
 
 	@threadUnsafe lazy val FluxObserver_ignore: FluxObserver[Any] = new FluxObserver[Any] {
-		override def onNext(a: Any, index: ExecutionSerial): Unit = ()
+		override def onNext(a: Any, index: Int): Unit = ()
 
 		override def onError(ex: Throwable): Unit = ()
 
@@ -122,6 +120,8 @@ trait FluxExtension { thisDoer: Doer =>
 
 			triggerSync(new ForeachWIObserver)
 		}
+
+		def andThen(observer: FluxObserver[A]): Flux[A]
 
 		def map[B: ClassTag](f: A => B): Flux[B]
 
@@ -398,6 +398,11 @@ trait FluxExtension { thisDoer: Doer =>
 
 	/** Partial implementation of [[Flux]] */
 	trait DefaultFlux[+A] extends Flux[A] {
+		override def andThen(observer: FluxObserver[A]): Flux[A] = {
+			triggerSync(observer)
+			this
+		}
+
 		override def map[B: ClassTag](f: A => B): Flux[B] = new Flux_Map(this, f)
 
 		override def mapWithIndex[B: ClassTag](f: (A, Int) => B): Flux[B] = new Flux_MapWithIndex(this, f)

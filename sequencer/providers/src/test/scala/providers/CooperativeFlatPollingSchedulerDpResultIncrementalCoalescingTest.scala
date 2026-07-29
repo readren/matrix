@@ -1,8 +1,6 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.ResultIncrementalCoalescingTest
-
 /** Tests if the [[ResultIncrementalCoalescing]] works correctly using the [[Doer]] provided by [[CooperativeFlatPollingSchedulerDp]].
  */
 class CooperativeFlatPollingSchedulerDpResultIncrementalCoalescingTest extends ResultIncrementalCoalescingTest[CooperativeFlatPollingSchedulerDp.SchedulingDoerFacade] { thisSuite =>

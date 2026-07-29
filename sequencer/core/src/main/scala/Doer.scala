@@ -385,6 +385,8 @@ trait Doer { thisDoer =>
 		 * @param onError a function that is applied to the failure result of this [[Mono]] for its side effects before subscribers. */
 		def andThen(onSuccess: A => Unit, onError: Throwable => Unit = _ => ()): Mono[A]
 
+		def andThen(monoObserver: MonoObserver[A]): Mono[A]
+
 		def reconcile: Mono[Try[A]]
 
 		def withFilter(p: A => Boolean): Mono[A]
@@ -505,7 +507,9 @@ trait Doer { thisDoer =>
 		 *
 		 * @param onSuccess a function that is applied to the result of this [[Task]] for its side effects.
 		 */
-		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit = _ => ()): Task[A] = new Task_AndThen[A](thisTask, onSuccess, onError)
+		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit = _ => ()): Task[A] = new Task_AndThen[A](thisTask, MonoObserver_fromCallbacks(onSuccess, onError))
+
+		override def andThen(monoObserver: MonoObserver[A]): Task[A] = new Task_AndThen[A](thisTask, monoObserver)
 
 		override def reconcile: Task[Try[A]] = new Task_Reconcile(thisTask)
 
@@ -784,16 +788,16 @@ trait Doer { thisDoer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_AndThen(trap: Nothing): Any = trap
 
-	final class Task_AndThen[+A](upChainMono: Mono[A], onSuccessCbf: A => Unit, onErrorCbf: Throwable => Unit) extends AbstractTask[A] {
+	final class Task_AndThen[+A](upChainMono: Mono[A], monoObserver: MonoObserver[A]) extends AbstractTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
 			upChainMono.subscribeSync(new MonoObserver[A] {
 				override def onSuccess(a: A): Unit = {
-					onSuccessCbf(a)
+					monoObserver.onSuccess(a)
 					downChainObserver.onSuccess(a)
 				}
 
 				override def onError(ex: Throwable): Unit = {
-					onErrorCbf(ex)
+					monoObserver.onError(ex)
 					downChainObserver.onError(ex)
 				}
 			})
@@ -1577,6 +1581,11 @@ trait Doer { thisDoer =>
 
 		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit): Capturer[A] = {
 			triggerSyncCallbacks(onSuccess, onError)
+			this
+		}
+
+		override def andThen(monoObserver: MonoObserver[A]): Capturer[A] = {
+			triggerSync(monoObserver)
 			this
 		}
 

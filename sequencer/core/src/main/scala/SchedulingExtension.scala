@@ -48,8 +48,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	trait TimedTask[+A] extends Task[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription
 
-		inline final def onSubscription(inline action: Schedule => Unit): TimedTask[A] =
-			new Task_OnSubscription[A](this, action)
+		inline final def andOnSubscription(action: Schedule => Unit): TimedTask[A] = new Task_OnSubscription[A](this, action)
 	}
 
 	/** Creates a [[Delay]] for a single time execution after a delay.
@@ -89,7 +88,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * The implementation should not throw non-fatal exceptions. */
 	def cancelAll(): Unit
 
-	/** @return true if the [[Schedule]] was used in a call to [[scheduleSequentially]], even if it is cancelled. */
+	/** @return true if the [[Schedule]] was used in a call to [[scheduleSequentially]], even if it is canceled. */
 	def wasActivated(schedule: Schedule): Boolean
 
 	/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
@@ -103,19 +102,10 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	extension [A](thisTask: Task[A]) {
 
-		/** Returns a [[Task]] that triggers the up-chain [[Task]] according to a [[Schedule]].
-		 * The [[Schedule]] is activated whenever the returned [[Task]] is executed.
-		 * For periodic schedules (e.g., fixed-rate or fixed-delay), the up-chain [[Task]] is executed repeatedly, yielding each result, until the schedule is canceled.
-		 *
-		 * $notReusableTask */
-		// @targetName("scheduledTask")
-		inline def scheduled(kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration): TimedTask[A] =
-			new Task_Scheduled(thisTask, kind, initialDelay, loopDelay)
-
 		/** Returns a [[Task]] that triggers the up-chain [[Task]] after a delay measured from the moment the returned [[Task]] is executed. */
 		// @targetName("delayedTask")
 		inline def delayed(delay: MilliDuration): TimedTask[A] = {
-			new Task_Scheduled(thisTask, DELAY, delay, 0)
+			new Task_Delayed(thisTask, delay)
 		}
 
 		/**
@@ -161,28 +151,6 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 		Task_unit.delayed(duration)
 
 	/**
-	 * Builds a [[Task]] that schedules the execution of a supplier function according to a specified [[Schedule]] and yields the supplier’s result for each scheduled execution.\
-	 * The schedule is activated only whenever the returned [[Task]] is started, not when it is constructed.\
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the supplier is executed repeatedly, yielding each result, until the schedule is canceled.\
-	 *
-	 * $notReusableTask
-	 * @param supplier the function that produces a value of type [[A]] for each scheduled execution.
-	 * @return a [[Task]] that yields the supplier’s result(s) according to the specified [[Schedule]]. */
-	inline def Task_schedules[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration)(supplier: TimedSubscription => A): TimedTask[A] =
-		new Task_SchedulesSupplier(kind, initialDelay, loopDelay, supplier)
-
-	/**
-	 * Builds a [[Task]] that schedules the execution of a [[Task]] builder according to a specified [[Schedule]] and yields the results of the [[Task]] produced by the builder for each scheduled execution.\
-	 * The schedule is activated only whenever the returned [[Task]] is started, not when it is constructed.\
-	 * For periodic schedules (e.g., fixed-rate or fixed-delay), the builder is executed repeatedly, producing a new [[Task]] for each execution, and the results of each produced [[Task]] are yielded until the schedule is canceled.\
-	 * This [[Task]] is not reusable and can only be executed once.
-	 *
-	 * @param builder  the function that produces a new [[Task[A]]] for each scheduled execution.
-	 * @return a [[Task]] that yields the results of the [[Task]] produced by the builder according to the specified [[Schedule]]. */
-	inline def Task_schedulesFlat[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration)(builder: TimedSubscription => Task[A]): TimedTask[A] =
-		new Task_SchedulesSupplierFlat(kind, initialDelay, loopDelay, builder)
-
-	/**
 	 * Builds a [[Task]] that waits for a specified duration before executing a supplier function and yielding its result.\
 	 * The delay begins only whenever the returned [[Task]] is started, not when it is constructed.\
 	 * The supplier is executed once after the delay, and its result is what the returned [[Task]] yields.\
@@ -191,7 +159,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param supplier the function that produces a value of type [[A]] after the delay.
 	 * @return a [[Task]] that yields the supplier’s result after the specified duration. */
 	inline def Task_delays[A](duration: MilliDuration)(supplier: TimedSubscription => A): TimedTask[A] =
-		new Task_SchedulesSupplier(DELAY, duration, 0, supplier)
+		new Task_DelaysSupplier(duration, supplier)
 
 	/**
 	 * Builds a [[Task]] that waits for a specified duration before executing a [[Task]] builder and yielding the result of the produced [[Task]].\
@@ -202,7 +170,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	 * @param builder  the function that produces a new [[Task[A]]] after the delay.
 	 * @return a [[Task]] that yields the result of the [[Task]] produced by the builder after the specified duration. */
 	inline def Task_delaysFlat[A](duration: MilliDuration)(builder: TimedSubscription => Task[A]): TimedTask[A] =
-		new Task_SchedulesSupplierFlat(DELAY, duration, 0, builder)
+		new Task_DelaysSupplierFlat(duration, builder)
 
 	/**
 	 * Builds a [[Task]] that executes a supplier function and yields its result if the execution duration is less than a specified limit.\
@@ -239,7 +207,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 	//// Task operations implementation classes ////
 
-	private inline def buildSchedule(kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration): Schedule = {
+	protected inline def buildSchedule(kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration): Schedule = {
 		kind match {
 			case DELAY => newDelaySchedule(initialDelay)
 			case FIXED_RATE => newFixedRateSchedule(initialDelay, loopDelay)
@@ -248,14 +216,12 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_Scheduled(trap: Nothing): Any = trap
+	private inline def Task_Delayed(trap: Nothing): Any = trap
 
-	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_Scheduled and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
-	final class Task_Scheduled[A](monoA: Mono[A], kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration) extends AbstractTask[A] with TimedTask[A] {
+	final class Task_Delayed[A](monoA: Mono[A], delay: MilliDuration) extends AbstractTask[A], TimedTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
-			// Returns subscription that guards schedule trigger and inner task completion
 			new TimedSubscription with MonoObserver[A] with (Schedule => Unit) {
-				private val aSchedule = buildSchedule(kind, initialDelay, loopDelay)
+				private val aSchedule = newDelaySchedule(delay)
 				private var isActive = true
 				private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -274,7 +240,6 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 				override def onSuccess(a: A): Unit = {
 					if isActive then {
-						if kind == DELAY then isActive = false
 						maybeUpChainSubscription = Maybe.empty
 						downChainObserver.onSuccess(a)
 					}
@@ -282,14 +247,12 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 				override def onError(e: Throwable): Unit = {
 					if isActive then {
-						if kind == DELAY then isActive = false
 						maybeUpChainSubscription = Maybe.empty
 						downChainObserver.onError(e)
 					}
 				}
 
 				override def unsubscribeSync(): Unit = {
-					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(aSchedule)
@@ -305,7 +268,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_TimeLimited(trap: Nothing): Any = trap
 
-	final class Task_TimeLimited[A](monoA: Mono[A], limit: MilliDuration) extends AbstractTask[Maybe[A]] with TimedTask[Maybe[A]] {
+	final class Task_TimeLimited[A](monoA: Mono[A], limit: MilliDuration) extends AbstractTask[Maybe[A]], TimedTask[Maybe[A]] {
 		override def subscribeSync(downChainObserver: MonoObserver[Maybe[A]]): TimedSubscription = {
 			new TimedSubscription with MonoObserver[A] with (Schedule => Unit) { thisSubOb =>
 				private val timer: Schedule = newDelaySchedule(limit)
@@ -324,30 +287,29 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 
 				override def apply(timer: Schedule): Unit = {
 					if isActive then {
-						isActive = false
-						downChainObserver.onSuccess(Maybe.empty)
 						maybeUpChainSubscription.foreach(_.unsubscribeSync())
+						maybeUpChainSubscription = Maybe.empty
+						downChainObserver.onSuccess(Maybe.empty)
 					}
 				}
 
 				override def onSuccess(a: A): Unit = {
 					if isActive then {
-						isActive = false
 						cancel(timer)
+						maybeUpChainSubscription = Maybe.empty
 						downChainObserver.onSuccess(Maybe(a))
 					}
 				}
 
 				override def onError(e: Throwable): Unit = {
 					if isActive then {
-						isActive = false
 						cancel(timer)
+						maybeUpChainSubscription = Maybe.empty
 						downChainObserver.onError(e)
 					}
 				}
 
 				override def unsubscribeSync(): Unit = {
-					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(timer)
@@ -363,7 +325,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_OnSubscription(trap: Nothing): Any = trap
 
-	final class Task_OnSubscription[+A](taskA: TimedTask[A], action: Schedule => Unit) extends AbstractTask[A] with TimedTask[A] {
+	final class Task_OnSubscription[+A](taskA: TimedTask[A], action: Schedule => Unit) extends AbstractTask[A], TimedTask[A] {
 
 		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
 			val upChainSubscription = taskA.subscribeSync(downChainObserver)
@@ -443,7 +405,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Capturer_Delayed(trap: Nothing): Any = trap
 
-	final class Capturer_Delayed[A](capturer: Capturer[A], delay: Delay) extends Captor[A] with (Schedule => Unit) with MonoObserver[A] {
+	final class Capturer_Delayed[A](capturer: Capturer[A], delay: Delay) extends Captor[A], (Schedule => Unit), MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -474,7 +436,7 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Capturer_TimeLimited(trap: Nothing): Any = trap
 
-	final class Capturer_TimeLimited[A](capturer: Capturer[A], delay: Delay) extends Captor[Maybe[A]] with (Schedule => Unit) with MonoObserver[A] {
+	final class Capturer_TimeLimited[A](capturer: Capturer[A], delay: Delay) extends Captor[Maybe[A]], (Schedule => Unit), MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -514,13 +476,12 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 	//// Flux operations implementation classes ////
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_SchedulesSupplier(trap: Nothing): Any = trap
+	private inline def Task_DelaysSupplier(trap: Nothing): Any = trap
 
-	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_SchedulesSupplier and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
-	final class Task_SchedulesSupplier[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration, supplier: TimedSubscription => A) extends AbstractTask[A] with TimedTask[A] {
+	final class Task_DelaysSupplier[A](delay: MilliDuration, supplier: TimedSubscription => A) extends AbstractTask[A], TimedTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
 			new TimedSubscription with (Schedule => Unit) {
-				private val aSchedule: Schedule = buildSchedule(kind, initialDelay, loopDelay)
+				private val aSchedule: Delay = newDelaySchedule(delay)
 				private var isActive = true
 
 				override def schedule: Schedule = aSchedule
@@ -538,27 +499,27 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 								Maybe.empty
 						}
 
-						maybeA.foreach(a => downChainObserver.onSuccess(a))
+						maybeA.foreach(downChainObserver.onSuccess)
 					}
 				}
 
 				override def unsubscribeSync(): Unit = {
-					checkWithin()
-					isActive = false
-					cancel(aSchedule)
+					if isActive then {
+						isActive = false
+						cancel(aSchedule)
+					}
 				}
 			}
 		}
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Task_SchedulesSupplierFlat(trap: Nothing): Any = trap
+	private inline def Task_DelaysSupplierFlat(trap: Nothing): Any = trap
 
-	/** TODO Wrong because the down-chain observer methods are called more than one time. Rename to Flux_SchedulesSupplierFlat and extend [[AbstractFlux]] with [[TimedFlux]] instead. */
-	final class Task_SchedulesSupplierFlat[A](kind: ScheduleKind, initialDelay: MilliDuration, loopDelay: MilliDuration, supplier: TimedSubscription => Task[A]) extends AbstractTask[A] with TimedTask[A] {
+	final class Task_DelaysSupplierFlat[A](delay: MilliDuration, supplier: TimedSubscription => Task[A]) extends AbstractTask[A], TimedTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): TimedSubscription = {
 			new TimedSubscription with (Schedule => Unit) {
-				private val aSchedule: Schedule = buildSchedule(kind, initialDelay, loopDelay)
+				private val aSchedule: Schedule = newDelaySchedule(delay)
 				private var isActive = true
 				private var maybeInnerSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -572,21 +533,28 @@ trait SchedulingExtension { thisSchedulingExtension: Doer =>
 					if isActive then {
 						val maybeTaskA = try Maybe(supplier(this)) catch {
 							case NonFatal(e) =>
-								if isActive then {
-									unsubscribeSync()
-									downChainObserver.onError(e)
-								}
+								isActive = false
+								downChainObserver.onError(e)
 								Maybe.empty
 						}
 						maybeTaskA.foreach { taskA =>
-							val innerSubscription = taskA.subscribeSync(downChainObserver)
+							val innerSubscription = taskA.subscribeSync(new MonoObserver[A] {
+								override def onSuccess(a: A): Unit = {
+									maybeInnerSubscription = Maybe.empty
+									downChainObserver.onSuccess(a)
+								}
+
+								override def onError(e: Throwable): Unit = {
+									maybeInnerSubscription = Maybe.empty
+									downChainObserver.onError(e)
+								}
+							})
 							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
 						}
 					}
 				}
 
 				override def unsubscribeSync(): Unit = {
-					checkWithin()
 					if isActive then {
 						isActive = false
 						cancel(aSchedule)

@@ -50,18 +50,21 @@ This component defines the single-threaded deterministic sequencing primitives u
 
 ## Scheduling and Timing Extensions
 
-The [SchedulingExtension](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala) trait extends `Doer` with temporal operators. Exposing underlying timer configurations and aligning execution behaviors is
-structured as follows:
+The [SchedulingExtension](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala) and [ScheduledFluxExtension](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/ScheduledFluxExtension.scala)
+traits extend `Doer` with temporal operators. Exposing underlying timer configurations and aligning execution behaviors is structured as follows:
 
-* **Timed Subscription Access**: Subscriptions that start a schedule (e.g., `delayed`, `timeLimited`, `Task_schedules`) return a [TimedSubscription](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala)
-  which provides type-safe access to the underlying `Schedule` via its `schedule` member. Scheduled suppliers receive the `TimedSubscription` handle to allow cancellation and inspection from within the callback.
-* **Immediate Subscription Hooks**: Callers can inspect the underlying `Schedule` before the task completes (e.g. for custom cancellation, logging, or pre-trigger checks) using the `.onSubscription(schedule => Unit)` side-effect hook on a
-  `TimedTask`. This runs synchronously during `subscribeSync` right after the schedule is created, but before it can run.
+* **Separation of Task (Mono) vs. Flux (Stream) Scheduling**:
+    * Single-shot delays (`delayed`, `timeLimited`, `Task_sleeps`, `Task_delays`, `Task_delaysFlat`, `retriedOnTimeout`) return a `Task[A]` / `TimedTask[A]` in `SchedulingExtension` and complete at most once.
+    * Periodic time-driven schedules (`task.scheduled(kind, ...)`, `Flux_schedules`, `Flux_schedulesFlat`) emit multi-value push streams and return a `Flux[A]` / `TimedFlux[A]` in `ScheduledFluxExtension`.
+* **Timed Subscription Access**: Subscriptions that start a schedule (e.g., `delayed`, `timeLimited`, `Flux_schedules`) return a `TimedSubscription` which provides type-safe access to the underlying `Schedule` via its `schedule` member.
+  Scheduled suppliers receive the `TimedSubscription` handle to allow cancellation and inspection from within the callback.
+* **Immediate Subscription Hooks**: Callers can inspect the underlying `Schedule` before the task or flux completes using `.andOnSubscription(schedule => Unit)` on a `TimedTask` or `TimedFlux`. This runs synchronously during `subscribeSync`
+  right after the schedule is created, but before it can run.
 * **Split Semantics (Task vs. Capturer)**:
-    * **Task (Lazy Timer Start)**: Scheduling operations (`delayed`, `timeLimited`, `scheduled`, `retriedOnTimeout`) on a `Task` start their timers lazily when the task is **subscribed to**.
-  * **Capturer (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capturer` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety
-    against incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capturer` that preserves caching guarantees and resolves to
-    completion (either success or timeout) at most once. Periodic/retry operations are restricted from `Capturer` due to caching invariants.
+    * **Task (Lazy Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`, `retriedOnTimeout`) on a `Task` start their timers lazily when the task is **subscribed to**.
+    * **Capturer (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capturer` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety against
+      incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capturer` that preserves caching guarantees and resolves to completion
+      (either success or timeout) at most once. Periodic/retry operations are restricted from `Capturer` due to caching invariants.
 * **Two-Level Scheduling & Chronological Ordering**:
     * **Hierarchical Queue**: Scalable scheduling uses a two-level heap structure (a global min-heap of active doers, and a per-doer private min-heap of schedules). This limits global queue operations to $O(\log D)$ (where $D$ is the number
       of active doers) instead of $O(\log N)$ (total schedules), drastically reducing lock contention on `thisProvider`.

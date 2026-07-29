@@ -1,8 +1,6 @@
 package readren.sequencer
 package providers
 
-import readren.sequencer.FluxDoerProviderTest
-
 /** Tests if the [[Doer]] with [[FluxExtension]] instances provided by [[CooperativeThreadDrivenSchedulerDp]] satisfy the [[FluxExtension]] invariants.
  */
 class CooperativeThreadDrivenSchedulerDpFluxTest extends FluxDoerProviderTest[CooperativeThreadDrivenSchedulerDp.SchedulingDoerFacade] { thisSuite =>

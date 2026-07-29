@@ -5,7 +5,6 @@ package providers
 import providers.*
 
 import munit.ScalaCheckEffectSuite
-import readren.sequencer.Doer
 
 import java.util.concurrent.TimeUnit
 import scala.collection.immutable.ArraySeq

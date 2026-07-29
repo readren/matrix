@@ -28,7 +28,7 @@ import scala.util.{Failure, Success, Try}
  *
  * @tparam D The type of Doer being tested, must extend both [[Doer]] with [[SchedulingExtension]] and [[LoopingExtension]].
  */
-abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
+abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & FluxExtension & ScheduledFluxExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
 
 	type DP <: DoerProvider[D]
 
@@ -251,40 +251,45 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 	//// CONCURRENCY TESTS ////
 
 	test("Multiple doers should execute runnables concurrently") {
+		assert(Runtime.getRuntime.availableProcessors() >= 3)
+
 		val doer1 = buildDoer("doer-1")
 		val doer2 = buildDoer("doer-2")
 		val doer3 = buildDoer("doer-3")
 
-		val latch = new CountDownLatch(3)
-		val startTime = System.currentTimeMillis()
-		val executionTimes = new AtomicInteger(0)
+		val startLatch = new CountDownLatch(3)
+		val endLatch = new CountDownLatch(3)
 
 		// Submit tasks to different doers simultaneously
 		doer1.executeSequentially { () =>
+			startLatch.countDown()
+			println(s"Doer1 start:${System.currentTimeMillis()}")
 			Thread.sleep(100)
-			executionTimes.incrementAndGet()
-			latch.countDown()
+			endLatch.countDown()
+			println(s"Doer1 end:${System.currentTimeMillis()}")
 		}
 
 		doer2.executeSequentially { () =>
+			startLatch.countDown()
+			println(s"Doer2 start:${System.currentTimeMillis()}")
 			Thread.sleep(100)
-			executionTimes.incrementAndGet()
-			latch.countDown()
+			endLatch.countDown()
+			println(s"Doer3 end:${System.currentTimeMillis()}")
 		}
 
 		doer3.executeSequentially { () =>
+			startLatch.countDown()
+			println(s"Doer3 start:${System.currentTimeMillis()}")
 			Thread.sleep(100)
-			executionTimes.incrementAndGet()
-			latch.countDown()
+			endLatch.countDown()
+			println(s"Doer3 end:${System.currentTimeMillis()}")
 		}
 
-		assert(latch.await(400, TimeUnit.MILLISECONDS), "All runnables should complete")
-		val endTime = System.currentTimeMillis()
-		val totalTime = endTime - startTime
+		// If tasks were truly concurrent, they should start without waiting any other to finish.
+		assert(startLatch.await(90, TimeUnit.MILLISECONDS), "All runnables should start soon.")
 
 		// If tasks were truly concurrent, total time should be close to 100ms, not 300ms
-		assert(totalTime < 250, s"Ventures should execute concurrently, total time: ${totalTime}ms")
-		assert(executionTimes.get == 3, "All runnables should have executed")
+		assert(endLatch.await(250, TimeUnit.MILLISECONDS), "All runnables should complete")
 	}
 
 	test("Ventures should see memory updates from previous runnable in the same doer") {
@@ -1413,7 +1418,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 		PropF.forAllNoShrinkF(Gen.choose(1, 15)) { (delay: Int) =>
 			val startNano = System.nanoTime()
-			val task = doer.Task_schedules(DELAY, delay, 0)((_, delay * 2))
+			val task = doer.Task_delays(delay)((_, delay * 2))
 				.map { case (schedule, x) =>
 					val actualDelay = System.nanoTime - startNano
 					// println(s"-------> actual delay: ${actualDelay/1000} micros, expected: $delay millis, error: ${actualDelay/1000_000-delay} schedule: $schedule")
@@ -1424,7 +1429,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Scheduling Task: `Task.schedules(FIXED_RATE, ...)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
+	test("Scheduling Task: `Flux_schedules(FIXED_RATE, ...)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified specified period until cancellation") {
 		val generators = getGenerators
 		import generators.*
 
@@ -1432,20 +1437,29 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val repetitions = 10 - interval
 			// println(s"\nBegin: initialDelay = $initialDelay, interval = $interval, repetitions = $repetitions")
 			val promise = Promise[(doer.TimedSubscription, Int)]()
+
+			given Promise[(doer.TimedSubscription, Int)] = promise
+
 			val startMilli = System.currentTimeMillis()
 			var counter: Int = 0
-			val task = doer.Task_schedules(FIXED_RATE, initialDelay, interval)((_, counter))
-				.andThen { case (timedSub, supplierResult) =>
-					// println(s"supplierResult = $supplierResult/$repetitions")
-					if !doer.wasActivated(timedSub.schedule) then promise.tryFailure(new AssertionError("The `wasActivated` method returned false for a schedule that was activated"))
-					if supplierResult == repetitions then {
-						timedSub.unsubscribeSync()
-						promise.trySuccess((timedSub, supplierResult))
-					} else if supplierResult > repetitions then {
-						promise.tryFailure(new AssertionError("The supplier was execute despite the schedule was canceled in the previous supplier's execution."))
-					} else counter += 1
-				}
-			task.triggerAndForget()
+			doer.Flux_schedules(FIXED_RATE, initialDelay, interval)((_, counter))
+				.subscribe(false)(new doer.FluxObserver[(doer.TimedSubscription, Int)] {
+					override def onNext(elem: (doer.TimedSubscription, Int), index: Int): Unit = {
+						val (timedSub, supplierResult) = elem
+						// println(s"supplierResult = $supplierResult/$repetitions")
+						if !doer.wasActivated(timedSub.schedule) then break("The `wasActivated` method returned false for a schedule that was activated")
+						if supplierResult == repetitions then {
+							timedSub.unsubscribeSync()
+							promise.trySuccess((timedSub, supplierResult))
+						} else if supplierResult > repetitions then {
+							break("The supplier was execute despite the schedule was canceled in the previous supplier's execution.")
+						} else counter += 1
+					}
+
+					override def onError(ex: Throwable): Unit = break(s"Unexpected error: $ex")
+
+					override def onComplete(): Unit = if !promise.isCompleted then break(s"Unexpected completion")
+				})
 			promise.future.map { case (timedSub, supplyResult) =>
 				val actualDelay = System.currentTimeMillis() - startMilli
 				val expectedDelay = interval * repetitions + initialDelay
@@ -1459,7 +1473,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// Scheduling instance operations ////
 
-	test("Scheduling Task: `task.scheduled(DELAY, delay, 0)` should preserve the original task's result and postpone its execution the specified `delay`") {
+	test("Scheduling Task: `task.delayed(delay)` should preserve the original task's result and postpone its execution the specified `delay`") {
 		val generators = getGenerators
 		import generators.*
 
@@ -1467,7 +1481,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			(for {
 				directResult <- task
 				startTime = System.currentTimeMillis()
-				delayedResult <- task.scheduled(DELAY, testDelay, 0)
+				delayedResult <- task.delayed(testDelay)
 			} yield {
 				val actualDelay = System.currentTimeMillis() - startTime
 				assertEquals(directResult, delayedResult)
@@ -1476,41 +1490,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Scheduling Task: `task.scheduled(FIXED_DELAY, initialDelay, period)` should execute the `task` (up-chained operations) repeatedly according to the specified period until cancellation") {
-		val generators = getGenerators
-		import generators.*
-
-		PropF.forAllNoShrinkF(
-			Gen.choose(1, 10),
-			Gen.choose(1, 5),
-			genSuccessfulTask[Int]()
-		) { (initialDelay: Int, interval: Int, task: Task[Int]) =>
-			val repetitions = 5 - interval
-			// println(s"\nBegin: initialDelay = $initialDelay, interval = $interval, repetitions = $repetitions")
-			val testCompletion = doer.Captor[Unit]()
-			var counter: Int = 0
-			var maybeCheckSubscription: Maybe[Subscription] = Maybe.empty 
-			val check = for {
-				directResult <- task
-				startMilli = System.currentTimeMillis()
-				scheduledResult <- task.scheduled(FIXED_DELAY, initialDelay, interval)
-			} yield {
-				if scheduledResult != directResult then testCompletion.trap(new AssertionError(s"the scheduled result differs from the original"))
-				val actualDelay = System.currentTimeMillis() - startMilli
-				val expectedDelay = interval * counter + initialDelay
-				if actualDelay + 1 < expectedDelay then testCompletion.trap(new AssertionError(s"Execution was not delayed enough. Expected at least ${expectedDelay}ms, got ${actualDelay}ms"))
-				// println(s"period = $interval, counter = $counter/$repetitions, actualDelay = $actualDelay, expectedDelay = $expectedDelay, active = ${doer.isActive(schedule)}")
-				if counter == repetitions then {
-					testCompletion.capture(())
-					maybeCheckSubscription.foreach(_.unsubscribeSync())
-				} else counter += 1
-			}
-			maybeCheckSubscription = Maybe(check.subscribeAndForget())
-			testCompletion.toFuture()
-		}
-	}
-
-	test("Scheduling Task: `task.scheduled(DELAY, ...)` should be cancellable after the schedule was activated.") {
+	test("Scheduling Task: `task.delayed(delay)` should be cancellable after the schedule was activated.") {
 		val generators = getGenerators
 		import generators.*
 
@@ -1522,7 +1502,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			var wasCanceled = false
 			var hasCompleted = false
 			var maybeSchedule: Maybe[doer.Schedule] = Maybe.empty
-			val scheduledTask: doer.TimedTask[Int] = task.scheduled(DELAY, delay, 0).onSubscription { s =>
+			val scheduledTask: doer.TimedTask[Int] = task.delayed(delay).andOnSubscription { s =>
 				if !doer.wasActivated(s) then break(s"The schedule should be activated after subscription")
 				maybeSchedule = Maybe(s)
 			}
@@ -1595,7 +1575,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 			given Promise[doer.Schedule] = promise
 
-			val timedTask = task.scheduled(DELAY, delay, 0).onSubscription { schedule =>
+			val timedTask = task.delayed(delay).andOnSubscription { schedule =>
 				promise.trySuccess(schedule)
 			}
 
@@ -1613,7 +1593,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 
 	//// Task factory methods ////
 
-	test("Scheduling Task.scheduled: should compose correctly with other Task operations") {
+	test("Scheduling Task.delayed: should compose correctly with other Task operations") {
 		val generators = getGenerators
 		import generators.*
 
@@ -1624,20 +1604,20 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			// println(s"Begin: testDelay = $testDelay")
 
 			// Test composition with map
-			val scheduledMapped: Task[String] = task.scheduled(DELAY, testDelay, 0).map(f)
-			val mappedScheduled: Task[String] = task.map(f).scheduled(DELAY, testDelay, 0)
+			val scheduledMapped: Task[String] = task.delayed(testDelay).map(f)
+			val mappedScheduled: Task[String] = task.map(f).delayed(testDelay)
 
 			// Test composition with flatMap
-			val scheduledFlatMapped: Task[String] = task.scheduled(DELAY, testDelay, 0).flatMap(x => Task_ready(f(x)))
-			val flatMappedScheduled: Task[String] = task.flatMap(x => Task_ready(f(x))).scheduled(DELAY, testDelay, 0)
+			val scheduledFlatMapped: Task[String] = task.delayed(testDelay).flatMap(x => Task_ready(f(x)))
+			val flatMappedScheduled: Task[String] = task.flatMap(x => Task_ready(f(x))).delayed(testDelay)
 
 			val checks =
 				for {
 					_ <- Task_combine(scheduledMapped, mappedScheduled) { (a, b) =>
-						assert(a == b, "scheduled.map should equal map.scheduled")
+						assert(a == b, "delayed.map should equal map.delayed")
 					}
 					_ <- Task_combine(scheduledFlatMapped, flatMappedScheduled) { (scheduledFlat, flatMapped) =>
-						assert(scheduledFlat == flatMapped, "scheduled.flatMap should equal flatMap.scheduled")
+						assert(scheduledFlat == flatMapped, "delayed.flatMap should equal flatMap.delayed")
 					}
 				} yield ()
 			checks.toFuture()
@@ -1650,6 +1630,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 		val maxDuration = 5
+		val otherDoer = buildDoer("other")
+
 		PropF.forAllNoShrinkF(
 			Gen.nonEmptyListOf(for {
 				schedule <- genSchedule(doer, maxDuration)
@@ -1673,7 +1655,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 
 			// With another Doer instance, schedule the execution of `doer.cancelAll` within the doer and wait enough time for the routines be executed before considering the test as passed.
-			val otherDoer = buildDoer("other")
 			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { _ =>
 				doer.run {
 					doer.cancelAll()
@@ -1690,6 +1671,8 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		val generators = getGenerators
 		import generators.*
 		val maxDelay = 5
+		val otherDoer = buildDoer("other")
+
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, maxDelay),
 			Gen.nonEmptyListOf(Gen.choose(1, maxDelay)),
@@ -1731,7 +1714,6 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			}
 
 			// With another Doer instance, schedule the execution of `doer.cancelAll` outside the doer and wait enough time for the routines be executed before considering the test as passed.
-			val otherDoer = buildDoer("other")
 			otherDoer.schedule(otherDoer.newDelaySchedule(cancelDelay)) { cancelSchedule =>
 				doer.cancelAll()
 				cancelNanoTime = System.nanoTime()
@@ -1768,7 +1750,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			val latch = new CountDownLatch(2)
 
 			val startTime = System.nanoTime()
-			val task = doer.Task_schedules(DELAY, expectedDelay, 0) { s =>
+			val task = doer.Task_delays(expectedDelay) { s =>
 				val actualDelay = System.nanoTime() - startTime
 				if actualDelay < expectedDelay * 1_000_000 then break("The execution occurred sooner than expected")
 				else latch.countDown()
@@ -1780,7 +1762,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 		}
 	}
 
-	test("Task_schedules: The task returned by `Task_schedules(newFixedRateSchedule(initialDelay, interval))(body)` should execute `body` and yield its result repeatedly after the instants determined by the schedule.") {
+	test("Flux_schedules: The task returned by `Task_schedules(newFixedRateSchedule(initialDelay, interval))(body)` should execute `body` and yield its result repeatedly after the instants determined by the schedule.") {
 		val generators = getGenerators
 		val REPETITIONS = 4
 		var testExecutionsCounter = 0
@@ -1801,7 +1783,7 @@ abstract class SchedulingDoerProviderTest[D <: Doer & SchedulingExtension & Loop
 			var executionsCounter = 0
 			var maybeSchedule: Maybe[doer.Schedule] = Maybe.empty
 			val startTime = System.nanoTime()
-			val task = doer.Task_schedules(FIXED_RATE, expectedInitialDelay, expectedPeriod) { s =>
+			val task = doer.Flux_schedules(FIXED_RATE, expectedInitialDelay, expectedPeriod) { s =>
 				maybeSchedule = Maybe(s.schedule)
 				val actualDurationNanos = System.nanoTime() - startTime
 				val expectedDurationMillis = expectedInitialDelay + executionsCounter * expectedPeriod
