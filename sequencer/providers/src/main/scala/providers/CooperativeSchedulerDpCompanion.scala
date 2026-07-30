@@ -7,7 +7,7 @@ import providers.CooperativeWorkersDp.DoerFacade
 trait CooperativeSchedulerDpCompanion {
 	/** Facade of the concrete type of the [[Doer]] instances provided by scheduling [[DoerProvider]]s that extend [[CooperativeWorkersDp]].
 	 * Note that this trait is extending [[DoerFacade]] which is an abstract class. See [[DoerFacade]] to see why. */
-	trait SchedulingDoerFacade extends DoerFacade, SchedulingExtension, LoopingExtension, FluxExtension, ScheduledFluxExtension {
+	trait SchedulingDoerFacade extends DoerFacade, FluxExtension, LoopingExtension, SchedulingExtension, ScheduledFluxExtension {
 		override type Schedule <: ScheduleFacade
 	}
 

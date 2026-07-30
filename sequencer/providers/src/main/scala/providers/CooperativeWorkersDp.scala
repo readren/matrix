@@ -20,7 +20,7 @@ object CooperativeWorkersDp {
 	}
 
 	/** Facade of the concrete type of the [[Doer]] instances provided by [[CooperativeWorkersDp]]. */
-	trait DoerFacade extends Doer {
+	trait DoerFacade extends Doer, FluxExtension, LoopingExtension {
 		/** Exposes the number of routines that are waiting to be executed sequentially. */
 		def numOfPendingRunnables: Int
 	}

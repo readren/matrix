@@ -33,7 +33,7 @@ abstract class DoerProviderTestBase[D <: Doer : ClassTag] extends ScalaCheckEffe
 	@volatile private var observingSession: Int = 0
 
 	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
-	protected def buildDoerProvider: DP
+	protected def buildDoerProvider(poolSize: Int = Runtime.getRuntime.availableProcessors().max(4)): DP
 
 	/** The implementation should release the specified [[DoerProvider]].
 	 * The implementation may assume that the provided instance was obtained calling [[buildDoerProvider]]. */
@@ -60,7 +60,7 @@ abstract class DoerProviderTestBase[D <: Doer : ClassTag] extends ScalaCheckEffe
 	override def beforeAll(): Unit = {
 		ScribeConfig.init(deleteLogFilesOnLaunch = true)
 
-		val sharedDoerProvider = buildDoerProvider
+		val sharedDoerProvider = buildDoerProvider()
 		this.sharedDoerProvider = sharedDoerProvider
 		val sharedDoer = sharedDoerProvider.provide(sharedDoerProvider.tagFromText("main-doer"))
 		this.sharedDoer = sharedDoer

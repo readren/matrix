@@ -14,7 +14,7 @@ import scala.reflect.ClassTag
 
 /** Trait containing tests for [[Doer]] implementations extended with [[ScheduledFluxExtension]].
  */
-trait ScheduledFluxDoerTests[D <: Doer & SchedulingExtension & FluxExtension & ScheduledFluxExtension : ClassTag] { self: DoerProviderTestBase[D] =>
+trait ScheduledFluxTests[D <: Doer & SchedulingExtension & FluxExtension & ScheduledFluxExtension : ClassTag] { self: DoerProviderTestBase[D] =>
 
 	test("Scheduling Task: `Flux_schedules(FIXED_RATE, ...)(supplier)` should execute both, the `supplier` and down-chained operations, repeatedly according to the specified period until cancellation") {
 		val generators = getGenerators
@@ -55,7 +55,7 @@ trait ScheduledFluxDoerTests[D <: Doer & SchedulingExtension & FluxExtension & S
 		}
 	}
 
-	test("Flux_schedules: The task returned by `Task_schedules(newFixedRateSchedule(initialDelay, interval))(body)` should execute `body` and yield its result repeatedly after the instants determined by the schedule.") {
+	test("Flux_schedules: The `TimedFlux` returned by `Flux_schedules(newFixedRateSchedule(initialDelay, interval))(body)` should execute `body` and yield its result repeatedly after the instants determined by the schedule.") {
 		val generators = getGenerators
 		val REPETITIONS = 4
 		var testExecutionsCounter = 0
@@ -72,11 +72,9 @@ trait ScheduledFluxDoerTests[D <: Doer & SchedulingExtension & FluxExtension & S
 
 			val latch = new CountDownLatch(REPETITIONS)
 
-			var executionsCounter = 0
-			var maybeSchedule: Maybe[doer.Schedule] = Maybe.empty
+			@volatile var executionsCounter = 0
 			val startTime = System.nanoTime()
-			val task = doer.Flux_schedules(FIXED_RATE, expectedInitialDelay, expectedPeriod) { s =>
-				maybeSchedule = Maybe(s.schedule)
+			val timedFlux = doer.Flux_schedules(FIXED_RATE, expectedInitialDelay, expectedPeriod) { ts =>
 				val actualDurationNanos = System.nanoTime() - startTime
 				val expectedDurationMillis = expectedInitialDelay + executionsCounter * expectedPeriod
 				val differenceMicros = actualDurationNanos / 1000 - expectedDurationMillis * 1000
@@ -85,10 +83,10 @@ trait ScheduledFluxDoerTests[D <: Doer & SchedulingExtension & FluxExtension & S
 				else latch.countDown()
 				executionsCounter += 1
 			}
-			task.triggerAndForget()
+			val subscription = timedFlux.subscribeAndForget(false)
 			if latch.await(expectedInitialDelay + expectedPeriod * REPETITIONS + EXECUTION_DELAY_MARGIN_MILLIS, TimeUnit.MILLISECONDS) then promise.trySuccess(())
-			else break(s"The number of executions ($executionsCounter) within the provided time is less than the expected")
-			doer.cancel(maybeSchedule.get)
+			else break(s"The number of executions ($executionsCounter) within the provided time is less than the expected ($REPETITIONS): initialDelay=$expectedInitialDelay, period=$expectedPeriod")
+			subscription.unsubscribe()
 			testExecutionsCounter += 1
 			gate
 		}

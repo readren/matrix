@@ -6,14 +6,18 @@ import providers.CooperativeContainedPollingSchedulerDp.*
 /** Tests if the [[Doer]] with [[SchedulingExtension]] instances provided by [[CooperativeContainedPollingSchedulerDp]] satisfy the [[Doer]] and [[SchedulingExtension]] invariants. */
 class CooperativeContainedPollingSchedulerDpTest extends DoerProviderTestBase[SchedulingDoerFacade]
 	with VanillaDoerTests[SchedulingDoerFacade]
+	with MonoTests[SchedulingDoerFacade]
 	with FluxDoerTests[SchedulingDoerFacade]
-	with SchedulingDoerTests[SchedulingDoerFacade]
-	with ScheduledFluxDoerTests[SchedulingDoerFacade]
-	with LoopingDoerTests[SchedulingDoerFacade] { thisSuite =>
+	with CausalFenceTests[SchedulingDoerFacade]
+	with ResultIncrementalCoalescingDoerTests[SchedulingDoerFacade]
+	with LoopingDoerTests[SchedulingDoerFacade]
+	with ScheduledMonoTests[SchedulingDoerFacade]
+	with ScheduledFluxTests[SchedulingDoerFacade]
+	with CooperativeWorkersChildTests[SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeContainedPollingSchedulerDp
 
-	override protected def buildDoerProvider: DP = new CooperativeContainedPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
+	override protected def buildDoerProvider(poolSize: Int): DP = new CooperativeContainedPollingSchedulerDp(applyMemoryFence = false, threadPoolSize = poolSize, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text

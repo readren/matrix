@@ -1,72 +1,21 @@
 package readren.sequencer
 
 import GeneratorsForDoerTests.{*, given}
-
-import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.effect.PropF
-import readren.common.{Maybe, ScribeConfig}
+import readren.common.Maybe
 
-import scala.compiletime.uninitialized
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.duration.Duration
 import scala.concurrent.{Future, Promise}
 import scala.reflect.ClassTag
 
-/** Abstract test suite for testing [[ResultIncrementalCoalescing]].
+/** Trait containing tests for [[ResultIncrementalCoalescing]].
  *
- * This suite checks if the primitive respects its convergence properties.
+ * This trait checks if the primitive respects its convergence properties.
  *
  * @tparam D The type of Doer being tested.
  */
-abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension & LoopingExtension : ClassTag] extends ScalaCheckEffectSuite {
-
-	type DP <: DoerProvider[D]
-
-	private var sharedDoerProvider: DP = uninitialized
-	private var sharedDoer: D = uninitialized
-	private var sharedGenerators: GeneratorsForDoerTests[D] = uninitialized
-
-	/** The implementation should build an instance of the [[DoerProvider]] implementation under test. */
-	protected def buildDoerProvider: DP
-
-	/** The implementation should release the specified [[DoerProvider]]. */
-	protected def releaseDoerProvider(doerProvider: DP): Unit
-
-	//// Suite lifecycle ////
-
-	override val munitTimeout: Duration = scala.concurrent.duration.Duration(240, "seconds")
-
-	override def beforeAll(): Unit = {
-		ScribeConfig.init(deleteLogFilesOnLaunch = true)
-
-		val sharedDoerProvider = buildDoerProvider
-		this.sharedDoerProvider = sharedDoerProvider
-		val sharedDoer = sharedDoerProvider.provide(sharedDoerProvider.tagFromText("mc-main-doer"))
-		this.sharedDoer = sharedDoer
-		val sharedGenerators = GeneratorsForDoerTests(sharedDoer, sharedDoerProvider)
-		this.sharedGenerators = sharedGenerators
-	}
-
-	override def afterAll(): Unit = {
-		releaseDoerProvider(sharedDoerProvider)
-	}
-
-	//// Shared instance's getters ////
-
-	private def getSharedDoerProvider: DP = sharedDoerProvider
-
-	private def getSharedDoer: D = sharedDoer
-
-	private def getGenerators: GeneratorsForDoerTests[D] = sharedGenerators
-
-	/** Breaks the `promise` if it wasn't already completed. */
-	private def break[P](message: String)(using promise: Promise[P]): Unit =
-		promise.tryFailure(new AssertionError(message))
-
-	private final def gate[P](using promise: Promise[P]): Future[P] = {
-		promise.future.map { result => result }(using scala.concurrent.ExecutionContext.Implicits.global)
-	}
+trait ResultIncrementalCoalescingDoerTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 	test("ResultIncrementalCoalescing - first contender starts competition and wins") {
 		val generators = getGenerators
@@ -191,11 +140,11 @@ abstract class ResultIncrementalCoalescingTest[D <: Doer & SchedulingExtension &
 
 				if bool then contenderA.seizeWithSync(contenderATask)
 				secondResultCapturer.triggerSyncCallbacks(
-					actualResult => {
-						if expectedResultA.fold(_ => true, _ != actualResult) then break(s"Expected $expectedResultA, got Success($actualResult)")
+					actualResultA => {
+						if expectedResultA.fold(_ => true, _ != actualResultA) then break(s"Expected $expectedResultA, got Success($actualResultA)")
 						else promise.trySuccess(())
-					}, actualError => {
-						if expectedResultA.fold(_ ne actualError, _ => true) then break(s"Expected $expectedResultA, got Failure($actualError)")
+					}, actualErrorA => {
+						if expectedResultA.fold(_ ne actualErrorA, _ => true) then break(s"Expected $expectedResultA, got Failure($actualErrorA)")
 						else promise.trySuccess(())
 					}
 				)

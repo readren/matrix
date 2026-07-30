@@ -161,12 +161,16 @@ When configuring execution environments, select the `DoerProvider` implementatio
 
 ## Testing Architecture Guidelines
 
-* **Modular Trait-Based Test Hierarchy**: Test cases are partitioned into reusable, capability-focused traits matching `Doer` extensions:
-  - `VanillaDoerTests`: Standard `Doer`, `Task`, `Captor`, and `CausalFence` invariant tests.
-  - `FluxDoerTests`: `FluxExtension` stream factory and operator tests.
-  - `SchedulingDoerTests`: Single-shot `SchedulingExtension` delay tests.
-  - `ScheduledFluxDoerTests`: `ScheduledFluxExtension` periodic push stream tests.
+* **Modular Trait-Based Test Hierarchy**: Test cases are partitioned into reusable, capability-focused traits matching `Doer` and `DoerProvider` abstractions:
+  - `VanillaDoerTests`: Standard `Doer` invariant tests.
+  - `MonoTests`: Standard `Task` and `Captor` invariants, factory, and operator tests.
+  - `FluxTests`: `FluxExtension` stream factory and operator tests.
+  - `ScheduledMonoTests`: Single-shot `SchedulingExtension` delay tests.
+  - `ScheduledFluxDoerTests`: Multi-shot`ScheduledFluxExtension` periodic push stream tests.
   - `LoopingDoerTests`: `LoopingExtension` iterative combinator tests.
+  - `CausalFenceTests`: `CausalFence` invariants tests.
+  - `ResultIncrementalCoalescingDoerTests`: `ResultIncrementalCoalescing` convergence, superseding, and yielding invariant tests.
+  - `CooperativeWorkersChildTests`: `CooperativeWorkersDp` thread-pool lifecycle, pending runnable tracking, and worker sleep/wakeup race condition tests.
 * **Abstract Harness (`DoerProviderTestBase`)**: Manages suite lifecycle, logging (`ScribeConfig`), `unhandledExceptionObserver` tracking, and reusable test harness helpers. Property sample generation (`forAllTaskOperandExceptions`,
   `forAllSubscribeExceptions`) and assertion evaluation (`checkTaskOperandExceptionHandling`, `checkMonoObserverExceptionNotCaught`) are centralized in `DoerProviderTestBase`, while feature traits define their specific test cases cleanly
   without boilerplate.

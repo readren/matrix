@@ -5,14 +5,18 @@ import providers.CooperativeShardedPollingSchedulerDp.*
 
 class CooperativeShardedPollingSchedulerDpTest extends DoerProviderTestBase[SchedulingDoerFacade]
 	with VanillaDoerTests[SchedulingDoerFacade]
+	with MonoTests[SchedulingDoerFacade]
 	with FluxDoerTests[SchedulingDoerFacade]
-	with SchedulingDoerTests[SchedulingDoerFacade]
-	with ScheduledFluxDoerTests[SchedulingDoerFacade]
-	with LoopingDoerTests[SchedulingDoerFacade] { thisSuite =>
+	with CausalFenceTests[SchedulingDoerFacade]
+	with ResultIncrementalCoalescingDoerTests[SchedulingDoerFacade]
+	with LoopingDoerTests[SchedulingDoerFacade]
+	with ScheduledMonoTests[SchedulingDoerFacade]
+	with ScheduledFluxTests[SchedulingDoerFacade]
+	with CooperativeWorkersChildTests[SchedulingDoerFacade] { thisSuite =>
 
 	override type DP = CooperativeShardedPollingSchedulerDp
 
-	override protected def buildDoerProvider: DP = new CooperativeShardedPollingSchedulerDp(applyMemoryFence = false, threadFactory = new TestThreadFactory) {
+	override protected def buildDoerProvider(poolSize: Int): DP = new CooperativeShardedPollingSchedulerDp(applyMemoryFence = false, threadPoolSize = poolSize, threadFactory = new TestThreadFactory) {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text

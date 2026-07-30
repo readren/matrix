@@ -230,6 +230,8 @@ trait Doer { thisDoer =>
 	 * @note CAUTION: Must be called within the single-thread Execution Context of the owning Doer (DoSerEx). */
 	trait Subscription {
 		def unsubscribeSync(): Unit
+
+		final def unsubscribe(): Unit = run(unsubscribeSync())
 	}
 
 	/** An empty subscription that performs no action upon unsubscription. */

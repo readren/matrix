@@ -6,14 +6,17 @@ import scala.concurrent.duration.Duration
 
 class StandardSchedulingDpTest extends DoerProviderTestBase[StandardSchedulingDp.ProvidedDoerFacade]
 	with VanillaDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
+	with MonoTests[StandardSchedulingDp.ProvidedDoerFacade]
 	with FluxDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
-	with SchedulingDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
-	with ScheduledFluxDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
-	with LoopingDoerTests[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
+	with CausalFenceTests[StandardSchedulingDp.ProvidedDoerFacade]
+	with ResultIncrementalCoalescingDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
+	with LoopingDoerTests[StandardSchedulingDp.ProvidedDoerFacade]
+	with ScheduledMonoTests[StandardSchedulingDp.ProvidedDoerFacade]
+	with ScheduledFluxTests[StandardSchedulingDp.ProvidedDoerFacade] { thisSuite =>
 
 	override type DP = StandardSchedulingDp
 
-	override protected def buildDoerProvider: DP = new StandardSchedulingDp() {
+	override protected def buildDoerProvider(poolSize: Int): DP = new StandardSchedulingDp() {
 		override type Tag = String
 
 		override def tagFromText(text: String): Tag = text

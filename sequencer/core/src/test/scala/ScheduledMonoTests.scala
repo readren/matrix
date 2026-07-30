@@ -14,7 +14,7 @@ import scala.reflect.ClassTag
 
 /** Trait containing tests for [[Doer]] implementations extended with [[SchedulingExtension]].
  */
-trait SchedulingDoerTests[D <: Doer & SchedulingExtension : ClassTag] { self: DoerProviderTestBase[D] =>
+trait ScheduledMonoTests[D <: Doer & SchedulingExtension : ClassTag] { self: DoerProviderTestBase[D] =>
 
 	//// SCHEDULING ////
 

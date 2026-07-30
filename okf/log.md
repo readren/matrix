@@ -8,6 +8,26 @@ timestamp: "2026-07-28T17:25:00Z"
 
 # Change Log
 
+## [2026-07-29T18:56:00Z]
+
+- Extracted `ResultIncrementalCoalescingDoerTests` mix-in trait in `sequencer/core`:
+    - Centralized `ResultIncrementalCoalescing` test suite (`first contender wins`, `second contender supersedes`, `second contender yields`, `new competition starts after previous completes`) into a reusable trait.
+    - Mixed `ResultIncrementalCoalescingDoerTests` into all provider test suites supporting scheduling & looping (`StandardSchedulingDpTest`, `CooperativeContainedPollingSchedulerDpTest`, `CooperativeFlatPollingSchedulerDpTest`, etc.).
+    - Updated `okf/sequencer-core.md` documentation guidelines.
+
+## [2026-07-29T17:49:00Z]
+
+- Created `CooperativeWorkersDoerTests` mix-in trait in `sequencer/providers`:
+    - Extracted shared `CooperativeWorkersDp` thread-pool lifecycle, pending runnable tracking, and worker sleep/wakeup race condition tests into a reusable trait.
+    - Updated `okf/sequencer-core.md` guidelines.
+
+## [2026-07-29T17:34:00Z]
+
+- Modularized `CooperativeWorkersDpTestNew.scala` in `sequencer/providers`:
+    - Created `CooperativeWorkersDpTestNew` extending `DoerProviderTestBase[DoerFacade]` and mixing in `VanillaDoerTests[DoerFacade]`.
+    - Configured `TestThreadFactory` and `onUnhandledException` bridging.
+    - Verified 100% test pass rate (38/38 tests passed).
+
 ## [2026-07-29T17:25:00Z]
 
 - Modularized `DoerProvider` testing framework in `sequencer/core` and `sequencer/providers`:
