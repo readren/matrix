@@ -2798,25 +2798,26 @@ trait ConsensusParticipantSdm { thisModule =>
 			override val ordinal: RoleOrdinal = LEADER
 			override val rank: ElectionRank = ElectionRank_from(LEADER)
 
-			/** The index of the next record to send to a participant, indexed by the participant index.
-			 * This array is optimistically initialized to the first empty record index of the leader's workspace for all participants,
-			 * assuming that each follower's log is already up-to-date with the leader's log. This optimistic initialization
-			 * allows the leader to attempt to append new entries immediately, but if a follower's log is actually behind or inconsistent,
-			 * the index will be decremented as needed until the logs are aligned.
-			 * When a record is successfully replicated to a participant, the index of the next record to send to that participant is incremented.
-			 * When a record is not successfully replicated to a participant, the index of the next record to send to that participant is decremented.
-			 * TODO: Consider initializing the array with the first empty record index unless the last filled ones are configuration changes, in which case initialize with the index of the first of them. Why? Because sending extra [[ConfigChange]] instances is cheap and may avoid rejections due to need of an earlier [[Record]].
-			 * TODO: Cache Peer Progress Across Re-Elections: When demoted, store this and the other arrays in a transit map of the [[ConsensusParticipant]], and use it to initialize the arrays when becoming leader again. That would save many messages when reelected.
-			 */
-			private var indexOfNextRecordToSend_ByParticipantIndex: Array[RecordIndex] = Array.fill(initialConfig.peers.size)(initialPrimaryState.firstEmptyRecordIndex)
-			/** The highest record index known to be replicated to a participant, indexed by the participant index.
-			 * This array is conservatively initialized to 0 for all participants, assuming that no records are known to be replicated to any follower at the start of the leader's term.
-			 * As records are successfully replicated to a participant, the corresponding value is incremented.
-			 * This conservative initialization ensures that the leader does not overestimate the replication state of any follower and only advances commitIndex when a true majority is confirmed.
-			 */
-			private var highestRecordIndexKnownToBeAppended_ByParticipantIndex: Array[RecordIndex] = Array.fill(initialConfig.peers.size)(0)
+			/** Tracks replication, commit progress, and in-flight RPC state for a single peer participant.
+			 *
+			 * @param indexOfNextRecordToSend The index of the next record to send to the participant. Optimistically initialized to the first empty record index of the leader's workspace for all participants, assuming each follower's log is already up-to-date with the leader's log. If a follower's log is actually behind or inconsistent, this index is decremented upon rejection until logs align.
+			 * @param highestRecordIndexKnownToBeAppended The highest record index known to be replicated to the participant. Conservatively initialized to 0 at the start of the leader's term to ensure the leader does not overestimate follower replication state and only advances commitIndex when a true majority is confirmed.
+			 * @param highestRecordIndexKnowToBeCommitted The highest record index known to be committed by the participant.
+			 * @param indexOfLastRecordSent The highest record index sent to the participant in the last append request. Used on the fast path to slice log ranges.
+			 * @param inFlightCount The number of active in-flight RPCs sent to the participant. Used to enforce sliding-window bounds.
+			 *
+			 * @note TODO: Consider initializing `indexOfNextRecordToSend` with the first empty record index unless the last filled ones are configuration changes, in which case initialize with the index of the first of them. Sending extra [[ConfigChange]] instances is cheap and may avoid rejections due to need of an earlier [[Record]].
+			 * @note TODO: Cache Peer Progress Across Re-Elections: When demoted, store this object in a transit map of the [[ConsensusParticipant]], and use it to initialize progress when becoming leader again to save RPC round-trips. */
+			final class PeerProgress(
+				var indexOfNextRecordToSend: RecordIndex,
+				var highestRecordIndexKnownToBeAppended: RecordIndex,
+				var highestRecordIndexKnowToBeCommitted: RecordIndex,
+				var indexOfLastRecordSent: RecordIndex = 0,
+				var inFlightCount: Int = 0
+			)
 
-			private var highestRecordIndexKnowToBeCommitted_ByParticipantIndex: Array[RecordIndex] = Array.fill(initialConfig.peers.size)(0)
+			private var peerProgress_ByParticipantIndex: Array[PeerProgress] =
+				Array.tabulate(initialConfig.peers.size)(_ => new PeerProgress(indexOfNextRecordToSend = initialPrimaryState.firstEmptyRecordIndex, highestRecordIndexKnownToBeAppended = 0, highestRecordIndexKnowToBeCommitted = 0))
 
 			/** Either, the index of the [[StableConfigChange]] that excluded this leading participant causing it become a ghost leader, or zero if in joint consensus or not excluded.
 			 * Set by the [[Leader.driveTheRetirements]] method, which is called by [[deriveConfigurationFrom]] when the active [[Configuration]] changes from a [[TransitionalConfig]] to a [[StableConfig]]. */
@@ -2889,9 +2890,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 				// Step two
 				val newAllOtherParticipantsArrayLength = newConfig.peers.length
-				val newIndexOfNextRecordToSend_ByParticipantIndex: Array[RecordIndex] = new Array(newAllOtherParticipantsArrayLength)
-				val newHighestRecordIndexKnowToBeAppended_ByParticipantIndex: Array[RecordIndex] = new Array(newAllOtherParticipantsArrayLength)
-				val newHighestRecordIndexKnowToBeCommitted_ByParticipantIndex: Array[RecordIndex] = new Array(newAllOtherParticipantsArrayLength)
+				val newPeerProgress_ByParticipantIndex: Array[PeerProgress] = new Array(newAllOtherParticipantsArrayLength)
 
 				var participantNewIndex = newAllOtherParticipantsArrayLength
 				while participantNewIndex > 0 do {
@@ -2899,19 +2898,12 @@ trait ConsensusParticipantSdm { thisModule =>
 					val participantId = newConfig.peers(participantNewIndex)
 					val participantOldIndex = oldConfig.participantIndexOf(participantId)
 					if participantOldIndex >= 0 then {
-						newIndexOfNextRecordToSend_ByParticipantIndex(participantNewIndex) = indexOfNextRecordToSend_ByParticipantIndex(participantOldIndex)
-						newHighestRecordIndexKnowToBeAppended_ByParticipantIndex(participantNewIndex) = highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantOldIndex)
-						newHighestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantNewIndex) = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantOldIndex)
-
+						newPeerProgress_ByParticipantIndex(participantNewIndex) = peerProgress_ByParticipantIndex(participantOldIndex)
 					} else {
-						newIndexOfNextRecordToSend_ByParticipantIndex(participantNewIndex) = indexOfNewConfigChange
-						newHighestRecordIndexKnowToBeAppended_ByParticipantIndex(participantNewIndex) = 0
-						newHighestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantNewIndex) = 0
+						newPeerProgress_ByParticipantIndex(participantNewIndex) = new PeerProgress(indexOfNextRecordToSend = indexOfNewConfigChange, highestRecordIndexKnownToBeAppended = 0, highestRecordIndexKnowToBeCommitted = 0)
 					}
 				}
-				indexOfNextRecordToSend_ByParticipantIndex = newIndexOfNextRecordToSend_ByParticipantIndex
-				highestRecordIndexKnownToBeAppended_ByParticipantIndex = newHighestRecordIndexKnowToBeAppended_ByParticipantIndex
-				highestRecordIndexKnowToBeCommitted_ByParticipantIndex = newHighestRecordIndexKnowToBeCommitted_ByParticipantIndex
+				peerProgress_ByParticipantIndex = newPeerProgress_ByParticipantIndex
 			}
 
 			/** Drives the excluded participants (the ones that are not active in the provided [[StableConfigChange]]) to retirement.
@@ -2941,9 +2933,9 @@ trait ConsensusParticipantSdm { thisModule =>
 				}
 
 				val minCommitIndexOfExcludedParticipants: RecordIndex = maybeStandingConfig.fold(0L) { standingConfig =>
-					// Find the minimum of the `highestRecordIndexKnowToBeCommitted_ByParticipantIndex` array among the excluded participants.
+					// Find the minimum of the `peerProgress_ByParticipantIndex` commitIndex among the excluded participants.
 					standingConfig.peers.foldLeftWithIndex(commitIndex) { (minCommitIndex, participantId, participantIndex) =>
-						val highestRecordIndexKnowToBeCommitted = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
+						val highestRecordIndexKnowToBeCommitted = peerProgress_ByParticipantIndex(participantIndex).highestRecordIndexKnowToBeCommitted
 						if highestRecordIndexKnowToBeCommitted < minCommitIndex && newRetiringParticipants.contains(participantId) then highestRecordIndexKnowToBeCommitted
 						else minCommitIndex
 					}
@@ -2978,8 +2970,8 @@ trait ConsensusParticipantSdm { thisModule =>
 					}
 				) { standingConfig => // Logic for a incumbent Leader: Create a driver for all the excluded peers that haven't already committed the `stableConfigChange`, each of which starts sending the records from the `indexOfNextRecordToSend` up to `stableConfigChangeIndex`.
 					standingConfig.peers.foreachWithIndex { (participantId, participantIndex) =>
-						if highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) < stableConfigChangeIndex && newRetiringParticipants.contains(participantId)
-						then start(participantId, thisLeader.indexOfNextRecordToSend_ByParticipantIndex(participantIndex))
+						if peerProgress_ByParticipantIndex(participantIndex).highestRecordIndexKnowToBeCommitted < stableConfigChangeIndex && newRetiringParticipants.contains(participantId)
+						then start(participantId, peerProgress_ByParticipantIndex(participantIndex).indexOfNextRecordToSend)
 					}
 				}
 			}
@@ -3351,7 +3343,7 @@ trait ConsensusParticipantSdm { thisModule =>
 					val config0 = deriveConfigurationFrom(primaryState0)
 					// For every other participants, generate a task to replicate records this participant has and believes the others lack.
 					val appendRequests_byParticipantIndex0 = config0.peers.mapWithIndex { (otherParticipantId, otherParticipantIndex0) =>
-						val nextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(otherParticipantIndex0)
+						val nextRecordToSend = peerProgress_ByParticipantIndex(otherParticipantIndex0).indexOfNextRecordToSend
 						appendsRecordsToParticipant(primaryState0, otherParticipantId, otherParticipantIndex0, nextRecordToSend, indexAfterTopRecordToSend)
 					}
 					val commitIndexAtAppendRequest = commitIndex
@@ -3380,7 +3372,7 @@ trait ConsensusParticipantSdm { thisModule =>
 												// Handle the responses. Note that when successful, it updates the corresponding entry of the `indexOfNextRecordToSend_ByParticipantIndex` and `highestRecordIndexKnownToBeAppended_ByParticipantIndex` arrays.
 												handleAppendResponse(accessible1, config1, otherParticipantId, otherParticipantIndex, appendResponse, primaryState0.currentTerm, indexAfterTopRecordToSend, commitIndexAtAppendRequest)
 											}
-											Trace.trace(s"The append responses until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.peers.indices yield s"${config1.peers(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
+											Trace.trace(s"The append responses until $indexAfterTopRecordToSend have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config1.peers.indices yield s"${config1.peers(i)}: outcome=${appendOutcomes1(i)}, nextToSend=${peerProgress_ByParticipantIndex(i).indexOfNextRecordToSend}, knownAppended=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnownToBeAppended}, knowCommitted=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnowToBeCommitted}").mkString("[", "; ", "]")}") // TODO delete
 											for maybeLastAppendAttemptInfo2 <- retryLaggingLearners(accessible1, config1, appendOutcomes1, indexAfterTopRecordToSend, false, false, serialOfReplicationAttempt)
 												yield {
 													// If the role changed while waiting the result or the number of successful appends isn't enough to achieve quorum, return false.
@@ -3393,7 +3385,8 @@ trait ConsensusParticipantSdm { thisModule =>
 														// Update the commitIndex if a majority has replicated the uncommitted records.
 														// If there exists an N such that N > commitIndex, the highest log-entry index known to be replicated is >= N for a majority of the servers, and getRecordAt[N].term == currentTerm: set commitIndex = N
 														val previousCommitIndex = commitIndex
-														commitIndex = config2a.indexOfTheCommittedRecordWithHighestIndex(accessible2, previousCommitIndex, IArray.unsafeFromArray(highestRecordIndexKnownToBeAppended_ByParticipantIndex), appendOutcomes2a)
+														val highestRecordIndexKnownToBeAppended_ByParticipantIndex = IArray.unsafeFromArray(peerProgress_ByParticipantIndex.map(_.highestRecordIndexKnownToBeAppended))
+														commitIndex = config2a.indexOfTheCommittedRecordWithHighestIndex(accessible2, previousCommitIndex, highestRecordIndexKnownToBeAppended_ByParticipantIndex, appendOutcomes2a)
 														val config2b =
 															if commitIndex == previousCommitIndex then config2a
 															else {
@@ -3421,7 +3414,7 @@ trait ConsensusParticipantSdm { thisModule =>
 															// If still leading
 															maybeLastAppendAttemptInfo3.foreach { lastAppendAttemptInfo3 =>
 																val config3 = lastAppendAttemptInfo3.updatedConfig
-																Trace.trace(s"Final step: excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config3.peers.indices yield s"${config3.peers(i)}: outcome=${lastAppendAttemptInfo3.lastAttemptOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
+																Trace.trace(s"Final step: excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config3.peers.indices yield s"${config3.peers(i)}: outcome=${lastAppendAttemptInfo3.lastAttemptOutcomes(i)}, nextToSend=${peerProgress_ByParticipantIndex(i).indexOfNextRecordToSend}, knownAppended=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnownToBeAppended}, knowCommitted=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnowToBeCommitted}").mkString("[", "; ", "]")}") // TODO delete
 																// If this leading participant is not included in the active configuration and all the followers in the new configuration have committed the StableConfigChange that excludes this participant, retire this participant.
 																if isGhostAndAllFollowersCommittedTheExcludingConfigChange then {
 																	// This point is reached if this leading participant was able to make the followers commit the StableConfigChange that excludes it before receiving an "appendRecords" call from the new leader (which is the other way to leave the gohst leader state)..
@@ -3455,7 +3448,8 @@ trait ConsensusParticipantSdm { thisModule =>
 			private def appendsRecordsToParticipant(primaryState: Accessible, destinationParticipantId: ParticipantId, destinationParticipantIndex: Int, fromIndex: RecordIndex, untilIndex: RecordIndex)(using Trace.Context): AppendRequest = {
 				Trace.step("appendsRecordsToParticipant") {
 					// if the appending would be empty and with the same `leaderCommit` as a previous successful append, skip it and fake a successful response.
-					if commitIndex == highestRecordIndexKnowToBeCommitted_ByParticipantIndex(destinationParticipantIndex) && untilIndex <= 1 + highestRecordIndexKnownToBeAppended_ByParticipantIndex(destinationParticipantIndex)
+					val progress = peerProgress_ByParticipantIndex(destinationParticipantIndex)
+					if commitIndex == progress.highestRecordIndexKnowToBeCommitted && untilIndex <= 1 + progress.highestRecordIndexKnownToBeAppended
 					then sequencer.Keeper(AppendResult(primaryState.currentTerm, 0, ISOLATED))
 					else thisConsensusParticipant.appendRecordsToParticipant(primaryState, destinationParticipantId, fromIndex, untilIndex, commitIndex)
 				}
@@ -3533,8 +3527,8 @@ trait ConsensusParticipantSdm { thisModule =>
 						config1.peers.foreachWithIndex { (participantId, participantIndex) =>
 							if (previousAttemptAppendOutcomes(participantIndex) & AO_IS_LAGGING_MASK) != 0 then {
 								laggingParticipants.addOne(participantId)
-								val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
-								val appendRequest = appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRecordToSend, indexAfterTopRecordSent)
+								val progress = peerProgress_ByParticipantIndex(participantIndex)
+								val appendRequest = appendsRecordsToParticipant(accessible1, participantId, participantIndex, progress.indexOfNextRecordToSend, indexAfterTopRecordSent)
 								newAppendRequests.addOne(appendRequest)
 							}
 						}
@@ -3570,7 +3564,7 @@ trait ConsensusParticipantSdm { thisModule =>
 														}
 													}
 												}
-												Trace.trace(s"The append responses to the laggard-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config2.peers.indices yield s"${config2.peers(i)}: outcome=${newOutcomes(i)}, nextToSend=${indexOfNextRecordToSend_ByParticipantIndex(i)}, knownAppended=${highestRecordIndexKnownToBeAppended_ByParticipantIndex(i)}, knowCommitted=${highestRecordIndexKnowToBeCommitted_ByParticipantIndex(i)}").mkString("[", "; ", "]")}") // TODO delete
+												Trace.trace(s"The append responses to the laggard-retry of replication #$serialOfReplicationAttempt until $indexAfterTopRecordSent have been handled, excludingConfigIndex=$indexOfConfigChangeThatExcludedThisParticipant, aboutOthers=${(for i <- config2.peers.indices yield s"${config2.peers(i)}: outcome=${newOutcomes(i)}, nextToSend=${peerProgress_ByParticipantIndex(i).indexOfNextRecordToSend}, knownAppended=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnownToBeAppended}, knowCommitted=${peerProgress_ByParticipantIndex(i).highestRecordIndexKnowToBeCommitted}").mkString("[", "; ", "]")}") // TODO delete
 												retryLaggingLearners(accessible2, config2, newOutcomes, indexAfterTopRecordSent, untilNoneLags, abortIfAnotherReplicationStarts, serialOfReplicationAttempt)
 										}
 									}
@@ -3583,7 +3577,7 @@ trait ConsensusParticipantSdm { thisModule =>
 
 			/** Handles the result of an [[ClusterParticipant.appendRecords]] call.
 			 *
-			 * Updates the [[indexOfNextRecordToSend_ByParticipantIndex]], [[highestRecordIndexKnownToBeAppended_ByParticipantIndex]], and [[highestRecordIndexKnowToBeCommitted_ByParticipantIndex]] arrays and maps the [[AppendResult]] to an [[AppendOutcome]].
+			 * Updates the state arrays and maps the [[AppendResult]] to an [[AppendOutcome]].
 			 * @param primaryState the current [[PrimaryState]].
 			 * @param config the active [[Configuration]]. Assumes it is derived from `config`.
 			 * @param participantId the identifier of the participant whose response is being handled.
@@ -3608,15 +3602,16 @@ trait ConsensusParticipantSdm { thisModule =>
 								assert(appendResult.term == appendRequestTerm || appendResult.roleOrdinal == RETIRING) // because the term in replies is always greater than or equal to the term in inquires.
 							}
 
-							val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
-							val highestRecordIndexKnownToBeAppended = highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex)
-							val highestRecordIndexKnownToBeCommited = highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex)
+							val peerProgress = peerProgress_ByParticipantIndex(participantIndex)
+							val indexOfNextRecordToSend = peerProgress.indexOfNextRecordToSend
+							val highestRecordIndexKnownToBeAppended = peerProgress.highestRecordIndexKnownToBeAppended
+							val highestRecordIndexKnownToBeCommited = peerProgress.highestRecordIndexKnowToBeCommitted
 
 							if appendResult.roleOrdinal == RETIRING && appendResult.successOrIndexForNextAttempt != 0 then {
 								val retireeExcludingConfigIndex = appendResult.successOrIndexForNextAttempt - 1 // see `Retiring.onAppendRecords`
-								highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
-								indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = appendResult.successOrIndexForNextAttempt
-								highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = retireeExcludingConfigIndex
+								peerProgress.highestRecordIndexKnowToBeCommitted = retireeExcludingConfigIndex
+								peerProgress.indexOfNextRecordToSend = appendResult.successOrIndexForNextAttempt
+								peerProgress.highestRecordIndexKnownToBeAppended = retireeExcludingConfigIndex
 								// If the commitIndex of the retiree is higher than the commitIndex of this leading participant when append was called, then this leader was crowned during joint consensus with the commitIndex behind the retiree's and, therefore, needs to consider it as a wildcard-voter.
 								// Else, the retiree is still retiring from a previous joint consensus and was included back but hasn't noticed yet. Therefore it needs missing records to catch up.
 								if retireeExcludingConfigIndex > commitIndex then AO_IS_RETIRING else AO_NEEDS_EARLIER_RECORDS
@@ -3625,17 +3620,17 @@ trait ConsensusParticipantSdm { thisModule =>
 							else if indexAfterTopRecordSent <= highestRecordIndexKnownToBeAppended then if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING else AO_SUCCESS
 							// If the appending was successful, update the local knowledge about the participant and return AO_SUCCESS.
 							else if appendResult.successOrIndexForNextAttempt == 0 then {
-								if appendRequestLeaderCommit > highestRecordIndexKnownToBeCommited then highestRecordIndexKnowToBeCommitted_ByParticipantIndex(participantIndex) = appendRequestLeaderCommit
-								if indexAfterTopRecordSent > indexOfNextRecordToSend then indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexAfterTopRecordSent
+								if appendRequestLeaderCommit > highestRecordIndexKnownToBeCommited then peerProgress.highestRecordIndexKnowToBeCommitted = appendRequestLeaderCommit
+								if indexAfterTopRecordSent > indexOfNextRecordToSend then peerProgress.indexOfNextRecordToSend = indexAfterTopRecordSent
 								val indexOfTopRecordSent = indexAfterTopRecordSent - 1
-								if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended_ByParticipantIndex(participantIndex) = indexOfTopRecordSent
+								if indexOfTopRecordSent > highestRecordIndexKnownToBeAppended then peerProgress.highestRecordIndexKnownToBeAppended = indexOfTopRecordSent
 								if appendResult.roleOrdinal == RETIRING then AO_IS_RETIRING else AO_SUCCESS
 							} else { // else the rejection was because the participant needs earlier records (the previous record's does not exist in its log or its term is not the same as in this participant log then):
 								val suggestedIndexForNextAttempt = appendResult.successOrIndexForNextAttempt
 								// Clamp the index of the first record to append in the next attempt after the highest record index known to be appended.
 								val indexForNextAttempt = if suggestedIndexForNextAttempt <= highestRecordIndexKnownToBeAppended then highestRecordIndexKnownToBeAppended + 1 else suggestedIndexForNextAttempt
 								if assertionsEnabled then assert(indexForNextAttempt > highestRecordIndexKnownToBeCommited)
-								indexOfNextRecordToSend_ByParticipantIndex(participantIndex) = indexForNextAttempt
+								peerProgress.indexOfNextRecordToSend = indexForNextAttempt
 								AO_NEEDS_EARLIER_RECORDS
 							}
 						}
@@ -3679,7 +3674,7 @@ trait ConsensusParticipantSdm { thisModule =>
 													val participantIndex = config1.participantIndexOf(participantId)
 													if participantIndex >= 0 then {
 														unreachableParticipantIds.addOne(participantId)
-														val indexOfNextRecordToSend = indexOfNextRecordToSend_ByParticipantIndex(participantIndex)
+														val indexOfNextRecordToSend = peerProgress_ByParticipantIndex(participantIndex).indexOfNextRecordToSend
 														appendRequests.addOne(appendsRecordsToParticipant(accessible1, participantId, participantIndex, indexOfNextRecordToSend, indexAfterTopRecordToSend))
 													}
 												}
@@ -3720,7 +3715,7 @@ trait ConsensusParticipantSdm { thisModule =>
 			 * @note that for the result of this operation be fiable, the [[PrimaryState]] should have stayed constant since the last call to [[deriveConfigurationFrom]].
 			 * @return true if this leading participant is not included in the active [[Configuration]] and all the followers in the new [[Configuration]] have committed the [[StableConfigChange]] that excludes this participant. */
 			private def isGhostAndAllFollowersCommittedTheExcludingConfigChange: Boolean = {
-				isGhost && IArray.unsafeFromArray(highestRecordIndexKnowToBeCommitted_ByParticipantIndex).forallWithIndex((highestRecordIndexKnowToBeCommitted, _) => highestRecordIndexKnowToBeCommitted >= indexOfConfigChangeThatExcludedThisParticipant)
+				isGhost && peerProgress_ByParticipantIndex.forall(_.highestRecordIndexKnowToBeCommitted >= indexOfConfigChangeThatExcludedThisParticipant)
 			}
 
 			/** Consolidates the many [[AppendRequest]]s into a single [[sequencer.Capturer]] that yields an array with the [[AppendResponse]]s.
