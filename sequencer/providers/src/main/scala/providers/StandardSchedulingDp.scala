@@ -2,33 +2,32 @@ package readren.sequencer
 package providers
 
 import Doer.ExecutionSerial
-import providers.StandardSchedulingDp.ProvidedDoerFacade
+import providers.StandardSchedulingDp.{NOT_ACTIVATED, ProvidedDoerFacade}
 
 import readren.common.CompileTime.getTypeName
 import readren.common.{Maybe, deriveToString}
 
 import java.util.concurrent.{ConcurrentLinkedQueue, Executors, ScheduledFuture, TimeUnit}
+import java.util.concurrent.atomic.AtomicLong
 
 object StandardSchedulingDp {
-	trait ProvidedDoerFacade extends Doer, SchedulingExtension, LoopingExtension, ShutdownAble {
-		/** @return true if the provided [[Schedule]] was activated and still not fully cancelled. */
+	trait ProvidedDoerFacade extends Doer, SchedulingExtension, SchedulingDoerFluxPart, ShutdownAble {
+		/** @return true if the provided [[Schedule]] was activated and still not fully canceled. */
 		def isActive(schedule: Schedule): Boolean
 	}
 
 	final class Impl(
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
-		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(false),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 	) extends StandardSchedulingDp {
 		override type Tag = String
 
-		override def tagFromText(text: String): String = text
+		override def tagFromText(text: String): Tag = text
 
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
 		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
 	}
+
+	inline def NOT_ACTIVATED: Long = Long.MaxValue
 }
 
 /** A [[DoerProvider]] that provides [[Doer]] with [[SchedulingExtension]] instances which own a dedicated single-thread-scheduled-executor instance provided by [[Executors.newSingleThreadScheduledExecutor]].
@@ -85,11 +84,12 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			})
 		}
 
+		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
+		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
+
 		override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
 		override def currentlyRunningDoer: Maybe[ProvidedDoerFacade] = Maybe(currentDoerThreadLocal.get)
-
-		override def reportFailure(failure: Throwable): Unit = onFailureReported(thisDoer, failure)
 
 		//// SCHEDULING EXTENSION
 
@@ -99,6 +99,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			private[DoerImpl] var scheduledFuture: ScheduledFuture[?] | Null = null
 			/** This variable's value is changed one time only, from `false` to `true`, when [[cancel]] or [[cancelAll]] is called. */
 			@volatile private[DoerImpl] var canceled: Boolean = false
+			val activationSerial: AtomicLong = AtomicLong(NOT_ACTIVATED)
 		}
 
 		class TDelaySchedule(val delay: MilliDuration) extends TSchedule {
@@ -117,6 +118,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		private val activatedSchedules: java.util.concurrent.ConcurrentLinkedQueue[TSchedule] = new java.util.concurrent.ConcurrentLinkedQueue()
 
 		override type Schedule = TSchedule
+		override type Delay = TDelaySchedule
 
 		override def newDelaySchedule(delay: MilliDuration): TDelaySchedule = TDelaySchedule(delay)
 
@@ -127,12 +129,13 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
 			schedule.synchronized {
 				if schedule.canceled then return
-				else if schedule.scheduledFuture ne null then throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+				val activationSerial = lastActivationSerial.incrementAndGet()
+				if !schedule.activationSerial.compareAndSet(NOT_ACTIVATED, activationSerial) then throw IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
 				else {
 					schedule.scheduledFuture = schedule match {
 						case ds: TDelaySchedule =>
 							val wrapper: Runnable = () =>
-								if !schedule.scheduledFuture.isDone then {
+								if !schedule.scheduledFuture.isDone && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
 									currentDoerThreadLocal.set(this)
 									try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 									catch {
@@ -147,26 +150,30 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 							doSerEx.schedule(wrapper, ds.delay, TimeUnit.MILLISECONDS)
 
 						case frs: TFixedRateSchedule =>
-							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
+								currentDoerThreadLocal.set(thisDoer)
 								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)
 										throw cause
+								} finally {
+									currentDoerThreadLocal.remove()
 								}
-
 							}
 							doSerEx.scheduleAtFixedRate(wrapper, frs.initialDelay, frs.interval, TimeUnit.MILLISECONDS)
 
 						case fds: TFixedDelaySchedule =>
-							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone then {
+							val wrapper: Runnable = () => if !schedule.scheduledFuture.isDone && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
+								currentDoerThreadLocal.set(thisDoer)
 								try routine(schedule) // TODO: use the ThreadFactory to setup the unhandled exceptions handler instead of this try-catch
 								catch {
 									case cause: Throwable =>
 										onUnhandledException(thisDoer, cause)
 										throw cause
+								} finally {
+									currentDoerThreadLocal.remove()
 								}
-
 							}
 							doSerEx.scheduleWithFixedDelay(wrapper, fds.initialDelay, fds.delay, TimeUnit.MILLISECONDS)
 					}
@@ -186,6 +193,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		}
 
 		override def cancelAll(): Unit = {
+			activationSerialAtLastCancelAll = lastActivationSerial.get
 			activatedSchedules.forEach { schedule =>
 				cancel(schedule)
 			}
@@ -194,7 +202,7 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 		/** @inheritdoc
 		 * Design assumption: This implementation assumes that [[schedule.scheduledFuture]] is modified a single time only, from `null` to `non-null`. */
 		override def wasActivated(schedule: Schedule): Boolean =
-			(schedule.scheduledFuture ne null) || schedule.synchronized(schedule.scheduledFuture ne null)
+			schedule.activationSerial.get != NOT_ACTIVATED
 
 		def isActive(schedule: Schedule): Boolean = {
 			if schedule.scheduledFuture ne null then !schedule.scheduledFuture.isDone
@@ -202,7 +210,8 @@ trait StandardSchedulingDp extends DoerProvider[StandardSchedulingDp.ProvidedDoe
 			else false
 		}
 
-		override def isCanceled(schedule: TSchedule): Boolean = schedule.canceled
+		override def isCanceled(schedule: TSchedule): Boolean =
+			schedule.canceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
 
 		/** @inheritdoc
 		 * This implementation shutdowns the executor and cleans up resources. */

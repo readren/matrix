@@ -2,7 +2,6 @@ package readren.sequencer
 package manager
 package descriptors
 
-import manager.descriptors.DefaultThreadDrivenSchedulingDpd.Tag
 import providers.LeastLoadedFixedWorkerDp
 
 import readren.common.CompileTime.getTypeName

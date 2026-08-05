@@ -19,7 +19,7 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 1. **Never edit code unless the user explicitly says to edit code.** Describing a problem, pasting logs, or asking for analysis is NOT permission to edit. The user must use words like "fix", "change", "implement", "edit", "refactor", or equivalent direct imperatives targeting code.
 2. **Never run tests or compile code unless the user explicitly says to do so.** Analyzing output or reasoning about behavior does NOT require execution. Default to static analysis.
 3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
-
+4. **Never suggest, prompt, or ask the user to compile, run tests, or execute commands.** Do not follow generic validation templates that prompt for execution. Wait for the user to explicitly initiate execution or request it.
 
 ## Environment
 - Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).
@@ -31,7 +31,10 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 - Use `compile` as the validation baseline.
 
 ### Format
-- Never wrap text. Let the container do that.
+
+- Use Scala 3 syntax, putting braces around all multi-line blocks that would require them if the "-no-indent" flag was active (do not rely on indentation for multi-line block delimitation).
+- Never add braces around single-line blocks or single-line case expressions (e.g. write `case Success(a) => expression`, NOT `case Success(a) => { expression }`).
+- No hard wraps or newlines in paragraphs. Let container soft-wrap.
 
 ## High-level architecture
 
@@ -41,7 +44,7 @@ This is a multi-module Scala codebase centered around deterministic single-threa
 - `common`
   - Shared low-level utilities (`Maybe`, macros/helpers, logging config helpers, concurrent collections).
 - `sequencer/core`
-  - Core execution model (`Doer`) and composable async primitives (`Duty`, `Task`, `LatchedDuty`, `Covenant`, `CausalFence`).
+    - Core execution model (`Doer`) and composable async primitives (`Duty`, `Task`, `LatchedDuty`, `Captor`, `CausalFence`).
   - This is the foundation used by higher layers for ordered, deterministic mutation.
 - `sequencer/providers` + `sequencer/providers-manager`
   - Concrete `Doer` providers (worker-based executors, scheduling-enabled variants) and provider management.
@@ -73,3 +76,10 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - cluster communication/state transitions: inspect `nexus/cluster/src/main/scala/cluster/service/ParticipantService.scala`.
   - consensus role/configuration transitions: inspect `consensus/src/main/scala/ConsensusParticipantSdm.scala`.
 - Tests are MUnit/ScalaCheck-based and distributed per module under `src/test/scala`.
+
+## OKF Maintenance
+
+- On any interaction (including debugging, single-issue analysis, or Q&A) that reveals, clarifies, or modifies system invariants, architectural decisions, or component behaviors:
+    - Extract and synthesize that knowledge into the appropriate concept doc or ADR in `okf/`.
+    - Express all updates as timeless, high-level system specifications focusing on invariants, constraints, and architecture—never include code implementation details (such as local variable names) or session debugging narratives.
+    - Record the documentation change in `okf/log.md`.

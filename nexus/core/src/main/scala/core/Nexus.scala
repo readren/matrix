@@ -25,15 +25,15 @@ abstract class Nexus(val name: String) extends Procreative { thisNexus =>
 
 
 	/** thread-safe */
-	def createsActant[U, CD <: Doer](
+	def createActant[U, CD <: Doer](
 		childFactory: ActantFactory,
 		childDoer: CD
 	)(
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Duty[Actant[U, CD]] = {
-		doer.Duty_mineFlat { () =>
+	): doer.Capturer[Actant[U, CD]] = {
+		doer.Capturer_defer { () =>
 			spawner.createsActant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}

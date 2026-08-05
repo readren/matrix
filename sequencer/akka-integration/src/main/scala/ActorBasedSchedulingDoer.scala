@@ -6,7 +6,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{Behavior, Scheduler}
 import readren.common.CompileTime.getTypeName
 import readren.common.Maybe
-import readren.sequencer.{MilliDuration, SchedulingExtension}
+import readren.sequencer.{MilliDuration, SchedulingExtension, SchedulingDoer}
 
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -45,13 +45,11 @@ object ActorBasedSchedulingDoer {
 			override def currentlyRunningDoer: Maybe[ActorBasedDoer] =
 				Maybe.apply(ActorBasedDoer.currentDoerThreadLocal.get)
 
-			override def reportFailure(cause: Throwable): Unit =
-				actorBasedDoer.reportFailurePortal(cause)
-
 			override def akkaScheduler: Scheduler =
 				actorBasedDoer.akkaScheduler
 
 			override type Schedule = Plan
+			override type Delay = SingleTime
 
 			override def newDelaySchedule(delay: MilliDuration): SingleTime = SingleTime(delay)
 
@@ -92,4 +90,4 @@ object ActorBasedSchedulingDoer {
 }
 
 /** A [[Doer]], extended with scheduling and akka-actor related operations, whose DoSerEx (doer's serial executor) is an akka-actor. */
-abstract class ActorBasedSchedulingDoer extends ActorBasedDoer, SchedulingExtension  
+abstract class ActorBasedSchedulingDoer extends ActorBasedDoer, SchedulingExtension

@@ -16,16 +16,16 @@ trait ActorExtension { thisActorExtension: Doer =>
 
 	extension [A](target: ActorRef[A]) {
 		/** Creates a [[Task]] that sends the provided message to the `target`. */
-		def says(message: A): Task[Unit] = Task_mine(() => target ! message)
+		def says(message: A): Task[Unit] = Task_apply(() => target ! message)
 
 		/** Note: The type parameter is required for the compiler to know the type parameter of the resulting [[Task]]. */
 		def queries[B](messageBuilder: ActorRef[B] => A)(using timeout: Timeout): Task[B] = {
 			import akka.actor.typed.scaladsl.AskPattern.*
-			Task_wait(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
+			Task_from(target.ask[B](messageBuilder)(using timeout, akkaScheduler))
 		}
 	}
 
-	extension [A](task: Task[A]) {
+	extension [A](taskA: Task[A]) {
 
 		/**
 		 * Triggers the execution of this task and sends the result to the `destination`.
@@ -34,11 +34,11 @@ trait ActorExtension { thisActorExtension: Doer =>
 		 * @param isWithinDoSerEx tells if the call is within the doer's serial executor.
 		 * @param errorHandler called if the execution of this task completed with failure.
 		 */
-		def triggerAndSend(destination: ActorRef[A], isWithinDoSerEx: Boolean = isInSequence)(errorHandler: Throwable => Unit): Unit = {
-			task.trigger(isWithinDoSerEx) {
-				case Success(r) => destination ! r;
-				case Failure(e) => errorHandler(e)
-			}
+		inline def subscribeAndSend(destination: ActorRef[A], inline isWithinDoSerEx: Boolean = isInSequence)(inline errorHandler: Throwable => Unit): Unit = {
+			taskA.subscribeCallbacks(isWithinDoSerEx)(
+				r => destination ! r,
+				e => errorHandler(e)
+			)
 		}
 	}
 

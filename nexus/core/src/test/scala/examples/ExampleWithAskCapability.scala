@@ -26,7 +26,7 @@ object ExampleWithAskCapability {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val calculatorDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "calculator")
-		nexus.createsActant[CalcCmd, calculatorDoer.type](RegularAf, calculatorDoer)(_ => {
+		nexus.createActant[CalcCmd, calculatorDoer.type](RegularAf, calculatorDoer)(_ => {
 				case Sum(a, b, replyTo, questionId) =>
 					replyTo.tell(SumResult(a + b, questionId))
 					Continue
@@ -35,24 +35,28 @@ object ExampleWithAskCapability {
 				val calculatorReceptor = calculator.receptorProvider.local[CalcCmd]
 
 				val userDoer = calculator.provideDoer(DefaultCooperativeWorkersDpd, "user")
-				nexus.createsActant[Started.type | SumResult, userDoer.type](RegularAf, userDoer) { user =>
+				nexus.createActant[Started.type | SumResult, userDoer.type](RegularAf, userDoer) { user =>
 					val userReceptor = user.receptorProvider.local[SumResult]
 
 					behaviors.inquisitiveNest(user)(new Behavior[Started.type] {
 						override def handle(message: Started.type): HandleResult[Started.type] =
 							calculatorReceptor.ask(questionId => Sum(3, 7, userReceptor, questionId))
-								.trigger(true) { answer =>
-									println(s"3 + 7 = ${answer.result}")
-									user.stop()
-								}
+								.subscribeSyncCallbacks(
+									answer => {
+										println(s"3 + 7 = ${answer.result}")
+										user.stop()
+									},
+									error => throw new Exception(error)
+								)
 							Continue
 					})()
 				}
 
 			}
-			.flatMap { user => user.stopDuty.onBehalfOf(nexus.doer) }
-			.trigger() { _ =>
-				manager.shutdown()
-			}
+			.flatMap { user => user.stopCapturer.onBehalfOf(nexus.doer) }
+			.triggerCallbacks(false)(
+				_ => manager.shutdown(),
+				error => throw new Exception(error)
+			)
 	}
 }

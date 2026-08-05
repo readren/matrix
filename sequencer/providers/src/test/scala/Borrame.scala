@@ -27,26 +27,26 @@ object Borrame {
 		val dog = Dog("buaw")
 		val cat = Cat("miau")
 
-		val laDog: doer.LatchingDuty[Animal] = doer.Covenant[Dog]().fulfill(dog)
+		val laDog: doer.Capturer[Animal] = doer.Captor[Dog]().capture(dog)
 
-		laDog.trigger()(a => println(a))
+		laDog.triggerCallbacks()(a => println(a), e => throw new Exception(e))
 
-		val laDogMutatedToCat: doer.LatchingDuty[Cat] = laDog.map(_ => cat)
+		val laDogMutatedToCat: doer.Capturer[Cat] = laDog.map(_ => cat)
 
-		laDogMutatedToCat.trigger()(b => println(b))
+		laDogMutatedToCat.triggerCallbacks()(b => println(b), e => throw new Exception(e))
 
-		val dOne = doer.Duty_mine(() => 1)
-		val covenant = doer.Covenant[Int]()
-		covenant.trigger()(x => println(s"covenant completed with $x"))
-		covenant.fulfillWith(dOne)
+		val dOne = doer.Task_apply(() => 1)
+		val captor = doer.Captor[Int]()
+		captor.triggerCallbacks()(x => println(s"captor completed with $x"), e => throw new Exception(e))
+		captor.seizeWith(dOne)
 
-		val stateUpdater: Animal => Maybe[doer.LatchingDuty[Animal]] = {
+		val stateUpdater: Animal => Maybe[doer.Capturer[Animal]] = {
 				case Dog(ladrido) =>
-					//					Maybe.some(doer.LatchingDuty_ready(Dog(ladrido + " " + ladrido)))
-					if ladrido.length < 10 then Maybe(doer.LatchingDuty_ready(Dog(ladrido + " " + ladrido)))
+					//					Maybe.some(doer.Keeper(Dog(ladrido + " " + ladrido)))
+					if ladrido.length < 10 then Maybe(doer.Keeper(Dog(ladrido + " " + ladrido)))
 					else Maybe.empty
 				case Cat(maullido) =>
-					Maybe(doer.LatchingDuty_ready(Cat(maullido ++ maullido)))
+					Maybe(doer.Keeper(Cat(maullido ++ maullido)))
 			}
 
 		val fence = CausalFence[Animal, doer.type](doer)(dog)
@@ -58,7 +58,7 @@ object Borrame {
 				z <- fence.advanceIf(stateUpdater)
 			} yield (i, x, y, z)
 
-		steps.trigger()(r => println(r))
+		steps.triggerCallbacks()(r => println(r), e => throw new Exception(e))
 		provider.shutdown()
 	}
 

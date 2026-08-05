@@ -1,10 +1,10 @@
 package readren.sequencer
 package providers
 
+import Doer.ExecutionSerial
 import providers.ShutdownAble
 
 import readren.common.Maybe
-import readren.sequencer.Doer.ExecutionSerial
 
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
@@ -13,15 +13,12 @@ object RoundRobinDp {
 	
 	final class Impl(
 		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
-		failureReporter: (Doer, Throwable) => Unit = DefaultDoerFaultReporter(true),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
 		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
 		queueFactory: () => BlockingQueue[Runnable] = () => new LinkedBlockingQueue[Runnable]()
 	) extends RoundRobinDp(threadPoolSize, threadFactory, queueFactory) {
 		/** Called when a [[Runnable]] passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
-		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = ??? // TODO if the Runnable passed to `executeSequentially` should be wrapped to notice about unhandled exceptions and expose them calling this method which would be implemented similar to `onFailureReported`.   
-
-		/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-		override protected def onFailureReported(doer: Doer, failure: Throwable): Unit = failureReporter(doer, failure)
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
 	}
 }
 
@@ -76,7 +73,6 @@ abstract class RoundRobinDp(
 
 		override def currentlyRunningDoer: Maybe[ProvidedDoer] = Maybe(doerThreadLocal.get)
 
-		override def reportFailure(cause: Throwable): Unit = onFailureReported(thisDoer, cause)
 	}
 
 
@@ -93,23 +89,23 @@ abstract class RoundRobinDp(
 	}
 
 	override def diagnose(sb: StringBuilder): StringBuilder = {
-		var totalCompletedTaskCount: Long = 0
+		var totalCompletedRunnablesCount: Long = 0
 		sb.append("<<<\n")
 		for (doer, i) <- doers.zipWithIndex do {
 			sb.append(i).append(") ")
 			sb.append(" queue.size=").append(doer.doSerEx.getQueue.size)
 			sb.append(", activeCount=").append(doer.doSerEx.getActiveCount)
-			sb.append(", taskCount=").append(doer.doSerEx.getTaskCount)
-			sb.append(", completedTaskCount=").append(doer.doSerEx.getCompletedTaskCount)
+			sb.append(", runnablesCount=").append(doer.doSerEx.getTaskCount)
+			sb.append(", completedRunnablesCount=").append(doer.doSerEx.getCompletedTaskCount)
 			// sb.append(", largestPoolSize=").append(info.executor.getLargestPoolSize)
 			sb.append(", isTerminating=").append(doer.doSerEx.isTerminating)
 			sb.append(", isTerminated=").append(doer.doSerEx.isTerminated)
 			sb.append(", isShutdown=").append(doer.doSerEx.isShutdown)
 			sb.append('\n')
 			// info.lastRunnable.foreach(r => sb.append("Last runnable:\n").append(r.toString).append('\n'))
-			totalCompletedTaskCount += doer.doSerEx.getCompletedTaskCount
+			totalCompletedRunnablesCount += doer.doSerEx.getCompletedTaskCount
 		}
-		sb.append("totalCompletedTasks=").append(totalCompletedTaskCount)
+		sb.append("totalCompletedRunnables=").append(totalCompletedRunnablesCount)
 		sb.append("\n>>>\n")
 		sb
 	}

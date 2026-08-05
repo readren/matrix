@@ -30,7 +30,7 @@ object PruebaChecked {
 		val nexus = new NexusTyped(uri, rootDoer, manager)
 
 		val parentDoer = nexus.provideDoer(DefaultCooperativeWorkersDpd, "parent")
-		nexus.createsActant[Cmd, parentDoer.type](RegularAf, parentDoer) { parent =>
+		nexus.createActant[Cmd, parentDoer.type](RegularAf, parentDoer) { parent =>
 			CheckedBehavior.factory[Cmd, MyException] {
 				case cmd: DoWork =>
 					if (cmd.integer % 5) >= 3 then throw new MyException
@@ -43,17 +43,20 @@ object PruebaChecked {
 				println(s"Recovering from $m")
 				Continue
 			}
-		}.trigger() { parent =>
-			val parentReceptor = parent.receptorProvider.local
-			val outReceptor = nexus.buildReceptorFor[Response] { response =>
-				if response.text eq null then manager.shutdown()
-				else println(response)
-			}
-			for i <- 0 to 20 do {
-				parentReceptor.tell(DoWork(i, outReceptor))
-			}
-			parentReceptor.tell(Relax(outReceptor))
-		}
+		}.triggerCallbacks()(
+			parent => {
+				val parentReceptor = parent.receptorProvider.local
+				val outReceptor = nexus.buildReceptorFor[Response] { response =>
+					if response.text eq null then manager.shutdown()
+					else println(response)
+				}
+				for i <- 0 to 20 do {
+					parentReceptor.tell(DoWork(i, outReceptor))
+				}
+				parentReceptor.tell(Relax(outReceptor))
+			},
+			error => throw new Exception(error)
+		)
 
 	}
 }

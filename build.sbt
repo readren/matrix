@@ -1,7 +1,7 @@
 
 ThisBuild / version := "0.1.1-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.8.3"
+ThisBuild / scalaVersion := "3.8.4"
 
 ThisBuild / libraryDependencies ++= Seq(
 	// "readren" %% "sequencer-core" % "0.3.0-SNAPSHOT",
@@ -11,6 +11,8 @@ ThisBuild / libraryDependencies ++= Seq(
 
 	"org.typelevel" %% "scalacheck-effect" % "2.1.0" % Test,
 	"org.typelevel" %% "scalacheck-effect-munit" % "2.1.0" % Test,
+	"org.typelevel" %% "weaver-cats" % "0.13.0" % Test,
+	"org.typelevel" %% "weaver-scalacheck" % "0.13.0" % Test
 )
 
 ThisBuild / scalacOptions ++= Seq(
@@ -25,6 +27,9 @@ ThisBuild / scalacOptions ++= Seq(
 	//	"-Xcheck-macros",			// This flag enables extra runtime checks that try to find ill-formed trees or types as soon as they are created.
 	// "-Yexplicit-nulls"
 )
+
+// Required so SBT knows how to look for and execute your Weaver Suites
+ThisBuild / testFrameworks += new TestFramework("weaver.framework.CatsEffect")
 
 // These two lines are required for the "-ea" VM option to work when running with SBT. Note that this does not affect IntelliJ's run configurations. Use add "-ea" to the run-configurations' VM options to achieve the same.
 ThisBuild / fork := true

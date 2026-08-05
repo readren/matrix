@@ -6,7 +6,7 @@ object QuorumProbability {
 	/**
 	 * Computes the binomial coefficient C(n, k) = "n choose k".
 	 *
-	 * @param n total number of trials/items
+	 * @param n total number of ventures/items
 	 * @param k number of successes/chosen items
 	 * @return the binomial coefficient as `Long`
 	 * @note returns 0 if `k < 0` or `k > n`
@@ -32,8 +32,8 @@ object QuorumProbability {
 	 *
 	 * This is the less numerically stable version.
 	 *
-	 * @param n number of independent Bernoulli trials
-	 * @param p success probability of each trial (must be ∈ [0,1])
+	 * @param n number of independent Bernoulli ventures
+	 * @param p success probability of each venture (must be ∈ [0,1])
 	 * @param m minimum number of successes (threshold)
 	 * @return probability that at least `m` successes occur
 	 */
@@ -63,8 +63,8 @@ object QuorumProbability {
 	 * Uses recursive probability ratios between consecutive terms instead of
 	 * direct power calculations.
 	 *
-	 * @param n number of independent Bernoulli trials
-	 * @param p success probability of each trial (must be ∈ [0,1])
+	 * @param n number of independent Bernoulli ventures
+	 * @param p success probability of each venture (must be ∈ [0,1])
 	 * @param m minimum number of successes (threshold)
 	 * @return probability of at least `m` successes
 	 *

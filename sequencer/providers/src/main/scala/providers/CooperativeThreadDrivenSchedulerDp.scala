@@ -1,0 +1,154 @@
+package readren.sequencer
+package providers
+
+import providers.CooperativeThreadDrivenSchedulerDp.*
+
+import readren.common.CompileTime.getTypeName
+import readren.common.Maybe
+
+import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicLong
+import scala.language.adhocExtensions
+
+object CooperativeThreadDrivenSchedulerDp extends CooperativeSchedulerDpCompanion {
+
+	final class Impl(
+		applyMemoryFence: Boolean = true,
+		threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+		unhandledExceptionReporter: (Doer, Throwable) => Unit = DefaultDoerUnhandledExceptionReporter(),
+		threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+		trackSleepTime: Boolean = false
+	) extends CooperativeThreadDrivenSchedulerDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime) {
+		override type Tag = String
+
+		override def tagFromText(text: String): Tag = text
+
+		/** Called when a routine passed to the [[Doer.executeSequentially]] method of a provided [[Doer]] throws an exception. */
+		override protected def onUnhandledException(doer: Doer, exception: Throwable): Unit = unhandledExceptionReporter(doer, exception)
+	}
+
+	inline def NOT_ACTIVATED: Long = Long.MaxValue
+}
+
+/** Adds scheduling features to the [[CooperativeWorkersDp]].
+ * The scheduling is managed by a [[ThreadDrivenScheduler]] which uses a dedicated thread that operates independently and does not contribute to the thread-pool size.
+ * @param applyMemoryFence Determines whether memory fences are applied to ensure that store operations made by a task happen before load operations performed by successive tasks enqueued to the same [[Doer]].
+ * The application of memory fences is optional because no test case has been devised to demonstrate their necessity. Apparently, the ordering constraints are already satisfied by the surrounding code.
+ */
+abstract class CooperativeThreadDrivenSchedulerDp(
+	applyMemoryFence: Boolean = true,
+	threadPoolSize: Int = Runtime.getRuntime.availableProcessors(),
+	threadFactory: ThreadFactory = Executors.defaultThreadFactory(),
+	trackSleepTime: Boolean = false
+) extends CooperativeWorkersDp(applyMemoryFence, threadPoolSize, threadFactory, trackSleepTime), DoerProvider[SchedulingDoerFacade] { thisSchedulingDoerProvider =>
+
+	/** IMPORTANT: Represents a unique entity where equality and hash code must be based on identity. */
+	private class ScheduleImpl(owner: SchedulingDoerImpl, override val initialDelay: MilliDuration, override val interval: MilliDuration, override val isFixedRate: Boolean) extends ThreadDrivenScheduler.Plan[SchedulingDoerImpl](owner), ScheduleFacade {
+		val activationSerial: AtomicLong = AtomicLong(NOT_ACTIVATED)
+
+		override def wasActivated: Boolean = activationSerial.get() != NOT_ACTIVATED
+
+		override def toString: String =
+			s"ScheduleImpl(owner=${owner.tag}, ïnitialDelay=$initialDelay, interval=$interval, isFixedRate=$isFixedRate, scheduledTime: $scheduledTime, wasActivated=$wasActivated, isTriggered=$isTriggered)"
+	}
+
+	private val scheduler = new ThreadDrivenScheduler[SchedulingDoerImpl, ScheduleImpl](threadFactory, trackSleepTime)
+
+	override def provide(tag: Tag): SchedulingDoerFacade = {
+		startAllWorkersIfNotAlready()
+		new SchedulingDoerImpl(tag)
+	}
+
+	override def currentDoer: Maybe[SchedulingDoerFacade] = super.currentDoer.asInstanceOf[Maybe[SchedulingDoerFacade]]
+
+	def schedulerSleepTimeNanos: Long = scheduler.totalSleepTimeNanos
+
+	private class SchedulingDoerImpl(aTag: Tag) extends DoerImpl(aTag), SchedulingDoerFacade { thisSchedulingDoer =>
+
+		override type Schedule = ScheduleImpl
+		override type Delay = ScheduleImpl
+
+		private val lastActivationSerial: AtomicLong = AtomicLong(Long.MinValue)
+		@volatile private var activationSerialAtLastCancelAll = Long.MinValue
+
+		override def newDelaySchedule(delay: MilliDuration): Delay =
+			new ScheduleImpl(thisSchedulingDoer, delay, 0L, false)
+
+		override def newFixedRateSchedule(initialDelay: MilliDuration, interval: MilliDuration): Schedule =
+			new ScheduleImpl(thisSchedulingDoer, initialDelay, interval, true)
+
+		override def newFixedDelaySchedule(initialDelay: MilliDuration, delay: MilliDuration): Schedule =
+			new ScheduleImpl(thisSchedulingDoer, initialDelay, delay, false)
+
+		override def scheduleSequentially(schedule: Schedule, routine: Schedule => Unit): Unit = {
+			val activationTime = nanosToMillisRoundedUp(System.nanoTime)
+			val activationSerial = lastActivationSerial.incrementAndGet()
+			if !schedule.activationSerial.compareAndSet(NOT_ACTIVATED, activationSerial) then
+				throw new IllegalStateException(s"The ${getTypeName[Schedule]} instance `$schedule` was already used before and can't be used twice.")
+			else if !schedule.isCanceled then {
+				schedule.runnable = new Runnable {
+					override def run(): Unit = {
+						if !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
+							routine(schedule)
+							if schedule.interval > 0 && !schedule.isCanceled && schedule.activationSerial.get > activationSerialAtLastCancelAll then {
+								if schedule.isFixedRate then scheduler.scheduleRelativeToPrevious(schedule, schedule.interval)
+								else scheduler.schedule(schedule, nanosToMillisRoundedUp(System.nanoTime()) + schedule.interval)
+							}
+						}
+
+					}
+				}
+				scheduler.schedule(schedule, activationTime + schedule.initialDelay)
+			}
+		}
+
+		/** @inheritdoc
+		 * This implementation removes the routine executions corresponding to the provided [[Schedule]] from the schedule.
+		 * If called near its scheduled time from outside this [[Doer]]'s current thread, the routine may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this [[Doer]]'s current thread, it is ensured that no more execution of the routine can occur. */
+		override def cancel(schedule: Schedule): Unit =
+			scheduler.cancel(schedule)
+
+		/** @inheritdoc
+		 * This implementation removes all the scheduled executions corresponding to this [[Doer]] from its schedule.
+		 * If called near a scheduled time from outside this [[Doer]] current thread, some [[Runnable]]s may be executed a single time during this method execution, but not after this method returns.
+		 * If called within this [[Doer]] current thread, it is ensured that no more execution of scheduled [[Runnable]]s can occur. */
+		override def cancelAll(): Unit = {
+			activationSerialAtLastCancelAll = lastActivationSerial.get
+			scheduler.cancelAllBelongingTo(thisSchedulingDoer)
+		}
+
+		/** @inheritdoc
+		 * An instance becomes active when is passed to the [[scheduleSequentially]] method.
+		 * An instance becomes inactive when it is passed to the [[cancel]] method or when [[cancelAll]] is called. */
+		override def wasActivated(schedule: Schedule): Boolean =
+			schedule.activationSerial.get != NOT_ACTIVATED
+
+		/** @return true if the [[Schedule]] was cancelled, even if it was not activated.
+		 * Note that [[cancelAll]] does not cancel [[Schedule]] instances that weren't activated. */
+		override def isCanceled(schedule: ScheduleImpl): Boolean =
+			schedule.isCanceled || schedule.activationSerial.get <= activationSerialAtLastCancelAll
+	}
+
+
+
+	/**
+	 * Makes this [[CooperativeThreadDrivenSchedulerDp]] to shut down when all the workers are sleeping.
+	 * Invocation has no additional effect if already shut down.
+	 *
+	 * <p>This method does not wait. Use [[awaitTermination]] to do that.
+	 *
+	 * @throws SecurityException @inheritDoc
+	 */
+	override def shutdown(): Unit = {
+		scheduler.stop()
+		super.shutdown()
+	}
+
+	override def diagnose(sb: StringBuilder): StringBuilder = {
+		sb.append(getTypeName[CooperativeThreadDrivenSchedulerDp]).append('\n')
+		sb.append("\tscheduler:\n")
+		scheduler.diagnose(sb)
+		super.diagnose(sb)
+	}
+}

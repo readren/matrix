@@ -37,7 +37,4 @@ trait DoerProvider[+D <: Doer] {
 	 * The implementation may assume that the call is within the thread currently assigned to the provided doer. */
 	protected def onUnhandledException(doer: Doer, exception: Throwable): Unit
 
-	/** Called when the [[Doer.reportFailure]] method of a provided [[Doer]] is called. */
-	protected def onFailureReported(doer: Doer, failure: Throwable): Unit
-
 }
