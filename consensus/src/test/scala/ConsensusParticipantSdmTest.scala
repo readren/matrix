@@ -382,7 +382,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 										responseChannel.enqueue(respondingTask)
 
 									case reply -> replierRole =>
-										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription returned `$reply`, received as $replierRole, $numberOfTravelingMessages messages are traveling.")
+										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription returned `$reply` as $replierRole, $numberOfTravelingMessages messages are traveling.")
 										val response =
 											if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
 											else Success(reply)
@@ -814,7 +814,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		override def logCompactionThreshold: Int = 5 // TODO Make this setting be random
+		override val logCompactionThreshold: Int = 5 // TODO Make this setting be random
 
 		override def logRetentionAfterSnapshot: Int = 0 // TODO Make this setting be random
 
@@ -1423,6 +1423,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 6, true, -8695189366888117562L),
+			(30, 8, false, -7045886391286260825L),
 			(30, 2, true, -5719502751839801933L),
 			(30, 9, true, -5561042816536613276L),
 			(30, 5, false, 3454827329483479159L), // strange situation during graceful shutdown
@@ -1468,7 +1470,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, -7045886391286260825L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (6, true, -8695189366888117562L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
