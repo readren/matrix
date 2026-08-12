@@ -21,6 +21,13 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
 4. **Never suggest, prompt, or ask the user to compile, run tests, or execute commands.** Do not follow generic validation templates that prompt for execution. Wait for the user to explicitly initiate execution or request it.
 
+## Epistemic Humility & Diagnostics
+
+- **Never state diagnostic hypotheses as absolute facts or proven truths** before concrete empirical log evidence confirms them.
+- **Explicitly acknowledge when a hypothesis was wrong**: When new evidence invalidates a previous diagnostic claim, state clearly that the previous hypothesis was incorrect rather than trying to frame the new finding as confirming the old
+  one.
+- **Maintain objective, tentative language during debugging**: Use terms like "possible cause", "working hypothesis", or "needs verification" until verified.
+
 ## Environment
 - Toolchain is SBT + Scala 3 (`scalaVersion := 3.8.2`, `sbt.version=1.11.5`).
 - Run all commands from the repository root.

@@ -142,8 +142,9 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[doer.Capturer]] is not causally ordered.\
 	 * So, avoid memorizing [[doer.Capturer]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
 	 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
-	inline def advance[B <: A](inline primaryStateUpdater: A => doer.Mono[A | B], isGuarded: Boolean = false): doer.Capturer[A | B] =
-		step((a, _) => Maybe(primaryStateUpdater(a)), false, isGuarded)
+	inline def advance[B <: A](inline primaryStateUpdater: A => doer.Mono[A | B], isGuarded: Boolean = false): doer.Capturer[A | B] = {
+		step((a, _) => Maybe(primaryStateUpdater(a)), isGuarded)
+	}
 
 
 	/** Like [[advance]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]].\
@@ -152,7 +153,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * @param primaryStateUpdater a partial function that computes the next state from the current one; the second argument is always `null`
 	 * @return a [[Capturer]] that yields the updated state */
 	inline def advanceIf[B <: A](inline primaryStateUpdater: A => Maybe[doer.Mono[B]], isGuarded: Boolean = false): doer.Capturer[A | B] = {
-		step((a, _) => primaryStateUpdater(a), false, isGuarded)
+		step((a, _) => primaryStateUpdater(a), isGuarded)
 	}
 
 	/** Enqueues an asynchronous speculative primary-state updater.\
@@ -168,8 +169,9 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * @note CAUTION: The execution of consumers that are subscribed to obsolete instances of [[Capturer]] is not causally ordered.
 	 * So, avoid memorizing [[Capturer]] instances returned by [[causalAnchor]] or [[advance]]-like methods; always subscribe to the instance returned by [[causalAnchor]] to ensure causal ordering of the consumers executions.
 	 * Obsolete are those instances returned by methods of this [[CausalFence]] before the last call to an [[advance]]-like method. */
-	inline def advanceSpeculatively[B <: A](inline primaryStateUpdater: (A, RollbackAccessor[B]) => doer.Mono[A | B], isGuarded: Boolean = false): doer.Capturer[A | B] =
-		step[B]((a, rba) => Maybe(primaryStateUpdater(a, rba)), true, isGuarded)
+	inline def advanceSpeculatively[B <: A](inline primaryStateUpdater: (A, RollbackAccessor[B]) => doer.Mono[A | B], isGuarded: Boolean = false): doer.Capturer[A | B] = {
+		step[B]((a, rba) => Maybe(primaryStateUpdater(a, rba)), isGuarded)
+	}
 
 	/** Like [[advanceSpeculatively]], but the update may be synchronously canceled by the provided updater returning [[Maybe.empty]]
 	 * If the [[primaryStateUpdater]] returns some state, it is committed.
@@ -179,19 +181,18 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * Only successful transitions update the committed state.\
 	 * @param primaryStateUpdater a function that computes the next state from the current one, with rollback capability
 	 * @return a [[Capturer]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped. */
-	inline def advanceSpeculativelyIf[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Mono[A | B]], isGuarded: Boolean = false): doer.Capturer[A | B] =
-		step(primaryStateUpdater, true, isGuarded)
+	inline def advanceSpeculativelyIf[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Mono[A | B]], isGuarded: Boolean = false): doer.Capturer[A | B] = {
+		step(primaryStateUpdater, isGuarded)
+	}
 
 	/** Internal method that performs the actual state transition.\
-	 * Handles both speculative and non-speculative updates depending on the `isSpeculative` flag.\
 	 * If the previous step failed, the update is not executed and the [[doer.Capturer]] corresponding to this step is completed with the same failure. The rollback accessor is instantiated only when needed to avoid unnecessary allocations.\
 	 * Only successful transitions update the committed state.\
 	 * The rollback accessor is instantiated only when needed to avoid unnecessary allocations.\
 	 * @param primaryStateUpdater the transition function, optionally accepting a [[RollbackAccessor]]
-	 * @param isSpeculative whether the update is speculative and may be rolled back.
 	 * @param isGuarded If true, any non-fatal exception thrown by the provided `primaryStateUpdater` function is caught sticking this fence synchronously. If false, exceptions throw by it are not handled.
 	 * @return a [[doer.Capturer]] that will be completed with the new state if not rolled-back in time, the previous state if rolled-back in time, or the previous failure due to which the update was skipped. */
-	private def step[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Mono[A | B]], isSpeculative: Boolean, isGuarded: Boolean): doer.Capturer[A | B] = {
+	private def step[B <: A](primaryStateUpdater: (A, RollbackAccessor[B]) => Maybe[doer.Mono[A | B]], isGuarded: Boolean): doer.Capturer[A | B] = {
 		doer.checkWithin()
 		val previousStepCovenant = lastEnqueuedCovenant
 		val thisStepCovenant = doer.Captor[A | B]()

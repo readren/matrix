@@ -131,12 +131,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
-		private var activeConfigChangeAtLastSettle: ConfigChange[Id] = activeConfigChange
 
 		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var indexOfActiveConfigChange: RecordIndex = 0
-		private var indexOfActiveConfigChangeAtLastSettle: RecordIndex = indexOfActiveConfigChange
 
 		//// The Provider of Doer instances. Will produce one Doer for the Net and one for each of the nodes. ////
 
@@ -253,10 +251,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		private def onSystemSettled(): Unit = {
-			activeConfigChangeAtLastSettle = activeConfigChange
-			indexOfActiveConfigChangeAtLastSettle = indexOfActiveConfigChange
-
-			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChangeAtLastSettle.oldParticipants.size, activeConfigChangeAtLastSettle.newParticipants.size))
+			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size))
 		}
 
 
@@ -575,9 +570,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
-				if activeConfigChangeAtLastSettle.isActive(node.myId) then {
-					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChangeAtLastSettle.oldParticipants).addAll(activeConfigChangeAtLastSettle.newParticipants).result()
-					node.startIfNotRunning(indexOfActiveConfigChangeAtLastSettle, participantsInActiveConfigChange).triggerAndForget(false)
+				if activeConfigChange.isActive(node.myId) then {
+					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChange.oldParticipants).addAll(activeConfigChange.newParticipants).result()
+					node.startIfNotRunning(indexOfActiveConfigChange, participantsInActiveConfigChange).triggerAndForget(false)
 				}
 			}
 		}
@@ -1423,6 +1418,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 8, true, -8505862789124375259L),
 			(30, 6, true, -8695189366888117562L),
 			(30, 8, false, -7045886391286260825L),
 			(30, 2, true, -5719502751839801933L),
@@ -1470,7 +1466,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (6, true, -8695189366888117562L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (15, false, 5715498412747712398L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
