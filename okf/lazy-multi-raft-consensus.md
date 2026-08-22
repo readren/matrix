@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-08-04T16:36:00Z"
+timestamp: "2026-08-22T00:34:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -212,7 +212,10 @@ boundary.
 
 - **Definition of Retirement Driver**: A retirement driver is a dedicated, bounded replication process maintained by the cluster leader for an excluded participant. Unlike standard follower replication (which is open-ended and continues
   indefinitely), a retirement driver has a strict upper boundary: the log index of the excluding configuration change record.
-- **Targeted Log Slicing**: Upon committing a configuration change, the leader captures a bounded log slice spanning from the lowest known committed log index among all excluded participants up to the excluding configuration record index.
+- **Targeted Log Slicing & Contiguity**: Upon committing a configuration change, the leader captures a bounded log slice spanning from the log buffer offset (contiguous with the latest snapshot) up to the excluding configuration record
+  index. This ensures that if snapshot installation is triggered for a lagging retiree, the following plain records form a contiguous sequence without log gaps.
+- **Failover Retirement Recovery**: When a new leader assumes leadership, it discovers all known non-member participants in the cluster environment and instantiates retirement drivers for any unretired nodes, ensuring self-healing if a
+  previous leader crashes before completing retirement replication.
 - **Log-Append Retries**: The retirement driver repeatedly issues log replication requests to the excluded participant, stepping back to lower indices if the retiree rejects appends, provided the entries fall within the captured log slice.
 - **Snapshot Fallback**: If an excluded participant demands log entries prior to the captured log slice, the retirement process falls back to installing a state snapshot. This enables lagging retirees to catch up without requiring unbounded
   log buffering in memory on the leader.
@@ -282,3 +285,24 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 - **Committed-Only Compaction Invariant**: Log compaction and log truncation must operate strictly within the bounds of committed log entries. A node must never truncate log entries beyond its verified commit index.
 - **State Machine Synchronization**: State machine application index and log compaction truncation point must never exceed the verified commit index.
+
+---
+
+## 8. Ghost Leader Reconfiguration & Learner Convergence Dynamics
+
+### I. Ghost Leader Reconfiguration Invariant
+
+- **Ghost Leader Definition**: When a leader commits a stable configuration change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
+  commit the excluding configuration change, but cannot initiate or lead subsequent configuration transitions.
+- **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new configuration change from which it is also excluded:
+    - If all active learners in the current configuration have committed the excluding configuration change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
+    - If one or more active learners have not yet committed the excluding configuration change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
+      to be deposed (`WAIT_GHOST_LEADER_IS_DEPOTED`), rather than synchronously re-triggering replication loops.
+
+### II. Asynchronous Learner Convergence vs. Quorum Progress Decoupling
+
+- **Quorum vs. Universal Convergence Decoupling**: Replication waves complete successfully as soon as a majority quorum of active peers acknowledges append RPCs. Conversely, leader retirement transitions require universal (100%)
+  acknowledgment across all active learners.
+- **Asynchronous Retry Decoupling**: When a replication wave completes via majority quorum while lagging or unreachable learners remain pending, retries targeting unreachable learners must be scheduled asynchronously on dedicated timers.
+  Ghost leaders must never execute re-entrant, synchronous replication loops during configuration change request handling.
+

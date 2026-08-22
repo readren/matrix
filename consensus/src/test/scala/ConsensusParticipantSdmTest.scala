@@ -488,7 +488,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				if remainingTargetNodes.isEmpty then netSequencer.Keeper(previousResponses)
 				else {
-					val (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) = previousResponses match {
+					val previousResponseAndNextNodeId: (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) = previousResponses match {
 						case Nil =>
 							// Start inquiring a random Node among the active ones in the activeConfigChange
 							(Maybe.empty, Maybe(takeRandomNode().myId))
@@ -513,12 +513,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							}
 							(Maybe(previousResponse), maybeNextNodeId)
 					}
-					maybeNextNodeId.fold {
+					previousResponseAndNextNodeId.maybeNextNodeId.fold {
 						netSequencer.Keeper(previousResponses)
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
 						val inquire = node.sequencer.Capturer_defer(() =>
-							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponse)
+							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponseAndNextNodeId.previousResponse)
 						).onBehalfOf(netSequencer)
 						for {
 							response <- inquire
@@ -723,6 +723,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		override val sequencer: ScheduSequen = net.doerProvider.provide(s"node-sequencer-$myId")
 
+		override val MAX_RECURSION_DEPTH: Int = 1 // TODO Make this setting be one of { 0, 1, 9 } randomly.
+		override val logCompactionThreshold: Int = 5 // TODO Make this setting be one of {1, 5} randomly.
+
+		override val maxInFlightAppendsPerPeer = 1 // TODO Make this setting be one of {1, 2, 9} randomly.
+
+		override def logRetentionAfterSnapshot: Int = 0 // TODO Make this setting be one of {0, 1, 5} randomly.
+
 		var statesChangesListener: NodeStateChangesListener = new NodeStateChangesListener() {
 			override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = ()
 		}
@@ -808,10 +815,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				sequencer.Capturer_ready(Doer.successUnit)
 			}
 		}
-
-		override val logCompactionThreshold: Int = 5 // TODO Make this setting be random
-
-		override def logRetentionAfterSnapshot: Int = 0 // TODO Make this setting be random
 
 		/**
 		 * Test instance and implementation of the [[ClusterParticipant]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
@@ -1176,7 +1179,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became leader of term $term from ${RoleOrdinal_nameOf(previous)}")
 			}
 
-			override def onHandingOff(term: Term): Unit = {
+			override def onAbdicating(term: Term): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"scribe-$myId: is handing off the leadership. The term $term is over.")
 			}
@@ -1418,6 +1421,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	test("Previous failing cases") {
 		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
 		val failingCases = Seq[FailingCase](
+			(30, 12, false, -2040876099453344345L),
+			(30, 12, false, -4525504475399466095L),
+			(30, 15, false, 5715498412747712398L),
 			(30, 8, true, -8505862789124375259L),
 			(30, 6, true, -8695189366888117562L),
 			(30, 8, false, -7045886391286260825L),
@@ -1466,7 +1472,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (15, false, 5715498412747712398L)
+		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (12, false, -2040876099453344345L)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
 		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)

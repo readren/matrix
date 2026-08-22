@@ -2,7 +2,25 @@ package readren.common
 
 import scala.reflect.ClassTag
 
-// 	TODO rename to file to IArrayOps.scala
+object IArrayWithIndexOps {
+	inline def tabulate[A: ClassTag](length: Int)(inline f: Int => A): IArray[A] = {
+		val array = new Array[A](length)
+		var index = 0
+		while index < length do {
+			array(index) = f(index)
+			index += 1
+		}
+		IArray.unsafeFromArray(array)
+	}
+
+	inline def copyFrom[A: ClassTag](origin: Array[A]): IArray[A] = {
+		val array = new Array[A](origin.length)
+		System.arraycopy(origin, 0, array, 0, array.length)
+		IArray.unsafeFromArray(array)
+	}
+}
+
+// 	TODO rename file to IArrayOps.scala
 extension [A](array: IArray[A]) {
 
 	inline def mapWithIndex[B: ClassTag](inline f: (element: A, index: Int) => B): IArray[B] = {

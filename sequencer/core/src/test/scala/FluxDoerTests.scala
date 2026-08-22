@@ -93,9 +93,11 @@ trait FluxDoerTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 	test("Flux_generate: generates sequence until Maybe.empty") {
 		val doer = getSharedDoer
-		val flux = doer.Flux_generate[Int] { idx =>
-			if idx < 3 then Maybe(idx * 5) else Maybe.empty
-		}
+		val flux = doer.Flux_generate[Int](
+			(idx, originId) => if idx < 3 then Maybe(idx * 5) else Maybe.empty,
+			7,
+			true
+		)
 
 		collectFlux(doer)(flux).map { case (items, error, completed) =>
 			val expected = List((0, 0), (5, 1), (10, 2))
@@ -106,16 +108,20 @@ trait FluxDoerTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 	test("Flux_generateStatefully: maintains state per subscription") {
 		val doer = getSharedDoer
-		val flux = doer.Flux_generateStatefully[Int] { () =>
-			var state = 100
-			idx => {
-				if idx < 3 then {
-					val current = state
-					state += 10
-					Maybe(current)
-				} else Maybe.empty
-			}
-		}
+		val flux = doer.Flux_generateStatefully[Int](
+			originId => {
+				var state = 100
+				idx => {
+					if idx < 3 then {
+						val current = state
+						state += 10
+						Maybe(current)
+					} else Maybe.empty
+				}
+			},
+			7,
+			true
+		)
 
 		for {
 			sub1 <- collectFlux(doer)(flux)

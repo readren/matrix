@@ -11,7 +11,7 @@ object Trace {
 	object format extends FormatBlock {
 		override def format(record: LogRecord): LogOutput =
 			record.data.get("traceCtx") match {
-				case Some(ctx) => TextOutput(StringBuilder(128, " ").appendTrace(ctx().asInstanceOf[Context]).append('|').result())
+				case Some(ctx) => TextOutput(StringBuilder(256, " ").appendTrace(ctx().asInstanceOf[Context]).append('|').result())
 				case None => EmptyOutput
 			}
 	}

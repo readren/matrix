@@ -3,8 +3,16 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-08-04T16:36:00Z"
+timestamp: "2026-08-22T00:34:00Z"
 ---
+
+## [2026-08-22T00:34:00Z]
+
+- Documented Failover Retirement Recovery across newly elected leaders and Contiguous Log Slicing from log buffer offset in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-21T05:52:00Z]
+
+- Documented Ghost Leader Reconfiguration Invariant and Asynchronous Learner Convergence vs. Quorum Progress Decoupling dynamics in `okf/lazy-multi-raft-consensus.md`.
 
 ## [2026-08-04T16:48:00Z]
 

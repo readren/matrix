@@ -100,6 +100,9 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	}
 
 
+	/** Calls [[causalAnchor(CompletionObserver[A])]] passing a [[CompletionIgnorer]]. */
+	inline def causalAnchor(): doer.Capturer[A] = causalAnchor(CompletionIgnorer)
+
 	/** Returns a [[Capturer]] that yields the same state an updater would see if [[advance]] were invoked at this moment.\
 	 * This provides a causal checkpoint suitable for synchronous consumers that need to derive state deterministically.\
 	 * The returned [[Capturer]] is backed by a fresh [[Captor]] that forwards from the current tail [[Captor]].\
@@ -109,7 +112,7 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * @return a [[doer.Capturer]] yielding the state that the next update will be causally anchored to — i.e. the same state an updater would see if [[advance]] were called at this moment.
 	 * @note When derived updates (those done to secondary state that derives from the primary state) have causal dependencies among themselves, you must enforce deterministic order by other means: use causal derivation functions (anchor only the dependent update and derive prerequisites synchronously from the anchored state), or, if derived updates are fast and the advance is not speculative, compose them into the `primaryStateUpdater` passed to [[advanceIf]] or [[advanceIf]]. Composition is not safe for speculative advances, because rollback during the derived update phase could succeed when it should not.\
 	 * Independent subscriptions to [[causalAnchor]] are appropriate only for derived updates that are order‑independent. */
-	def causalAnchor(completionObserver: CompletionObserver[A] = CompletionIgnorer): doer.Capturer[A] = { // TODO Consolidate the callbacks into a trait.
+	def causalAnchor(completionObserver: CompletionObserver[A]): doer.Capturer[A] = { // TODO Consolidate the callbacks into a trait.
 		doer.checkWithin()
 		val lec = lastEnqueuedCovenant
 		val lcc = lastCommittedCovenant
