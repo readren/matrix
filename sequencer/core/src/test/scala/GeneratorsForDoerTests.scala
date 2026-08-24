@@ -318,20 +318,26 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 		val iterableGen: Gen[Flux[A]] = Gen.const(Flux_fromIterable(elements))
 		val iterableGuardedGen: Gen[Flux[A]] = Gen.const(Flux_fromIterableGuarded(elements))
 
-		val generateGen: Gen[Flux[A]] = Gen.const(Flux_generate[A] { idx =>
-			if idx < elements.length then Maybe(elements(idx)) else Maybe.empty
-		})
+		val generateGen: Gen[Flux[A]] = Gen.const(Flux_generate[A](
+			(idx, originId) => if idx < elements.length then Maybe(elements(idx)) else Maybe.empty,
+			7,
+			true
+		))
 
-		val generateStatefullyGen: Gen[Flux[A]] = Gen.const(Flux_generateStatefully[A] { () =>
-			var count = 0
-			idx => {
-				if count < elements.length then {
-					val v = elements(count)
-					count += 1
-					Maybe(v)
-				} else Maybe.empty
-			}
-		})
+		val generateStatefullyGen: Gen[Flux[A]] = Gen.const(Flux_generateStatefully[A](
+			originId => {
+				var count = 0
+				idx => {
+					if count < elements.length then {
+						val v = elements(count)
+						count += 1
+						Maybe(v)
+					} else Maybe.empty
+				}
+			},
+			7,
+			true
+		))
 
 		val emitterGen: Gen[Flux[A]] = Gen.const {
 			new DefaultFlux[A] {
@@ -392,10 +398,11 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 		}
 
 		val generateGen: Gen[Flux[A]] = Gen.const {
-			Flux_generate[A] { idx =>
-				if idx < elementsBeforeFailure.length then Maybe(elementsBeforeFailure(idx))
-				else throw ex
-			}
+			Flux_generate[A](
+				(idx, originId) => if idx < elementsBeforeFailure.length then Maybe(elementsBeforeFailure(idx)) else throw ex,
+				7,
+				true
+			)
 		}
 
 		val monosGen: Gen[Flux[A]] = Gen.const {

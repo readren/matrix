@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-08-04T16:36:00Z"
+timestamp: "2026-08-22T00:34:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -175,20 +175,137 @@ pub trait StateMachine {
 
 ---
 
-## 6. Participant Exclusion & Retirement Dynamics
+## 6. Participant Exclusion, Retirement Dynamics & Quiescence Protocol
 
-When a configuration transition excludes a participant from a Raft group (moving from a transitional configuration to a stable configuration):
+When cluster membership changes, nodes removed from the active cluster topology must be safely transitioned from active consensus participation to complete network quiescence without violating linearizability or causing election deadlocks.
 
-### I. Retirement Driving Mechanism
+### I. Participant Role Lifecycle & Reconfiguration Overview
 
-- **Targeted Replication**: The leader initiates an independent retirement process for each excluded participant that has not yet acknowledged the stable configuration change.
-- **Bounded Log Slicing**: The leader captures a bounded log slice covering entries from the lowest known committed index among all excluded participants up to the configuration change record.
+A participant node in the consensus engine moves through distinct operational roles during its lifecycle:
 
-### II. Rejection Back-off and Snapshot Fallback
+```
+[ Starting / Isolated ]
+         |
+         v
+[ Candidate / Follower / Leader ]  <-- Active Cluster Member
+         |
+         | (Excluded by Stable Configuration Change)
+         v
+    [ Retiring ]                   <-- Catching up log entries up to Excluding Index
+         |
+         | (Retirement Drivers Finish/Abort & Cluster Quiescence Authorized)
+         v
+    [ Quiesced ]                   <-- Zero Network / Background Load
+```
 
-- **Log-Append Retries**: When an excluded participant rejects a log append request demanding earlier entries, the retirement driver steps back and retries appending records starting from the requested lower index, provided those entries
-  fall within its bounded log slice.
-- **Snapshot Fallback**: If an excluded participant rejects appends past the lower bound of the captured log slice (demanding entries prior to the sliced log window), the retirement process falls back to snapshot installation if a state
-  snapshot is available. This enables lagging retirees to catch up without requiring unbounded log buffering in memory.
-- **Quiescence Preconditions**: An excluded participant transitions to the quiesced state only after all active retirement replication processes complete, its local role transitions to retiring, and explicit quiescence authorization is
-  granted by the cluster.
+- **Active Roles (Leader, Follower, Candidate)**: Process client commands, participate in leader elections, and replicate log entries.
+- **Retiring Role**: Entered when a stable configuration change excludes the participant from the cluster. The participant stops proposing client commands and cannot win elections for subsequent terms. It remains active solely to catch up
+  its local log to the excluding configuration entry.
+- **Quiesced Role**: Terminal resting state where the participant halts all background network traffic, timers, and RPC handling.
+
+---
+
+### II. Retirement Replication Driver Architecture
+
+When a configuration transition excludes one or more participants (moving from a transitional configuration to a stable configuration), the leader initiates targeted replication processes to bring the excluded participants to the retirement
+boundary.
+
+- **Definition of Retirement Driver**: A retirement driver is a dedicated, bounded replication process maintained by the cluster leader for an excluded participant. Unlike standard follower replication (which is open-ended and continues
+  indefinitely), a retirement driver has a strict upper boundary: the log index of the excluding configuration change record.
+- **Targeted Log Slicing & Contiguity**: Upon committing a configuration change, the leader captures a bounded log slice spanning from the log buffer offset (contiguous with the latest snapshot) up to the excluding configuration record
+  index. This ensures that if snapshot installation is triggered for a lagging retiree, the following plain records form a contiguous sequence without log gaps.
+- **Failover Retirement Recovery**: When a new leader assumes leadership, it discovers all known non-member participants in the cluster environment and instantiates retirement drivers for any unretired nodes, ensuring self-healing if a
+  previous leader crashes before completing retirement replication.
+- **Log-Append Retries**: The retirement driver repeatedly issues log replication requests to the excluded participant, stepping back to lower indices if the retiree rejects appends, provided the entries fall within the captured log slice.
+- **Snapshot Fallback**: If an excluded participant demands log entries prior to the captured log slice, the retirement process falls back to installing a state snapshot. This enables lagging retirees to catch up without requiring unbounded
+  log buffering in memory on the leader.
+- **Driver Lifecycle & Registry Cleanup**:
+    - The leader maintains an active tracking registry of all running retirement drivers.
+    - A retirement driver remains active until it receives acknowledgment from the retiree that the excluding configuration entry is appended, or it encounters a terminal failure condition.
+    - Upon reaching the maximum retry threshold for network/RPC failures, the retirement driver aborts its replication loop, unregisters itself from the leader's active driver registry, and triggers a quiescence eligibility evaluation.
+      Unregistering aborted drivers is essential to prevent orphaned entries from permanently blocking node quiescence.
+
+---
+
+### III. Quiescence Protocol & Convergence Preconditions
+
+Quiescence authorization ensures that a retiring participant does not shut down prematurely before its peers have recognized its exclusion and authorized its departure.
+
+- **Quiescence Authorization Flow**:
+    1. Upon committing an excluding configuration change, the leader broadcasts quiescence authorization permissions (`PermitQuiesce`) to all excluded participants.
+    2. Retiring participants acknowledge the permission and record the authorized configuration change index.
+    3. If initial permission requests fail due to transient network drops, the leader retries permission delivery up to a configured retry limit before clearing remaining unacknowledged permissions.
+
+- **Convergence Preconditions for Quiescence**:
+  A participant in the `Retiring` role can transition to `Quiesced` if and only if four independent conditions converge:
+    1. **Role Eligibility**: The participant's current role is `Retiring`.
+    2. **Local Driver Clearance**: The participant's local retirement drivers tracking registry is empty. If the participant acted as leader during the configuration transition, all retirement drivers it initiated to catch up excluded
+       followers must have completed or aborted and unregistered from its local registry.
+    3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster.
+    4. **Index Verification**: The authorized configuration change index is greater than or equal to the participant's excluding configuration index.
+
+---
+
+### IV. Retiring Participant Election StateInfo Invariant
+
+- **Excluding-Config Index Bounding in StateInfo**: To prevent election deadlock during cluster reconfiguration, a participant in the retiring state must report the term and index of the excluding configuration change as its committed state
+  information (`StateInfo`), even if its local log contains committed records at higher indices.
+- **Election Deadlock Prevention**: Reporting post-exclusion log indices during election coordination would allow an excluded node with higher log indices to block active cluster members from achieving a decisive election outcome. Bounding
+  the exposed state to the excluding configuration change ensures active participants can elect a valid leader without being blocked by retiring nodes.
+
+## Per-Peer In-Flight Append Backpressure & Domain Result ADT
+
+### I. In-Flight Serial Tracking and Sliding Window
+
+- **Monotonic Serial Generation**: Every append RPC emitted to a learner is tagged with a monotonically increasing serial number per peer.
+- **Self-Healing Response Acknowledgement**: The leader tracks the highest acknowledged append serial number per peer. Processing a higher serial number automatically acknowledges all preceding in-flight requests for that peer.
+- **In-Flight Bound Enforcement**: The difference between the last emitted append serial number and the last acknowledged append serial number defines the in-flight count. When this count reaches the configured threshold
+  (`maxInFlightAppendsPerPeer`), further emissions to that peer are deferred.
+
+### II. AppendResult ADT & Progress Non-Mutation Invariants
+
+- **Domain Outcome Safety**: Append RPC outcomes are explicitly typed as ADT variants (`Accepted`, `Rejected`, `SkippedDueToBackpressure`, `SkippedOutOfConfiguration`, `Failed`) eliminating magic-number status flags and heap-allocated error
+  wrappers.
+- **Backpressure Deferral Invariant**: Deferring an append request due to in-flight backpressure emits a `SkippedDueToBackpressure` domain result. Processing `SkippedDueToBackpressure` is a strict no-op on peer progress state, leaving
+  pessimistic and optimistic replication indices completely unchanged.
+
+---
+
+## 7. Raft §5.4.2 Commitment and Log Compaction Safety Invariants
+
+### I. Strict Commitment Verification Before State Machine Application
+
+- **Uncommitted Entry Barrier**: A leader must never apply a command record to its state machine, respond success to a client, or trigger log compaction based solely on peer RPC transport success.
+- **Raft §5.4.2 Transitive Commitment Constraint**: Log entries from previous terms cannot be committed directly by majority acknowledgment alone. They can only be committed indirectly by committing a log entry from the leader's current
+  term.
+- **Current-Term Entry Insertion**: If RPC replication succeeds over log entries containing previous-term records, but the leader's commit index cannot advance because no current-term entry has been committed, the leader must append a
+  current-term no-op entry and replicate it to force transitive commitment across all preceding entries.
+
+### II. Log Compaction Boundaries
+
+- **Committed-Only Compaction Invariant**: Log compaction and log truncation must operate strictly within the bounds of committed log entries. A node must never truncate log entries beyond its verified commit index.
+- **Compaction Truncation Bounds**: Log compaction truncation index must never fall below the in-memory log buffer offset. The retained log record count is bounded by the compaction threshold to guarantee strictly positive buffer bounds.
+- **Recovered Commit Floor Invariant**: Commands applied to the state machine or embedded in a persistent snapshot are mathematically guaranteed to have been committed by quorum. Upon startup or crash recovery, a participant must advance
+  its volatile commit index to reflect the recovered applied command index and snapshot boundary, ensuring candidate state information accurately advertises the verified committed baseline during leader elections.
+- **State Machine Synchronization**: State machine application index and log compaction truncation point must never exceed the verified commit index.
+
+---
+
+## 8. Ghost Leader Reconfiguration & Learner Convergence Dynamics
+
+### I. Ghost Leader Reconfiguration Invariant
+
+- **Ghost Leader Definition**: When a leader commits a stable configuration change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
+  commit the excluding configuration change, but cannot initiate or lead subsequent configuration transitions.
+- **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new configuration change from which it is also excluded:
+    - If all active learners in the current configuration have committed the excluding configuration change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
+    - If one or more active learners have not yet committed the excluding configuration change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
+      to be deposed (`WAIT_GHOST_LEADER_IS_DEPOTED`), rather than synchronously re-triggering replication loops.
+
+### II. Asynchronous Learner Convergence vs. Quorum Progress Decoupling
+
+- **Quorum vs. Universal Convergence Decoupling**: Replication waves complete successfully as soon as a majority quorum of active peers acknowledges append RPCs. Conversely, leader retirement transitions require universal (100%)
+  acknowledgment across all active learners.
+- **Asynchronous Retry Decoupling**: When a replication wave completes via majority quorum while lagging or unreachable learners remain pending, retries targeting unreachable learners must be scheduled asynchronously on dedicated timers.
+  Ghost leaders must never execute re-entrant, synchronous replication loops during configuration change request handling.
+

@@ -3,8 +3,20 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-08-04T16:36:00Z"
+timestamp: "2026-08-23T01:17:00Z"
 ---
+
+## [2026-08-23T01:17:00Z]
+
+- Documented Recovered Commit Floor Invariant and Log Compaction Truncation Bounds in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-22T00:34:00Z]
+
+- Documented Failover Retirement Recovery across newly elected leaders and Contiguous Log Slicing from log buffer offset in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-21T05:52:00Z]
+
+- Documented Ghost Leader Reconfiguration Invariant and Asynchronous Learner Convergence vs. Quorum Progress Decoupling dynamics in `okf/lazy-multi-raft-consensus.md`.
 
 ## [2026-08-04T16:48:00Z]
 
@@ -287,4 +299,20 @@ timestamp: "2026-08-04T16:36:00Z"
 
 ## [2026-06-24T02:10:00Z]
 
-- Initialized OKF bundle structure.
+## [2026-08-10T19:08:00Z]
+
+- Documented per-peer in-flight append backpressure, monotonic serial tracking, and `AppendResult` ADT non-mutation invariants in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-11T20:15:00Z]
+
+- Documented Raft §5.4.2 commitment verification invariants, current-term no-op entry insertion triggers, and committed-only log compaction boundaries in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-12T15:10:00Z]
+
+- Documented `Retiring` participant `StateInfo` election bounding invariants (exposing excluding configuration change index/term to prevent election deadlocks) in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-12T20:16:00Z]
+
+- Restructured and expanded Section 6 in `okf/lazy-multi-raft-consensus.md` to be fully self-contained, defining the Participant Role Lifecycle, Retirement Replication Driver Architecture, Quiescence Protocol, and Quiescence Preconditions.
+- Corrected the Quiescence Precondition specification in `okf/lazy-multi-raft-consensus.md` to clarify that retirement driver clearance is evaluated against the participant's own local registry (for drivers it initiated as leader to catch
+  up excluded followers), not a remote leader registry.

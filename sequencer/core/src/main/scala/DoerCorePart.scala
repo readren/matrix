@@ -242,6 +242,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
 
+		// TODO Add an overload with a signature that avoid wrapping with Try.
 		def transform[B](f: Try[A] => Try[B]): Mono[B]
 
 		def transformWith[B](f: Try[A] => Mono[B]): Mono[B]
@@ -1559,7 +1560,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 * It exposes methods such as [[capture]] and [[seizeWith]] to allow external code to complete it.
 	 *
 	 * [[Captor]] is to [[Capturer]] as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]] */
-	class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
+	open class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
 		protected var theState: Trial[A] = initialState
 
 		override protected def state: Trial[A] = theState
@@ -1883,8 +1884,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	//// COVENANT FACTORY METHODS ////
 
 	/** Creates a new pending [[Captor]] */
-	inline def Captor[A](): Captor[A] =
-		new Captor()
+	inline def Captor[A](): Captor[A] = new Captor()
 
 	/** Creates a [[Captor]] that will fulfill with the result of executing the provided supplier within the $DoSerEx.
 	 * @param supplier a supplier function that is executed within the $DoSerEx and returns the value to fulfill the created [[Captor]] with. */

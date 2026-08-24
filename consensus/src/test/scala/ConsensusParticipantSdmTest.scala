@@ -131,12 +131,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
-		private var activeConfigChangeAtLastSettle: ConfigChange[Id] = activeConfigChange
 
 		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var indexOfActiveConfigChange: RecordIndex = 0
-		private var indexOfActiveConfigChangeAtLastSettle: RecordIndex = indexOfActiveConfigChange
 
 		//// The Provider of Doer instances. Will produce one Doer for the Net and one for each of the nodes. ////
 
@@ -253,10 +251,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		private def onSystemSettled(): Unit = {
-			activeConfigChangeAtLastSettle = activeConfigChange
-			indexOfActiveConfigChangeAtLastSettle = indexOfActiveConfigChange
-
-			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChangeAtLastSettle.oldParticipants.size, activeConfigChangeAtLastSettle.newParticipants.size))
+			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size))
 		}
 
 
@@ -382,7 +377,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 										responseChannel.enqueue(respondingTask)
 
 									case reply -> replierRole =>
-										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription returned `$reply`, received as $replierRole, $numberOfTravelingMessages messages are traveling.")
+										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription returned `$reply` as $replierRole, $numberOfTravelingMessages messages are traveling.")
 										val response =
 											if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
 											else Success(reply)
@@ -493,7 +488,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				if remainingTargetNodes.isEmpty then netSequencer.Keeper(previousResponses)
 				else {
-					val (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) = previousResponses match {
+					val previousResponseAndNextNodeId: (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) = previousResponses match {
 						case Nil =>
 							// Start inquiring a random Node among the active ones in the activeConfigChange
 							(Maybe.empty, Maybe(takeRandomNode().myId))
@@ -518,12 +513,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							}
 							(Maybe(previousResponse), maybeNextNodeId)
 					}
-					maybeNextNodeId.fold {
+					previousResponseAndNextNodeId.maybeNextNodeId.fold {
 						netSequencer.Keeper(previousResponses)
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
 						val inquire = node.sequencer.Capturer_defer(() =>
-							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponse)
+							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponseAndNextNodeId.previousResponse)
 						).onBehalfOf(netSequencer)
 						for {
 							response <- inquire
@@ -575,9 +570,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
-				if activeConfigChangeAtLastSettle.isActive(node.myId) then {
-					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChangeAtLastSettle.oldParticipants).addAll(activeConfigChangeAtLastSettle.newParticipants).result()
-					node.startIfNotRunning(indexOfActiveConfigChangeAtLastSettle, participantsInActiveConfigChange).triggerAndForget(false)
+				if activeConfigChange.isActive(node.myId) then {
+					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChange.oldParticipants).addAll(activeConfigChange.newParticipants).result()
+					node.startIfNotRunning(indexOfActiveConfigChange, participantsInActiveConfigChange).triggerAndForget(false)
 				}
 			}
 		}
@@ -714,10 +709,31 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def onCommandApplied(command: TestClientCommand, index: RecordIndex): Unit = ()
 	}
 
-	/**
-	 * An implementation of the [[ConsensusParticipantSdm]] for testing.
-	 */
-	private class Node(val myId: Id, initialParticipants: Set[Id], net: Net, val remembersLastAppliedCommandIndex: Boolean, retirementDriveRetryPeriod: MilliDuration, unreachableFollowersRetryPeriod: MilliDuration, quiescenceAuthorizationRetryPeriod: MilliDuration) extends ConsensusParticipantSdm { thisNode =>
+	/** An implementation of the [[ConsensusParticipantSdm]] for testing.
+	 * @param myId the identifier of this participant.
+	 * @param initialParticipants the initial participant identifiers known to this node.
+	 * @param net the network simulation environment.
+	 * @param remembersLastAppliedCommandIndex whether the state machine remembers the index of the last applied command.
+	 * @param retirementDriveRetryPeriod the retry period for retirement driving.
+	 * @param unreachableFollowersRetryPeriod the retry period when followers are unreachable.
+	 * @param quiescenceAuthorizationRetryPeriod the retry period for quiescence authorization requests.
+	 * @param MAX_RECURSION_DEPTH maximum call depth when recursively applying committed commands or processing learners.
+	 * @param logCompactionThreshold maximum number of log entries to retain before triggering compaction.
+	 * @param maxInFlightAppendsPerPeer maximum number of in-flight append-records calls per peer.
+	 * @param logRetentionAfterSnapshot number of records to retain in the log after compaction. */
+	private class Node(
+		val myId: Id,
+		initialParticipants: Set[Id],
+		net: Net,
+		val remembersLastAppliedCommandIndex: Boolean,
+		retirementDriveRetryPeriod: MilliDuration,
+		unreachableFollowersRetryPeriod: MilliDuration,
+		quiescenceAuthorizationRetryPeriod: MilliDuration,
+		override val MAX_RECURSION_DEPTH: Int,
+		override val logCompactionThreshold: Int,
+		override val maxInFlightAppendsPerPeer: Int,
+		override val logRetentionAfterSnapshot: Int
+	) extends ConsensusParticipantSdm { thisNode =>
 
 		import net.rpc
 
@@ -813,10 +829,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				sequencer.Capturer_ready(Doer.successUnit)
 			}
 		}
-
-		override def logCompactionThreshold: Int = 5 // TODO Make this setting be random
-
-		override def logRetentionAfterSnapshot: Int = 0 // TODO Make this setting be random
 
 		/**
 		 * Test instance and implementation of the [[ClusterParticipant]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
@@ -1181,7 +1193,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became leader of term $term from ${RoleOrdinal_nameOf(previous)}")
 			}
 
-			override def onHandingOff(term: Term): Unit = {
+			override def onAbdicating(term: Term): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"scribe-$myId: is handing off the leadership. The term $term is over.")
 			}
@@ -1209,19 +1221,43 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	/** Helper to create and initialize [[Node]]s.
 	 * @param net the [[Net]] where the created [[Node]] instances will be added.
 	 * @param weakReferencesHolder a collection to which the created instances of [[NotificationListener]] are added in order to avoid being garbage-collected.
-	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor. */
+	 * @param remembersLastAppliedCommandIndex whether the state machine remembers the index of the last applied command.
+	 * @param retirementDriveRetryPeriod the retry period for retirement driving.
+	 * @param unreachableFollowersRetryPeriod the retry period when followers are unreachable.
+	 * @param quiescenceAuthorizationRetryPeriod the retry period for quiescence authorization requests.
+	 * @param MAX_RECURSION_DEPTH maximum call depth when recursively applying committed commands or processing learners.
+	 * @param logCompactionThreshold maximum number of log entries to retain before triggering compaction.
+	 * @param maxInFlightAppendsPerPeer maximum number of in-flight append-records calls per peer.
+	 * @param logRetentionAfterSnapshot number of records to retain in the log after compaction.
+	 * @param notificationListenerBuilder a function that takes the new [[Node]] and builds the [[NotificationListener]] to be passed to its [[ConsensusParticipantSdm.ConsensusParticipant]] service constructor. */
 	private def createAndInitializeNodes[N <: Net](
 		net: N,
 		weakReferencesHolder: mutable.Buffer[AnyRef],
-		remembersLastAppliedCommandIndex: Boolean = false,
-		retirementDriveRetryPeriod: MilliDuration = 10,
-		unreachableFollowersRetryPeriod: MilliDuration = 10,
-		quiescenceAuthorizationRetryPeriod: MilliDuration = 10
+		remembersLastAppliedCommandIndex: Boolean,
+		retirementDriveRetryPeriod: MilliDuration,
+		unreachableFollowersRetryPeriod: MilliDuration,
+		quiescenceAuthorizationRetryPeriod: MilliDuration,
+		MAX_RECURSION_DEPTH: Int,
+		logCompactionThreshold: Int,
+		maxInFlightAppendsPerPeer: Int,
+		logRetentionAfterSnapshot: Int
 	)(notificationListenerBuilder: (node: Node) => node.NotificationListener): Unit = {
 
 		val initialParticipants = net.nodesIncludedIn(net.initialConfigMask)
 		for id <- net.nodesIds do {
-			val node = Node(id, initialParticipants, net, remembersLastAppliedCommandIndex, retirementDriveRetryPeriod, unreachableFollowersRetryPeriod, quiescenceAuthorizationRetryPeriod)
+			val node = Node(
+				id,
+				initialParticipants,
+				net,
+				remembersLastAppliedCommandIndex,
+				retirementDriveRetryPeriod,
+				unreachableFollowersRetryPeriod,
+				quiescenceAuthorizationRetryPeriod,
+				MAX_RECURSION_DEPTH,
+				logCompactionThreshold,
+				maxInFlightAppendsPerPeer,
+				logRetentionAfterSnapshot
+			)
 			net.addNode(node)
 			val nl = notificationListenerBuilder(node)
 			weakReferencesHolder.addOne(nl)
@@ -1230,30 +1266,62 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	}
 
 	/** This is the core logic for verifying the correctness of the consensus algorithm. It sets up a simulated environment and then actively checks several critical invariants:
-	 *		- Leader Append-Only**: Ensures that a leader never overwrites or deletes entries in its log, only appends.
-	 *		- Log Matching**: Verifies that if two logs contain an entry with the same index and term, then the logs are identical up through that index.
-	 *		- State Machine Safety**: Guarantees that if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index.
-	 *		- Election Safety**: Asserts that at most one leader can be elected in a given term.
-	 *		- Leader Completeness**: Confirms that if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms.
+	 *  - Leader Append-Only: Ensures that a leader never overwrites or deletes entries in its log, only appends.
+	 *  - Log Matching: Verifies that if two logs contain an entry with the same index and term, then the logs are identical up through that index.
+	 *  - State Machine Safety: Guarantees that if a server has applied a log entry at a given index to its state machine, no other server will ever apply a different log entry for the same index.
+	 *  - Election Safety: Asserts that at most one leader can be elected in a given term.
+	 *  - Leader Completeness: Confirms that if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms.
 	 *
-	 *   These invariants are checked using the `NodeStateChangesListener` and by comparing the state across multiple simulated nodes. If any invariant is violated, the test fails immediately via a `Promise.tryFailure`. */
-	private def testAllInvariants(net: Net,
+	 * These invariants are checked using the `NodeStateChangesListener` and by comparing the state across multiple simulated nodes. If any invariant is violated, the test fails immediately via a `Promise.tryFailure`.
+	 * @param net the [[Net]] simulation environment.
+	 * @param startWithHighestPriorityParticipant whether the client starts by communicating with the highest priority participant.
+	 * @param remembersLastAppliedCommandIndex whether the state machine remembers the index of the last applied command.
+	 * @param numberOfCommandsToSend total number of client commands to submit.
+	 * @param maxRetries maximum retry attempts for client commands and graceful shutdown.
+	 * @param retirementDriveRetryPeriod the retry period for retirement driving.
+	 * @param unreachableFollowersRetryPeriod the retry period when followers are unreachable.
+	 * @param quiescenceAuthorizationRetryPeriod the retry period for quiescence authorization requests.
+	 * @param configChangeRetryPeriod the retry period for configuration changes during shutdown.
+	 * @param MAX_RECURSION_DEPTH maximum call depth when recursively applying committed commands or processing learners.
+	 * @param logCompactionThreshold maximum number of log entries to retain before triggering compaction.
+	 * @param maxInFlightAppendsPerPeer maximum number of in-flight append-records calls per peer.
+	 * @param logRetentionAfterSnapshot number of records to retain in the log after compaction. */
+	private def testAllInvariants(
+		net: Net,
 		startWithHighestPriorityParticipant: Boolean,
+		remembersLastAppliedCommandIndex: Boolean = false,
 		numberOfCommandsToSend: Int = 20,
 		maxRetries: Int = 20,
 		retirementDriveRetryPeriod: MilliDuration = 10,
 		unreachableFollowersRetryPeriod: MilliDuration = 10,
 		quiescenceAuthorizationRetryPeriod: MilliDuration = 10,
-		configChangeRetryPeriod: MilliDuration = 100
+		configChangeRetryPeriod: MilliDuration = 100,
+		MAX_RECURSION_DEPTH: Int = 1,
+		logCompactionThreshold: Int = 5,
+		maxInFlightAppendsPerPeer: Int = 1,
+		logRetentionAfterSnapshot: Int = 0
 	): Future[Unit] = {
 		val promise = Promise[Unit]()
 		val clusterSize = net.clusterSize
+		val netRandomnessSeed = net.randomnessSeed
+		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed, remembersLastAppliedCommandIndex=$remembersLastAppliedCommandIndex, maxRecursionDepth=$MAX_RECURSION_DEPTH, logCompactionThreshold=$logCompactionThreshold, maxInFlightAppendsPerPeer=$maxInFlightAppendsPerPeer, logRetentionAfterSnapshot=$logRetentionAfterSnapshot\n($numberOfCommandsToSend, $clusterSize, $startWithHighestPriorityParticipant, ${netRandomnessSeed}L, $remembersLastAppliedCommandIndex, $MAX_RECURSION_DEPTH, $logCompactionThreshold, $maxInFlightAppendsPerPeer, $logRetentionAfterSnapshot),")
 		val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 		val leaderNodeByTerm: mutable.SortedMap[Term, Node] = mutable.SortedMap.empty
 		val committedRecordsByNodeIndex: Array[mutable.Buffer[Record | None.type]] = Array.fill(clusterSize)(mutable.Buffer.empty)
 		val appliedCommandsByNodeIndex: Array[mutable.SortedMap[Int, TestClientCommand]] = Array.fill(clusterSize)(mutable.SortedMap.empty)
 
-		createAndInitializeNodes(net, weakReferencesHolder) { node =>
+		createAndInitializeNodes(
+			net,
+			weakReferencesHolder,
+			remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex,
+			retirementDriveRetryPeriod = retirementDriveRetryPeriod,
+			unreachableFollowersRetryPeriod = unreachableFollowersRetryPeriod,
+			quiescenceAuthorizationRetryPeriod = quiescenceAuthorizationRetryPeriod,
+			MAX_RECURSION_DEPTH = MAX_RECURSION_DEPTH,
+			logCompactionThreshold = logCompactionThreshold,
+			maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
+			logRetentionAfterSnapshot = logRetentionAfterSnapshot
+		) { node =>
 			node.statesChangesListener = new NodeStateChangesListener() {
 				override def onLogOverwrite(index: RecordIndex, firstReplacedRecord: Record, firstReplacingRecord: Record): Unit = {
 					// Defer the check to let the updating execution to complete the atomic changes.
@@ -1334,38 +1402,57 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
 					// Checks Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4
-					// Memorize the commited records filling potential holes with `None`.
-					val first = previous + 1
+					// Memorize the committed records filling potential holes with `None`.
 					val thisNodeCommittedRecordsMemory = committedRecordsByNodeIndex(net.indexOf(node.myId))
 					val thisNodeLogBufferOffset = node.storage.memory.logBufferOffset
-					val boundedFirst = if first >= thisNodeLogBufferOffset then first else thisNodeLogBufferOffset
-					val boundedFirstBase0 = boundedFirst.toInt - 1
-					if boundedFirstBase0 < thisNodeCommittedRecordsMemory.size then promise.tryFailure(new AssertionError(s"Node ${node.myId} commited the same record index more than once: previous=$previous, current=$current, thisNodeLogBufferOffset=$thisNodeLogBufferOffset, memory=$thisNodeCommittedRecordsMemory"))
-					else {
-						val holeLength = boundedFirstBase0 - thisNodeCommittedRecordsMemory.size
-						if holeLength > 0 then thisNodeCommittedRecordsMemory.addAll(Iterable.fill(holeLength)(None))
-						val newCommittedRecords = node.storage.memory.getRecordsBetween(boundedFirst, current + 1)
-						thisNodeCommittedRecordsMemory.addAll(newCommittedRecords)
+					val first = (previous + 1).max(thisNodeLogBufferOffset)
 
-						if as == LEADER then {
-							// Check that records commited in the past by other nodes are present in the leader's log.
-							for nodeIndex <- 0 until clusterSize do {
-								val otherNode = net.getNode(nodeIndex)
-								if otherNode ne node then {
-									val otherNodeCommittedRecordsMemory = committedRecordsByNodeIndex(nodeIndex)
-									for (otherNodeCommitedRecord, recordIndexBase0) <- otherNodeCommittedRecordsMemory.zipWithIndex do {
-										otherNodeCommitedRecord match {
-											case None => ()
-											case otherNodeCommitedRecord: Record =>
-												if thisNodeCommittedRecordsMemory.size <= recordIndexBase0 then promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has more commited records than the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The commited records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
-												else {
-													thisNodeCommittedRecordsMemory(recordIndexBase0) match {
-														case None => ()
-														case leaderCommittedRecord: Record =>
-															if leaderCommittedRecord != otherNodeCommitedRecord then promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has a commited records at index ${recordIndexBase0 + 1} that differs from the record of the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The commited records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
-													}
+					// Validate consistency for any overlapping records that were already recorded before restart/re-join
+					val overlapUntil = current.min(thisNodeCommittedRecordsMemory.size.toLong)
+					var checkIdx = first
+					while checkIdx <= overlapUntil do {
+						thisNodeCommittedRecordsMemory(checkIdx.toInt - 1) match {
+							case previousRecord: Record =>
+								val currentRecord = node.storage.memory.getRecordAt(checkIdx)
+								if currentRecord != previousRecord then {
+									promise.tryFailure(new AssertionError(s"Node ${node.myId} committed a different record at index $checkIdx after restart: previous=$previousRecord, current=$currentRecord"))
+								}
+							case None => ()
+						}
+						checkIdx += 1
+					}
+
+					// Append only newly committed records beyond the previously recorded memory size
+					val newFirst = first.max(thisNodeCommittedRecordsMemory.size + 1L)
+					if newFirst <= current then {
+						val newFirstBase0 = newFirst.toInt - 1
+						val holeLength = newFirstBase0 - thisNodeCommittedRecordsMemory.size
+						if holeLength > 0 then thisNodeCommittedRecordsMemory.addAll(Iterable.fill(holeLength)(None))
+						val newCommittedRecords = node.storage.memory.getRecordsBetween(newFirst, current + 1)
+						thisNodeCommittedRecordsMemory.addAll(newCommittedRecords)
+					}
+
+					if as == LEADER then {
+						// Check that records committed in the past by other nodes are present in the leader's log.
+						for nodeIndex <- 0 until clusterSize do {
+							val otherNode = net.getNode(nodeIndex)
+							if otherNode ne node then {
+								val otherNodeCommittedRecordsMemory = committedRecordsByNodeIndex(nodeIndex)
+								for (otherNodeCommittedRecord, recordIndexBase0) <- otherNodeCommittedRecordsMemory.zipWithIndex do {
+									otherNodeCommittedRecord match {
+										case None => ()
+										case otherNodeCommittedRecord: Record =>
+											if thisNodeCommittedRecordsMemory.size <= recordIndexBase0 then {
+												promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has more committed records than the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The committed records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
+											} else {
+												thisNodeCommittedRecordsMemory(recordIndexBase0) match {
+													case None => ()
+													case leaderCommittedRecord: Record =>
+														if leaderCommittedRecord != otherNodeCommittedRecord then {
+															promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has a committed record at index ${recordIndexBase0 + 1} that differs from the record of the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The committed records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
+														}
 												}
-										}
+											}
 									}
 								}
 							}
@@ -1406,72 +1493,159 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		if ConsensusParticipantSdm.assertionsEnabled then Future.successful(()) else Future.failed(new RuntimeException(""))
 	}
 
+	/** Randomizable configuration parameters for a [[Node]].
+	 * @param remembersLastAppliedCommandIndex whether the state machine remembers the index of the last applied command.
+	 * @param maxRecursionDepth maximum call depth when recursively applying committed commands or processing learners.
+	 * @param logCompactionThreshold maximum number of log entries to retain before triggering compaction.
+	 * @param maxInFlightAppendsPerPeer maximum number of in-flight append-records calls per peer.
+	 * @param logRetentionAfterSnapshot number of records to retain in the log after compaction. */
+	private case class NodeConfig(
+		remembersLastAppliedCommandIndex: Boolean,
+		maxRecursionDepth: Int,
+		logCompactionThreshold: Int,
+		maxInFlightAppendsPerPeer: Int,
+		logRetentionAfterSnapshot: Int
+	)
+
+	/** ScalaCheck generator for [[NodeConfig]]. */
+	private val genNodeConfig: Gen[NodeConfig] = for {
+		remembersLastAppliedCommandIndex <- Gen.oneOf(true, false)
+		maxRecursionDepth <- Gen.oneOf(0, 1, 9)
+		logCompactionThreshold <- Gen.oneOf(3, 5)
+		maxInFlightAppendsPerPeer <- Gen.oneOf(1, 2, 9)
+		logRetentionAfterSnapshot <- Gen.oneOf(0, 1, 3)
+	} yield NodeConfig(
+		remembersLastAppliedCommandIndex,
+		maxRecursionDepth,
+		logCompactionThreshold,
+		maxInFlightAppendsPerPeer,
+		logRetentionAfterSnapshot
+	)
+
 	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds, but *without* injecting configuration changes.
 	test("All invariants must comply - without configuration changes noise".ignore) {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
 			Gen.choose(2, 7),
 			Gen.oneOf(true, false),
-			Gen.long
-		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			Gen.long,
+			genNodeConfig
+		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, nodeConfig) =>
 			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, configChangeBeforeRequestDelivered_probability = 0, configChangeBeforeResponseDelivered_probability = 0, configChangeAfterResponseDelivered_probability = 0)
-			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 10, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+			testAllInvariants(
+				net,
+				startWithHighestPriorityParticipant,
+				remembersLastAppliedCommandIndex = nodeConfig.remembersLastAppliedCommandIndex,
+				numberOfCommandsToSend = numberOfCommandsToSend,
+				maxRetries = 10,
+				retirementDriveRetryPeriod = clusterSize * 10,
+				unreachableFollowersRetryPeriod = clusterSize * 10,
+				quiescenceAuthorizationRetryPeriod = clusterSize * 10,
+				configChangeRetryPeriod = clusterSize * 100,
+				MAX_RECURSION_DEPTH = nodeConfig.maxRecursionDepth,
+				logCompactionThreshold = nodeConfig.logCompactionThreshold,
+				maxInFlightAppendsPerPeer = nodeConfig.maxInFlightAppendsPerPeer,
+				logRetentionAfterSnapshot = nodeConfig.logRetentionAfterSnapshot
+			)
 		}
 	}
 
 	test("Previous failing cases") {
-		type FailingCase = (numberOfCommandsToSend: Int, clusterSize: Int, startWithHighestPriorityParticipant: Boolean, netRandomnessSeed: Long)
+		type FailingCase = (
+			numberOfCommandsToSend: Int,
+			clusterSize: Int,
+			startWithHighestPriorityParticipant: Boolean,
+			netRandomnessSeed: Long,
+			remembersLastAppliedCommandIndex: Boolean,
+			maxRecursionDepth: Int,
+			logCompactionThreshold: Int,
+			maxInFlightAppendsPerPeer: Int,
+			logRetentionAfterSnapshot: Int
+		)
 		val failingCases = Seq[FailingCase](
-			(30, 2, true, -5719502751839801933L),
-			(30, 9, true, -5561042816536613276L),
-			(30, 5, false, 3454827329483479159L), // strange situation during graceful shutdown
-			(30, 6, false, 4377378712223639909L), // LeaderTransition record kind is used.
-			(30, 8, true, 3219848794431902011L),
-			(30, 3, false, 2486592392277813285L),
-			(30, 4, true, 4513069980120952979L),
-			(30, 6, false, -25160870373328826L),
-			(30, 9, true, -7099459776600378137L),
-			(30, 6, true, -4000233556805337121L),
-			(30, 15, false, -8377836387231152620L),
-			(30, 2, true, 5465215041039872636L),
-			(30, 4, false, -2871391883553136003L),
-			(30, 2, true, 5082886513912816935L), // hanged up without any error.
-			(30, 15, false, 107166222495627916L),
-			(30, 3, false, -4120685655909330148L),
-			(30, 6, false, 4457054910789412562L), // Retiring finalTerm greater than termAtExcludingConfigChange.
-			(30, 6, true, 1187713772695268880L),
-			(30, 15, true, -7036178255522478916L), // Does not converge
-			(30, 4, false, -1201266674536539693L), // MatchError thrown at StableConfigChange.isCoupleOf
-			(30, 7, false, -6232654863579614157L), // Net: graceful shutdown failed after 20 attempts
-			(30, 3, true, -2370286264465510604L), // PanicException thrown in replicateTccAndThenStartSecondPhase
-			(30, 2, true, 1380848690399351272L), // The node p-1 applied the command TestClientCommand(19,A) at index 22, which is different from the command TestClientCommand(18,A) applied at the same index in node p-0.
-			(30, 3, false, -2547866549608645507L), // PanicException
-			(30, 3, true, -7417113718760886059L), // "Should never happen" assertion triggered
-			(30, 3, false, 7259924510493798812L),
-			(30, 3, true, -7726398781820803091L), // assertion failed: currentPrimaryState eq primaryStateFence.committedState
-			(30, 3, false, 3592691889253758326L),
-			(30, 5, false, 2968913177794423906L),
-			(30, 4, false, 1456932037162721701L),
+			(30, 12, false, -979546981164946039L, true, 0, 3, 1, 0),
+			(30, 9, false, 7958057327002876682L, false, 1, 1, 9, 5),
+			(30, 12, false, -2040876099453344345L, false, 1, 5, 1, 0),
+			(30, 12, false, -4525504475399466095L, false, 1, 5, 1, 0),
+			(30, 15, false, 5715498412747712398L, false, 1, 5, 1, 0),
+			(30, 8, true, -8505862789124375259L, false, 1, 5, 1, 0),
+			(30, 6, true, -8695189366888117562L, false, 1, 5, 1, 0),
+			(30, 8, false, -7045886391286260825L, false, 1, 5, 1, 0),
+			(30, 2, true, -5719502751839801933L, false, 1, 5, 1, 0),
+			(30, 9, true, -5561042816536613276L, false, 1, 5, 1, 0),
+			(30, 5, false, 3454827329483479159L, false, 1, 5, 1, 0), // strange situation during graceful shutdown
+			(30, 6, false, 4377378712223639909L, false, 1, 5, 1, 0), // LeaderTransition record kind is used.
+			(30, 8, true, 3219848794431902011L, false, 1, 5, 1, 0),
+			(30, 3, false, 2486592392277813285L, false, 1, 5, 1, 0),
+			(30, 4, true, 4513069980120952979L, false, 1, 5, 1, 0),
+			(30, 6, false, -25160870373328826L, false, 1, 5, 1, 0),
+			(30, 9, true, -7099459776600378137L, false, 1, 5, 1, 0),
+			(30, 6, true, -4000233556805337121L, false, 1, 5, 1, 0),
+			(30, 15, false, -8377836387231152620L, false, 1, 5, 1, 0),
+			(30, 2, true, 5465215041039872636L, false, 1, 5, 1, 0),
+			(30, 4, false, -2871391883553136003L, false, 1, 5, 1, 0),
+			(30, 2, true, 5082886513912816935L, false, 1, 5, 1, 0), // hanged up without any error.
+			(30, 15, false, 107166222495627916L, false, 1, 5, 1, 0),
+			(30, 3, false, -4120685655909330148L, false, 1, 5, 1, 0),
+			(30, 6, false, 4457054910789412562L, false, 1, 5, 1, 0), // Retiring finalTerm greater than termAtExcludingConfigChange.
+			(30, 6, true, 1187713772695268880L, false, 1, 5, 1, 0),
+			(30, 15, true, -7036178255522478916L, false, 1, 5, 1, 0), // Does not converge
+			(30, 4, false, -1201266674536539693L, false, 1, 5, 1, 0), // MatchError thrown at StableConfigChange.isCoupleOf
+			(30, 7, false, -6232654863579614157L, false, 1, 5, 1, 0), // Net: graceful shutdown failed after 20 attempts
+			(30, 3, true, -2370286264465510604L, false, 1, 5, 1, 0), // PanicException thrown in replicateTccAndThenStartSecondPhase
+			(30, 2, true, 1380848690399351272L, false, 1, 5, 1, 0), // The node p-1 applied the command TestClientCommand(19,A) at index 22, which is different from the command TestClientCommand(18,A) applied at the same index in node p-0.
+			(30, 3, false, -2547866549608645507L, false, 1, 5, 1, 0), // PanicException
+			(30, 3, true, -7417113718760886059L, false, 1, 5, 1, 0), // "Should never happen" assertion triggered
+			(30, 3, false, 7259924510493798812L, false, 1, 5, 1, 0),
+			(30, 3, true, -7726398781820803091L, false, 1, 5, 1, 0), // assertion failed: currentPrimaryState eq primaryStateFence.committedState
+			(30, 3, false, 3592691889253758326L, false, 1, 5, 1, 0),
+			(30, 5, false, 2968913177794423906L, false, 1, 5, 1, 0),
+			(30, 4, false, 1456932037162721701L, false, 1, 5, 1, 0),
 		)
 
 		failingCases.foldLeft(Future.successful(())) { (previousResult, failingCase) =>
 			previousResult.flatMap { _ =>
-				val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = failingCase
+				val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) = failingCase
 				val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
-				scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-				testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 10, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+				testAllInvariants(
+					net,
+					startWithHighestPriorityParticipant,
+					remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex,
+					numberOfCommandsToSend = numberOfCommandsToSend,
+					maxRetries = 10,
+					retirementDriveRetryPeriod = clusterSize * 10,
+					unreachableFollowersRetryPeriod = clusterSize * 10,
+					quiescenceAuthorizationRetryPeriod = clusterSize * 10,
+					configChangeRetryPeriod = clusterSize * 100,
+					MAX_RECURSION_DEPTH = maxRecursionDepth,
+					logCompactionThreshold = logCompactionThreshold,
+					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
+					logRetentionAfterSnapshot = logRetentionAfterSnapshot
+				)
 			}
 		}
 	}
 
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
-		inline val numberOfCommandsToSend = 30
-		val (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed) = (8, false, -7045886391286260825L)
+		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
+			(30, 12, false, -979546981164946039L, true, 0, 3, 1, 0)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
-		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-		testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+		testAllInvariants(
+			net,
+			startWithHighestPriorityParticipant,
+			remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex,
+			numberOfCommandsToSend = numberOfCommandsToSend,
+			maxRetries = 15,
+			retirementDriveRetryPeriod = clusterSize * 10,
+			unreachableFollowersRetryPeriod = clusterSize * 10,
+			quiescenceAuthorizationRetryPeriod = clusterSize * 10,
+			configChangeRetryPeriod = clusterSize * 100,
+			MAX_RECURSION_DEPTH = maxRecursionDepth,
+			logCompactionThreshold = logCompactionThreshold,
+			maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
+			logRetentionAfterSnapshot = logRetentionAfterSnapshot
+		)
 	}
 
 	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds.
@@ -1482,12 +1656,26 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			Gen.choose(1, 3), // 1, 2, 3; 2, 4, 6; 3, 6, 9; 4, 8, 12; 5, 10, 15
 			Gen.choose(1, 5),
 			Gen.oneOf(true, false),
-			Gen.long
-		) { (clusterSize1, clusterSize2, startWithHighestPriorityParticipant, netRandomnessSeed) =>
+			Gen.long,
+			genNodeConfig
+		) { (clusterSize1, clusterSize2, startWithHighestPriorityParticipant, netRandomnessSeed, nodeConfig) =>
 			val clusterSize = clusterSize1 * clusterSize2
 			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
-			scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed")
-			testAllInvariants(net, startWithHighestPriorityParticipant, numberOfCommandsToSend, 15, clusterSize * 10, clusterSize * 10, clusterSize * 10, clusterSize * 100)
+			testAllInvariants(
+				net,
+				startWithHighestPriorityParticipant,
+				remembersLastAppliedCommandIndex = nodeConfig.remembersLastAppliedCommandIndex,
+				numberOfCommandsToSend = numberOfCommandsToSend,
+				maxRetries = 15,
+				retirementDriveRetryPeriod = clusterSize * 10,
+				unreachableFollowersRetryPeriod = clusterSize * 10,
+				quiescenceAuthorizationRetryPeriod = clusterSize * 10,
+				configChangeRetryPeriod = clusterSize * 100,
+				MAX_RECURSION_DEPTH = nodeConfig.maxRecursionDepth,
+				logCompactionThreshold = nodeConfig.logCompactionThreshold,
+				maxInFlightAppendsPerPeer = nodeConfig.maxInFlightAppendsPerPeer,
+				logRetentionAfterSnapshot = nodeConfig.logRetentionAfterSnapshot
+			)
 		}
 	}
 }

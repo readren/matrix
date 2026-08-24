@@ -252,17 +252,20 @@ trait DoerFluxPart { thisDoer: Doer =>
 		}
 	}
 
-	def Flux_generate[A](supplier: Int => Maybe[A]): Flux[A] = new DefaultFlux[A] {
+	def Flux_generate[A](supplier: (Int, OriginId) => Maybe[A], originId: OriginId, isGuarded: Boolean): Flux[A] = new DefaultFlux[A] {
 		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
 			var index = 0
 			var isActive = true
 			while isActive do {
-				val maybeVal = try supplier(index) catch {
-					case NonFatal(e) =>
-						isActive = false
-						downChainObserver.onError(e)
-						Maybe.empty
-				}
+				val maybeVal =
+					if isGuarded then {
+						try supplier(index, originId) catch {
+							case NonFatal(e) =>
+								isActive = false
+								downChainObserver.onError(e)
+								Maybe.empty
+						}
+					} else supplier(index, originId)
 				if isActive then maybeVal.fold {
 					isActive = false
 					downChainObserver.onComplete()
@@ -275,18 +278,21 @@ trait DoerFluxPart { thisDoer: Doer =>
 		}
 	}
 
-	def Flux_generateStatefully[A](supplierBuilder: () => Int => Maybe[A]): Flux[A] = new DefaultFlux[A] {
+	def Flux_generateStatefully[A](supplierBuilder: OriginId => Int => Maybe[A], originId: OriginId, isGuarded: Boolean): Flux[A] = new DefaultFlux[A] {
 		override def subscribeSync(downChainObserver: FluxObserver[A]): Subscription = {
-			val supplier = supplierBuilder()
+			val supplier = supplierBuilder(originId)
 			var index = 0
 			var isActive = true
 			while isActive do {
-				val maybeA = try supplier(index) catch {
-					case NonFatal(e) =>
-						isActive = false
-						downChainObserver.onError(e)
-						Maybe.empty
-				}
+				val maybeA =
+					if isGuarded then {
+						try supplier(index) catch {
+							case NonFatal(e) =>
+								isActive = false
+								downChainObserver.onError(e)
+								Maybe.empty
+						}
+					} else supplier(index)
 				if isActive then maybeA.fold {
 					isActive = false
 					downChainObserver.onComplete()
