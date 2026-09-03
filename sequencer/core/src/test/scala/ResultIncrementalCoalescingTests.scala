@@ -25,7 +25,7 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 				successfulResult <- smallIntGen
 				result <- genTryFrom(successfulResult, "expected-result", 50)
 				contender <- genTaskFrom(result)
-			} yield (successfulResult, result, doer.Captor_triggerAndWire(contender): doer.Capturer[Int])
+			} yield (successfulResult, result, doer.Captor_triggerAndWire(contender): doer.Capture[Int])
 		} { (successfulResult, expectedResult, contender) =>
 
 			val promise = Promise[Unit]()
@@ -34,11 +34,11 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 
 			doer.run {
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
-				val resultCapturer = ric.contend { maybeIncumbent =>
+				val resultCapture = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contender
 				}
-				resultCapturer.triggerSyncCallbacks(
+				resultCapture.triggerSyncCallbacks(
 					actualResult => {
 						if actualResult == successfulResult then promise.trySuccess(())
 						else break(s"Expected $successfulResult, got $actualResult")
@@ -60,7 +60,7 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 			for {
 				contenderATask <- genTask[Int]()
 				expectedResultB <- genTry[Int]
-				contenderB <- genCapturerFrom(expectedResultB)
+				contenderB <- genCaptureFrom(expectedResultB)
 				bool <- Gen.oneOf(true, false)
 			} yield (
 				contenderATask,
@@ -77,18 +77,18 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
 				val contenderA = new Captor[Int]()
-				val firstResultCapturer = ric.contend { maybeIncumbent =>
+				val firstResultCapture = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contenderA
 				}
-				val secondResultCapturer = ric.contend { maybeIncumbent =>
+				val secondResultCapture = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.fold(true)(_ ne contenderA) then break("Second contender should see contenderA as incumbent")
 					contenderB
 				}
-				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
+				if secondResultCapture ne firstResultCapture then break(s"The returned Captor is not stable")
 
 				if bool then contenderA.seizeWithSync(contenderATask)
-				secondResultCapturer.triggerSyncCallbacks(
+				secondResultCapture.triggerSyncCallbacks(
 					actualResultB => {
 						if expectedResultB.fold(_ => true, _ != actualResultB) then break(s"expected $expectedResultB, got Success($actualResultB)")
 						else promise.trySuccess(())
@@ -125,21 +125,21 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
 				val contenderA = new Captor[Int]()
-				val firstResultCapturer = ric.contend { maybeIncumbent =>
+				val firstResultCapture = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contenderA
 				}
 
-				val secondResultCapturer = ric.contend { maybeIncumbent =>
+				val secondResultCapture = ric.contend { maybeIncumbent =>
 					maybeIncumbent.fold {
 						break("Second contender should see contenderA as incumbent")
 						Keeper(0)
 					}(identity)
 				}
-				if secondResultCapturer ne firstResultCapturer then break(s"The returned Captor is not stable")
+				if secondResultCapture ne firstResultCapture then break(s"The returned Captor is not stable")
 
 				if bool then contenderA.seizeWithSync(contenderATask)
-				secondResultCapturer.triggerSyncCallbacks(
+				secondResultCapture.triggerSyncCallbacks(
 					actualResultA => {
 						if expectedResultA.fold(_ => true, _ != actualResultA) then break(s"Expected $expectedResultA, got Success($actualResultA)")
 						else promise.trySuccess(())
@@ -160,9 +160,9 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 		import generators.*
 		PropF.forAllNoShrinkF {
 			for {
-				contenderA <- genCapturer[Int]()
+				contenderA <- genCapture[Int]()
 				expectedResultB <- genTry[Int]
-				contenderB <- genCapturerFrom(expectedResultB)
+				contenderB <- genCaptureFrom(expectedResultB)
 			} yield (
 				contenderA,
 				expectedResultB,
@@ -176,7 +176,7 @@ trait ResultIncrementalCoalescingTests[D <: Doer : ClassTag] { self: DoerProvide
 			doer.run {
 				val ric = new ResultIncrementalCoalescing[Int, doer.type](doer)
 
-				val firstResultCapturer = ric.contend { maybeIncumbent =>
+				val firstResultCapture = ric.contend { maybeIncumbent =>
 					if maybeIncumbent.isDefined then break("First contender should see empty incumbent")
 					contenderA
 				}

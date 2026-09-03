@@ -199,14 +199,14 @@ trait Doer extends DoerCorePart, DoerTaskOpsPart, DoerFluxPart, DoerLoopingPart 
 		override inline def wireFlatGuarded(supplier: () => Task[A]): Task[A] = new Task_DefersGuarded(supplier)
 	}
 
-	inline given [A] =>Wirable[A, Capturer] {
-		override inline def wire(supplier: () => A): Capturer[A] = Captor_apply(supplier, false)
+	inline given [A] =>Wirable[A, Capture] {
+		override inline def wire(supplier: () => A): Capture[A] = Captor_apply(supplier, false)
 
-		override inline def wireFlat(supplier: () => Capturer[A]): Capturer[A] = Captor_defer(supplier, false)
+		override inline def wireFlat(supplier: () => Capture[A]): Capture[A] = Captor_defer(supplier, false)
 
-		override inline def wireGuarded(supplier: () => A): Capturer[A] = Captor_apply(supplier, true)
+		override inline def wireGuarded(supplier: () => A): Capture[A] = Captor_apply(supplier, true)
 
-		override inline def wireFlatGuarded(supplier: () => Capturer[A]): Capturer[A] = Captor_defer(supplier, true)
+		override inline def wireFlatGuarded(supplier: () => Capture[A]): Capture[A] = Captor_defer(supplier, true)
 	}
 
 	//// EXCEPTION HANDLING ////

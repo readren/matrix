@@ -69,7 +69,7 @@ object PruebaScheduling {
 			}.triggerCallbacks(false)(
 				parent => {
 					nexus.doer.checkWithin()
-					parent.stopCapturer.triggerCallbacks(false)(
+					parent.stopCapture.triggerCallbacks(false)(
 						_ => {
 							parent.doer.checkWithin()
 							println(s"Diagnostics:\n${manager.diagnose(new StringBuilder())}")

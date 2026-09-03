@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-08-22T00:34:00Z"
+timestamp: "2026-08-29T20:07:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -161,6 +161,18 @@ pub trait StateMachine {
 }
 ```
 
+### The `Workspace` and `Accessible` Persistence Split
+
+To ensure the log storage layer (`Workspace`) remains a pure, "dumb" I/O abstraction devoid of consensus logic, the framework splits log persistence concerns into two layers:
+
+1. **`Workspace` (Storage SPI):** A synchronous, in-memory facade provided by the host environment (or tests) to store and truncate the log buffer and snapshots. It provides only primitive operations like `truncateSuffix`, `truncatePrefix`,
+   and `appendRecord`, and is completely isolated from Raft invariants.
+2. **`Accessible` (Consensus Driver):** An internal, consensus-aware wrapper around `Workspace` used by the active Raft roles (`Leader`, `Follower`, etc.). It enforces Raft's Log Matching invariant (handling conflict resolution and
+   truncation during appends), tracks `ConfigChange` offsets across the log and snapshots, and manages log scanning and caching.
+
+By pushing Raft invariants up into the `Accessible` layer, the `Workspace` interface is radically simplified. Custom storage implementers no longer need to write complex array-copy conflict resolution or scan backwards for configuration
+changes during truncations.
+
 ---
 
 ## 5. Architectural Trade-off Summary
@@ -281,7 +293,19 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Current-Term Entry Insertion**: If RPC replication succeeds over log entries containing previous-term records, but the leader's commit index cannot advance because no current-term entry has been committed, the leader must append a
   current-term no-op entry and replicate it to force transitive commitment across all preceding entries.
 
-### II. Log Compaction Boundaries
+### II. Universal Log Fusion & Obsolete Suffix Truncation Invariants
+
+- **Universal Scope**: Log matching and fusion invariants apply to all participants processing replication RPCs (`AppendRecords`), regardless of their current role (`Follower`, `Joining`, `Isolated`, or `Retiring`).
+- **Conflict Truncation**: During log fusion, if an existing local record at index $i$ differs in term from the corresponding record in the incoming batch, the local log is truncated from index $i$ onwards before appending the remaining
+  batch entries.
+- **Obsolete Trailing Suffix Truncation**: When all entries in an incoming batch match the local log without term conflicts, but the local log holds uncommitted entries extending beyond the applied batch:
+    - The evaluation boundary advances to the first uncommitted entry, calculated as $\max (\text{appliedIndex} + 1, \text{commitIndex} + 1)$.
+    - If the entry at this uncommitted boundary was written under a term strictly lower than the active leader's term, that entry and all subsequent records represent uncommitted remnants from a superseded term.
+    - The participant must truncate its log starting at this uncommitted boundary.
+- **Committed Data Invariant**: Suffix truncation is strictly bounded by the participant's verified commit baseline (`commitIndex + 1`), ensuring committed records are never mutated or truncated.
+- **Current-Term Invariant**: If uncommitted trailing records have terms matching the active leader's term, they are preserved as valid extensions established under the current leadership tenure.
+
+### III. Log Compaction Boundaries
 
 - **Committed-Only Compaction Invariant**: Log compaction and log truncation must operate strictly within the bounds of committed log entries. A node must never truncate log entries beyond its verified commit index.
 - **Compaction Truncation Bounds**: Log compaction truncation index must never fall below the in-memory log buffer offset. The retained log record count is bounded by the compaction threshold to guarantee strictly positive buffer bounds.
@@ -297,6 +321,8 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 - **Ghost Leader Definition**: When a leader commits a stable configuration change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
   commit the excluding configuration change, but cannot initiate or lead subsequent configuration transitions.
+- **Electorate Validation Scope**: A ghost leader evaluates its retirement condition (verifying that all included learners have committed the excluding configuration change) strictly against the current active configuration's electorate.
+  Historical tracking capacities or learners excluded by prior configurations must not influence this eligibility check, preventing stale tracking data from stalling the leader's retirement.
 - **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new configuration change from which it is also excluded:
     - If all active learners in the current configuration have committed the excluding configuration change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
     - If one or more active learners have not yet committed the excluding configuration change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
@@ -308,4 +334,67 @@ Quiescence authorization ensures that a retiring participant does not shut down 
   acknowledgment across all active learners.
 - **Asynchronous Retry Decoupling**: When a replication wave completes via majority quorum while lagging or unreachable learners remain pending, retries targeting unreachable learners must be scheduled asynchronously on dedicated timers.
   Ghost leaders must never execute re-entrant, synchronous replication loops during configuration change request handling.
+
+---
+
+## 9. On-Demand Election Protocol, Ballot Invariants & Promotion Dynamics
+
+### I. Multi-Phase Reactive Election Architecture
+
+Unlike monolithic consensus systems with background heartbeat timeouts, leader elections are executed on-demand in four coordinated phases:
+
+1. **State Discovery Phase (`HowAreYou`)**:
+    - An uncoordinated participant (`Isolated` or `Candidate`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active configuration.
+    - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, log tail metadata, and current ballot.
+
+2. **Deterministic Candidate Ranking (`decideMyVote`)**:
+    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(term, electionRank, commitIndex, termAtCommitIndex, lastRecordTerm, lastRecordIndex, participantId)`.
+    - Active leaders take precedence over candidates, candidates take precedence over retirees, and higher terms take precedence over lower terms.
+    - If terms match, higher commit indices and matching log prefixes are preferred.
+    - Ties between equal-state candidates are broken deterministically by participant identifier, guaranteeing that all participants with identical peer views select the same candidate.
+
+3. **Voting Phase (`ChooseALeader`)**:
+    - If a participant deterministically selects itself and reached a majority in the discovery phase, it solicits explicit votes from peers via `ChooseALeader`.
+    - Peers evaluate the solicitation against their local state and return an explicit `Vote` tagged with the election term and ballot.
+
+4. **Quorum & Role Determination**:
+    - **Stable Configuration Quorum**: A candidate must receive votes from a strict majority (`> N / 2`) of active configuration participants.
+    - **Transitional Configuration Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old configuration set (`Cold`) and the new configuration set (`Cnew`).
+    - If the candidate obtains the required quorum, it transitions to `Promoting`. If quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
+
+### II. Ballot Mechanics & The "One Vote Per Ballot" Invariant
+
+- **Ballot Monotonicity**: Every participant maintains a local monotonic ballot counter (`currentBallot`). The ballot counter distinguishes distinct election rounds within the participant's lifecycle.
+- **Ballot Invalidation on Disruption**: The ballot counter is bumped whenever an election round fails to establish a leader, whenever higher ballots are observed in peer RPC responses, or when client retries incite new election rounds.
+  Advancing the ballot immediately purges all cached peer state information.
+- **One Vote per Ballot Invariant**: A participant may cast at most one vote per ballot round. `StateInfo` and `Vote` records are strictly bound to their issuing ballot. If concurrent activity or peer RPCs advance the ballot, all votes cast
+  under prior ballots are invalidated.
+- **Split-Brain Prevention**: Because each voter participates at most once per ballot, and any valid leadership requires a majority quorum (or overlapping joint majorities in transitional configurations), two distinct candidates can never
+  simultaneously secure valid majorities in the same ballot round.
+
+### III. Promotion Phase (`Promoting`) & Term Bumping Invariants
+
+- **Hidden Transitional Substate**: `Promoting` is a transient, internal role entered immediately upon securing an election quorum. Outside participants never observe a node in the `Promoting` state because inbound RPCs are held pending
+  during this interval.
+- **Mandatory Persistent Term Advancement**: A participant entering `Promoting` from term $T$ does not become leader of term $T$. Instead, it atomically increments its term to $T + 1$ in persistent storage through the primary state causal
+  fence.
+- **Strict Role-Exit Cleanliness**: All active replication waves and retry tokens are canceled upon role transitions. Role references are updated before invoking exit handlers to ensure synchronous cancellation continuations immediately
+  observe that the node is no longer in the previous role.
+- **Leadership Inauguration**: Only after the bumped term $T + 1$ is safely stored in persistent state does the participant instantiate and transition to `Leader(term = T + 1)`. As a consequence, concurrent dual leadership within the same
+  term is strictly impossible.
+
+---
+
+## 9. Configuration Change Response & Ballot Propagation Invariants
+
+- **Terminal vs. Non-Terminal Response Partitioning**: Configuration change responses are strictly partitioned into terminal and non-terminal variants:
+    - **Terminal Responses**: Represent final consensus outcomes (completed or already matching configuration changes) that definitively satisfy the requester and terminate retry loops. Terminal responses do not carry election ballot
+      metadata.
+    - **Non-Terminal Responses**: Represent intermediate rejections, redirections, or lost tracking states. Non-terminal responses carry the highest observed election ballot to propagate election round counters across sequential node
+      interactions during client discovery.
+- **Ballot Propagation Independence**: The receipt of an observed ballot via prior responses allows subsequent nodes in a discovery loop to fast-forward local election ballots and purge obsolete peer cache entries without triggering
+  unprovoked ballot increments.
+- **Reconfiguration Quiescence Decoupling**: Successful replication and commitment of a stable configuration change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
+  returned upon majority consensus commitment without requiring post-commit causal anchoring against persistent state.
+
 

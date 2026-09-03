@@ -636,7 +636,7 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	///////////////////////////
-	//// Capturer hierarchy ////
+	//// Capture hierarchy ////
 	///////////////////////////
 
 	/** Exception-unaware single result capturer. Ex Capturer
@@ -652,7 +652,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B]
 
-		@targetName("flatMapCapturer")
+		@targetName("flatMapCapture")
 		def flatMap[B](f: A => Capturer[B]): Capturer[B]
 
 		@targetName("flatMapTask")
@@ -662,7 +662,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
 
-		@targetName("flatMapCapturerGuarded")
+		@targetName("flatMapCaptureGuarded")
 		def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B]
 
 		@targetName("flatMapTaskGuarded")
@@ -682,7 +682,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B] = underlying.flatMapGuarded(f)
 
-		@targetName("flatMapCapturer")
+		@targetName("flatMapCapture")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapTask")
@@ -692,7 +692,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B] = underlying.flatMapGuarded(f)
 
-		@targetName("flatMapCapturerGuarded")
+		@targetName("flatMapCaptureGuarded")
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapTaskGuarded")
@@ -714,7 +714,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B] = f(value)
 
-		@targetName("flatMapCapturer")
+		@targetName("flatMapCapture")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = f(value)
 
 		@targetName("flatMapTask")
@@ -732,7 +732,7 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
-		@targetName("flatMapCapturerGuarded")
+		@targetName("flatMapCaptureGuarded")
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
 			try f(value) catch {
 				case NonFatal(e) => new Failed(e)
@@ -765,7 +765,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMap[B](f: Nothing => Mono[B]): Mono[B] = this.asInstanceOf[Failed]
 
-		@targetName("flatMapCapturer")
+		@targetName("flatMapCapture")
 		override def flatMap[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
 
 		@targetName("flatMapTask")
@@ -780,7 +780,7 @@ trait DoerSandbox2 { thisDoer =>
 
 		override def flatMapGuarded[B](f: Nothing => Mono[B]): Mono[B] = this.asInstanceOf[Failed]
 
-		@targetName("flatMapCapturerGuarded")
+		@targetName("flatMapCaptureGuarded")
 		override def flatMapGuarded[B](f: Nothing => Capturer[B]): Capturer[B] = this.asInstanceOf[Failed]
 
 		@targetName("flatMapTaskGuarded")
@@ -856,7 +856,7 @@ trait DoerSandbox2 { thisDoer =>
 			}(new Failed(_)) { a => f(a) }
 		}
 
-		@targetName("flatMapCapturer")
+		@targetName("flatMapCapture")
 		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
 			state.fold {
 				new Captor_FlatMapCapturer(this, f, isGuarded = false)
@@ -899,7 +899,7 @@ trait DoerSandbox2 { thisDoer =>
 			}
 		}
 
-		@targetName("flatMapCapturerGuarded")
+		@targetName("flatMapCaptureGuarded")
 		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
 			state.fold {
 				new Captor_FlatMapCapturer(this, f, isGuarded = true)
@@ -947,6 +947,13 @@ trait DoerSandbox2 { thisDoer =>
 		}
 	}
 
+	/** A mutable [[Capturer]] that acts as a single-assignment completion promise and rendezvous point.\
+	 * A [[Captor]] starts in a pending state and can be completed with a value via [[captureSync]]/[[capture]], a failure via [[failSync]]/[[fail]], or wired to another [[Mono]] via [[captureWith]].\
+	 * The first completion transition fixes the outcome, notifies all registered observers in subscription order, and clears the observer registry.\
+	 * Subsequent completion attempts are ignored, preserving the initial outcome.\
+	 * Observers subscribed before completion are queued and notified upon resolution; observers subscribed after completion receive the memoized outcome synchronously.\
+	 * Synchronous completion methods (`captureSync`, `failSync`, `completeSync`) must be invoked within the owning [[Doer]]'s sequential timeline ($DoSerEx), whereas asynchronous variants (`capture`, `fail`, `complete`) are thread-safe.\
+	 * @param initialState the initial completion state of the captor; defaults to [[Trial.empty]] (pending). */
 	final class Captor[A](initialState: Trial[A] = Trial.empty) extends AbstractCaptor[A](initialState) {
 		def captureSync(result: A, onCompleted: CompletionObserver[A] = CompletionObserver_ignore): this.type = {
 			state.fold {
@@ -1046,7 +1053,7 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	//////////////////////////////////
-	//// Capturer factory methods ////
+	//// Capture factory methods ////
 	//////////////////////////////////
 
 	def Capturer_succeed[A](a: A): Keeper[A] = Keeper(a)
@@ -1107,7 +1114,7 @@ trait DoerSandbox2 { thisDoer =>
 	}
 
 	////////////////////////////////////////////
-	//// Capturer operations' helper classes ////
+	//// Capture operations' helper classes ////
 	////////////////////////////////////////////
 
 	abstract class SpareSlotCaptorOp[A, B](source: Capturer[A]) extends AbstractCaptor[B] with MonoObserver[A] {

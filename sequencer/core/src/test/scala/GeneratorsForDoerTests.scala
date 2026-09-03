@@ -229,67 +229,67 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	/** Implicitly provide an Arbitrary instance for `doer.Task` */
 	given taskArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Task[A]] = Arbitrary(genTask())
 
-	def genSuccessfulCapturerFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Capturer[A]] = {
-		val readyGen: Gen[Capturer[A]] = Keeper(a)
+	def genSuccessfulCaptureFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Capture[A]] = {
+		val readyGen: Gen[Capture[A]] = Keeper(a)
 
-		val applyGen: Gen[Capturer[A]] = Capturer_apply(() => a)
+		val applyGen: Gen[Capture[A]] = Capture_apply(() => a)
 
-		val deferredGen: Gen[Capturer[A]] = Gen.oneOf(readyGen, applyGen).map(lt => Capturer_defer(() => lt))
+		val deferredGen: Gen[Capture[A]] = Gen.oneOf(readyGen, applyGen).map(lt => Capture_defer(() => lt))
 
-		val fromFutureGen: Gen[Capturer[A]] = genFutureFromTry(Success(a), "Capturer_fromFuture").map(future => Capturer_from(future))
+		val fromFutureGen: Gen[Capture[A]] = genFutureFromTry(Success(a), "Capture_fromFuture").map(future => Capture_from(future))
 
-		val fromDeferFutureGen: Gen[Capturer[A]] = genFutureFromTry(Success(a), "Capturer_fromDeferFuture").map(future => Capturer_from(() => future))
+		val fromDeferFutureGen: Gen[Capture[A]] = genFutureFromTry(Success(a), "Capture_fromDeferFuture").map(future => Capture_from(() => future))
 
-		def foreignGen: Gen[Capturer[A]] = foreignDoerGenerators().genSuccessfulCapturerFrom(a).map(_.onBehalfOf(doer))
+		def foreignGen: Gen[Capture[A]] = foreignDoerGenerators().genSuccessfulCaptureFrom(a).map(_.onBehalfOf(doer))
 
 		if syncExecutionOnly then readyGen
 		else if includeForeign then Gen.oneOf(readyGen, applyGen, deferredGen, fromFutureGen, fromDeferFutureGen, foreignGen)
 		else Gen.oneOf(readyGen, applyGen, deferredGen, fromFutureGen, fromDeferFutureGen)
 	}
 
-	def genSuccessfulCapturer[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Capturer[A]] = {
+	def genSuccessfulCapture[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Capture[A]] = {
 		for {
 			a <- genA.arbitrary
-			f <- genSuccessfulCapturerFrom(a, syncExecutionOnly)
+			f <- genSuccessfulCaptureFrom(a, syncExecutionOnly)
 		} yield f
 	}
 
-	def genFailingCapturerFrom(e: Throwable, syncExecutionOnly: Boolean = false): Gen[Capturer[Nothing]] = {
+	def genFailingCaptureFrom(e: Throwable, syncExecutionOnly: Boolean = false): Gen[Capture[Nothing]] = {
 
-		val readyGen: Gen[Capturer[Nothing]] = Failed(e)
+		val readyGen: Gen[Capture[Nothing]] = Failed(e)
 
-		val deferredGen: Gen[Capturer[Nothing]] = readyGen.map(lt => Capturer_defer(() => lt))
+		val deferredGen: Gen[Capture[Nothing]] = readyGen.map(lt => Capture_defer(() => lt))
 
-		val fromFutureGen: Gen[Capturer[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromFuture").map(future => Capturer_from(future))
+		val fromFutureGen: Gen[Capture[Nothing]] = genFutureFromTry(Failure(e), "Capture_fromFuture").map(future => Capture_from(future))
 
-		val fromDeferFutureGen: Gen[Capturer[Nothing]] = genFutureFromTry(Failure(e), "Capturer_fromDeferFuture").map(future => Capturer_from(() => future))
+		val fromDeferFutureGen: Gen[Capture[Nothing]] = genFutureFromTry(Failure(e), "Capture_fromDeferFuture").map(future => Capture_from(() => future))
 
-		def foreignGen: Gen[Capturer[Nothing]] = foreignDoerGenerators().genFailingCapturerFrom(e).map(_.onBehalfOf(doer))
+		def foreignGen: Gen[Capture[Nothing]] = foreignDoerGenerators().genFailingCaptureFrom(e).map(_.onBehalfOf(doer))
 
 		if syncExecutionOnly then readyGen
 		else if includeForeign then Gen.oneOf(readyGen, deferredGen, fromFutureGen, fromDeferFutureGen, foreignGen)
 		else Gen.oneOf(readyGen, deferredGen, fromFutureGen, fromDeferFutureGen)
 	}
 
-	def genCapturerFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Capturer[A]] = {
+	def genCaptureFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Capture[A]] = {
 		tryA match {
-			case Success(a) => genSuccessfulCapturerFrom(a, syncExecutionOnly)
-			case Failure(e) => genFailingCapturerFrom(e, syncExecutionOnly)
+			case Success(a) => genSuccessfulCaptureFrom(a, syncExecutionOnly)
+			case Failure(e) => genFailingCaptureFrom(e, syncExecutionOnly)
 		}
 	}
 
-	def genCapturer[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Capturer[A]] = {
+	def genCapture[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Capture[A]] = {
 		for {
 			tryA <- genTryA.arbitrary
-			capturerA <- genCapturerFrom(tryA, syncExecutionOnly)
+			capturerA <- genCaptureFrom(tryA, syncExecutionOnly)
 		} yield capturerA
 	}
 	
 	/** Implicitly provide an Arbitrary instance for `doer.Task` */
-	given capturerArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Capturer[A]] = Arbitrary(genCapturer())
+	given captureArbitrary: [A] =>Arbitrary[Try[A]] => Arbitrary[Capture[A]] = Arbitrary(genCapture())
 
 	def genSuccessfulMonoFrom[A](a: A, syncExecutionOnly: Boolean = false): Gen[Mono[A]] = {
-		Gen.oneOf(genSuccessfulTaskFrom(a, syncExecutionOnly), genSuccessfulCapturerFrom(a, syncExecutionOnly))
+		Gen.oneOf(genSuccessfulTaskFrom(a, syncExecutionOnly), genSuccessfulCaptureFrom(a, syncExecutionOnly))
 	}
 
 	def genSuccessfulMono[A](syncExecutionOnly: Boolean = false)(using genA: Arbitrary[A]): Gen[Mono[A]] = {
@@ -300,7 +300,7 @@ class GeneratorsForDoerTests[D <: Doer](val doer: D, doerProvider: DoerProvider[
 	}
 
 	def genMonoFrom[A](tryA: Try[A], syncExecutionOnly: Boolean = false): Gen[Mono[A]] = {
-		Gen.oneOf(genTaskFrom(tryA, syncExecutionOnly), genCapturerFrom(tryA, syncExecutionOnly))
+		Gen.oneOf(genTaskFrom(tryA, syncExecutionOnly), genCaptureFrom(tryA, syncExecutionOnly))
 	}
 
 	def genMono[A](syncExecutionOnly: Boolean = false)(using genTryA: Arbitrary[Try[A]]): Gen[Mono[A]] = {

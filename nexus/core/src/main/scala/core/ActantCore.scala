@@ -98,7 +98,7 @@ abstract class ActantCore[U, D <: Doer](
 	/**
 	 * Should be called only once and within the [[doer]].
 	 * Design note: This method is necessary to initialize the objects referenced by this [[ActantCore]] that also need a reference to this [[ActantCore]] after it is sufficiently initialized (e.g., [[currentBehavior]]). */
-	def initialize(): doer.Capturer[this.type] = { // send Started signal after all the vals and vars have been initialized
+	def initialize(): doer.Capture[this.type] = { // send Started signal after all the vals and vars have been initialized
 		doer.checkWithin()
 		assert(currentBehavior eq null)
 		selfStart(false, initialBehaviorBuilder).map(_ => thisActant) // TODO considerar hacer que selfStarts devuelva Task[this.type] para evitar este 'map`  del final. Esto requiere que selfStop, selfRestar, stayIdleUntilNextMessageArrive, y otros que ahora devuelven Task[Unit] también hagan lo mismo.
@@ -107,14 +107,14 @@ abstract class ActantCore[U, D <: Doer](
 	/** Starts or restarts this [[ActantCore]].
 	 * Should be called only once and within the [[doer]].
 	 * */
-	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: Actant[U, D] => Behavior[U]): doer.Capturer[Unit] = {
+	private def selfStart(comesFromRestart: Boolean, behaviorBuilder: Actant[U, D] => Behavior[U]): doer.Capture[Unit] = {
 		doer.checkWithin()
 		currentBehavior = behaviorBuilder(thisActant)
 		val handleResult = handleSignal(if comesFromRestart then isSignalTest.restarted else isSignalTest.started)
 		mapHrToDecision(handleResult) match {
 			case ToContinue =>
 				if !stopWasStarted then beReadyToProcess()
-				doer.Capturer_unit
+				doer.Capture_unit
 			case ToStop =>
 				selfStop()
 			case tr: ToRestart =>
@@ -130,7 +130,7 @@ abstract class ActantCore[U, D <: Doer](
 		initialChildBehaviorBuilder: Actant[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Capturer[Actant[V, CD]] = {
+	): doer.Capture[Actant[V, CD]] = {
 		doer.checkWithin()
 		maybeSpawner.fold {
 				val spawner = new Spawner[doer.type](thisActant, doer, serial)
@@ -150,10 +150,10 @@ abstract class ActantCore[U, D <: Doer](
 	}
 
 	/** Calls must be within the [[doer]]. */
-	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: Actant[U, D] => Behavior[U]): doer.Capturer[Unit] = {
+	private final def selfRestart(stopChildren: Boolean, restartBehaviorBuilder: Actant[U, D] => Behavior[U]): doer.Capture[Unit] = {
 		doer.checkWithin()
 
-		def restartMe(): doer.Capturer[Unit] = {
+		def restartMe(): doer.Capture[Unit] = {
 			// send RestartReceived signal
 			val hr = handleSignal(isSignalTest.restartReceived)
 			mapHrToDecision(hr) match {
@@ -165,11 +165,11 @@ abstract class ActantCore[U, D <: Doer](
 					// if the `handleSignal` responds `Restart` or `RestartWith` to the `RestartReceived` signal, then the restart is adapted to the new restart settings: stops children if they were not, and replaces the restartBehaviorBuilder for the new one. The signal handler is NOT called again.
 					val stopsChildrenIfInstructed =
 						if tr.stopChildren && !stopChildren then {
-							maybeSpawner.fold(doer.Capturer_unit) { spawner =>
+							maybeSpawner.fold(doer.Capture_unit) { spawner =>
 								spawner.stopChildren()
 							}
 						}
-						else doer.Capturer_unit
+						else doer.Capture_unit
 					stopsChildrenIfInstructed.flatMap(_ => selfStart(true, tr.restartBehaviorBuilder))
 			}
 		}
@@ -183,9 +183,9 @@ abstract class ActantCore[U, D <: Doer](
 
 	override def isMarkedToBeStopped: Boolean = isMarkedToStop
 
-	override def stopCapturer: doer.Capturer[Unit] = stopCaptor
+	override def stopCapture: doer.Capture[Unit] = stopCaptor
 
-	override def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignalBuilder: (Unit | Throwable) => SS, univocally: Boolean, maybeSubscriptionCompletedCapturer: Maybe[doer.Captor[Unit]]): Maybe[WatchSubscription] = {
+	override def watch[SS <: U](watchedActant: Actant[?, ?], stoppedSignalBuilder: (Unit | Throwable) => SS, univocally: Boolean, maybeSubscriptionCompletedCapture: Maybe[doer.Captor[Unit]]): Maybe[WatchSubscription] = {
 		doer.checkWithin()
 		if stopWasStarted then Maybe.empty
 		else {
@@ -195,13 +195,13 @@ abstract class ActantCore[U, D <: Doer](
 				private var thisEyeWasRemoved: Boolean = false
 
 				override def run(): Unit = {
-					val was = watchedActant.stopCapturer.subscribeSync(thisEye)
+					val was = watchedActant.stopCapture.subscribeSync(thisEye)
 					if watchedActant.doer eq thisActant.doer then {
 						if stopWasStarted then was.unsubscribeSync() else watchedActantStoppedSubscription = was
-						maybeSubscriptionCompletedCapturer.foreach(_.captureSync(()))
+						maybeSubscriptionCompletedCapture.foreach(_.captureSync(()))
 					} else thisActant.doer.run {
 						if stopWasStarted then was.unsubscribeSync() else watchedActantStoppedSubscription = was
-						maybeSubscriptionCompletedCapturer.foreach(_.captureSync(()))
+						maybeSubscriptionCompletedCapture.foreach(_.captureSync(()))
 					}
 				}
 
@@ -291,7 +291,7 @@ abstract class ActantCore[U, D <: Doer](
 		}
 	}
 
-	override final def stop(): doer.Capturer[Unit] = {
+	override final def stop(): doer.Capture[Unit] = {
 		// Note that if [[stop]] is called simultaneously from many threads, the [[selfStop]] task might be triggered more than once, but that is not harmful because it discards repetitions.
 		// As far as this "if" is concerned, mutations of the `isMarkedToStop` flag do not need to be atomic.
 		if !isMarkedToStop then {
@@ -306,7 +306,7 @@ abstract class ActantCore[U, D <: Doer](
 	 * Should be called within the [[doer]].
 	 * Supports being called more than one time.
 	 * @return a [[Task]] that completes when this [[ActantCore]] is fully stopped. */
-	private final def selfStop(): doer.Capturer[Unit] = {
+	private final def selfStop(): doer.Capture[Unit] = {
 		doer.checkWithin()
 
 		/** should be called within the [[doer]]. */
@@ -436,9 +436,9 @@ abstract class ActantCore[U, D <: Doer](
 	}
 
 
-	override def diagnose: doer.Capturer[ActantDiagnostic] =
-		doer.Capturer_defer { () =>
-			for childrenDiagnostics <- doer.Capturer_sequenceToArray(children.values.map(_.diagnose.onBehalfOf(doer)))
+	override def diagnose: doer.Capture[ActantDiagnostic] =
+		doer.Capture_defer { () =>
+			for childrenDiagnostics <- doer.Capture_sequenceToArray(children.values.map(_.diagnose.onBehalfOf(doer)))
 				yield ActantDiagnostic(thisActant.isReadyToProcessMsg, thisActant.isMarkedToStop, thisActant.stopWasStarted, inbox.size, inbox.iterator, childrenDiagnostics)
 		}
 

@@ -131,18 +131,25 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Transform(trap: Nothing): Any = trap
 
-	final class Task_Transform[-A, B](upChainMono: Task[A], f: Try[A] => Try[B], isGuarded: Boolean) extends AbstractTask[B] {
+	final class Task_Transform[-A, B](upChainMono: Task[A], f: MonoTransformer[A, Try[B]], isGuarded: Boolean) extends AbstractTask[B] {
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			upChainMono.subscribeSync(new MonoObserver[A] {
-				override def onSuccess(a: A): Unit = handle(Success(a))
-
-				override def onError(e: Throwable): Unit = handle(Failure(e))
-
-				private def handle(tryA: Try[A]): Unit = {
-					val tryB = if isGuarded then try f(tryA) catch {
+				override def onSuccess(a: A): Unit = {
+					val tryB = if isGuarded then try f.mapSuccess(a) catch {
 						case NonFatal(e) => Failure(e)
-					} else f(tryA)
+					} else f.mapSuccess(a)
+					tryB match {
+						case Success(b) => downChainObserver.onSuccess(b)
+						case Failure(ex) => downChainObserver.onError(ex)
+					}
+
+				}
+
+				override def onError(e: Throwable): Unit = {
+					val tryB = if isGuarded then try f.mapError(e) catch {
+						case NonFatal(e) => Failure(e)
+					} else f.mapError(e)
 					tryB match {
 						case Success(b) => downChainObserver.onSuccess(b)
 						case Failure(ex) => downChainObserver.onError(ex)
@@ -272,7 +279,7 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_TransformWith(trap: Nothing): Any = trap
 
-	final class Task_TransformWith[+A, +B](upChainMono: Mono[A], f: Try[A] => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
+	final class Task_TransformWith[+A, +B](upChainMono: Mono[A], f: MonoTransformer[A, Mono[B]], isGuarded: Boolean) extends AbstractTask[B] {
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
 			new Subscription with MonoObserver[A] {
 				private var isActive = true
@@ -284,20 +291,33 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
 				}
 
-				override def onSuccess(a: A): Unit = handle(Success(a))
-
-				override def onError(e: Throwable): Unit = handle(Failure(e))
-
-				private def handle(tryA: Try[A]): Unit = {
+				override def onSuccess(a: A): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
-						val maybeMonoB = if isGuarded then try Maybe(f(tryA)) catch {
+						val maybeMonoB = if isGuarded then try Maybe(f.mapSuccess(a)) catch {
 							case NonFatal(e) =>
 								isActive = false
 								maybeUpChainSubscription = Maybe.empty
 								downChainObserver.onError(e)
 								Maybe.empty
-						} else Maybe(f(tryA))
+						} else Maybe(f.mapSuccess(a))
+						maybeMonoB.foreach { monoB =>
+							val innerSubscription = monoB.subscribeSync(downChainObserver)
+							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
+						}
+					}
+				}
+
+				override def onError(e: Throwable): Unit = {
+					if isActive then {
+						maybeUpChainSubscription = Maybe.empty
+						val maybeMonoB = if isGuarded then try Maybe(f.mapError(e)) catch {
+							case NonFatal(e) =>
+								isActive = false
+								maybeUpChainSubscription = Maybe.empty
+								downChainObserver.onError(e)
+								Maybe.empty
+						} else Maybe(f.mapError(e))
 						maybeMonoB.foreach { monoB =>
 							val innerSubscription = monoB.subscribeSync(downChainObserver)
 							if isActive then maybeInnerSubscription = Maybe(innerSubscription)
@@ -396,7 +416,7 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Defers(trap: Nothing): Any = trap
 
-	final class Task_Defers[+A](supplier: () => Task[A]) extends AbstractTask[A] {
+	final class Task_Defers[+A](supplier: () => Mono[A]) extends AbstractTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
 			// Propagate the inner subscription directly
 			supplier().subscribeSync(downChainObserver)
@@ -408,14 +428,14 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_DefersGuarded(trap: Nothing): Any = trap
 
-	final class Task_DefersGuarded[+A](supplier: () => Task[A]) extends AbstractTask[A] {
+	final class Task_DefersGuarded[+A](supplier: () => Mono[A]) extends AbstractTask[A] {
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
-			val maybeTaskA = try Maybe(supplier()) catch {
+			val maybeMonoA = try Maybe(supplier()) catch {
 				case NonFatal(e) =>
 					downChainObserver.onError(e)
 					Maybe.empty
 			}
-			maybeTaskA.fold(Subscription_empty)(_.subscribeSync(downChainObserver))
+			maybeMonoA.fold(Subscription_empty)(_.subscribeSync(downChainObserver))
 		}
 
 		override def toString: String = deriveToString[Task_DefersGuarded[A]](this)
@@ -557,7 +577,7 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 	/** $suppressSyntheticCompanionObject */
 	private inline def Task_Combined(trap: Nothing): Any = trap
 
-	final class Task_Combined[+A, +B, +C](taskA: Task[A], taskB: Task[B], f: (A, B) => C, isGuarded: Boolean) extends AbstractTask[C] {
+	final class Task_Combined[+A, +B, +C](monoA: Mono[A], monoB: Mono[B], f: (A, B) => C, isGuarded: Boolean) extends AbstractTask[C] {
 		override def subscribeSync(downChainObserver: MonoObserver[C]): Subscription = new Subscription with MonoObserver[A] {
 			private var isActive = true
 			private var maybeA: Maybe[A] = Maybe.empty
@@ -566,11 +586,11 @@ trait DoerTaskOpsPart { thisDoer: Doer & DoerCorePart =>
 			private var maybeSubscriptionB: Maybe[Subscription] = Maybe.empty
 
 			{ // Constructor
-				val subscriptionA = taskA.subscribeSync(this)
+				val subscriptionA = monoA.subscribeSync(this)
 
 				if isActive then {
 					if maybeA.isEmpty then maybeSubscriptionA = Maybe(subscriptionA)
-					val subscriptionB = taskB.subscribeSync(new MonoObserver[B] {
+					val subscriptionB = monoB.subscribeSync(new MonoObserver[B] {
 						override def onSuccess(b: B): Unit = {
 							if isActive then {
 								maybeSubscriptionB = Maybe.empty

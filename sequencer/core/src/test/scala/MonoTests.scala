@@ -179,6 +179,12 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 			def f2[A, B, C](a: A, b: B): C = throw expectedUnhandledExceptionParam
 
+			class T[A, B] extends MonoTransformer[A, B] {
+				override def mapSuccess(a: A): B = throw expectedUnhandledExceptionParam
+
+				override def mapError(e: Throwable): B = throw expectedUnhandledExceptionParam
+			} 
+			
 			val sTask = successfulTaskParam.asInstanceOf[Task[Int]]
 			val fTask = failingTaskParam.asInstanceOf[Task[Int]]
 
@@ -204,15 +210,15 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 				_ <- check("flatMap", sTask.flatMap(f1))
 				_ <- check("flatMapGuarded", sTask.flatMapGuarded(f1), true)
 
-				_ <- check("transform1", sTask.transform(f1))
-				_ <- check("transform2", fTask.transform(f1))
-				_ <- check("guarded.transform3", sTask.guarded.transform(f1), true)
-				_ <- check("guarded.transform4", fTask.guarded.transform(f1), true)
+				_ <- check("transform1", sTask.transform(new T))
+				_ <- check("transform2", fTask.transform(new T))
+				_ <- check("guarded.transform3", sTask.guarded.transform(new T), true)
+				_ <- check("guarded.transform4", fTask.guarded.transform(new T), true)
 
-				_ <- check("transformWith1", sTask.transformWith(f1))
-				_ <- check("transformWith2", fTask.transformWith(f1))
-				_ <- check("guarded.transformWith1", sTask.guarded.transformWith(f1), true)
-				_ <- check("guarded.transformWith2", fTask.guarded.transformWith(f1), true)
+				_ <- check("transformWith1", sTask.transformWith(new T))
+				_ <- check("transformWith2", fTask.transformWith(new T))
+				_ <- check("guarded.transformWith1", sTask.guarded.transformWith(new T), true)
+				_ <- check("guarded.transformWith2", fTask.guarded.transformWith(new T), true)
 
 				_ <- check("recover", fTask.recover(f1))
 				_ <- check("guarded.recover", fTask.guarded.recover(f1), true)
@@ -231,6 +237,12 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 			def check[R](opName: String, operatedTask: Task[R]): Future[Unit] = {
 				val promise = Promise[Unit]()
 				checkMonoObserverExceptionNotCaught(opName, operatedTask, thrownExceptionParam)(using promise)
+			}
+
+			class T[A, B] extends MonoTransformer[A, B] {
+				override def mapSuccess(a: A): B = throw thrownExceptionParam
+
+				override def mapError(e: Throwable): B = throw thrownExceptionParam
 			}
 
 			val t1 = task1Param.asInstanceOf[Task[Int]]
@@ -261,11 +273,11 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 				_ <- check("flatMap", t1.flatMap(_ => t2))
 				_ <- check("flatMapGuarded", t1.flatMapGuarded(_ => t2))
 
-				_ <- check("transform", t1.transform(identity))
-				_ <- check("guarded.transform", t1.guarded.transform(identity))
+				_ <- check("transform", t1.transform(new T))
+				_ <- check("guarded.transform", t1.guarded.transform(new T))
 
-				_ <- check("transformWith", t1.transformWith(_ => t2))
-				_ <- check("guarded.transformWith", t1.guarded.transformWith(_ => t2))
+				_ <- check("transformWith", t1.transformWith(new T))
+				_ <- check("guarded.transformWith", t1.guarded.transformWith(new T))
 
 				_ <- check("recover", t1.recover { _ => if randomBool then Maybe(randomInt) else Maybe.empty })
 				_ <- check("guarded.recover", t1.guarded.recover { _ => if randomBool then Maybe(randomInt) else Maybe.empty })
@@ -279,7 +291,7 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 	//// CAPTOR ////
 
 
-	test("Capturer: functional arguments passed to operations must be executed at most once") {
+	test("Capture: functional arguments passed to operations must be executed at most once") {
 		val generators = getGenerators
 		import generators.*
 
@@ -287,22 +299,22 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 			for {
 				successfulInteger <- smallIntGen
 				thrownException <- throwableArbitrary.arbitrary
-				successfulCapturer <- genSuccessfulCapturerFrom(successfulInteger)
-				failingCapturer <- genFailingCapturerFrom(thrownException).map(_.asInstanceOf[Capturer[Int]])
-			} yield (successfulInteger, thrownException, successfulCapturer, failingCapturer)
-		) { case (successfulInteger, thrownException, successfulCapturer, failingCapturer) =>
-			def checkOperation[Result](operationName: String)(buildSpiedCapturer: Runnable => Capturer[Result]): Future[Unit] = {
+				successfulCapture <- genSuccessfulCaptureFrom(successfulInteger)
+				failingCapture <- genFailingCaptureFrom(thrownException).map(_.asInstanceOf[Capture[Int]])
+			} yield (successfulInteger, thrownException, successfulCapture, failingCapture)
+		) { case (successfulInteger, thrownException, successCapture, failureCapture) =>
+			def checkOperation[Result](operationName: String)(buildSpiedCapture: Runnable => Capture[Result]): Future[Unit] = {
 				val promise = Promise[Unit]()
 
 				given Promise[Unit] = promise
 
 				doer.run {
 					val executionCounter = new AtomicInteger(0)
-					val spiedCapturer = buildSpiedCapturer(() => executionCounter.incrementAndGet())
+					val spiedCapture = buildSpiedCapture(() => executionCounter.incrementAndGet())
 
-					spiedCapturer.subscribe(false)(new MonoObserver[Result] {
+					spiedCapture.subscribe(false)(new MonoObserver[Result] {
 						override def onSuccess(firstResult: Result): Unit = {
-							spiedCapturer.subscribeSync(new MonoObserver[Result] {
+							spiedCapture.subscribeSync(new MonoObserver[Result] {
 								override def onSuccess(secondResult: Result): Unit = checkExecutionCount()
 
 								override def onError(secondException: Throwable): Unit = break(s"$operationName: second observer received unexpected error: $secondException")
@@ -310,7 +322,7 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 						}
 
 						override def onError(firstException: Throwable): Unit = {
-							spiedCapturer.subscribeSync(new MonoObserver[Result] {
+							spiedCapture.subscribeSync(new MonoObserver[Result] {
 								override def onSuccess(secondResult: Result): Unit = break(s"$operationName: second observer succeeded despite failure")
 
 								override def onError(secondException: Throwable): Unit = checkExecutionCount()
@@ -330,99 +342,125 @@ trait MonoTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 			for {
 				// Factory methods
-				_ <- checkOperation("Capturer_apply")(spy => Capturer_apply(() => {
+				_ <- checkOperation("Capture_apply")(spy => Capture_apply(() => {
 					spy.run();
 					successfulInteger
 				}))
-				_ <- checkOperation("Capturer_applyGuarded")(spy => Capturer_apply(() => {
+				_ <- checkOperation("Capture_applyGuarded")(spy => Capture_apply(() => {
 					spy.run();
 					successfulInteger
 				}, isGuarded = true))
-				_ <- checkOperation("Capturer_defer")(spy => Capturer_defer(() => {
+				_ <- checkOperation("Capture_defer")(spy => Capture_defer(() => {
 					spy.run();
-					successfulCapturer
+					successCapture
 				}))
-				_ <- checkOperation("Capturer_deferGuarded")(spy => Capturer_defer(() => {
+				_ <- checkOperation("Capture_deferGuarded")(spy => Capture_defer(() => {
 					spy.run();
-					successfulCapturer
+					successCapture
 				}, isGuarded = true))
-				_ <- checkOperation("Capturer_fromFutureBuilder")(spy => Capturer_from(() => {
+				_ <- checkOperation("Capture_fromFutureBuilder")(spy => Capture_from(() => {
 					spy.run();
 					Future.successful(successfulInteger)
 				}))
-				_ <- checkOperation("Capturer_fromForeign")(spy => Capturer_from(foreignDoer)(foreignDoer.Capturer_apply(() => {
+				_ <- checkOperation("Capture_fromForeign")(spy => Capture_from(foreignDoer)(foreignDoer.Capture_apply(() => {
 					spy.run();
 					successfulInteger
 				})))
 
-				// Operations on successful Capturer
-				_ <- checkOperation("successfulCapturer.andThen")(spy => successfulCapturer.andThen(successValue => spy.run(), failureCause => spy.run()))
-				_ <- checkOperation("successfulCapturer.withFilter")(spy => successfulCapturer.withFilter(integerValue => {
+				// Operations on successful Capture
+				_ <- checkOperation("successfulCapture.andThen")(spy => successCapture.andThen(successValue => spy.run(), failureCause => spy.run()))
+				_ <- checkOperation("successfulCapture.withFilter")(spy => successCapture.withFilter(integerValue => {
 					spy.run();
 					integerValue > 0
 				}))
-				_ <- checkOperation("successfulCapturer.withFilterGuarded")(spy => successfulCapturer.withFilterGuarded(integerValue => {
+				_ <- checkOperation("successfulCapture.withFilterGuarded")(spy => successCapture.withFilterGuarded(integerValue => {
 					spy.run();
 					integerValue > 0
 				}))
-				_ <- checkOperation("successfulCapturer.map")(spy => successfulCapturer.map(integerValue => {
+				_ <- checkOperation("successfulCapture.map")(spy => successCapture.map(integerValue => {
 					spy.run();
 					integerValue + 1
 				}))
-				_ <- checkOperation("successfulCapturer.mapGuarded")(spy => successfulCapturer.mapGuarded(integerValue => {
+				_ <- checkOperation("successfulCapture.mapGuarded")(spy => successCapture.mapGuarded(integerValue => {
 					spy.run();
 					integerValue + 1
 				}))
-				_ <- checkOperation("successfulCapturer.flatMap")(spy => successfulCapturer.flatMap(integerValue => {
+				_ <- checkOperation("successfulCapture.flatMap")(spy => successCapture.flatMap(integerValue => {
 					spy.run();
 					Keeper(integerValue + 1)
 				}))
-				_ <- checkOperation("successfulCapturer.flatMapGuarded")(spy => successfulCapturer.flatMapGuarded(integerValue => {
+				_ <- checkOperation("successfulCapture.flatMapGuarded")(spy => successCapture.flatMapGuarded(integerValue => {
 					spy.run();
 					Keeper(integerValue + 1)
 				}))
-				_ <- checkOperation("successfulCapturer.transform")(spy => successfulCapturer.transform(trialResult => {
-					spy.run();
-					trialResult
-				}))
-				_ <- checkOperation("successfulCapturer.transformWith")(spy => successfulCapturer.transformWith {
-					case Success(integerValue) => spy.run(); Keeper(integerValue + 1)
-					case Failure(failureCause) => spy.run(); Failed(failureCause)
-				})
-
-				// Guarded Capturer operations on successful Capturer
-				_ <- checkOperation("successfulCapturer.guarded.withFilter")(spy => successfulCapturer.guarded.withFilter(integerValue => {
-					spy.run();
-					integerValue > 0
-				}))
-				_ <- checkOperation("successfulCapturer.guarded.map")(spy => successfulCapturer.guarded.map(integerValue => {
-					spy.run();
-					integerValue + 1
-				}))
-				_ <- checkOperation("successfulCapturer.guarded.flatMap")(spy => successfulCapturer.guarded.flatMap(integerValue => {
-					spy.run();
-					Keeper(integerValue + 1)
-				}))
-
-				// Operations on failing Capturer
-				_ <- checkOperation("failingCapturer.andThen")(spy => failingCapturer.andThen(successValue => spy.run(), failureCause => spy.run()))
-				_ <- checkOperation("failingCapturer.transform")(spy => failingCapturer.transform(trialResult => {
-					spy.run();
-					trialResult
-				}))
-				_ <- checkOperation("failingCapturer.transformWith")(spy => failingCapturer.transformWith[Int] { tryInt =>
-					tryInt match {
-						case Success(integerValue) => spy.run(); Keeper(integerValue + 1)
-						case Failure(failureCause) => spy.run(); Failed(failureCause)
+				_ <- checkOperation("successfulCapture.transform")(spy => successCapture.transform(new MonoTransformer[Int, scala.util.Try[Int]] {
+					def mapSuccess(a: Int): Try[Int] = {
+						spy.run();
+						scala.util.Success(a)
 					}
-				})
-				_ <- checkOperation("failingCapturer.recover")(spy => failingCapturer.recover(failureCause => {
+
+					def mapError(e: Throwable): Try[Int] = {
+						spy.run();
+						scala.util.Failure(e)
+					}
+				}))
+				_ <- checkOperation("successfulCapture.transformWith")(spy => successCapture.transformWith(new MonoTransformer[Int, Capture[Int]] {
+					def mapSuccess(integerValue: Int): Capture[Int] = {
+						spy.run();
+						Keeper(integerValue + 1)
+					}
+
+					def mapError(failureCause: Throwable): Capture[Int] = {
+						spy.run();
+						Failed(failureCause)
+					}
+				}))
+
+				// Guarded Capture operations on successful Capture
+				_ <- checkOperation("successfulCapture.guarded.withFilter")(spy => successCapture.guarded.withFilter(integerValue => {
+					spy.run();
+					integerValue > 0
+				}))
+				_ <- checkOperation("successfulCapture.guarded.map")(spy => successCapture.guarded.map(integerValue => {
+					spy.run();
+					integerValue + 1
+				}))
+				_ <- checkOperation("successfulCapture.guarded.flatMap")(spy => successCapture.guarded.flatMap(integerValue => {
+					spy.run();
+					Keeper(integerValue + 1)
+				}))
+
+				// Operations on failing Capture
+				_ <- checkOperation("failingCapture.andThen")(spy => failureCapture.andThen(successValue => spy.run(), failureCause => spy.run()))
+				_ <- checkOperation("failingCapture.transform")(spy => failureCapture.transform(new MonoTransformer[Int, scala.util.Try[Int]] {
+					def mapSuccess(a: Int): Try[Int] = {
+						spy.run();
+						scala.util.Success(a)
+					}
+
+					def mapError(e: Throwable): Try[Int] = {
+						spy.run();
+						scala.util.Failure(e)
+					}
+				}))
+				_ <- checkOperation("failingCapture.transformWith")(spy => failureCapture.transformWith(new MonoTransformer[Int, Capture[Int]] {
+					def mapSuccess(integerValue: Int): Capture[Int] = {
+						spy.run();
+						Keeper(integerValue + 1)
+					}
+
+					def mapError(failureCause: Throwable): Capture[Int] = {
+						spy.run();
+						Failed(failureCause)
+					}
+				}))
+				_ <- checkOperation("failingCapture.recover")(spy => failureCapture.recover(failureCause => {
 					spy.run();
 					Maybe(successfulInteger)
 				}))
-				_ <- checkOperation("failingCapturer.recoverWith")(spy => failingCapturer.recoverWith(failureCause => {
+				_ <- checkOperation("failingCapture.recoverWith")(spy => failureCapture.recoverWith(failureCause => {
 					spy.run();
-					Maybe(successfulCapturer)
+					Maybe(successCapture)
 				}))
 
 				// Seized pending Captor

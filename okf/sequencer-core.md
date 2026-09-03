@@ -1,9 +1,9 @@
 ---
 type: "Component"
 title: "Sequencer Core Component"
-description: "Core execution model, Task hierarchy, and Captor (Captor) implementation details."
+description: "Core execution model, Task hierarchy, and Capture (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "flux", "testing"]
-timestamp: "2026-08-01T17:31:00Z"
+timestamp: "2026-09-01T23:10:00Z"
 ---
 
 # Sequencer Core Component
@@ -14,16 +14,16 @@ This component defines the single-threaded deterministic sequencing primitives u
 
 * `Observable` (future `Mono`): The base trait for all lazy computations.
 * `Task`: A task that executes lazily and can be subscribed to multiple times.
-* `Capturer` (future `Capturer`): A single-run task that caches its completed result.
-* `Captor` (future `Captor`): A latching task with an externally controllable completion hook (Promise-like).
+* `Capture`: A single-run task that caches its completed result.
+* `Captor`: A latching task with an externally controllable completion hook (Promise-like).
 
 ## Semantic Invariants
 
 * **Task Evaluation**: `Task` represents a lazy computation. Chained functional operands (e.g., functions passed to `map`, `flatMap`, `transformWith`) are evaluated **on every subscription**. Subscribing multiple times re-runs the entire
   pipeline and its side effects.
-* **Capturer Evaluation**: `Capturer` caches its outcome (success or failure) once resolved. Chained functional operands are evaluated **at most once**. Subsequent subscriptions instantly yield the cached result without re-evaluating the
+* **Capture Evaluation**: `Capture` caches its outcome (success or failure) once resolved. Chained functional operands are evaluated **at most once**. Subsequent subscriptions instantly yield the cached result without re-evaluating the
   transition functions or pipeline side effects.
-* **Subscription Lifetime**: For pipelines returning a `Capturer`, discarding/unsubscribing from upstream mid-flight is semantically not supported because latching tasks are designed to guarantee run-to-completion once triggered.
+* **Subscription Lifetime**: For pipelines returning a `Capture`, discarding/unsubscribing from upstream mid-flight is semantically not supported because latching tasks are designed to guarantee run-to-completion once triggered.
 
 ## Subscription & Muxing
 
@@ -33,7 +33,7 @@ This component defines the single-threaded deterministic sequencing primitives u
   compaction deferred until the outermost iteration exits.
 * **FIFO Subscription Order**: To guarantee that observers are notified in subscription order (FIFO), `addTarget` must not occupy an empty `maybeFirstTarget` if `maybeFollowingTargets` contains elements. Instead, it must append the new
   observer to the end of `maybeFollowingTargets`, allowing deferred compaction to promote the oldest active observer to `maybeFirstTarget` once the iteration exits.
-* **Inheritance Model & Encapsulation**: To avoid extra allocations, `DefaultCapturer` directly extends `Muxer[A, MonoObserver]` instead of containing it as a component. Because `Muxer` is invariant on `A`, `DefaultCapturer` bypasses
+* **Inheritance Model & Encapsulation**: To avoid extra allocations, `DefaultCapture` directly extends `Muxer[A, MonoObserver]` instead of containing it as a component. Because `Muxer` is invariant on `A`, `DefaultCapture` bypasses
   standard Scala variance limits using `@uncheckedVariance` on the parent type. This remains safe because all mutable and traversal methods on `Muxer` are `protected` or `private`, preventing type-unsafe operations from being exposed to
   external clients.
 
@@ -59,11 +59,11 @@ traits extend `Doer` with temporal operators. Exposing underlying timer configur
   Scheduled suppliers receive the `TimedSubscription` handle to allow cancellation and inspection from within the callback.
 * **Immediate Subscription Hooks**: Callers can inspect the underlying `Schedule` before the task or flux completes using `.andOnSubscription(schedule => Unit)` on a `TimedTask` or `TimedFlux`. This runs synchronously during `subscribeSync`
   right after the schedule is created, but before it can run.
-* **Split Semantics (Task vs. Capturer)**:
+* **Split Semantics (Task vs. Capture)**:
     * **Task (Lazy Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`, `retriedOnTimeout`) on a `Task` start their timers lazily when the task is **subscribed to**.
-    * **Capturer (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capturer` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety against
-      incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capturer` that preserves caching guarantees and resolves to completion
-      (either success or timeout) at most once. Periodic/retry operations are restricted from `Capturer` due to caching invariants.
+  * **Capture (Immediate/Hot Timer Start)**: Single-shot scheduling operations (`delayed`, `timeLimited`) on a `Capture` start their timers **immediately on operation call** (when the method is invoked). To ensure type safety against
+    incorrect periodic timer reuse, these operations accept a pre-built `Delay` instance (where `Delay <: Schedule` represents single-shot delays). They return a `Capture` that preserves caching guarantees and resolves to completion (either
+    success or timeout) at most once. Periodic/retry operations are restricted from `Capture` due to caching invariants.
 * **Two-Level Scheduling & Chronological Ordering**:
     * **Hierarchical Queue**: Scalable scheduling uses a two-level heap structure (a global min-heap of active doers, and a per-doer private min-heap of schedules). This limits global queue operations to $O (\log D)$ (where $D$ is the
       number of active doers) instead of $O (\log N)$ (total schedules), drastically reducing lock contention on `thisProvider`.
@@ -180,8 +180,8 @@ When configuring execution environments, select the `DoerProvider` implementatio
 
 ## Implementation Guidelines
 
-* **Zero-Allocation Pipelines**: Monadic combinators on `Capturer` are implemented using inline custom anonymous classes extending `Subscription` with `MonoObserver` (or `AbstractTask`) directly, bypassing intermediate wrapping steps.
-  Combinators returning a `Capturer` are implemented via lightweight anonymous subclasses extending `DefaultCaptor[B] with MonoObserver[A]`, leveraging `fulfillSync` and `breakSync` to handle state propagation with zero intermediate
+* **Zero-Allocation Pipelines**: Monadic combinators on `Capture` are implemented using inline custom anonymous classes extending `Subscription` with `MonoObserver` (or `AbstractTask`) directly, bypassing intermediate wrapping steps.
+  Combinators returning a `Capture` are implemented via lightweight anonymous subclasses extending `DefaultCapture[B] with MonoObserver[A]`, leveraging `captureSync` and `trapSync` to handle state propagation with zero intermediate
   allocations.
 * **Testing Exception Suppression**: When testing thread pool execution components (e.g., `CooperativeFlatPollingSchedulerDp`), unhandled exceptions thrown by asynchronous tasks terminate worker threads and propagate to the default uncaught
   exception handler (printing to stderr). To keep build logs clean, pass a custom `ThreadFactory` that intercepts the thread's uncaught exception handler to suppress simulated/expected test exceptions (such as `FaultyValue` and

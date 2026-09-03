@@ -53,7 +53,7 @@ object ExampleWithAskCapability {
 				}
 
 			}
-			.flatMap { user => user.stopCapturer.onBehalfOf(nexus.doer) }
+			.flatMap { user => user.stopCapture.onBehalfOf(nexus.doer) }
 			.triggerCallbacks(false)(
 				_ => manager.shutdown(),
 				error => throw new Exception(error)

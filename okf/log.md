@@ -3,8 +3,24 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-08-23T01:17:00Z"
+timestamp: "2026-08-29T20:07:00Z"
 ---
+
+## [2026-08-29T20:07:00Z]
+
+- Documented Configuration Change Response & Ballot Propagation Invariants in Section 9 of `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-29T16:50:00Z]
+
+- Documented the Universal Log Fusion & Obsolete Suffix Truncation Invariants across all consensus participant roles in Section 7 of `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-28T15:20:00Z]
+
+- Documented on-demand reactive election protocol, deterministic candidate ranking, ballot mechanics, the one-vote-per-ballot invariant, and leader promotion term-advancement dynamics in `okf/lazy-multi-raft-consensus.md`.
+
+## [2026-08-24T18:14:00Z]
+
+- Documented the architecture of the persistence split between the `Workspace` (dumb log SPI) and `Accessible` (Raft invariant enforcement) layers in `okf/lazy-multi-raft-consensus.md`.
 
 ## [2026-08-23T01:17:00Z]
 
@@ -316,3 +332,11 @@ timestamp: "2026-08-23T01:17:00Z"
 - Restructured and expanded Section 6 in `okf/lazy-multi-raft-consensus.md` to be fully self-contained, defining the Participant Role Lifecycle, Retirement Replication Driver Architecture, Quiescence Protocol, and Quiescence Preconditions.
 - Corrected the Quiescence Precondition specification in `okf/lazy-multi-raft-consensus.md` to clarify that retirement driver clearance is evaluated against the participant's own local registry (for drivers it initiated as leader to catch
   up excluded followers), not a remote leader registry.
+
+- **2026-08-26**: Added Electorate Validation Scope to Ghost Leader Reconfiguration Invariant in lazy-multi-raft-consensus.md.
+
+## [2026-09-01T23:10:00Z]
+
+- Updated component specifications in `okf/sequencer-core.md` to reflect the renaming of the memoized reactive trait `Capturer` (and `DefaultCapturer`) to `Capture` (and `DefaultCapture`), aligning architectural documentation with the
+  concept-noun to agent-noun taxonomy (`Capture` vs. `Captor` / `Keeper`).
+- Synchronized scheduling extension specifications in `okf/adr-scheduling-subscription-design.md` and reactive primitive evaluations in `okf/adr-spare-slot-pattern-evaluation.md` with the `Capture` nomenclature.

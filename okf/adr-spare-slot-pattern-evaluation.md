@@ -3,14 +3,14 @@ type: "Decision"
 title: "Evaluation of the Spare-Slot Pattern in Sequencer Primitives"
 description: "Architectural analysis of the spare-slot zero-allocation pattern evaluated in sandbox DoerSandbox2."
 tags: ["design-history", "sequencer", "performance", "task"]
-timestamp: "2026-07-22T17:45:00Z"
+timestamp: "2026-09-01T23:10:00Z"
 ---
 
 # Architectural Decision Record: Spare-Slot Pattern Evaluation
 
 ## Context
 
-In `sequencer/core` (evaluated inside [DoerSandbox2.scala](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/sandbox/DoerSandbox2.scala)), reactive computation primitives (`Task`, `Capturer`, `Flux`, `Tensor`) are used for
+In `sequencer/core` (evaluated inside [DoerSandbox2.scala](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/sandbox/DoerSandbox2.scala)), reactive computation primitives (`Task`, `Capture`, `Flux`, `Tensor`) are used for
 deterministic single-threaded sequencing.
 
 Standard reactive pipeline operators (such as `map`, `flatMap`, `scan`) allocate a new `Subscription` or `Observer` state object whenever a downstream consumer subscribes. Under high throughput, these short-lived allocations contribute to

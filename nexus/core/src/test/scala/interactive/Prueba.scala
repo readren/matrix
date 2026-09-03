@@ -251,7 +251,7 @@ object Prueba {
 					parent.doer.checkWithin()
 					for producerIndex <- 0 until NUMBER_OF_PRODUCERS do {
 
-						/** Creates a [[Doer.Capturer]] that builds a producer with operates as follows:
+						/** Creates a [[Doer.Capture]] that builds a producer with operates as follows:
 						 * - Sends a Consumable to each consumer and then again NUMBER_OF_MESSAGES_TO_CONSUMER_PER_PRODUCER times.
 						 * - The Consumables are sent one after the other without waiting any response.
 						 * */
@@ -315,7 +315,7 @@ object Prueba {
 							}
 						}
 
-						val buildsProducer: parent.doer.Capturer[Actant[?, ?]] =
+						val buildsProducer: parent.doer.Capture[Actant[?, ?]] =
 							if useInquisitiveProducer then buildsInquisitiveProducer
 							else buildsRegularProducer
 						buildsProducer.subscribeSyncCallbacks(
@@ -374,7 +374,7 @@ object Prueba {
 					}
 				}
 
-				parent.stopCapturer.subscribe(false) { _ =>
+				parent.stopCapture.subscribe(false) { _ =>
 					val consumption = ObjectCounterAgent.getApproximateObjectCount - memoryBefore
 
 					println(s"+++ Total number of non-negative numbers sent to children: ${counter.get()} +++")

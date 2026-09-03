@@ -27,11 +27,11 @@ object Borrame {
 		val dog = Dog("buaw")
 		val cat = Cat("miau")
 
-		val laDog: doer.Capturer[Animal] = doer.Captor[Dog]().capture(dog)
+		val laDog: doer.Capture[Animal] = doer.Captor[Dog]().capture(dog)
 
 		laDog.triggerCallbacks()(a => println(a), e => throw new Exception(e))
 
-		val laDogMutatedToCat: doer.Capturer[Cat] = laDog.map(_ => cat)
+		val laDogMutatedToCat: doer.Capture[Cat] = laDog.map(_ => cat)
 
 		laDogMutatedToCat.triggerCallbacks()(b => println(b), e => throw new Exception(e))
 
@@ -40,7 +40,7 @@ object Borrame {
 		captor.triggerCallbacks()(x => println(s"captor completed with $x"), e => throw new Exception(e))
 		captor.seizeWith(dOne)
 
-		val stateUpdater: Animal => Maybe[doer.Capturer[Animal]] = {
+		val stateUpdater: Animal => Maybe[doer.Capture[Animal]] = {
 				case Dog(ladrido) =>
 					//					Maybe.some(doer.Keeper(Dog(ladrido + " " + ladrido)))
 					if ladrido.length < 10 then Maybe(doer.Keeper(Dog(ladrido + " " + ladrido)))

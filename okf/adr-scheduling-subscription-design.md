@@ -3,7 +3,7 @@ type: "Decision"
 title: "Design of Scheduling and Timing Extensions"
 description: "Analysis of exposing Schedule instances and split semantics in Scheduling and Timing Extensions."
 tags: ["design-history", "sequencer", "scheduling"]
-timestamp: "2026-07-01T20:16:00Z"
+timestamp: "2026-09-01T23:10:00Z"
 ---
 
 # Design of Scheduling and Timing Extensions
@@ -63,9 +63,9 @@ It might seem tempting to define a global `ScheduleBase` trait for `Schedule` to
 2. **Loss of Strict Path Checking**: Using a global non-path-dependent `ScheduleBase` would weaken type safety. The compiler would no longer enforce that a schedule belongs to the specific `Doer` instance on which operations (like `cancel`
    or `isCanceled`) are being called. Relying on the path-dependent `Schedule` type member keeps these checks strong.
 
-## Target API: Split Extension Model (Task vs. Capturer)
+## Target API: Split Extension Model (Task vs. Capture)
 
-We define specific scheduling extension behaviors for both `Task` and `Capturer` to preserve their native lifecycle and evaluation semantics:
+We define specific scheduling extension behaviors for both `Task` and `Capture` to preserve their native lifecycle and evaluation semantics:
 
 ### 1. Reusable `Task` Semantics (Lazy Timer Start)
 
@@ -87,27 +87,27 @@ extension [A](thisTask: Task[A]) {
 }
 ```
 
-### 2. Caching `Capturer` Semantics (Immediate/Hot Timer Start)
+### 2. Caching `Capture` Semantics (Immediate/Hot Timer Start)
 
-For [Capturer](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/Doer.scala) (which represents a single-run caching computation), the timer starts **immediately on operation call** (when the method is called). Since a cached
+For [Capture](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/Doer.scala) (which represents a single-run caching computation), the timer starts **immediately on operation call** (when the method is called). Since a cached
 task completes at most once, periodic schedules are semantically invalid.
 
-To enforce this at compile time, we introduce a new abstract type member `Delay <: Schedule` representing single-shot delay timers. `newDelaySchedule` returns `Delay`, and `Capturer` operations accept `Delay` instead of the general
+To enforce this at compile time, we introduce a new abstract type member `Delay <: Schedule` representing single-shot delay timers. `newDelaySchedule` returns `Delay`, and `Capture` operations accept `Delay` instead of the general
 `Schedule` type:
 
 - `delayed`: Subscribes to the underlying latching task after a delay determined by the provided delay schedule.
 - `timeLimited`: Enforces a timeout determined by the provided delay schedule.
 
-These return `Capturer` and are defined via:
+These return `Capture` and are defined via:
 
 ```scala
-extension [A](thisLatchingTask: Capturer[A]) {
-  inline def delayed(schedule: Delay): Capturer[A] = ...
-  inline def timeLimited(timer: Delay): Capturer[Maybe[A]] = ...
+extension [A](thisCapture: Capture[A]) {
+  inline def delayed(schedule: Delay): Capture[A] = ...
+  inline def timeLimited(timer: Delay): Capture[Maybe[A]] = ...
 }
 ```
 
-They are backed by dedicated `LatchingTask_Delayed` and `LatchingTask_TimeLimited` classes extending `DefaultCaptor`.
+They are backed by dedicated `Capture_Delayed` and `Capture_TimeLimited` classes extending `Captor`.
 
 ### 3. Immediate Subscription Hooks
 

@@ -34,13 +34,13 @@ object Inquisitive {
 
 	extension [A <: Answer, Q <: Question[A], U >: A](receptor: Receptor[Q])
 		/**
-		 * Sends a question constructed by the provided `questionBuilder` to the specified [[Receptor]], and returns an instance of {{{ inquisitive.agent.doer.Capturer[A] }}} that will be completed when the corresponding answer is received.
+		 * Sends a question constructed by the provided `questionBuilder` to the specified [[Receptor]], and returns an instance of {{{ inquisitive.agent.doer.Capture[A] }}} that will be completed when the corresponding answer is received.
 		 *
 		 * @param questionBuilder A function that takes a unique [[QuestionId]] and builds a [[Question]] of type `Q`.
 		 * @param inquisitive The instance of [[Inquisitive]] responsible for managing the interaction. It is the interceptor
 		 * @return A subscriptable task of type `SubscriptableTask[A]`, representing the eventual answer to the question.
 		 */
-		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.Capturer[A] = {
+		def ask(questionBuilder: QuestionId => Q)(using inquisitive: Inquisitive[A, U]): inquisitive.agent.doer.Capture[A] = {
 			inquisitive.ask(receptor, questionBuilder)
 		}
 	
@@ -96,7 +96,7 @@ class Inquisitive[A <: Answer, U >: A](val agent: Actant[U, ?], unaskedAnswersBe
 	 * @tparam Q The type of the `Question`, constrained to match `A`.
 	 * @return A {{{ actant.doer.SubscriptableTask[A] }}} instance that will be completed when the answer is received.
 	 */
-	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.Capturer[A] = {
+	def ask[Q <: Question[A]](receptor: Receptor[Q], questionBuilder: Inquisitive.QuestionId => Q): agent.doer.Capture[A] = {
 		assert(agent.doer.isInSequence)
 		val captor = new agent.doer.Captor[A]
 		lastQuestionId += 1

@@ -340,34 +340,34 @@ trait SchedulingExtension extends SchedulingDoerFluxPart { thisDoer: Doer =>
 		}
 	}
 
-	//// Capturer extension methods ////
+	//// Capture extension methods ////
 
-	extension [A](thisCapturer: Capturer[A]) {
+	extension [A](thisCapture: Capture[A]) {
 
-		/** Returns a [[Capturer]] that subscribes to the up-chain [[Capturer]] after a delay determined by the provided [[Delay]]. */
+		/** Returns a [[Capture]] that subscribes to the up-chain [[Capture]] after a delay determined by the provided [[Delay]]. */
 		@targetName("delayedLatchingTask")
-		inline def delayed(delay: Delay): Capturer[A] = {
-			new Capturer_Delayed(thisCapturer, delay)
+		inline def delayed(delay: Delay): Capture[A] = {
+			new Capture_Delayed(thisCapture, delay)
 		}
 
 		/**
-		 * Returns a [[Capturer]] that waits for the up-chain [[Capturer]] to yield a result, but only for a limited time determined by the provided [[Delay]].
-		 * If the up-chain [[Capturer]] yields a result within the time limit, the returned [[Capturer]] yields that result wrapped in [[Maybe.some]].
-		 * If the time limit is exceeded, the up-chain [[Capturer]] is canceled and the returned [[Capturer]] yields [[Maybe.empty]] immediately.
+		 * Returns a [[Capture]] that waits for the up-chain [[Capture]] to yield a result, but only for a limited time determined by the provided [[Delay]].
+		 * If the up-chain [[Capture]] yields a result within the time limit, the returned [[Capture]] yields that result wrapped in [[Maybe.some]].
+		 * If the time limit is exceeded, the up-chain [[Capture]] is canceled and the returned [[Capture]] yields [[Maybe.empty]] immediately.
 		 */
-		inline def timeLimited(delay: Delay): Capturer[Maybe[A]] = {
-			new Capturer_TimeLimited[A](thisCapturer, delay)
+		inline def timeLimited(delay: Delay): Capture[Maybe[A]] = {
+			new Capture_TimeLimited[A](thisCapture, delay)
 		}
 	}
 
-	/** Builds a [[Capturer]] that schedules the execution of a supplier function after a specified delay.\
+	/** Builds a [[Capture]] that schedules the execution of a supplier function after a specified delay.\
 	 * The delay begins immediately when this method is called (hot/eager start).\
-	 * The supplier is executed once after the delay, and its result is what the returned [[Capturer]] yields.
+	 * The supplier is executed once after the delay, and its result is what the returned [[Capture]] yields.
 	 *
 	 * @param delay the schedule delay that determines when the supplier function will be executed.
 	 * @param supplier the function that produces a value of type [[A]] after the delay.
-	 * @return a [[Capturer]] that yields the supplier’s result. */
-	def Capturer_delay[A](delay: Delay)(supplier: Schedule => A): Capturer[A] = new Captor[A] with (Schedule => Unit) {
+	 * @return a [[Capture]] that yields the supplier’s result. */
+	def Capture_delay[A](delay: Delay)(supplier: Schedule => A): Capture[A] = new Captor[A] with (Schedule => Unit) {
 		schedule(delay)(this)
 
 		override def apply(schedule: Schedule): Unit = {
@@ -380,32 +380,32 @@ trait SchedulingExtension extends SchedulingDoerFluxPart { thisDoer: Doer =>
 		}
 	}
 
-	/** Builds a [[Capturer]] that waits for a specified delay before executing a [[Capturer]] builder and yielding the result of the produced [[Capturer]].\
+	/** Builds a [[Capture]] that waits for a specified delay before executing a [[Capture]] builder and yielding the result of the produced [[Capture]].\
 	 * The delay begins immediately when this method is called (hot/eager start).\
-	 * The builder is executed once after the delay, producing a [[Capturer]] whose result is yielded by the returned [[Capturer]].
+	 * The builder is executed once after the delay, producing a [[Capture]] whose result is yielded by the returned [[Capture]].
 	 *
-	 * @param delay the schedule delay that determines when the [[Capturer]] builder will be executed.
-	 * @param builder the function that produces a new [[Capturer[A]]] after the delay.
-	 * @return a [[Capturer]] that yields the result of the [[Capturer]] produced by the builder. */
-	def Capturer_delayFlat[A](delay: Delay)(builder: Schedule => Capturer[A]): Capturer[A] = new Captor[A] with (Schedule => Unit) {
+	 * @param delay the schedule delay that determines when the [[Capture]] builder will be executed.
+	 * @param builder the function that produces a new [[Capture[A]]] after the delay.
+	 * @return a [[Capture]] that yields the result of the [[Capture]] produced by the builder. */
+	def Capture_delayFlat[A](delay: Delay)(builder: Schedule => Capture[A]): Capture[A] = new Captor[A] with (Schedule => Unit) {
 		schedule(delay)(this)
 
 		override def apply(schedule: Schedule): Unit = {
-			val maybeCapturerA = try Maybe(builder(schedule)) catch {
+			val maybeCaptureA = try Maybe(builder(schedule)) catch {
 				case NonFatal(e) =>
 					trapSync(e)
 					Maybe.empty
 			}
-			maybeCapturerA.foreach(capturerA => seizeWithSync(capturerA))
+			maybeCaptureA.foreach(captureA => seizeWithSync(captureA))
 		}
 	}
 
-	//// Capturer operations implementation classes ////
+	//// Capture operations implementation classes ////
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Capturer_Delayed(trap: Nothing): Any = trap
+	private inline def Capture_Delayed(trap: Nothing): Any = trap
 
-	final class Capturer_Delayed[A](capturer: Capturer[A], delay: Delay) extends Captor[A], (Schedule => Unit), MonoObserver[A] {
+	final class Capture_Delayed[A](capture: Capture[A], delay: Delay) extends Captor[A], (Schedule => Unit), MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
@@ -415,7 +415,7 @@ trait SchedulingExtension extends SchedulingDoerFluxPart { thisDoer: Doer =>
 
 		override def apply(schedule: Schedule): Unit = {
 			if isActive then {
-				val upChainSubscription = capturer.subscribeSync(this)
+				val upChainSubscription = capture.subscribeSync(this)
 				if isActive then {
 					maybeUpChainSubscription = Maybe(upChainSubscription)
 				}
@@ -434,14 +434,14 @@ trait SchedulingExtension extends SchedulingDoerFluxPart { thisDoer: Doer =>
 	}
 
 	/** $suppressSyntheticCompanionObject */
-	private inline def Capturer_TimeLimited(trap: Nothing): Any = trap
+	private inline def Capture_TimeLimited(trap: Nothing): Any = trap
 
-	final class Capturer_TimeLimited[A](capturer: Capturer[A], delay: Delay) extends Captor[Maybe[A]], (Schedule => Unit), MonoObserver[A] {
+	final class Capture_TimeLimited[A](capture: Capture[A], delay: Delay) extends Captor[Maybe[A]], (Schedule => Unit), MonoObserver[A] {
 		private var isActive = true
 		private var maybeUpChainSubscription: Maybe[Subscription] = Maybe.empty
 
 		{ // Constructor
-			val upChainSubscription = capturer.subscribeSync(this)
+			val upChainSubscription = capture.subscribeSync(this)
 			if isActive then {
 				maybeUpChainSubscription = Maybe(upChainSubscription)
 				thisDoer.schedule(delay)(this)

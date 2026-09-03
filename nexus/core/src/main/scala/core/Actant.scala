@@ -31,7 +31,7 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 		initialChildBehaviorBuilder: Actant[V, CD] => Behavior[V]
 	)(
 		using isSignalTest: IsSignalTest[V]
-	): doer.Capturer[Actant[V, CD]]
+	): doer.Capture[Actant[V, CD]]
 
 	/** Calls must be within the [[doer]]. */
 	def children: MapView[Long, Actant[?, ?]]
@@ -46,14 +46,14 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 	 *
 	 * This method is thread-safe.
 	 * @return a [[Task]] that completes when this [[ActantCore]] is fully stopped. */
-	def stop(): doer.Capturer[Unit]
+	def stop(): doer.Capture[Unit]
 
 	/** A [[SubscriptableTask]] that completes when this [[ActantCore]] is fully stopped (after the [[StopReceived]] signal was handled and this [[ActantCore]] was removed from its progenitor's children list).
 	 *
 	 * This task is the same as the returned by the [[stop]] method.
 	 *
 	 * This method is thread-safe but some methods of the returned [[SubscriptableTask]] require being called within the [[doer]]. */
-	def stopCapturer: doer.Capturer[Unit]
+	def stopCapture: doer.Capture[Unit]
 
 	/** Registers this [[ActantCore]] to be notified with the specified signal when the given `watchedActant` is fully stopped.
 	 *
@@ -75,7 +75,7 @@ abstract class Actant[-U, +D <: Doer] extends Procreative {
 
 	/** Provides diagnostic information about the current instance.
 	 * The different nested [[ActantDiagnostic]] are build by different [[Doer]] instances so they may be inconsistent. */
-	def diagnose: doer.Capturer[ActantDiagnostic]
+	def diagnose: doer.Capture[ActantDiagnostic]
 
 	/** Provides diagnostic information about the current instance that may be stale due to cache visibility issues across processor cores. */
 	@deprecated

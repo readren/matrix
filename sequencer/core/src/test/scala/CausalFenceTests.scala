@@ -18,7 +18,7 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Capturer[Int]) =>
+		PropF.forAllNoShrinkF { (initial: Int, updater: Int => Capture[Int]) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -29,11 +29,11 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 				if repetition == 9 then promise.trySuccess(())
 				else {
 					updater(currentValue).triggerHardy(true) { expectedNextState =>
-						val advanceCapturer = fence.advance[Int] { previousValue =>
+						val advanceCapture = fence.advance[Int] { previousValue =>
 							if previousValue != currentValue then break(s"repetition #$repetition mismatch")
 							updater(previousValue)
 						}
-						advanceCapturer.triggerCallbacks(true)(
+						advanceCapture.triggerCallbacks(true)(
 							actualNextSuccessfulState => {
 								if expectedNextState.fold(_ => true, _ != actualNextSuccessfulState) then break(s"Expected: $expectedNextState, got: Success($actualNextSuccessfulState)")
 								else loop(actualNextSuccessfulState, repetition + 1)
@@ -58,7 +58,7 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 
 		PropF.forAllNoShrinkF(
 			smallIntGen,
-			Gen.function1[Int, Capturer[Int]](genSuccessfulCapturer[Int]())
+			Gen.function1[Int, Capture[Int]](genSuccessfulCapture[Int]())
 		) { (initial, updater) =>
 			val promise = Promise[Unit]()
 
@@ -119,7 +119,7 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 
-			def path(pathId: Int): Capturer[PrimaryState] = {
+			def path(pathId: Int): Capture[PrimaryState] = {
 				var hasAdvanced = false
 				for {
 					nextState <- {
@@ -139,27 +139,27 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 						}
 					}
 					anchoredState <- {
-						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
-						if hasAdvanced && nextState.pathId != pathId then break(s"A consumer subscribed to the Capturer returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capturer returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						val committedState = fence.committedState.getOrElse(break(s"The Capture returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
+						if hasAdvanced && nextState.pathId != pathId then break(s"A consumer subscribed to the Capture returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capture` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capture returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					recursiveState <- {
-						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
-						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						val committedState = fence.committedState.getOrElse(break(s"The Capture returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
+						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capture` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial < topSerial then path(pathId)
 						else fence.committed
 					}
 				} yield {
-					val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by `committed` yielded an unexpected failing state: ${fence.committedState}"))
+					val committedState = fence.committedState.getOrElse(break(s"The Capture returned by `committed` yielded an unexpected failing state: ${fence.committedState}"))
 					if recursiveState.serial != committedState.serial then break(s"followingState=$recursiveState, commited=${fence.committedState}")
 					recursiveState
 				}
 			}
 
-			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.Capturer_defer(() => path(n)) }
+			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => doer.Capture_defer(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
 			gate
@@ -181,7 +181,7 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 			val fence = CausalFence[PrimaryState, doer.type](doer)(initialState)
 			var derivedSerial: Int = 0
 
-			def path(pathId: Int): Capturer[PrimaryState] = {
+			def path(pathId: Int): Capture[PrimaryState] = {
 				for {
 					nextState <- {
 						fence.advance { (previous: PrimaryState) =>
@@ -196,27 +196,27 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 						}
 					}
 					anchoredState <- {
-						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
-						if nextState.pathId != pathId then break(s"A consumer subscribed to the Capturer returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
-						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
-						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capturer returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
+						val committedState = fence.committedState.getOrElse(break(s"The Capture returned by advanceIf yielded an unexpected failing state: ${fence.committedState}"))
+						if nextState.pathId != pathId then break(s"A consumer subscribed to the Capture returned by `advance` should see the state to which the advance transitioned to; and is not happening: pathId=$pathId, actual: ${nextState.pathId}")
+						else if derivedSerial > nextState.serial then break(s"Consumers subscribed immediately (in a synchronously coupled manner) to the `Capture` returned by `advance`, should be executed in order of subscription before any other consumer, even before the updaters passed to subsequent calls to advance; and is not happening.")
+						else if nextState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the Capture returned by `advance` should see the up-to-date state; and is not happening: current=$nextState, commited=$committedState")
 						else derivedSerial = nextState.serial
 						fence.causalAnchor()
 					}
 					recursiveState <- {
-						val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
-						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capturer` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
+						val committedState = fence.committedState.getOrElse(break(s"The Capture returned by causalAnchor yielded an unexpected failing state: ${fence.committedState}"))
+						if anchoredState.serial != committedState.serial then break(s"A consumer subscribed immediately (in a synchronously coupled manner) to the `Capture` returned by `causalAnchor` should see the the up-to-date state; and is not happening: current=$anchoredState, commited=${fence.committedState}")
 						if nextState.serial < topSerial then path(pathId)
 						else fence.committed
 					}
 				} yield {
-					val committedState = fence.committedState.getOrElse(break(s"The Capturer returned by `committed` yielded an unexpected failing state: ${fence.committedState}"))
+					val committedState = fence.committedState.getOrElse(break(s"The Capture returned by `committed` yielded an unexpected failing state: ${fence.committedState}"))
 					if recursiveState.serial != committedState.serial then break(s"followingState=$recursiveState, commited=${fence.committedState}")
 					recursiveState
 				}
 			}
 
-			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => Capturer_defer(() => path(n)) }
+			val swarm: Seq[Mono[PrimaryState]] = Seq.tabulate(swarmSize) { n => Capture_defer(() => path(n)) }
 			val checks = for array <- doer.Task_sequenceToArray(swarm) yield promise.trySuccess(())
 			checks.triggerAndForget()
 			gate
@@ -300,8 +300,8 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 						_ => doTheRollback()
 					)
 				}.subscribeSyncCallbacks(
-					actualFinalSuccessState => if actualFinalSuccessState != expectedInitialState then break("The `Capturer` returned by `advanceSpeculatively` yielded an unexpected value"),
-					_ => break("The `Capturer` returned by `advanceSpeculatively` received a sticking/failure state despite it shouldn't")
+					actualFinalSuccessState => if actualFinalSuccessState != expectedInitialState then break("The `Capture` returned by `advanceSpeculatively` yielded an unexpected value"),
+					_ => break("The `Capture` returned by `advanceSpeculatively` received a sticking/failure state despite it shouldn't")
 				)
 
 				fence.causalAnchor(new CompletionObserver[PrimaryState] {
@@ -312,16 +312,16 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 					override def onError(e: Throwable, originId: OriginId): Unit = break("The causal anchor`s CompletionObserver received a sticking/failure state despite it shouldn't")
 				}
 				).subscribeSyncCallbacks(
-					actualSuccessfulState => if actualSuccessfulState != expectedInitialState then break("The `Capturer` returned by `causalAnchor` yielded an unexpected value"),
-					_ => break("The `Capturer` returned by `causalAnchor` captured an error and it shouldn't")
+					actualSuccessfulState => if actualSuccessfulState != expectedInitialState then break("The `Capture` returned by `causalAnchor` yielded an unexpected value"),
+					_ => break("The `Capture` returned by `causalAnchor` captured an error and it shouldn't")
 				)
 
 				fence.committed.subscribeSyncCallbacks(
 					actualCommitted => {
-						if actualCommitted != expectedInitialState then break("The `Capturer` returned by `committed` captured an unexpected value")
+						if actualCommitted != expectedInitialState then break("The `Capture` returned by `committed` captured an unexpected value")
 						else promise.trySuccess(())
 					},
-					_ => break("The `Capturer` returned by `committed` captured an error and it shouldn't")
+					_ => break("The `Capture` returned by `committed` captured an error and it shouldn't")
 				)
 			}
 			gate
@@ -391,7 +391,7 @@ trait CausalFenceTests[D <: Doer : ClassTag] { self: DoerProviderTestBase[D] =>
 								_ => doTheRollback()
 							)
 						}.triggerHardy(true) { actualFinalState =>
-							if actualFinalState !=== expectedFinalState then break(s"The `Capturer` returned by `advanceSpeculatively` received an unexpected state")
+							if actualFinalState !=== expectedFinalState then break(s"The `Capture` returned by `advanceSpeculatively` received an unexpected state")
 
 							fence.causalAnchor(new CompletionObserver[PrimaryState] {
 								override def onSuccess(actualFinalSuccessState: PrimaryState, originId: OriginId): Unit = {

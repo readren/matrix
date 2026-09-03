@@ -10,6 +10,14 @@ This file provides guidance to Antigravity when working in this repository.
 ## Communication Constraints
 - Use standard, formal English. Avoid using idioms, slang, or regionalisms.
 
+## Instructions for All Prompts
+
+When you answer or react to any user prompt, you must always follow these three steps:
+
+- Grammar Correction: If the user's prompt has spelling or grammar mistakes, immediately show a fixed version in English highlighting the corrections.
+- Clarity Improvement: If the prompt is confusing, ambiguos, or unclear; immediately rewrite the prompt to be clear and direct replacing any confusing or ambiguous parts, and explain the difference.
+- Then, *after* printing the two items above, process the improved prompt.
+
 ## Build, test, and development commands
 
 ## Hard Constraints

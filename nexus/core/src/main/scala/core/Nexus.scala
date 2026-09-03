@@ -32,8 +32,8 @@ abstract class Nexus(val name: String) extends Procreative { thisNexus =>
 		initialBehaviorBuilder: Actant[U, CD] => Behavior[U]
 	)(
 		using isSignalTest: IsSignalTest[U]
-	): doer.Capturer[Actant[U, CD]] = {
-		doer.Capturer_defer { () =>
+	): doer.Capture[Actant[U, CD]] = {
+		doer.Capture_defer { () =>
 			spawner.createsActant[U, CD](childFactory, childDoer, isSignalTest, initialBehaviorBuilder)
 		}
 	}

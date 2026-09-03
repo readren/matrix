@@ -78,6 +78,12 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		new Local
 	}
 
+	trait MonoTransformer[-A, +B] {
+		def mapSuccess(a: A): B
+
+		def mapError(e: Throwable): B
+	}
+
 	/** A single result computation with observable result. */
 	trait Mono[+A] { thisMono =>
 		/** Subscribes an [[Observer]] to the result of this [[Mono]] and returns a [[Subscription]] that can be used to cancel.
@@ -242,11 +248,10 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
 
-		// TODO Add an overload with a signature that avoid wrapping with Try.
-		def transform[B](f: Try[A] => Try[B]): Mono[B]
+		def transform[B](transformer: MonoTransformer[A, Try[B]]): Mono[B]
 
-		def transformWith[B](f: Try[A] => Mono[B]): Mono[B]
-
+		def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Mono[B]
+		
 		def recover[B >: A](pf: Throwable => Maybe[B]): Mono[B]
 
 		def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B]
@@ -295,9 +300,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B]
 
-		def transform[B](f: Try[A] => Try[B]): Mono[B]
+		def transform[B](transformer: MonoTransformer[A, Try[B]]): Mono[B]
 
-		def transformWith[B](f: Try[A] => Mono[B]): Mono[B]
+		def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Mono[B]
 	}
 
 	/////////////// TASK ///////////////
@@ -310,8 +315,8 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 * For example, if the [[Task.subscribeSyncCallbacks]] implementation closes over mutable variables (either directly or through any of the function operands that its factory or the operations used to construct it receives) from the environment that affects its execution result, then the equality of two supposedly equivalent expressions like {{{task.flatMap(f).flatMap(g) == task.flatMap(a => f(a).flatMap(g))}}} could be compromised. This would depend on the timing of when the variables are mutated — specifically when the mutations occur between the start and end of the task's execution.\
 	 * This does not mean that [[Task.subscribeSyncCallbacks]] implementations must avoid closing over mutable variables altogether. Rather, it highlights that if strict adherence to monadic laws is required by your business logic, you should ensure that the mutable variable is not modified during the execution of the involved [[Task]] instances.\
 	 * If the goal is just deterministic behavior, it's sufficient that any closed-over mutable variable is only mutated and accessed by actions executed sequentially in a determined order. This is why the contract enforces serialized execution of actions in the order at which the actions were triggered: to maintain determinism, even when closing over mutable variables, provided they are mutated and accessed solely within the actions in said ordered sequence and those actions are deterministic.\
-	 * If you require to ensure monadic laws are followed, use [[Capturer]] instead.\
-	 * Design note: [[Task]] and [[Capturer]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Capturer]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
+	 * If you require to ensure monadic laws are followed, use [[Capture]] instead.\
+	 * Design note: [[Task]] and [[Capture]] are defined as inner traits of [[Doer]] to leverage Scala's path-dependent type checking. This avoids that [[Task]]/[[Capture]] instances that belong to different [[Doer]] instances to be inadvertently composed together without the adapters needed to ensure sequential execution of the component actions.\
 	 * While path-dependent type checking is valuable for enforcing this contract, it has a drawback: the compiler's type-path checks are overly strict, requiring compatible singleton types for references, whereas we only need to verify that the [[Task]] instances correspond to the same [[Doer]].\
 	 * As a result, the compiler may flag type errors in cases where the contract is not violated, which is undesirable.\
 	 * To bypass these path-dependent restrictions when composing tasks across Doer boundaries (or when types cannot be fully proven stable by the compiler), see the trigger implementations in the macro definition, which projects types using the general projected type `Doer#Task`.\
@@ -356,7 +361,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		override def recover[B >: A](pf: Throwable => Maybe[B]): Task[B] = new Task_Recover(thisTask, pf, false)
 
-		override def transform[B](f: Try[A] => Try[B]): Task[B] = new Task_Transform(thisTask, f, false)
+		override def transform[B](transformer: MonoTransformer[A, Try[B]]): Task[B] = new Task_Transform(thisTask, transformer, false)
 
 		/**
 		 * Creates a new [[Task]] that yields the result of executing an intermediate [[Mono]] produced by applying the provided function to the final of this [[Task]].
@@ -375,7 +380,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Task[B] = new Task_RecoverWith(thisTask, pf, false)
 
-		override def transformWith[B](f: Try[A] => Mono[B]): Task[B] = new Task_TransformWith(thisTask, f, false)
+		override def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Task[B] = new Task_TransformWith(thisTask, transformer, false)
 
 		override def toFuture(isWithinDoSerEx: Boolean = isInSequence): Future[A] = {
 			val promise = Promise[A]()
@@ -433,9 +438,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Task[B] = new Task_RecoverWith(underlying, pf, true)
 
-		def transform[B](f: Try[A] => Try[B]): Task[B] = new Task_Transform(underlying, f, true)
+		def transform[B](transformer: MonoTransformer[A, Try[B]]): Task[B] = new Task_Transform(underlying, transformer, true)
 
-		def transformWith[B](f: Try[A] => Mono[B]): Task[B] = new Task_TransformWith(underlying, f, true)
+		def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Task[B] = new Task_TransformWith(underlying, transformer, true)
 	}
 
 	//// Task's factory methods ////
@@ -480,22 +485,26 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 */
 	inline def Task_apply[A](supplier: () => A, isGuarded: Boolean = false): Task[A] = if isGuarded then new Task_ApplyGuarded(supplier) else new Task_Apply(supplier)
 
-	/** Creates a [[Task]] that lazily executes the provided [[Task]] supplier and yields whatever the produced [[Task]] yields.
+	/** Creates a [[Task]] that lazily executes the provided [[Mono]] supplier and yields whatever the produced [[Mono]] yields.
 	 * Is equivalent to: {{{Task_apply(supplier).flatMap(identity)}}} but slightly more efficient
 	 * ===Detailed behavior===
 	 * Creates a task that, when executed:
 	 *		- evaluates the `supplier` within the $DoSerEx;
-	 *		- then triggers an execution of the returned Task;
+	 *		- then triggers an execution of the returned [[Mono]];
 	 *		- finally completes with the result of executed task.
 	 *
 	 * $$threadSafe
 	 *
-	 * @param supplier the supplier of the task whose execution will give the result. $isExecutedByDoSerEx $notGuarded
-	 * @return the task described in the method description.
-	 */
-	inline def Task_defers[A](supplier: () => Task[A], isGuarded: Boolean = false): Task[A] = if isGuarded then new Task_DefersGuarded(supplier) else new Task_Defers(supplier)
+	 * @param supplier the supplier of the [[Mono]] whose execution will give the result. $isExecutedByDoSerEx $notGuarded
+	 * @return the task described in the method description. */
+	inline def Task_defers[A](supplier: () => Mono[A], isGuarded: Boolean = false): Task[A] = if isGuarded then new Task_DefersGuarded(supplier) else new Task_Defers(supplier)
 
-	/** Creates a [[Task]] that wraps a [[Mono]]. */
+	/** Adapts a [[Mono]] belonging to this [[Doer]] into a [[Task]].\
+	 * If `mono` is already a [[Task]], it is returned directly without wrapping overhead, preserving its lazy, re-executable behavior.\
+	 * If `mono` is a [[Capture]], the returned [[Task]] yields its single, memoized result whenever executed.\
+	 * $threadSafe
+	 * @param mono the [[Mono]] belonging to this [[Doer]] to adapt into a [[Task]].
+	 * @return a [[Task]] representing the computation of `mono`. */
 	def Task_from[A](mono: Mono[A]): Task[A] = {
 		mono match {
 			case task: Task[A] @unchecked => task
@@ -503,13 +512,17 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	/** Creates a [[Task]] that synchronously wraps a [[Mono]] of another [[Doer]]. Its result will be yielded by the returned [[Task]] in sequence with this [[Doer]].
-	 * Useful to delegate work to another [[Doer]] and access its result safely.
+	/** Adapts a [[Mono]] belonging to another [[Doer]] into a [[Task]] sequenced on this [[Doer]].\
+	 * When the returned [[Task]] is executed, subscription is dispatched sequentially to `foreignDoer`.\
+	 * If `foreignMono` is a [[Task]], each execution of the returned [[Task]] triggers a new execution on `foreignDoer`.\
+	 * If `foreignMono` is a [[Capture]], executions of the returned [[Task]] observe its single, memoized outcome.\
+	 * When `foreignMono` completes (success or failure), its result is dispatched back into this [[Doer]]'s sequential timeline.\
+	 * If unsubscription occurs on this [[Doer]], the unsubscription request is dispatched sequentially to `foreignDoer`.\
+	 * If `foreignDoer` is identical to this [[Doer]], the mono is adapted directly without foreign bridging overhead.\
 	 * $threadSafe
-	 *
-	 * @param foreignDoer the [[Doer]] to whom the `foreignMono` belongs.
-	 * @param foreignMono the [[Mono]] to subscribed to whenever the returned [[Task]] is executed.
-	 * @return a [[Task]] that yields what the `foreignMono` yields to subscribers, but the result is yielded in sequence with this [[Doer]]. */
+	 * @param foreignDoer the [[Doer]] that owns `foreignMono`.
+	 * @param foreignMono the [[Mono]] to subscribe to when the returned [[Task]] is executed.
+	 * @return a [[Task]] that yields the outcome of `foreignMono` within this [[Doer]]'s sequential timeline. */
 	def Task_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Mono[A]): Task[A] = {
 		if foreignDoer ne thisDoer then new Task_FromForeign[A](foreignDoer, foreignMono)
 		else foreignMono match {
@@ -518,55 +531,51 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	/** Create a [[Task]] whose result will be the result of the provided [[Future]] when it completes.\
-	 * Useful to access the result of a process that was already started in an alien executor as if it were executed sequentially.\
+	/** Adapts an existing, eagerly executing [[Future]] into a [[Task]] sequenced on this [[Doer]].\
+	 * Because `future` is already running or completed, all executions of the returned [[Task]] await and observe the same single outcome rather than restarting the operation.\
+	 * When `future` completes (success or failure), its result is dispatched back into this [[Doer]]'s sequential timeline.\
 	 * $threadSafe
-	 * @param future the future to wait for.
-	 * @return the [[Task]] described in the method description. */
+	 * @param future the [[Future]] whose completion will be awaited.
+	 * @return a [[Task]] that yields the outcome of `future` within this [[Doer]]'s sequential timeline. */
 	inline final def Task_from[A](future: Future[A]): Task[A] = new Task_FromFuture(future)
 
-	/** Creates a [[Task]] whose result will be the result of the [[Future]] returned by the provided supplier.\
-	 * Useful to start a process in an alien executor and access its result as if it were executed sequentially.\
-	 * The alien executor may be the $DoSerEx of this [[Doer]].\
+	/** Creates a lazy [[Task]] that invokes `supplier` upon each execution to start a new [[Future]].\
+	 * Each execution of the returned [[Task]] evaluates `supplier` to trigger a fresh asynchronous computation.\
+	 * When the produced [[Future]] completes (success or failure), its result is dispatched back into this [[Doer]]'s sequential timeline.\
 	 * $threadSafe
-	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx
-	 * @param isGuarded determines whether non-fatal exceptions thrown by `supplier` are propagated to the result (true) or are left unhandled (false).
-	 * @return the [[Task]] described in the method description. */
+	 * @param supplier a function evaluated within this [[Doer]]'s sequential timeline that starts an asynchronous process and returns its [[Future]]. $isExecutedByDoSerEx
+	 * @param isGuarded determines whether non-fatal exceptions thrown by `supplier` are captured as task failures (`true`) or left unhandled (`false`).
+	 * @return a [[Task]] that evaluates `supplier` and yields the outcome of the resulting [[Future]] within this [[Doer]]'s sequential timeline. */
 	inline final def Task_from[A](supplier: () => Future[A], isGuarded: Boolean = false): Task[A] = new Task_FromFutureSupplier(supplier, isGuarded)
 
 
-	/**
-	 * Creates a [[Task]] that yields the result of applying the bifunction `f` to what the provided duties yield.
-	 * When executed, simultaneously triggers and execution of each task and returns their results combined by the provided function.
-	 * Given the serial-execution nature of [[Doer]] this operation only has sense when the provided [[Task]]s involves foreign ([[Task_from]]) or alien ([[Task_from]]) actions.
-	 * ===Detailed behavior===
-	 * Creates a new [[Task]] that, when executed:
-	 *		- triggers an execution for both: `taskA` and `taskB`
-	 *		- when both are completed, completes with the value that results of applying the function `f` to their results.
-	 *
+	/** Creates a [[Task]] that subscribes to two [[Mono]] instances and combines their results using a bifunction.\
+	 * When the returned [[Task]] is executed, subscriptions to `monoA` and `monoB` are initiated.\
+	 * Given the serial execution nature of [[Doer]], concurrency between the monos only occurs if one or both involve foreign or alien actions (such as [[Task_from]]).\
+	 * If either mono fails, the overall [[Task]] immediately fails with that error and cancels the remaining active peer mono.\
+	 * When both monos succeed, `f` is evaluated within this [[Doer]]'s sequential timeline to produce the final result.\
 	 * $threadSafe
-	 *
-	 * @param taskA a [[Task]]
-	 * @param taskB a [[Task]]
-	 * @param f the function that combines the results of the two [[Task]] instances. $isExecutedByDoSerEx
-	 * @return the [[Task]] described in the method description.
-	 */
-	inline def Task_combine[A, B, C](taskA: Task[A], taskB: Task[B], isGuarded: Boolean = false)(f: (A, B) => C): Task[C] = new Task_Combined(taskA, taskB, f, isGuarded)
+	 * @param monoA the first [[Mono]] to combine.
+	 * @param monoB the second [[Mono]] to combine.
+	 * @param isGuarded determines whether non-fatal exceptions thrown by `f` are captured as task failures (`true`) or left unhandled (`false`).
+	 * @param f the function that combines the successful outcomes of `monoA` and `monoB`. $isExecutedByDoSerEx
+	 * @return a [[Task]] that yields the combined result of `monoA` and `monoB`. */
+	inline def Task_combine[A, B, C](monoA: Mono[A], monoB: Mono[B], isGuarded: Boolean = false)(f: (A, B) => C): Task[C] = new Task_Combined(monoA, monoB, f, isGuarded)
 
-	/**
-	 * Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]]s in the received iterable, and completes with a collection containing their results in the same order.
-	 * This overload accepts any [[Iterable]] and is more efficient than the other (above). Especially for large iterables.
+	/** Creates a [[Task]] that subscribes to each [[Mono]] in the provided [[Iterable]] and yields a target collection containing their results in the original input order.\
+	 * When the returned [[Task]] is executed, subscriptions to all elements in `monos` are initiated.\
+	 * Given the serial execution nature of [[Doer]], concurrency only occurs among monos involving foreign or alien actions (such as [[Task_from]]).\
+	 * If any mono fails, the overall [[Task]] immediately fails with that error and cancels all active subscriptions.\
+	 * If `monos` is empty, the task completes immediately with an empty collection.\
 	 * $threadSafe
-	 *
-	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @param duties the `Iterable` of duties that the returned [[Task]] will trigger simultaneously to combine their results.
-	 * @tparam A the result type of all the duties
-	 * @tparam C the higher-kinded type of the `Iterable` of duties.
-	 * @tparam To the type of the `Iterable` that will contain the results.
-	 * @return the task described in the method description.
-	 * */
-	def Task_sequence[A: ClassTag, C[x] <: Iterable[x], To[_]](factory: IterableFactory[To], duties: C[Task[A]]): Task[To[A]] = {
-		Task_sequenceToArray(duties).map { array =>
+	 * @param factory the [[IterableFactory]] used to build the target collection.
+	 * @param monos the [[Iterable]] of [[Mono]] instances to sequence.
+	 * @tparam A the result type of each [[Mono]].
+	 * @tparam C the higher-kinded type of the input collection.
+	 * @tparam To the higher-kinded type of the resulting collection.
+	 * @return a [[Task]] that yields a collection containing the successful results of all monos in the original input order. */
+	def Task_sequence[A: ClassTag, C[x] <: Iterable[x], To[_]](factory: IterableFactory[To], monos: C[Mono[A]]): Task[To[A]] = {
+		Task_sequenceToArray(monos).map { array =>
 			val builder = factory.newBuilder[A]
 			var index = 0
 			while index < array.length do {
@@ -577,20 +586,28 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	/** Like [[Task_sequence]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
+	/** Like [[Task_sequence]], but returns an [[Array]] directly without [[IterableFactory]] conversion overhead.\
+	 * $threadSafe
+	 * @param monos the [[Iterable]] of [[Mono]] instances to sequence.
+	 * @tparam A the result type of each [[Mono]].
+	 * @tparam C the higher-kinded type of the input collection.
+	 * @return a [[Task]] yielding an [[Array]] with the results of all monos in the original input order. */
 	inline def Task_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]]): Task[Array[A]] = new Task_Sequence[A, C](monos)
 
-	/** Creates a [[Task]] that, when executed, simultaneously triggers an execution for each [[Task]] in the received [[Iterable]], and completes with an [[Iterable]] containing their results, successful or not, wrapped with [[Try]], in the same order.\
-	 * The result, if any, is always successful.
-	 * $threadSafe \
-	 * @param tasks the [[Iterable]] of [[Task]]s that the returned [[Task]] will trigger simultaneously to combine their results.
-	 * @param factory the [[IterableFactory]] needed to build the [[Iterable]] that will contain the results. Note that most [[Iterable]] implementations' companion objects are an [[IterableFactory]].
-	 * @tparam A the result type of all the provided [[Task]]s.
-	 * @tparam C the higher-kinded type of the [[Iterable]] of [[Task]]s.
-	 * @tparam To the higher-kinded type of the [[Iterable]] that will contain the results.
-	 * @return the successful task described in the method description. */
-	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], tasks: C[Task[A]]): Task[To[Try[A]]] = {
-		Task_sequenceHardyToArray(tasks).map { array =>
+	/** Creates a [[Task]] that subscribes to each [[Mono]] in the provided [[Iterable]] and yields a target collection containing their [[Try]] outcomes in the original input order.\
+	 * The returned [[Task]] always completes successfully once every mono finishes, capturing individual failures into [[scala.util.Failure]] without aborting.\
+	 * When the returned [[Task]] is executed, subscriptions to all elements in `monos` are initiated.\
+	 * Given the serial execution nature of [[Doer]], concurrency only occurs among monos involving foreign or alien actions (such as [[Task_from]]).\
+	 * If `monos` is empty, the task completes immediately with an empty collection.\
+	 * $threadSafe
+	 * @param factory the [[IterableFactory]] used to build the target collection.
+	 * @param monos the [[Iterable]] of [[Mono]] instances to sequence.
+	 * @tparam A the value type of each [[Mono]].
+	 * @tparam C the higher-kinded type of the input collection.
+	 * @tparam To the higher-kinded type of the resulting collection.
+	 * @return a [[Task]] that yields a collection of [[Try]] outcomes for all monos in the original input order. */
+	def Task_sequenceHardy[A: ClassTag, C[x] <: Iterable[x], To[x] <: Iterable[x]](factory: IterableFactory[To], monos: C[Mono[A]]): Task[To[Try[A]]] = {
+		Task_sequenceHardyToArray(monos).map { array =>
 			val builder = factory.newBuilder[Try[A]]
 			var index = 0
 			while index < array.length do {
@@ -601,26 +618,31 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	/** Like [[Task_sequenceHardy]] but the resulting collection's higher-kinded type `To` is fixed to [[Array]]. */
-	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](ventures: C[Mono[A]]): Task[Array[Try[A]]] =
-		new Task_SequenceHardyToArray[A, C](ventures)
+	/** Like [[Task_sequenceHardy]], but returns an [[Array]] directly without [[IterableFactory]] conversion overhead.\
+	 * $threadSafe
+	 * @param monos the [[Iterable]] of [[Mono]] instances to sequence.
+	 * @tparam A the value type of each [[Mono]].
+	 * @tparam C the higher-kinded type of the input collection.
+	 * @return a [[Task]] yielding an [[Array]] of [[Try]] outcomes for all monos in the original input order. */
+	inline def Task_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]]): Task[Array[Try[A]]] =
+		new Task_SequenceHardyToArray[A, C](monos)
 
 
-	////////////// Capturer ///////////////
+	////////////// Capture ///////////////
 
-	/** A [[Mono]] whose completion is externally controlled and, upon completion, exposes the same result to all present and future subscribers.\
-	 * Useful to capture the result of a computation that already started.\
-	 * Once completed, subscribing a consumer executes the call-back immediately. Note that linking a down-chain subscribes the first link as consumer.
-	 * The monadic laws are always upheld. Before completion, they can’t be observed because no result exists yet; after completion, they can be observed in the cached result.\
-	 * Allows dynamic subscription and unsubscription. */
-	sealed abstract class Capturer[+A] extends Mono[A] {
+	/** A [[Mono]] that memoizes a single computation outcome and shares it with all present and future subscribers.\
+	 * If the outcome is already resolved, new subscribers are notified synchronously upon subscription.\
+	 * If the outcome is still pending, subscribers are queued and notified in sequence when resolution occurs.\
+	 * Unlike lazy [[Task]] instances, [[Capture]] caches its final outcome, ensuring that derived monadic operations strictly uphold monadic laws.\
+	 * Allows dynamic subscription and unsubscription prior to completion. */
+	sealed abstract class Capture[+A] extends Mono[A] {
 
 		inline def asMono: Mono[A] = this
 
-		/** Subscribes a consumer of the captured value.\
+		/** Subscribes a [[MonoObserver]] of the captured value.\
 		 * The subscription is automatically removed after a value was captured and the received consumer is executed.\
 		 * If a value was already captured when this method is called, the provided consumer is invoked synchronously and no subscription occurs.\
-		 * Otherwise, the provided consumer is schedule to run upon the capture occurs in subscription orden (after sequentially running all the previously subscribed captured value consumers).\
+		 * Otherwise, the provided [[MonoObserver]] is scheduled to run when the capture occurs in subscription order (after sequentially running all the previously subscribed captured value consumers).\
 		 * @note CAUTION: This method does not prevent duplicate subscriptions.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription
@@ -629,120 +651,120 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		def maybeResult: Trial[A]
 
-		/** @return true if this the target computation completed, successfully or not.
+		/** @return true if the target computation completed, successfully or not.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		inline def isCompleted: Boolean = maybeResult.isDefined
 
-		/** @return true if this [[Capturer]] is still pending; or false if it was completed.
+		/** @return true if this [[Capture]] is still pending; or false if it was completed.
 		 * @note CAUTION: Must be called within the $DoSerEx */
 		inline def isPending: Boolean = maybeResult.isEmpty
 
-		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit): Capturer[A] = {
+		override def andThen(onSuccess: A => Unit, onError: Throwable => Unit): Capture[A] = {
 			triggerSyncCallbacks(onSuccess, onError)
 			this
 		}
 
-		override def andThen(monoObserver: MonoObserver[A]): Capturer[A] = {
+		override def andThen(monoObserver: MonoObserver[A]): Capture[A] = {
 			triggerSync(monoObserver)
 			this
 		}
 
-		override def reconcile: Capturer[Try[A]]
+		override def reconcile: Capture[Try[A]]
 
-		override def withFilter(predicate: A => Boolean): Capturer[A]
+		override def withFilter(predicate: A => Boolean): Capture[A]
 
-		override def withFilterGuarded(predicate: A => Boolean): Capturer[A]
+		override def withFilterGuarded(predicate: A => Boolean): Capture[A]
 
-		override def map[B](f: A => B): Capturer[B]
+		override def map[B](f: A => B): Capture[B]
 
-		override def mapGuarded[B](f: A => B): Capturer[B]
+		override def mapGuarded[B](f: A => B): Capture[B]
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B]
 
 		@targetName("flatMapTask")
 		def flatMap[B](f: A => Task[B]): Task[B]
 
-		@targetName("flatMapCapturer")
-		def flatMap[B](f: A => Capturer[B]): Capturer[B]
+		@targetName("flatMapCapture")
+		def flatMap[B](f: A => Capture[B]): Capture[B]
 
 		override def flatMapGuarded[B](f: A => Mono[B]): Mono[B]
 
 		@targetName("flatMapGuardedTask")
 		def flatMapGuarded[B](f: A => Task[B]): Task[B]
 
-		@targetName("flatMapGuardedCapturer")
-		def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B]
+		@targetName("flatMapGuardedCapture")
+		def flatMapGuarded[B](f: A => Capture[B]): Capture[B]
 
-		override def transform[B](f: Try[A] => Try[B]): Capturer[B]
+		override def transform[B](transformer: MonoTransformer[A, Try[B]]): Capture[B]
 
-		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B]
+		override def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Mono[B]
 
-		@targetName("transformWithCapturer")
-		def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B]
+		@targetName("transformWithCapture")
+		def transformWith[B](transformer: MonoTransformer[A, Capture[B]]): Capture[B]
 
 		@targetName("transformWithTask")
-		def transformWith[B](f: Try[A] => Task[B]): Task[B]
+		def transformWith[B](transformer: MonoTransformer[A, Task[B]]): Task[B]
 
-		override def recover[B >: A](pf: Throwable => Maybe[B]): Capturer[B]
+		override def recover[B >: A](pf: Throwable => Maybe[B]): Capture[B]
 
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B]
 
-		@targetName("recoverWithCapturer")
-		def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B]
+		@targetName("recoverWithCapture")
+		def recoverWith[B >: A](pf: Throwable => Maybe[Capture[B]]): Capture[B]
 
 		@targetName("recoverWithTask")
 		def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B]
 
-		override def onBehalfOf(otherDoer: Doer): otherDoer.Capturer[A]
+		override def onBehalfOf(otherDoer: Doer): otherDoer.Capture[A]
 
-		override def castTypePath[E <: Doer](doer: E): doer.Capturer[A] = {
+		override def castTypePath[E <: Doer](doer: E): doer.Capture[A] = {
 			assert(thisDoer eq doer)
-			this.asInstanceOf[doer.Capturer[A]]
+			this.asInstanceOf[doer.Capture[A]]
 		}
 
-		override def guarded: GuardedCapturer[A] = new GuardedCapturer[A](this)
+		override def guarded: GuardedCapture[A] = new GuardedCapture[A](this)
 	}
 
-	final class GuardedCapturer[+A](val underlying: Capturer[A]) extends GuardedMono[A] {
+	final class GuardedCapture[+A](val underlying: Capture[A]) extends GuardedMono[A] {
 
-		override def withFilter(predicate: A => Boolean): Capturer[A] = underlying.withFilterGuarded(predicate)
+		override def withFilter(predicate: A => Boolean): Capture[A] = underlying.withFilterGuarded(predicate)
 
-		override def map[B](f: A => B): Capturer[B] = underlying.mapGuarded(f)
+		override def map[B](f: A => B): Capture[B] = underlying.mapGuarded(f)
 
 		override def flatMap[B](f: A => Mono[B]): Mono[B] = underlying.flatMapGuarded(f)
 
-		@targetName("flatMapCapturer")
-		def flatMap[B](f: A => Capturer[B]): Capturer[B] = underlying.flatMapGuarded(f)
+		@targetName("flatMapCapture")
+		def flatMap[B](f: A => Capture[B]): Capture[B] = underlying.flatMapGuarded(f)
 
 		@targetName("flatMapTask")
 		def flatMap[B](f: A => Task[B]): Task[B] = underlying.flatMapGuarded(f)
 
 
-		override def transform[B](f: Try[A] => Try[B]): Capturer[B] = ???
+		override def transform[B](transformer: MonoTransformer[A, Try[B]]): Capture[B] = ???
 
-		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = ???
+		override def transformWith[B](transformer: MonoTransformer[A, Mono[B]]): Mono[B] = ???
 
-		@targetName("transformWithCapturer")
-		def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B] = ???
+		@targetName("transformWithCapture")
+		def transformWith[B](transformer: MonoTransformer[A, Capture[B]]): Capture[B] = ???
 
 		@targetName("transformWithTask")
-		def transformWith[B](f: Try[A] => Task[B]): Task[B] = ???
+		def transformWith[B](transformer: MonoTransformer[A, Task[B]]): Task[B] = ???
 
-		override def recover[B >: A](pf: Throwable => Maybe[B]): Capturer[B] = ???
+		override def recover[B >: A](pf: Throwable => Maybe[B]): Capture[B] = ???
 
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Mono[B] = ???
 
-		@targetName("recoverWithCapturer")
-		def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = ???
+		@targetName("recoverWithCapture")
+		def recoverWith[B >: A](pf: Throwable => Maybe[Capture[B]]): Capture[B] = ???
 
 		@targetName("recoverWithTask")
 		def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = ???
 
 	}
 
-	/** A partial implementation of [[Capturer]]. Implements everything except [[state]].
+	/** A partial implementation of [[Capture]]. Implements everything except [[state]].
 	 * Implementation note: Despite extending [[Muxer]], the [[Muxer]] state is actually a component of this class. The composition is implemented by extending [[Muxer]], instead of holding it as a component, to avoid an allocation. Also, given the [[Muxer]] pseudo-component is not public (none of its methods are public), it should not prevent variance on this class. */
-	abstract class DefaultCapturer[+A] extends Capturer[A], Muxer[A @uncheckedVariance, MonoObserver] { thisCaptor =>
+	abstract class DefaultCapture[+A] extends Capture[A], Muxer[A @uncheckedVariance, MonoObserver] { thisCaptor =>
 		protected def state: Trial[A]
 
 		override def subscribeSync(monoObserver: MonoObserver[A]): Subscription = {
@@ -785,7 +807,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}(_ => ())(consumer)
 		}
 
-		override def reconcile: Capturer[Try[A]] = {
+		override def reconcile: Capture[Try[A]] = {
 			state.fold {
 				new Captor[Try[A]] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
@@ -799,9 +821,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def withFilter(predicate: A => Boolean): Capturer[A] = {
+		override def withFilter(predicate: A => Boolean): Capture[A] = {
 			checkWithin()
-			state.fold[Capturer[A]] {
+			state.fold[Capture[A]] {
 				new Captor[A] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -818,9 +840,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def withFilterGuarded(predicate: A => Boolean): Capturer[A] = {
+		override def withFilterGuarded(predicate: A => Boolean): Capture[A] = {
 			checkWithin()
-			state.fold[Capturer[A]] {
+			state.fold[Capture[A]] {
 				new Captor[A] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -837,9 +859,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def map[B](f: A => B): Capturer[B] = {
+		override def map[B](f: A => B): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -850,9 +872,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			} { ex => new Failed(ex) } { a => new Keeper[B](f(a)) }
 		}
 
-		override def mapGuarded[B](f: A => B): Capturer[B] = {
+		override def mapGuarded[B](f: A => B): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -883,10 +905,10 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			} { ex => Task_fail(ex) } { a => f(a) }
 		}
 
-		@targetName("flatMapCapturer")
-		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
+		@targetName("flatMapCapture")
+		override def flatMap[B](f: A => Capture[B]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -924,10 +946,10 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		@targetName("flatMapGuardedCapturer")
-		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
+		@targetName("flatMapGuardedCapture")
+		override def flatMapGuarded[B](f: A => Capture[B]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -969,15 +991,15 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def transform[B](f: Try[A] => Try[B]): Capturer[B] = {
+		override def transform[B](transformer: MonoTransformer[A, Try[B]]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
 					override def onSuccess(a: A): Unit = {
 						// try {
-						f(Success(a)) match {
+						transformer.mapSuccess(a) match {
 							case Success(b) => captureSync(b)
 							case Failure(e) => trapSync(e)
 						}
@@ -988,7 +1010,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 					override def onError(ex: Throwable): Unit = {
 						// try {
-						f(Failure(ex)) match {
+						transformer.mapError(ex) match {
 							case Success(b) => captureSync(b)
 							case Failure(e) => trapSync(e)
 						}
@@ -999,7 +1021,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 				}
 			} { ex =>
 				//try {
-				f(Failure(ex)) match {
+				transformer.mapError(ex) match {
 					case Success(b) => Keeper(b)
 					case Failure(e) => new Failed(e)
 				}
@@ -1008,7 +1030,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 				//}
 			} { a =>
 				//try {
-				f(Success(a)) match {
+				transformer.mapSuccess(a) match {
 					case Success(b) => Keeper(b)
 					case Failure(e) => new Failed(e)
 				}
@@ -1018,34 +1040,34 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = {
+		override def transformWith[B](f: MonoTransformer[A, Mono[B]]): Mono[B] = {
 			checkWithin()
 			state.fold[Mono[B]] {
 				new Captor_TransformWith[A, B](this, f, false)
 			} { ex =>
-				/*try*/ f(Failure(ex)) /*catch {
+				/*try*/ f.mapError(ex) /*catch {
 					case NonFatal(e) => new Failed(e)
 				}*/
 			} { a =>
-				/*try*/ f(Success(a)) /*catch {
+				/*try*/ f.mapSuccess(a) /*catch {
 					case NonFatal(e) => new Failed(e)
 				}*/
 			}
 		}
 
-		@targetName("transformWithCapturer")
-		override def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B] = {
+		@targetName("transformWithCapture")
+		override def transformWith[B](f: MonoTransformer[A, Capture[B]]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.subscribeSync(this)
 
-					override def onSuccess(a: A): Unit = handle(Success(a))
+					override def onSuccess(a: A): Unit = handle(f.mapSuccess(a))
 
-					override def onError(ex: Throwable): Unit = handle(Failure(ex))
+					override def onError(ex: Throwable): Unit = handle(f.mapError(ex))
 
-					private def handle(tryA: Try[A]): Unit = {
-						f(tryA).triggerSync(new MonoObserver[B] {
+					private def handle(capture: Capture[B]): Unit = {
+						capture.triggerSync(new MonoObserver[B] {
 							override def onSuccess(b: B): Unit = captureSync(b)
 
 							override def onError(ex: Throwable): Unit = trapSync(ex)
@@ -1054,13 +1076,13 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 				}
 			} { ex =>
 				// try {
-				f(Failure(ex))
+				f.mapError(ex)
 				//} catch {
 				//	case NonFatal(e) => new Failed(e)
 				//}
 			} { a =>
 				//try {
-				f(Success(a))
+				f.mapSuccess(a)
 				//} catch {
 				//	case NonFatal(e) => new Failed(e)
 				//}
@@ -1068,20 +1090,20 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 
 		@targetName("transformWithTask")
-		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
+		override def transformWith[B](f: MonoTransformer[A, Task[B]]): Task[B] = {
 			checkWithin()
 			state.fold[Task[B]] {
 				new Captor_TransformWith[A, B](this, f, false)
 			} { ex =>
-				f(Failure(ex))
+				f.mapError(ex)
 			} { a =>
-				f(Success(a))
+				f.mapSuccess(a)
 			}
 		}
 
-		override def recover[B >: A](pf: Throwable => Maybe[B]): Capturer[B] = {
+		override def recover[B >: A](pf: Throwable => Maybe[B]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -1096,7 +1118,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 					}
 				}
 			} { ex =>
-				/*try*/ pf(ex).fold[Capturer[B]](thisCaptor)(Keeper) /*catch {
+				/*try*/ pf(ex).fold[Capture[B]](thisCaptor)(Keeper) /*catch {
 					case NonFatal(e) => new Failed(e)
 				}*/
 			} { a => thisCaptor }
@@ -1113,10 +1135,10 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			} { a => Task_ready(a) }
 		}
 
-		@targetName("recoverWithCapturer")
-		override def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = {
+		@targetName("recoverWithCapture")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Capture[B]]): Capture[B] = {
 			checkWithin()
-			state.fold[Capturer[B]] {
+			state.fold[Capture[B]] {
 				new Captor[B] with MonoObserver[A] {
 					thisCaptor.triggerSync(this)
 
@@ -1135,7 +1157,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 					}
 				}
 			} { ex =>
-				pf(ex).fold[Capturer[B]](thisCaptor)(identity)
+				pf(ex).fold[Capture[B]](thisCaptor)(identity)
 			} { a => thisCaptor }
 		}
 
@@ -1163,18 +1185,18 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			} { ex => Future.failed(ex) } { a => Future.successful(a) }
 		}
 
-		override def onBehalfOf(otherDoer: Doer): otherDoer.Capturer[A] = {
+		override def onBehalfOf(otherDoer: Doer): otherDoer.Capture[A] = {
 			state.fold {
-				otherDoer.Capturer_from(thisDoer)(this)
+				otherDoer.Capture_from(thisDoer)(this)
 			} { ex => otherDoer.Failed(ex) } { a => new otherDoer.Keeper(a) }
 		}
 	}
 
-	/** A [[Capturer]] that captures a value derived from an observed result. */
-	abstract class ChainedCapturer[-A, +B] extends DefaultCapturer[B], MonoObserver[A]
+	/** A [[Capture]] that captures a value derived from an observed result. */
+	abstract class ChainedCapture[-A, +B] extends DefaultCapture[B], MonoObserver[A]
 
-	/** A [[Capturer]] that captures the first value it observes. */
-	abstract class DirectlyChainedCaptor[A] extends ChainedCapturer[A, A] {
+	/** A [[Capture]] that captures the first value it observes. */
+	abstract class DirectlyChainedCaptor[A] extends ChainedCapture[A, A] {
 		private var theState: Trial[A] = Trial.empty
 
 		override protected def state: Trial[A] = theState
@@ -1184,25 +1206,25 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		override def onError(e: Throwable): Unit = theState = Trial.failure(e)
 	}
 
-	//// Capturer factory methods ////
+	//// Capture factory methods ////
 
-	/** An already completed [[Capturer]] that yields [[Unit]].
+	/** An already completed [[Capture]] that yields [[Unit]].
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val Capturer_unit: Keeper[Unit] = Keeper(())
+	@threadUnsafe lazy final val Capture_unit: Keeper[Unit] = Keeper(())
 
-	/** An already completed [[Capturer]] that yields `true`.
+	/** An already completed [[Capture]] that yields `true`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val Capturer_true: Keeper[Boolean] = Keeper(true)
+	@threadUnsafe lazy final val Capture_true: Keeper[Boolean] = Keeper(true)
 
-	/** An already completed [[Capturer]] that yields `false`.
+	/** An already completed [[Capture]] that yields `false`.
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
-	@threadUnsafe lazy final val Capturer_false: Keeper[Boolean] = Keeper(false)
+	@threadUnsafe lazy final val Capture_false: Keeper[Boolean] = Keeper(false)
 
-	inline def Capturer_ready[A](a: A): Keeper[A] = new Keeper(a)
+	inline def Capture_ready[A](a: A): Keeper[A] = new Keeper(a)
 
-	def Capturer_from[A](mono: Mono[A]): Capturer[A] = {
+	def Capture_from[A](mono: Mono[A]): Capture[A] = {
 		mono match {
-			case capturer: Capturer[A] => capturer
+			case capture: Capture[A] => capture
 			case _ =>
 				new Captor[A]() with MonoObserver[A] {
 					mono.triggerSync(this)
@@ -1214,7 +1236,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	inline def Capturer_apply[A](inline supplier: () => A, inline isGuarded: Boolean = false): Capturer[A] = {
+	inline def Capture_apply[A](inline supplier: () => A, inline isGuarded: Boolean = false): Capture[A] = {
 		class CR extends Captor[A] with Runnable {
 			executeSequentially(this)
 
@@ -1232,18 +1254,18 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		new CR
 	}
 
-	inline def Capturer_defer[A](inline supplier: () => Capturer[A], inline isGuarded: Boolean = false): Capturer[A] = {
+	inline def Capture_defer[A](inline supplier: () => Capture[A], inline isGuarded: Boolean = false): Capture[A] = {
 		class COR extends Captor[A] with MonoObserver[A] with Runnable {
 			executeSequentially(this)
 
 			override def run(): Unit = {
 				if isGuarded then {
-					val maybeCapturerA = try Maybe(supplier()) catch {
+					val maybeCaptureA = try Maybe(supplier()) catch {
 						case NonFatal(e) =>
 							trapSync(e)
 							Maybe.empty
 					}
-					maybeCapturerA.foreach(_.triggerSync(this))
+					maybeCaptureA.foreach(_.triggerSync(this))
 				} else supplier().triggerSync(this)
 			}
 
@@ -1254,13 +1276,13 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		new COR
 	}
 
-	/** Creates a [[Capturer]] that subscribes to an [[Mono]] of another [[Doer]].
+	/** Adapts a [[Mono]] belonging to another [[Doer]] into a [[Capture]] sequenced on this [[Doer]].\
+	 * Its result will be memoized and yielded by the returned [[Capture]] in sequence with this [[Doer]].\
 	 * $threadSafe
-	 *
-	 * @param foreignDoer the [[Doer]] to whom the `foreignMono` belongs.
-	 * @param foreignMono the [[Mono]] to subscribe to. Its result will be memorized and yielded by the returned [[Capturer]] in sequence with this [[Doer]].
-	 * @return a [[Task]] that produces what the `foreignMono` produces, but the result is yielded in sequence with this [[Doer]]. */
-	def Capturer_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Mono[A]): Capturer[A] = {
+	 * @param foreignDoer the [[Doer]] that owns `foreignMono`.
+	 * @param foreignMono the [[Mono]] to subscribe to.
+	 * @return a [[Capture]] that yields the memoized outcome of `foreignMono` within this [[Doer]]'s sequential timeline. */
+	def Capture_from[A](foreignDoer: Doer)(foreignMono: foreignDoer.Mono[A]): Capture[A] = {
 		if foreignDoer ne thisDoer then {
 			new Captor[A] with foreignDoer.MonoObserver[A] with Runnable {
 				foreignDoer.executeSequentially(this)
@@ -1272,17 +1294,17 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 				override def onError(e: Throwable): Unit = thisDoer.run(trapSync(e))
 			}
 		} else foreignMono match {
-			case ft: foreignDoer.Capturer[A] @unchecked => ft.asInstanceOf[Capturer[A]]
-			case _ => Capturer_from(foreignMono.asInstanceOf[Mono[A]])
+			case ft: foreignDoer.Capture[A] @unchecked => ft.asInstanceOf[Capture[A]]
+			case _ => Capture_from(foreignMono.asInstanceOf[Mono[A]])
 		}
 	}
 
-	/** Create a [[Capturer]] whose result will be the result of the provided [[Future]] when it completes.\
-	 * Useful to start a process in this [[Doer]]'s DoSerEx derived from a value produced by other process.\
+	/** Creates a [[Capture]] whose result will be the result of the provided [[Future]] when it completes.\
+	 * Useful to start a process in this [[Doer]]'s DoSerEx derived from a value produced by another process.\
 	 * $threadSafe
 	 * @param future the future to wait for.
-	 * @return the [[Capturer]] described in the method description. */
-	final def Capturer_from[A](future: Future[A]): Capturer[A] = {
+	 * @return the [[Capture]] described in the method description. */
+	final def Capture_from[A](future: Future[A]): Capture[A] = {
 		new Captor[A] with (Try[A] => Unit) {
 			future.onComplete(this)(using ownSerialExecutionContext)
 
@@ -1293,13 +1315,13 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	/** Creates a [[Capturer]] whose result will be the result of the [[Future]] returned by the provided supplier.\
+	/** Creates a [[Capture]] whose result will be the result of the [[Future]] returned by the provided supplier.\
 	 * Useful to start a process in an alien executor and continue it within this [[Doer]]'s DoSerEx.\
 	 * The alien executor may be the $DoSerEx of this [[Doer]].\
 	 * $threadSafe
-	 * @param supplier a function that starts the process and return a [[Future]] of its result. $isExecutedByDoSerEx
-	 * @return the [[Capturer]] described in the method description. */
-	final def Capturer_from[A](supplier: () => Future[A]): Capturer[A] = {
+	 * @param supplier a function that starts the process and returns a [[Future]] of its result. $isExecutedByDoSerEx
+	 * @return the [[Capture]] described in the method description. */
+	final def Capture_from[A](supplier: () => Future[A]): Capture[A] = {
 		new Captor[A] with (Try[A] => Unit) {
 			run(supplier().onComplete(this)(using ownSerialExecutionContext))
 
@@ -1310,12 +1332,12 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	inline def Capturer_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capturer[Array[A]] = {
+	inline def Capture_sequenceToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capture[Array[A]] = {
 		Captor_triggerAndWire(Task_sequenceToArray(monos)) // TODO optimize
 	}
 
 	/** Like [[Task_sequenceHardyToArray]] but eager (instead of lazy). */
-	inline def Capturer_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capturer[Array[Try[A]]] = {
+	inline def Capture_sequenceHardyToArray[A: ClassTag, C[x] <: Iterable[x]](monos: C[Mono[A]], inline isWithinDoSerEx: Boolean = isInSequence): Capture[Array[Try[A]]] = {
 		Captor_triggerAndWire(Task_sequenceHardyToArray(monos), isWithinDoSerEx) // TODO optimize
 	}
 
@@ -1325,8 +1347,8 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 * @note Also suppresses the generation of the synthetic companion object. */
 	inline final def Keeper[A](a: A): Keeper[A] = new Keeper(a)
 
-	/** A [[Capturer]] that is fulfilled since its inception. */
-	final class Keeper[+A](val value: A) extends Capturer[A] { thisKeeper =>
+	/** A [[Capture]] that is fulfilled since its inception. */
+	final class Keeper[+A](val value: A) extends Capture[A] { thisKeeper =>
 
 		override def subscribeSync(downChainObserver: MonoObserver[A]): Subscription = {
 			// Returns empty subscription since it completes synchronously
@@ -1345,12 +1367,12 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		override def reconcile: Keeper[Try[A]] = Keeper(Success(value))
 
-		override def withFilter(predicate: A => Boolean): Capturer[A] = {
+		override def withFilter(predicate: A => Boolean): Capture[A] = {
 			if predicate(value) then thisKeeper
 			else Failed(new NoSuchElementException)
 		}
 
-		override def withFilterGuarded(predicate: A => Boolean): Capturer[A] = {
+		override def withFilterGuarded(predicate: A => Boolean): Capture[A] = {
 			try {
 				if predicate(value) then thisKeeper
 				else Failed(new NoSuchElementException)
@@ -1364,15 +1386,15 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			Keeper(f(value))
 		}
 
-		override def mapGuarded[B](f: A => B): Capturer[B] = {
+		override def mapGuarded[B](f: A => B): Capture[B] = {
 			checkWithin()
 			try Keeper(f(value)) catch {
 				case NonFatal(e) => Failed(e)
 			}
 		}
 
-		@targetName("flatMapCapturer")
-		override def flatMap[B](f: A => Capturer[B]): Capturer[B] = {
+		@targetName("flatMapCapture")
+		override def flatMap[B](f: A => Capture[B]): Capture[B] = {
 			checkWithin()
 			f(value)
 		}
@@ -1395,8 +1417,8 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		@targetName("flatMapGuardedCapturer")
-		override def flatMapGuarded[B](f: A => Capturer[B]): Capturer[B] = {
+		@targetName("flatMapGuardedCapture")
+		override def flatMapGuarded[B](f: A => Capture[B]): Capture[B] = {
 			checkWithin()
 			try f(value) catch {
 				case NonFatal(e) => Failed(e)
@@ -1411,37 +1433,37 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			}
 		}
 
-		override def transform[B](f: Try[A] => Try[B]): Capturer[B] = {
+		override def transform[B](f: MonoTransformer[A, Try[B]]): Capture[B] = {
 			checkWithin()
-			f(Success(value)) match {
+			f.mapSuccess(value) match {
 				case Success(b) => Keeper(b)
 				case Failure(e) => Failed(e)
 			}
 		}
 
-		override def transformWith[B](f: Try[A] => Mono[B]): Mono[B] = {
+		override def transformWith[B](f: MonoTransformer[A, Mono[B]]): Mono[B] = {
 			checkWithin()
-			f(Success(value))
+			f.mapSuccess(value)
 		}
 
-		@targetName("transformWithCapturer")
-		override def transformWith[B](f: Try[A] => Capturer[B]): Capturer[B] = {
+		@targetName("transformWithCapture")
+		override def transformWith[B](f: MonoTransformer[A, Capture[B]]): Capture[B] = {
 			checkWithin()
-			f(Success(value))
+			f.mapSuccess(value)
 		}
 
 		@targetName("transformWithTask")
-		override def transformWith[B](f: Try[A] => Task[B]): Task[B] = {
+		override def transformWith[B](f: MonoTransformer[A, Task[B]]): Task[B] = {
 			checkWithin()
-			f(Success(value))
+			f.mapSuccess(value)
 		}
 
 		override def recover[B >: A](pf: Throwable => Maybe[B]): Keeper[B] = thisKeeper
 
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Mono[B]]): Keeper[B] = thisKeeper
 
-		@targetName("recoverWithCapturer")
-		override def recoverWith[B >: A](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = thisKeeper
+		@targetName("recoverWithCapture")
+		override def recoverWith[B >: A](pf: Throwable => Maybe[Capture[B]]): Capture[B] = thisKeeper
 
 		@targetName("recoverWithTask")
 		override def recoverWith[B >: A](pf: Throwable => Maybe[Task[B]]): Task[B] = Task_ready(value)
@@ -1459,7 +1481,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 * @note Also suppresses the generation of the synthetic companion object. */
 	inline final def Failed(exception: Throwable): Failed = new Failed(exception)
 
-	final class Failed(val exception: Throwable) extends Capturer[Nothing] { thisFailed =>
+	final class Failed(val exception: Throwable) extends Capture[Nothing] { thisFailed =>
 		override def maybeResult: Trial[Nothing] = Trial.failure(exception)
 
 		override def subscribeSync(downChainObserver: MonoObserver[Nothing]): Subscription = {
@@ -1471,7 +1493,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		override def foreach(consumer: Nothing => Unit): Unit = ()
 
-		override def reconcile: Capturer[Try[Nothing]] = Keeper(Failure(exception))
+		override def reconcile: Capture[Try[Nothing]] = Keeper(Failure(exception))
 
 		override def withFilter(predicate: Nothing => Boolean): Failed = thisFailed
 
@@ -1483,48 +1505,48 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 		override def flatMap[B](f: Nothing => Mono[B]): Failed = thisFailed
 
-		@targetName("flatMapCapturer")
-		override def flatMap[B](f: Nothing => Capturer[B]): Failed = thisFailed
+		@targetName("flatMapCapture")
+		override def flatMap[B](f: Nothing => Capture[B]): Failed = thisFailed
 
 		@targetName("flatMapTask")
 		override def flatMap[B](f: Nothing => Task[B]): Task[B] = Task_fail(exception)
 
 		override def flatMapGuarded[B](f: Nothing => Mono[B]): Failed = thisFailed
 
-		@targetName("flatMapGuardedCapturer")
-		override def flatMapGuarded[B](f: Nothing => Capturer[B]): Failed = thisFailed
+		@targetName("flatMapGuardedCapture")
+		override def flatMapGuarded[B](f: Nothing => Capture[B]): Failed = thisFailed
 
 		@targetName("flatMapGuardedTask")
 		override def flatMapGuarded[B](f: Nothing => Task[B]): Task[B] = Task_fail(exception)
 
-		// override def reconcile: Capturer[Try[Nothing]] = Keeper(Failure(exception))
+		// override def reconcile: Capture[Try[Nothing]] = Keeper(Failure(exception))
 
-		override def transform[B](f: Try[Nothing] => Try[B]): Capturer[B] = {
+		override def transform[B](f: MonoTransformer[Nothing, Try[B]]): Capture[B] = {
 			checkWithin()
-			f(Failure(exception)) match {
+			f.mapError(exception) match {
 				case Success(b) => Keeper(b)
 				case Failure(ex) => new Failed(ex)
 			}
 		}
 
-		override def transformWith[B](f: Try[Nothing] => Mono[B]): Mono[B] = {
+		override def transformWith[B](f: MonoTransformer[Nothing, Mono[B]]): Mono[B] = {
 			checkWithin()
-			f(Failure(exception))
+			f.mapError(exception)
 		}
 
-		@targetName("transformWithCapturer")
-		override def transformWith[B](f: Try[Nothing] => Capturer[B]): Capturer[B] = {
+		@targetName("transformWithCapture")
+		override def transformWith[B](f: MonoTransformer[Nothing, Capture[B]]): Capture[B] = {
 			checkWithin()
-			f(Failure(exception))
+			f.mapError(exception)
 		}
 
 		@targetName("transformWithTask")
-		override def transformWith[B](f: Try[Nothing] => Task[B]): Task[B] = {
+		override def transformWith[B](f: MonoTransformer[Nothing, Task[B]]): Task[B] = {
 			checkWithin()
-			f(Failure(exception))
+			f.mapError(exception)
 		}
 
-		override def recover[B >: Nothing](pf: Throwable => Maybe[B]): Capturer[B] = {
+		override def recover[B >: Nothing](pf: Throwable => Maybe[B]): Capture[B] = {
 			checkWithin()
 			pf(exception).fold(thisFailed)(Keeper)
 		}
@@ -1534,8 +1556,8 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			pf(exception).fold(thisFailed)(identity)
 		}
 
-		@targetName("recoverWithCapturer")
-		override def recoverWith[B >: Nothing](pf: Throwable => Maybe[Capturer[B]]): Capturer[B] = {
+		@targetName("recoverWithCapture")
+		override def recoverWith[B >: Nothing](pf: Throwable => Maybe[Capture[B]]): Capture[B] = {
 			checkWithin()
 			pf(exception).fold(thisFailed)(identity)
 		}
@@ -1555,25 +1577,27 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 	//// CAPTOR /////
 
-	/** A [[Capturer]] with dynamic control of its completion (the execution of the subscribed consumers).
-	 *
-	 * It exposes methods such as [[capture]] and [[seizeWith]] to allow external code to complete it.
-	 *
-	 * [[Captor]] is to [[Capturer]] as [[scala.concurrent.Promise]] is to [[scala.concurrent.Future]] */
-	open class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapturer[A] { thisCaptor =>
+	/** A mutable [[Capture]] that acts as a single-assignment completion promise and rendezvous point.\
+	 * A [[Captor]] starts in a pending state and can be completed with a value via [[captureSync]]/[[capture]], a failure via [[trapSync]]/[[trap]], a [[scala.util.Try]] via [[seizeSync]]/[[seize]], or wired to another [[Mono]] via [[seizeWithSync]]/[[seizeWith]].\
+	 * The first completion transition fixes the outcome, notifies all registered observers in subscription order, and clears the observer registry.\
+	 * Subsequent completion attempts are ignored, preserving the initial outcome.\
+	 * Observers subscribed before completion are queued and notified upon resolution; observers subscribed after completion receive the memoized outcome synchronously.\
+	 * Synchronous completion methods (`captureSync`, `trapSync`, `seizeSync`, `seizeWithSync`) must be invoked within the owning [[Doer]]'s sequential timeline ($DoSerEx), whereas asynchronous variants (`capture`, `trap`, `seize`, `seizeWith`) are thread-safe.\
+	 * @param initialState the initial completion state of the captor; defaults to [[Trial.empty]] (pending). */
+	open class Captor[A](initialState: Trial[A] = Trial.empty) extends DefaultCapture[A] { thisCaptor =>
 		protected var theState: Trial[A] = initialState
 
 		override protected def state: Trial[A] = theState
 
-		/** Sets this [[Captor]] captured value with the given successful `result`, unless it has already been set.
+		/** Sets this [[Captor]]'s captured value with the given successful `result`, unless it has already been set.
 		 *
-		 * If this [[Captor]] captured value is not yet set, the provided `result` becomes its final value and is made immediately visible to all subscribers.
+		 * If this [[Captor]]'s captured value is not yet set, the provided `result` becomes its final value and is made immediately visible to all subscribers.
 		 * If it is already set, the provided `result` is ignored.
 		 *
 		 * CAUTION: This method must be called within this [[Doer]].
-		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capturer]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. This could be avoided in the library but is not worth. The user can prevent it easily with the help of [[Doer.currentExecutionSerial]].
+		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capture]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. This could be avoided in the library but is not worth. The user can prevent it easily with the help of [[Doer.currentExecutionSerial]].
 		 *
-		 * @param result the value to set this [[Captor]] capture value with.
+		 * @param result the value to fulfill this [[Captor]] with.
 		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
 		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
 		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
@@ -1592,15 +1616,15 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 			this
 		}
 
-		/** Sets this [[Captor]] captured value with the given failure `excuse`, unless it has already been set.
+		/** Sets this [[Captor]]'s captured value with the given failure `excuse`, unless it has already been set.
 		 *
-		 * If this [[Captor]] is not yet fulfilled, the provided `result` becomes its final value and is made immediately visible to all subscribers.
-		 * If it is already fulfilled, the provided `result` is ignored.
+		 * If this [[Captor]] is not yet fulfilled, the provided `excuse` becomes its final value and is made immediately visible to all subscribers.
+		 * If it is already fulfilled, the provided `excuse` is ignored.
 		 *
 		 * CAUTION: This method must be called within this [[Doer]].
-		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capturer]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
+		 * CAUTION: Deep synchronous chains of [[flatMap]] over immediately-fulfilled [[Capture]] instances during ongoing fulfillment can form a synchronous recursion (fulfill → subscribe-immediate → fulfill → …) that overflows the stack. // TODO consider the trampoline solutions discussed with copilot in the session "causal anchoring dilema", near the end.
 		 *
-		 * @param excuse the value to fulfill this [[Captor]] with.
+		 * @param excuse the exception to fail this [[Captor]] with.
 		 * @param completionObserver optional synchronous observer of the actual captured value and information about its origin:
 		 *   - [[THE_PROVIDED]] if the captured value was set by this method call with the provided value;
 		 *   - [[ANOTHER_BEFORE]] if the captured value was already set when this method was called. */
@@ -1768,7 +1792,7 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		}
 	}
 
-	final class Captor_TransformWith[A, B](upChainMono: Mono[A], f: Try[A] => Mono[B], isGuarded: Boolean) extends AbstractTask[B] {
+	final class Captor_TransformWith[A, B](upChainMono: Mono[A], f: MonoTransformer[A, Mono[B]], isGuarded: Boolean) extends AbstractTask[B] {
 		private var fResultMemory: Maybe[Mono[B]] = Maybe.empty
 
 		override def subscribeSync(downChainObserver: MonoObserver[B]): Subscription = {
@@ -1782,21 +1806,21 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 					if isActive then maybeUpChainSubscription = Maybe(upChainSubscription)
 				}
 
-				override def onSuccess(a: A): Unit = handle(Success(a))
+				override def onSuccess(a: A): Unit = handle(f.mapSuccess(a))
 
-				override def onError(ex: Throwable): Unit = handle(Failure(ex))
+				override def onError(ex: Throwable): Unit = handle(f.mapError(ex))
 
-				private def handle(tryA: Try[A]): Unit = {
+				private inline def handle(inline momoBuilder: => Mono[B]): Unit = {
 					if isActive then {
 						maybeUpChainSubscription = Maybe.empty
 						if fResultMemory.isEmpty then {
 							val maybeInnerMono =
-								if isGuarded then try Maybe(f(tryA)) catch {
+								if isGuarded then try Maybe(momoBuilder) catch {
 									case NonFatal(e) =>
 										isActive = false
 										downChainObserver.onError(e)
 										Maybe.empty
-								} else Maybe(f(tryA))
+								} else Maybe(momoBuilder)
 							fResultMemory = maybeInnerMono
 						}
 
@@ -1910,9 +1934,9 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 		new CR
 	}
 
-	/** Creates a [[Captor]] that is wired to the [[Capturer]] resulting of executing the provided supplier within the $DoSerEx.
-	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[Capturer]] to which the created [[Captor]] is wired. */
-	inline def Captor_defer[A](inline supplier: () => Capturer[A], inline isGuarded: Boolean = false): Captor[A] = {
+	/** Creates a [[Captor]] that is wired to the [[Capture]] resulting from executing the provided supplier within the $DoSerEx.
+	 * @param supplier a supplier function that is executed within the $DoSerEx to return the [[Capture]] to which the created [[Captor]] is wired. */
+	inline def Captor_defer[A](inline supplier: () => Capture[A], inline isGuarded: Boolean = false): Captor[A] = {
 		class CRO extends Captor[A] with Runnable with MonoObserver[A] {
 			{ // Constructor
 				executeSequentially(this)
@@ -1920,12 +1944,12 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 
 			override def run(): Unit = {
 				if isGuarded then {
-					val maybeCapturerA = try Maybe(supplier()) catch {
+					val maybeCaptureA = try Maybe(supplier()) catch {
 						case NonFatal(e) =>
 							trapSync(e)
 							Maybe.empty
 					}
-					maybeCapturerA.foreach(_.triggerSync(this))
+					maybeCaptureA.foreach(_.triggerSync(this))
 				} else {
 					supplier().triggerSync(this)
 				}

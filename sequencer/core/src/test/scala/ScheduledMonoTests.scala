@@ -153,11 +153,11 @@ trait ScheduledMonoTests[D <: SchedulingDoer : ClassTag] { self: DoerProviderTes
 		}
 	}
 
-	test("Scheduling Capturer: `capturer.delayed(delay)` should be cancellable before the schedule is activated.") {
+	test("Scheduling Capture: `capture.delayed(delay)` should be cancellable before the schedule is activated.") {
 		val generators = getGenerators
 		import generators.*
 
-		PropF.forAllNoShrinkF(genCapturer[Int](), Gen.choose(1, 5)) { (capturer: Capturer[Int], duration: Int) =>
+		PropF.forAllNoShrinkF(genCapture[Int](), Gen.choose(1, 5)) { (capture: Capture[Int], duration: Int) =>
 			val promise = Promise[Unit]()
 
 			given Promise[Unit] = promise
@@ -165,8 +165,8 @@ trait ScheduledMonoTests[D <: SchedulingDoer : ClassTag] { self: DoerProviderTes
 			run {
 				val delay: doer.Delay = doer.newDelaySchedule(duration)
 				doer.cancel(delay)
-				val scheduledCapturer = capturer.delayed(delay)
-				scheduledCapturer.trigger()(new MonoObserver[Int] {
+				val scheduledCapture = capture.delayed(delay)
+				scheduledCapture.trigger()(new MonoObserver[Int] {
 					override def onSuccess(value: Int): Unit = break(s"The task completed (onSuccess) despite it was cancelled: isActive=${doer.wasActivated(delay)}")
 
 					override def onError(ex: Throwable): Unit = break(s"The task completed (onError) despite it was cancelled: isActive=${doer.wasActivated(delay)}")
