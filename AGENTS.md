@@ -28,6 +28,7 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 2. **Never run tests or compile code unless the user explicitly says to do so.** Analyzing output or reasoning about behavior does NOT require execution. Default to static analysis.
 3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
 4. **Never suggest, prompt, or ask the user to compile, run tests, or execute commands.** Do not follow generic validation templates that prompt for execution. Wait for the user to explicitly initiate execution or request it.
+5. **Never execute mutating git commands.** You may only use `git` for read-only operations like `git diff` or `git log`. Never run `git checkout`, `git reset`, `git commit`, `git add`, `git restore`, or `git apply` under any circumstances.
 
 ## Epistemic Humility & Diagnostics
 

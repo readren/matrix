@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-08-29T20:07:00Z"
+timestamp: "2026-09-12T01:35:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -219,23 +219,27 @@ A participant node in the consensus engine moves through distinct operational ro
 
 ### II. Retirement Replication Driver Architecture
 
-When a configuration transition excludes one or more participants (moving from a transitional configuration to a stable configuration), the leader initiates targeted replication processes to bring the excluded participants to the retirement
-boundary.
+When a configuration transition excludes one or more participants (moving from a transitional configuration to a stable configuration), the leader initiates targeted replication processes (pipelines) to push records to the excluded
+participants until they reach the retirement boundary (the StableConfigChange that excluded them).
 
-- **Definition of Retirement Driver**: A retirement driver is a dedicated, bounded replication process maintained by the cluster leader for an excluded participant. Unlike standard follower replication (which is open-ended and continues
-  indefinitely), a retirement driver has a strict upper boundary: the log index of the excluding configuration change record.
-- **Targeted Log Slicing & Contiguity**: Upon committing a configuration change, the leader captures a bounded log slice spanning from the log buffer offset (contiguous with the latest snapshot) up to the excluding configuration record
-  index. This ensures that if snapshot installation is triggered for a lagging retiree, the following plain records form a contiguous sequence without log gaps.
-- **Failover Retirement Recovery**: When a new leader assumes leadership, it discovers all known non-member participants in the cluster environment and instantiates retirement drivers for any unretired nodes, ensuring self-healing if a
-  previous leader crashes before completing retirement replication.
-- **Log-Append Retries**: The retirement driver repeatedly issues log replication requests to the excluded participant, stepping back to lower indices if the retiree rejects appends, provided the entries fall within the captured log slice.
-- **Snapshot Fallback**: If an excluded participant demands log entries prior to the captured log slice, the retirement process falls back to installing a state snapshot. This enables lagging retirees to catch up without requiring unbounded
-  log buffering in memory on the leader.
+- **Leader Push over Follower Pull**: The cluster leader actively drives replication to non-active participants. This eliminates the need for a pull-based `RetirementDriver` on the follower. Because the new leader relies on the cluster
+  transport layer (via `ClusterParticipant.getOtherProbableParticipants`) to discover all live nodes, it can spin up pipelines for any non-active nodes (including those excluded by past leaders). Consequently, an abdicating leader can
+  safely tear down its own pipelines, knowing the new leader will pick up the slack.
+- **Strict Upper Boundary (TargetIndexBound)**: The pipeline restricts the logs sent to the participant strictly up to the log index of the excluding configuration change (`sccIndex`).
+- **LeaderCommit Clamping & Ghost Records**: When sending `AppendRecords`, the `leaderCommit` sent to the excluded participant MUST NEVER exceed the `sccIndex`. If the retiring participant has unverified, trailing "ghost" records in its log
+  (e.g., from a past term where it was active), an empty `AppendRecords` (bounded by `sccIndex`) will not truncate them. If the leader sent a `leaderCommit > sccIndex`, the participant would execute
+  `commitIndex = min(leaderCommit, indexOfLastNewEntry)` and falsely commit its ghost records, corrupting its state machine. Therefore, `requestLeaderCommit` is tightly clamped.
+- **Snapshot Fallback (Wiping Ghost Records)**: If the leader's log has been compacted past the `sccIndex`, it cannot send a `requestLeaderCommit <= sccIndex` (as `getRecordTermAt` would throw an `IndexOutOfBoundsException`). Instead, the
+  pipeline falls back to sending an `InstallSnapshot`. This safely resolves the dilemma: because the snapshot fully replaces the follower's log, all unverified trailing ghost records are wiped out. The follower safely adopts the verified
+  state (which includes its own exclusion) and its `commitIndex` safely advances past `sccIndex` without risking corruption.
+- **Stateless Retiring Role**: The follower only transitions to the `Retiring` role *after* it has successfully committed the excluding configuration change. Because it has already committed its own exclusion, it has no need to process
+  further records. Thus, the `Retiring` role is appropriately stateless and rejects all incoming `AppendRecords` or `InstallSnapshot` requests (unless they contain a new configuration that re-includes it). This rejection signals the
+  leader's pipeline to terminate.
+- **Non-Fatal Pipeline Aborts (`GracefullyReleased`)**: Background pipelines rely on `CausalFence` operations (like `causalAnchor()`). These operations can fail non-fatally with a `GracefullyReleased` exception if the role loses
+  statefulness (e.g., the leader demotes). When this happens, the capture fails gracefully, and the replication pipeline silently and safely halts, recognizing that the leader role is shutting down.
 - **Driver Lifecycle & Registry Cleanup**:
-    - The leader maintains an active tracking registry of all running retirement drivers.
-    - A retirement driver remains active until it receives acknowledgment from the retiree that the excluding configuration entry is appended, or it encounters a terminal failure condition.
-    - Upon reaching the maximum retry threshold for network/RPC failures, the retirement driver aborts its replication loop, unregisters itself from the leader's active driver registry, and triggers a quiescence eligibility evaluation.
-      Unregistering aborted drivers is essential to prevent orphaned entries from permanently blocking node quiescence.
+    - The leader maintains an active tracking registry of all running retirement drivers (`retiringLearnersById`).
+    - The pipeline is terminated and the participant is removed from the registry once it acknowledges it has committed the `sccIndex` (e.g., by responding with an `AppendResult_Rejected` citing the `RETIRING` role).
 
 ---
 
@@ -312,6 +316,13 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Recovered Commit Floor Invariant**: Commands applied to the state machine or embedded in a persistent snapshot are mathematically guaranteed to have been committed by quorum. Upon startup or crash recovery, a participant must advance
   its volatile commit index to reflect the recovered applied command index and snapshot boundary, ensuring candidate state information accurately advertises the verified committed baseline during leader elections.
 - **State Machine Synchronization**: State machine application index and log compaction truncation point must never exceed the verified commit index.
+
+### IV. Client Response Contract & Commit Watermark Invariant
+
+- **Commit Watermark Invariant**: Whenever a leader successfully commits and applies a client command to its state machine, the positive acknowledgement (`Processed`) must expose both the resulting `RecordIndex` of the committed command in
+  the distributed log and the application's `StateMachineResponse`.
+- **Decoupled Session Consistency**: Exposing `RecordIndex` directly in the consensus response contract allows client runtimes, gateway routers, and caching layers to track monotonically increasing commit watermarks without deserializing or
+  coupling to application-specific `StateMachineResponse` envelopes, enabling standardized read-your-writes and session-level linearizable consistency across cluster participants.
 
 ---
 
@@ -397,4 +408,46 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Reconfiguration Quiescence Decoupling**: Successful replication and commitment of a stable configuration change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
   returned upon majority consensus commitment without requiring post-commit causal anchoring against persistent state.
 
+## 10. Decoupled Mutation Contract & Causal State Synchronization
 
+To guarantee strictly sequential state transitions without the stalling overhead of Thread/Actor-blocking or the race-condition vulnerabilities of Mutexes (lock-and-release), the consensus participant wraps its PrimaryState inside a
+CausalFence. This acts as a non-blocking promise queue dedicated solely to state synchronization.
+
+### The Game-Changing Invariant
+
+By attaching continuations synchronously to the Capture returned by advance or causalAnchor, the algorithm guarantees execution ordering. Continuations inherently execute in the exact causal timeline slot following the anchored mutation,
+ensuring they receive the perfectly synchronized, fresh state.
+
+### The Decoupled Mutation Contract (A Design Decision)
+
+While CausalFence enforces the timeline, the consensus algorithm specifically enforces a **Decoupled Mutation Contract** across its internal pub-sub boundaries (such as CommitIndexAwaiters fulfilling Captures).
+
+This contract strictly forbids observers from mutating the PrimaryState synchronously upon notification. Consequential side-effects (e.g., initiating log compaction or appending new records based on a commit index bump) must be fully
+decoupled—either chained asynchronously onto the causal timeline or dispatched via sequencer.run.
+
+**Rationale & Alternative Considered:**
+An alternative to this contract would be allowing observers to synchronously mutate the state. However, if this were permitted, any consensus method invoking an observer (like recalculateCommitIndex iterating through awaiters) would have to
+defensively assume its local PrimaryState reference was instantly poisoned by the observer. It would be forced to execute a new causalAnchor () to fetch the fresh state before continuing to the next line of code.
+
+By universally adopting the Decoupled Mutation Contract inside ConsensusParticipantSdm, the consensus algorithm entirely eliminates the massive overhead and syntactic boilerplate of constantly re-anchoring state references. It guarantees
+that within any synchronous block of execution, a valid PrimaryState reference remains pristine and temporally safe from beginning to end.
+
+## 11. Diagnostic Inspection & Causally Consistent Observation
+
+- **Quiescent Diagnostic State Boundary**: Diagnostic observation of internal participant and role state (such as peer learner replication progress and configuration tracking) must not bypass single-threaded sequencer confinement or observe
+  partially applied causal mutations.
+- **Inter-Step Temporal Consistency**: In discrete-event simulation, test harnesses, and external diagnostics, inspecting the active role's diagnostic snapshot is causally consistent at step boundaries (whenever a discrete sequencer step
+  completes or when the runnable queue is empty). At these boundaries, all synchronous causal chain derivations (including active configuration changes and peer replication metrics) are guaranteed to be in identical lockstep.
+
+## 12. Host Bridge RPC Completion & Transport Termination Invariants
+
+- **Asynchronous Completion Guarantee**: The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `chooseALeader`,
+  `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying
+  strictly on the host layer to bound request lifecycles.
+- **Aggregation vs. Pipelined Quorum Resilience**: While pipelined log replication makes forward progress upon reaching quorum without waiting for lagging peers, discovery and election phases aggregate responses across candidate peers
+  (e.g., collecting state reports across the full configuration). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling
+  the single-threaded participant actor.
+- **Simulation Harness Equivalence**: In discrete-event simulation and test environments, dropping an in-flight network packet must resolve the sender's pending completion observer with a transport failure to emulate transport timeouts or
+  connection termination. Silent removal of packets without failure resolution creates an artificial permanent deadlock that violates the reactive completion contract.
+- **Uniform Transport Failure Handling**: The consensus protocol is fail-silent and retry-driven with respect to transport errors. All network-level failures are handled uniformly regardless of the underlying exception class; specific
+  exception discrimination provides no algorithmic differentiation within the consensus engine.

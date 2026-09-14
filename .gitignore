@@ -62,3 +62,4 @@ metals.sbt
 /dump
 **/logs
 
+/scratch/**

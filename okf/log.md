@@ -3,8 +3,28 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-08-29T20:07:00Z"
+timestamp: "2026-09-12T01:35:00Z"
 ---
+
+## [2026-09-12T01:35:00Z]
+
+- Documented Host Bridge RPC Completion & Transport Termination Invariants in Section 12 of `okf/lazy-multi-raft-consensus.md`, formalizing the asynchronous completion obligations of host-provided `Capture` handles, the impact of unresolved
+  queries on multi-candidate aggregation pipelines, simulation harness packet drop equivalence, and uniform transport exception semantics.
+
+## [2026-09-11T21:15:00Z]
+
+- Documented the Diagnostic Inspection & Causally Consistent Observation Invariant in Section 11 of `okf/lazy-multi-raft-consensus.md`, specifying that internal participant and role diagnostics must observe discrete sequencer step
+  boundaries to preserve causal lockstep across configuration changes and replication metrics without violating single-threaded sequencer confinement.
+
+## [2026-09-11T18:50:00Z]
+
+- Documented the Client Response Contract & Commit Watermark Invariant in Section 7 of `okf/lazy-multi-raft-consensus.md`, establishing that `Processed` responses must expose both the distributed log `RecordIndex` and `StateMachineResponse`
+  to decouple session consistency (read-your-writes and linearizable reads) from application payload schemas.
+
+## [2026-09-05T02:00:41Z]
+
+- Documented retirement driver invariants in okf/lazy-multi-raft-consensus.md, including leader push semantics, leaderCommit clamping vs. trailing ghost records, snapshot fallback mechanics, the stateless Retiring role, and
+  GracefullyReleased non-fatal pipeline aborts.
 
 ## [2026-08-29T20:07:00Z]
 
@@ -340,3 +360,6 @@ timestamp: "2026-08-29T20:07:00Z"
 - Updated component specifications in `okf/sequencer-core.md` to reflect the renaming of the memoized reactive trait `Capturer` (and `DefaultCapturer`) to `Capture` (and `DefaultCapture`), aligning architectural documentation with the
   concept-noun to agent-noun taxonomy (`Capture` vs. `Captor` / `Keeper`).
 - Synchronized scheduling extension specifications in `okf/adr-scheduling-subscription-design.md` and reactive primitive evaluations in `okf/adr-spare-slot-pattern-evaluation.md` with the `Capture` nomenclature.
+- : Added ADR adr-causal-fence-state-synchronization.md to document the Game-Changing Invariant and the Decoupled Mutation Contract for CausalFence.
+
+- 2026-09-09: Added ADR adr-causal-fence-state-synchronization.md to document the Game-Changing Invariant and the Decoupled Mutation Contract for CausalFence.

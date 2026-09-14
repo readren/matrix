@@ -1,0 +1,3120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raft Consensus Playground</title>
+    <style>
+        :root {
+            --bg-main: #0b0f19;
+            --bg-panel: #111827;
+            --bg-card: #1f2937;
+            --bg-hover: #374151;
+            --border-color: #374151;
+            --border-focus: #6366f1;
+            --text-main: #f9fafb;
+            --text-muted: #9ca3af;
+            --text-subtle: #6b7280;
+
+            --role-leader: #10b981;
+            --role-leader-bg: rgba(16, 185, 129, 0.15);
+            --role-candidate: #f59e0b;
+            --role-candidate-bg: rgba(245, 158, 11, 0.15);
+            --role-follower: #3b82f6;
+            --role-follower-bg: rgba(59, 130, 246, 0.15);
+            --role-down: #6b7280;
+            --role-down-bg: rgba(107, 114, 128, 0.15);
+
+            --accent-primary: #6366f1;
+            --accent-primary-hover: #4f46e5;
+            --accent-danger: #ef4444;
+            --accent-danger-hover: #dc2626;
+            --accent-success: #10b981;
+            --accent-warning: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Top Navigation Bar */
+        header {
+            background-color: var(--bg-panel);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.6rem 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-shrink: 0;
+            z-index: 20;
+        }
+
+        .brand-section {
+            display: flex;
+            align-items: center;
+            gap: 0.8rem;
+        }
+
+        .brand-title {
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            color: #fff;
+        }
+
+        .brand-title span.badge {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: 9999px;
+            background-color: #312e81;
+            color: #c7d2fe;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .toolbar-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-right: 0.2rem;
+            font-weight: 600;
+        }
+
+        /* Buttons & Inputs */
+        button {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 0.35rem 0.7rem;
+            border-radius: 0.375rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            transition: all 0.15s ease;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: var(--bg-hover);
+            border-color: #4b5563;
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button.btn-primary {
+            background-color: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: white;
+        }
+
+        button.btn-primary:hover:not(:disabled) {
+            background-color: var(--accent-primary-hover);
+        }
+
+        button.btn-success {
+            background-color: #065f46;
+            border-color: #047857;
+            color: #a7f3d0;
+        }
+
+        button.btn-success:hover:not(:disabled) {
+            background-color: #047857;
+        }
+
+        button.btn-danger {
+            background-color: #7f1d1d;
+            border-color: #991b1b;
+            color: #fecaca;
+        }
+
+        button.btn-danger:hover:not(:disabled) {
+            background-color: #991b1b;
+        }
+
+        button.btn-sm {
+            padding: 0.2rem 0.45rem;
+            font-size: 0.75rem;
+        }
+
+        select, input[type="text"], input[type="number"] {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 0.35rem 0.6rem;
+            border-radius: 0.375rem;
+            font-size: 0.8rem;
+            outline: none;
+        }
+
+        select:focus, input:focus {
+            border-color: var(--border-focus);
+        }
+
+        .config-pill {
+            padding: 0.2rem 0.55rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+
+        .config-pill:hover {
+            border-color: #6366f1;
+            color: #f9fafb;
+        }
+
+        .config-pill.active {
+            background-color: rgba(99, 102, 241, 0.25);
+            border-color: var(--accent-primary);
+            color: #c7d2fe;
+        }
+
+        /* Main Workspace Layout */
+        .app-workspace {
+            display: flex;
+            flex-direction: row;
+            height: calc(100vh - 53px);
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Side Panels */
+        .panel {
+            background-color: var(--bg-panel);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .panel-left {
+            width: 320px;
+            min-width: 240px;
+            max-width: 1400px;
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-color);
+        }
+
+        .panel-right {
+            width: 380px;
+            min-width: 240px;
+            max-width: 1400px;
+            flex-shrink: 0;
+            border-right: none;
+            border-left: 1px solid var(--border-color);
+        }
+
+        /* Gutter Resizers */
+        .gutter {
+            width: 6px;
+            background: transparent;
+            cursor: col-resize;
+            flex-shrink: 0;
+            z-index: 25;
+            transition: background 0.15s ease;
+            position: relative;
+            touch-action: none;
+        }
+
+        .gutter:hover, .gutter.dragging {
+            background: var(--accent-primary);
+        }
+
+        .gutter::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: -2px;
+            right: -2px;
+        }
+
+        .panel-header {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .panel-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.2rem;
+        }
+
+        /* Section Cards inside panels */
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 0.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+
+        .card-title {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 0.4rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.5rem;
+        }
+
+        .stat-box {
+            background-color: rgba(0, 0, 0, 0.25);
+            border-radius: 0.375rem;
+            padding: 0.45rem 0.6rem;
+        }
+
+        .stat-label {
+            font-size: 0.65rem;
+            color: var(--text-subtle);
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .stat-val {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-top: 0.1rem;
+            font-family: monospace;
+        }
+
+        /* Status Badges */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .badge-leader {
+            background-color: var(--role-leader-bg);
+            color: var(--role-leader);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-candidate {
+            background-color: var(--role-candidate-bg);
+            color: var(--role-candidate);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-follower {
+            background-color: var(--role-follower-bg);
+            color: var(--role-follower);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
+        .badge-down {
+            background-color: var(--role-down-bg);
+            color: var(--role-down);
+            border: 1px solid rgba(107, 114, 128, 0.3);
+        }
+
+        /* Canvas Center View */
+        .canvas-container {
+            flex: 1;
+            min-width: 0;
+            position: relative;
+            background: radial-gradient(circle at center, #131d31 0%, #0b0f19 100%);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .canvas-header {
+            position: absolute;
+            top: 1rem;
+            left: 1rem;
+            right: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .canvas-header > * {
+            pointer-events: auto;
+        }
+
+        .time-badge {
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border-color);
+            padding: 0.4rem 0.8rem;
+            border-radius: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .time-badge span.time-value {
+            color: #60a5fa;
+            font-family: monospace;
+            font-size: 1rem;
+        }
+
+        #topologySvg {
+            width: 100%;
+            height: 100%;
+            user-select: none;
+            cursor: grab;
+        }
+
+        #topologySvg.panning {
+            cursor: grabbing;
+        }
+
+        .zoom-controls {
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.3rem;
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border-color);
+            padding: 0.3rem 0.4rem;
+            border-radius: 0.5rem;
+            z-index: 10;
+        }
+
+        /* SVG Nodes & Links Styling */
+        .svg-channel {
+            stroke: #374151;
+            stroke-width: 2;
+            fill: none;
+            transition: stroke 0.2s;
+        }
+
+        .svg-channel.has-packets {
+            stroke: #6366f1;
+            stroke-width: 2.5;
+            stroke-dasharray: 6 3;
+            animation: dashMove 1.5s linear infinite;
+        }
+
+        @keyframes dashMove {
+            to {
+                stroke-dashoffset: -18;
+            }
+        }
+
+        .svg-packet-badge {
+            cursor: pointer;
+        }
+
+        .svg-packet-badge circle {
+            transition: r 0.15s ease, filter 0.15s ease, stroke-width 0.15s ease;
+        }
+
+        .svg-packet-badge:hover circle {
+            r: 16;
+            stroke-width: 2.5;
+            filter: brightness(1.25) drop-shadow(0 0 6px rgba(99, 102, 241, 0.8));
+        }
+
+        .svg-node-group {
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+
+        .svg-node-circle {
+            stroke-width: 3;
+            transition: all 0.2s;
+        }
+
+        .svg-node-group.selected .svg-node-circle {
+            stroke-width: 5;
+            stroke-dasharray: 4 2;
+            filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.8));
+        }
+
+        .node-leader {
+            fill: #064e3b;
+            stroke: #10b981;
+        }
+
+        .node-candidate {
+            fill: #78350f;
+            stroke: #f59e0b;
+        }
+
+        .node-follower {
+            fill: #1e3a8a;
+            stroke: #3b82f6;
+        }
+
+        .node-down {
+            fill: #1f2937;
+            stroke: #4b5563;
+        }
+
+        /* Tables */
+        .table-container {
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 0.375rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.75rem;
+        }
+
+        th {
+            background-color: rgba(0, 0, 0, 0.3);
+            color: var(--text-muted);
+            text-align: left;
+            padding: 0.4rem 0.25rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+        }
+
+        td {
+            padding: 0.4rem 0.25rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            white-space: nowrap;
+        }
+
+        #logTab th, #logTab td {
+            padding: 0.35rem 0.25rem;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background-color: rgba(255, 255, 255, 0.03);
+        }
+
+        tr.row-applied td {
+            color: #6ee7b7;
+            font-weight: 500;
+        }
+
+        /* Tabs */
+        .tabs-nav {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+            background-color: rgba(0, 0, 0, 0.2);
+        }
+
+        .tab-btn {
+            flex: 1;
+            border: none;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            background: transparent;
+            padding: 0.55rem 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            justify-content: center;
+        }
+
+        .tab-btn:hover {
+            background: rgba(255, 255, 255, 0.03);
+            color: var(--text-main);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-primary);
+            border-bottom-color: var(--accent-primary);
+            background: rgba(99, 102, 241, 0.08);
+        }
+
+        /* Modal / Popover */
+        /* Modal / Floating Modeless Dialog */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background-color: transparent;
+            pointer-events: none;
+            display: none;
+            z-index: 50;
+        }
+
+        .modal-backdrop.open {
+            display: block;
+        }
+
+        .modal-dialog {
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background-color: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 0.6rem;
+            width: fit-content;
+            min-width: 520px;
+            max-width: calc(100vw - 40px);
+            min-height: 240px;
+            max-height: calc(100vh - 40px);
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 30px -5px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+            resize: both;
+            overflow: hidden;
+            pointer-events: auto;
+        }
+
+        .modal-header {
+            padding: 0.7rem 1.1rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: grab;
+            user-select: none;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .modal-header:active {
+            cursor: grabbing;
+        }
+
+        .modal-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .modal-body {
+            padding: 1rem 1.2rem;
+            overflow: auto;
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+
+        .modal-footer {
+            padding: 0.6rem 1.1rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        /* SVG Node Action Dock Buttons */
+        .svg-node-btn {
+            cursor: pointer;
+            user-select: none;
+            transition: filter 0.15s ease;
+        }
+
+        .svg-node-btn:hover rect {
+            filter: brightness(1.3);
+        }
+
+        .svg-node-btn {
+            cursor: pointer;
+        }
+
+        .svg-node-btn.approve-active rect {
+            animation: pulse-amber 2s infinite;
+        }
+
+        .svg-node-btn.approve-paused rect {
+            stroke-dasharray: 3, 2;
+        }
+
+        @keyframes pulse-amber {
+            0% {
+                filter: drop-shadow(0 0 1px #f59e0b);
+            }
+            50% {
+                filter: drop-shadow(0 0 4px #f59e0b);
+            }
+            100% {
+                filter: drop-shadow(0 0 1px #f59e0b);
+            }
+        }
+
+        /* Toast Notification */
+        #toastContainer {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .toast {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--accent-primary);
+            padding: 0.6rem 1rem;
+            border-radius: 0.375rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            pointer-events: auto;
+            animation: slideIn 0.2s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast.toast-error {
+            border-left-color: var(--accent-danger);
+        }
+
+        .toast.toast-success {
+            border-left-color: var(--accent-success);
+        }
+
+        /* Preset Cards */
+        .preset-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            text-align: left;
+        }
+
+        .preset-card:hover {
+            border-color: var(--accent-primary);
+            background-color: var(--bg-hover);
+        }
+
+        .preset-card.active {
+            border-color: var(--accent-primary);
+            background-color: rgba(99, 102, 241, 0.15);
+            box-shadow: 0 0 0 1px var(--accent-primary);
+        }
+
+        .preset-card-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .preset-card-desc {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            line-height: 1.35;
+        }
+
+        .preset-card-meta {
+            font-size: 0.68rem;
+            color: var(--text-subtle);
+            font-family: monospace;
+            margin-top: 0.2rem;
+        }
+
+        /* Seed Pill */
+        .seed-pill {
+            padding: 0.25rem 0.65rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+
+        .seed-pill:hover {
+            border-color: #10b981;
+            color: #f9fafb;
+        }
+
+        .seed-pill.active {
+            background-color: rgba(16, 185, 129, 0.2);
+            border-color: #10b981;
+            color: #6ee7b7;
+        }
+
+        /* Settings Drawer */
+        .settings-drawer {
+            position: fixed;
+            top: 53px;
+            right: 0;
+            width: 360px;
+            height: calc(100vh - 53px);
+            background: var(--bg-panel);
+            border-left: 1px solid var(--border-color);
+            box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .settings-drawer.open {
+            transform: translateX(0);
+        }
+    </style>
+</head>
+<body>
+
+<!-- VIEW 1: SCENARIO INITIALIZER -->
+<div id="viewInitializer" style="display: flex; flex-direction: column; height: 100vh; overflow-y: auto; background: var(--bg-main);">
+    <header>
+        <div class="brand-section" title="Raft consensus interactive discrete-event visualization harness">
+            <div class="brand-title">
+                <span>⚡ Raft Consensus Playground</span>
+                <span class="badge">Scenario Initializer</span>
+            </div>
+            <div id="connStatusInit" class="status-badge" style="background:#064e3b; color:#34d399; font-size:0.65rem;" title="Server connectivity">
+                ● Connected (localhost:8080)
+            </div>
+        </div>
+        <div class="toolbar-group">
+            <button id="btnReturnWorkspace" class="btn-sm btn-primary" onclick="switchToWorkspace()" style="display: none;" title="Return to running simulation workspace">
+                Return to Workspace →
+            </button>
+            <button class="btn-sm btn-danger" onclick="handleShutdownServer()" title="Gracefully shut down server">
+                ⏹ Stop Server
+            </button>
+        </div>
+    </header>
+
+    <main style="max-width: 880px; width: 100%; margin: 1.5rem auto 3rem auto; padding: 0 1.5rem;">
+        <div style="margin-bottom: 1.25rem;">
+            <h1 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.3rem; color: #fff;">Scenario Configuration</h1>
+            <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+                Configure cluster size, seed membership quorum (C<sub>initial</sub>), and static Raft protocol parameters before launching the discrete-event simulation workspace.
+            </p>
+        </div>
+
+        <div class="card" style="padding: 1.25rem; gap: 1.25rem; background: var(--bg-panel); border-color: var(--border-color);">
+            <!-- Presets Selector Grid -->
+            <div>
+                <label class="toolbar-label" style="display: block; margin-bottom: 0.5rem; font-size: 0.8rem;">Select Scenario Preset</label>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 0.6rem;" id="presetCardsContainer">
+                    <!-- Preset cards rendered dynamically -->
+                </div>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid var(--border-color);"/>
+
+            <!-- Cluster Size & Seed Nodes -->
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.8rem;">
+                    <div>
+                        <label class="toolbar-label" style="display: block; font-size: 0.8rem; margin-bottom: 0.2rem;">Simulation Node Pool (clusterSize)</label>
+                        <span style="font-size: 0.72rem; color: var(--text-subtle);">Total participant nodes instantiated in the simulation universe (1 to 9).</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="number" id="initClusterSize" value="3" min="1" max="9" style="width: 60px; text-align: center; font-weight: 700; font-size: 0.9rem;" onchange="onInitClusterSizeChange(this.value)">
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">nodes</span>
+                    </div>
+                </div>
+
+                <div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+                        <label class="toolbar-label" style="font-size: 0.8rem;">Initial Seed Quorum (C<sub>initial</sub>)</label>
+                        <div style="display: flex; gap: 0.3rem;">
+                            <button type="button" class="btn-sm" onclick="selectAllSeedNodes(true)">All</button>
+                            <button type="button" class="btn-sm" onclick="selectAllSeedNodes(false)">Clear</button>
+                        </div>
+                    </div>
+                    <p style="font-size: 0.72rem; color: var(--text-subtle); margin-bottom: 0.6rem;">
+                        Participant nodes included in the initial active configuration appointed on boot. Unselected nodes start outside the initial quorum as prospective joiners (e.g. <code>p-3</code> in Figure 10).
+                    </p>
+                    <div id="initSeedPillsContainer" style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                        <!-- Seed node pills rendered dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid var(--border-color);"/>
+
+            <!-- Protocol Invariants & Static Settings -->
+            <div>
+                <label class="toolbar-label" style="display: block; margin-bottom: 0.6rem; font-size: 0.8rem;">Static Protocol Settings (vals requiring cluster reset)</label>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="stat-box" style="padding: 0.75rem;">
+                        <label class="stat-label" style="display: block; margin-bottom: 0.3rem;">Max In-Flight Appends Per Peer</label>
+                        <input type="number" id="initMaxInFlight" value="2" min="1" max="9" style="width: 100%;" title="Pipelining concurrency: maximum concurrent unacknowledged append-records RPCs per follower before pipeline throttles">
+                        <span style="font-size: 0.68rem; color: var(--text-subtle); display: block; margin-top: 0.3rem;">1 = lockstep RPCs; &gt;1 = pipelined replication</span>
+                    </div>
+
+                    <div class="stat-box" style="padding: 0.75rem;">
+                        <label class="stat-label" style="display: block; margin-bottom: 0.3rem;">Log Compaction Threshold</label>
+                        <input type="number" id="initLogCompaction" value="5" min="2" max="5000" style="width: 100%;" title="Log length threshold triggering snapshot creation and log prefix truncation">
+                        <span style="font-size: 0.68rem; color: var(--text-subtle); display: block; margin-top: 0.3rem;">Records in log before automatic snapshot compaction</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Launch Button -->
+            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.8rem; margin-top: 0.5rem;">
+                <button id="btnLaunchScenario" type="button" class="btn-primary" style="padding: 0.6rem 1.4rem; font-size: 0.9rem; font-weight: 600;" onclick="handleLaunchScenario()">
+                    ▶ Launch Scenario Workspace
+                </button>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- VIEW 2: EXECUTION WORKSPACE -->
+<div id="viewWorkspace" style="display: none; flex-direction: column; height: 100vh; overflow: hidden;">
+    <!-- Top App Bar in Workspace -->
+    <header>
+        <div class="brand-section" title="Raft consensus interactive discrete-event visualization harness">
+            <div class="brand-title">
+                <span>⚡ Raft Consensus Playground</span>
+                <span class="badge" id="activeScenarioBadge">Workspace</span>
+            </div>
+
+            <div id="connStatus" class="status-badge" style="background:#064e3b; color:#34d399; font-size:0.65rem;" title="Server connectivity: green indicates active HTTP connection to localhost:8080">
+                ● Connected (localhost:8080)
+            </div>
+        </div>
+
+        <!-- Scenario Controls & Settings Drawer -->
+        <div class="toolbar-group">
+            <button class="btn-sm" onclick="switchToInitializer()" title="Stop current execution and return to Scenario Initializer (View 1)">
+                ⟲ Reset Scenario
+            </button>
+            <button id="btnToggleSettingsDrawer" class="btn-sm" onclick="toggleSettingsDrawer()" title="Configure dynamic runtime parameters (retries, snapshot retention, disk failure simulation)">
+                ⚙ Dynamic Settings
+            </button>
+        </div>
+
+        <!-- Global Operations -->
+        <div class="toolbar-group">
+            <span class="toolbar-label">Global Run:</span>
+            <button class="btn-primary" onclick="triggerAction('stepAll')" title="Execute exactly one pending task on every active node in the cluster">
+                ▶ Step All
+            </button>
+            <button onclick="triggerAction('drainAll')" title="Run all queued actor tasks across all nodes until the entire cluster is idle">
+                ⏩ Drain All
+            </button>
+            <button onclick="triggerAction('dispatchAll')" title="Deliver all in-flight network packets across all channel queues to their destination nodes">
+                ✉ Deliver All
+            </button>
+        </div>
+
+        <!-- Invariant Health & Server Controls -->
+        <div class="toolbar-group">
+            <div id="invariantBadge" class="status-badge badge-leader"
+                 title="Log Matching Invariant (§5.4.3): Asserts that if two logs contain an entry with the same index and term, the logs are identical up to that index across all participants">
+                🛡️ Invariants: OK
+            </div>
+            <button class="btn-sm btn-danger" onclick="handleShutdownServer()" title="Gracefully shut down the embedded JDK HTTP server and terminate the JVM process">
+                ⏹ Stop Server
+            </button>
+        </div>
+    </header>
+
+    <!-- Workspace Grid -->
+    <div class="app-workspace">
+
+        <!-- LEFT PANEL: Selected Node Inspector & Storage -->
+        <div id="leftPanel" class="panel panel-left">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <span>🖥️ Node Inspector</span>
+                </div>
+                <div id="selectedNodeRoleBadge" class="status-badge badge-follower" title="Current Raft role of the selected participant (§5.1)">p-0 (FOLLOWER)</div>
+            </div>
+
+            <div class="panel-body">
+
+                <!-- Node State & Controls -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>Node Lifecycle & Execution</span>
+                        <span id="selectedNodeId" style="font-family:monospace; color:#818cf8;">p-0</span>
+                    </div>
+
+                    <div class="stat-grid">
+                        <div class="stat-box" title="Latest election term observed by this node. Monotonically increasing counter (§5.1)">
+                            <div class="stat-label">Current Term</div>
+                            <div id="nodeTerm" class="stat-val">1</div>
+                        </div>
+                        <div class="stat-box" title="Actor runnables queued in the node's StepDoer. Tasks do not execute until stepped or drained">
+                            <div class="stat-label">Pending Tasks</div>
+                            <div id="nodeTasks" class="stat-val">0</div>
+                        </div>
+                        <div class="stat-box" title="Highest log index committed and executed against the state machine (§5.3)">
+                            <div class="stat-label">Applied Index</div>
+                            <div id="nodeApplied" class="stat-val">0</div>
+                        </div>
+                        <div class="stat-box" title="First absolute log record index present in memory. Records below this index have been compacted into a snapshot">
+                            <div class="stat-label">Log Offset</div>
+                            <div id="nodeOffset" class="stat-val">1</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; gap:0.4rem; margin-top:0.3rem;">
+                        <button id="btnStepNode" class="btn-primary btn-sm" style="flex:1" onclick="handleStepNode()" title="Execute a single pending task in this node's StepDoer queue">▶ Step</button>
+                        <button id="btnDrainNode" class="btn-sm" style="flex:1" onclick="handleDrainNode()" title="Execute all pending tasks in this node's StepDoer until idle">⏩ Drain</button>
+                        <button id="nodePowerBtn" class="btn-danger btn-sm" onclick="handleToggleNodePower()" title="Simulate node crash or power recovery. Stopping a node purges its volatile task queue and halts execution">Stop Node
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Client Commands & Configuration -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>Client Commands</span>
+                        <button class="btn-sm btn-primary" onclick="handleAddClient()" title="Add an auto-generated client to dispatch commands">+ Add Client</button>
+                    </div>
+
+                    <div id="clientListContainer" style="display:flex; flex-direction:column; gap:0.4rem; max-height: 150px; overflow-y:auto; margin-bottom: 0.6rem;">
+                    </div>
+
+                    <div class="card-title" style="margin-top:0.4rem; padding-top:0.4rem; border-top:1px solid var(--border-color);">
+                        <span>Request Config Change</span>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:0.45rem;">
+                        <div id="configPillsContainer" style="display:flex; flex-wrap:wrap; gap:0.35rem; align-items:center;">
+                        </div>
+                        <button id="btnRequestConfigChange" class="btn-sm" disabled onclick="handleSubmitConfig()" title="Propose a membership change to transition cluster configuration through joint consensus (Cold,new)"
+                                style="align-self:flex-start; opacity:0.5; cursor:not-allowed;">
+                            Request Config Change
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Pending Persistence (Gated Storage) -->
+                <div class="card" title="Synchronous storage operations paused by the test harness. Click 'Approve' to simulate disk write or 'Fail' to simulate I/O failure">
+                    <div class="card-title">
+                        <span>💾 Gated Storage Operations</span>
+                        <span id="nodePendingStorageCount" class="badge" style="background:#374151; font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:9999px;">0</span>
+                    </div>
+
+                    <div id="storageOpsList" style="display:flex; flex-direction:column; gap:0.4rem; max-height: 140px; overflow-y:auto;">
+                        <div style="font-size:0.75rem; color:var(--text-subtle); text-align:center; padding:0.5rem;">
+                            No pending disk writes.
+                        </div>
+                    </div>
+                </div>
+
+
+            </div>
+        </div>
+
+        <!-- LEFT GUTTER RESIZER -->
+        <div id="gutterLeft" class="gutter" title="Drag to resize left panel"></div>
+
+        <!-- CENTER CANVAS: Cluster Network Topology -->
+        <div class="canvas-container">
+            <div class="canvas-header">
+                <div class="time-badge" title="Discrete-event simulation time (ticks). Advances deterministically when virtual timers elapse">
+                    <span>Virtual Time:</span>
+                    <span id="virtualTimeDisplay" class="time-value">0</span>
+                    <div style="display:flex; gap:0.25rem; margin-left:0.5rem;">
+                        <button class="btn-sm" onclick="triggerAction('advanceTime', { ticks: 1 })" title="Advance virtual time by 1 tick">+1</button>
+                        <button class="btn-sm" onclick="triggerAction('advanceTime', { ticks: 10 })" title="Advance virtual time by 10 ticks">+10</button>
+                        <button class="btn-sm" onclick="triggerAction('advanceTime', { ticks: 100 })" title="Advance virtual time by 100 ticks">+100</button>
+                    </div>
+                </div>
+
+                <div style="background: rgba(17,24,39,0.85); backdrop-filter:blur(8px); border:1px solid var(--border-color); border-radius:0.5rem; padding:0.3rem 0.6rem; font-size:0.75rem; display:flex; align-items:center; gap:0.5rem;">
+                    <span style="color:var(--text-subtle);">Click node to inspect | Click packet badge on channel to dispatch</span>
+                </div>
+            </div>
+
+            <!-- SVG Topology Visualizer -->
+            <svg id="topologySvg" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet">
+                <defs>
+                    <marker id="arrow" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#4b5563"/>
+                    </marker>
+                    <marker id="arrow-active" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#818cf8"/>
+                    </marker>
+                    <filter id="glow-leader" x="-20%" y="-20%" width="140%" height="140%">
+                        <feGaussianBlur stdDeviation="6" result="blur"/>
+                        <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+                    </filter>
+                </defs>
+                <g id="viewportTransform">
+                    <g id="channelsLayer"></g>
+                    <g id="packetsLayer"></g>
+                    <g id="nodesLayer"></g>
+                </g>
+            </svg>
+
+            <!-- Zoom & Pan Controls -->
+            <div class="zoom-controls">
+                <button class="btn-sm" onclick="zoomIn()" title="Zoom in viewport">+</button>
+                <button class="btn-sm" onclick="zoomOut()" title="Zoom out viewport">−</button>
+                <button class="btn-sm" onclick="resetZoom()" title="Reset zoom to 1.0 and recenter canvas">⟲ Reset</button>
+            </div>
+        </div>
+
+        <!-- RIGHT GUTTER RESIZER -->
+        <div id="gutterRight" class="gutter" title="Drag to resize right panel"></div>
+
+        <!-- RIGHT PANEL: Queues, Timers & Command Histories -->
+        <div id="rightPanel" class="panel panel-right">
+            <!-- Tabs Navigation -->
+            <div class="tabs-nav">
+                <button class="tab-btn active" onclick="switchRightTab('packetsTab')" title="Live network buffer showing messages in transit. Deliver to execute on target node, or Drop to simulate packet loss">Packets (<span
+                        id="inFlightTabCount">0</span>)
+                </button>
+                <button class="tab-btn" onclick="switchRightTab('timersTab')" title="Scheduled virtual clock wake-ups (election timeouts, heartbeat broadcasts, retry delays)">Timers (<span id="timersTabCount">0</span>)</button>
+                <button class="tab-btn" onclick="switchRightTab('commandsTab')" title="Lifecycle outcome of submitted client commands (InFlight, Processed, Redirected, Unable)">Commands (<span id="commandsTabCount">0</span>)</button>
+                <button id="tabBtnLog" class="tab-btn" onclick="switchRightTab('logTab')" title="Inspect local log buffer of any participant node">Log (<span id="logTabNodeBadge">p-0</span>)</button>
+            </div>
+
+            <div class="panel-body">
+
+                <!-- TAB 1: In-Flight Packets Queue -->
+                <div id="packetsTab" class="tab-content" style="display:flex; flex-direction:column; gap:0.6rem; height:100%;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.75rem; color:var(--text-subtle); text-transform:uppercase; font-weight:600;">Traveling Network Packets</span>
+                        <button class="btn-sm btn-primary" onclick="triggerAction('dispatchAll')" title="Deliver all in-flight network packets across all channel queues to their destination nodes">Deliver All</button>
+                    </div>
+
+                    <div class="table-container" style="flex:1; max-height:none;">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th title="Packet source and destination node identifiers">From &rarr; To</th>
+                                <th title="RPC method name and request/response payload summary">Type & Summary</th>
+                                <th style="width:70px; text-align:right;">Actions</th>
+                            </tr>
+                            </thead>
+                            <tbody id="packetsTableBody">
+                            <tr>
+                                <td colspan="3" style="text-align:center; color:var(--text-subtle);">No packets in flight</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TAB 2: Timers / Wake-Ups Queue -->
+                <div id="timersTab" class="tab-content" style="display:none; flex-direction:column; gap:0.6rem; height:100%;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.75rem; color:var(--text-subtle); text-transform:uppercase; font-weight:600;">Pending Wake-Ups</span>
+                        <button class="btn-sm" onclick="handleAdvanceToNextWakeUp()" title="Advance virtual time directly to the earliest scheduled node timer">Jump to Next</button>
+                    </div>
+
+                    <div class="table-container" style="flex:1; max-height:none;">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>Node</th>
+                                <th>Reason</th>
+                                <th>Time</th>
+                            </tr>
+                            </thead>
+                            <tbody id="timersTableBody">
+                            <tr>
+                                <td colspan="3" style="text-align:center; color:var(--text-subtle);">No scheduled timers</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TAB 3: Client Commands Status History -->
+                <div id="commandsTab" class="tab-content" style="display:none; flex-direction:column; gap:0.6rem; height:100%;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.75rem; color:var(--text-subtle); text-transform:uppercase; font-weight:600;">Client Commands</span>
+                    </div>
+
+                    <div class="table-container" style="flex:1; max-height:none;">
+                        <table>
+                            <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Outcome / Status</th>
+                            </tr>
+                            </thead>
+                            <tbody id="commandsTableBody">
+                            <tr>
+                                <td colspan="2" style="text-align:center; color:var(--text-subtle);">No commands recorded</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- TAB 4: Node Log Buffer View -->
+                <div id="logTab" class="tab-content" style="display:none; flex-direction:column; gap:0.6rem; height:100%;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; padding-bottom:0.4rem; border-bottom:1px solid var(--border-color);">
+                        <div style="display:flex; align-items:center; gap:0.4rem;">
+                            <label for="logNodeSelect" class="toolbar-label" style="margin:0;">Node:</label>
+                            <select id="logNodeSelect" onchange="handleLogNodeChange(this.value)" style="padding:0.25rem 0.55rem; font-weight:600; font-family:monospace;"></select>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:0.4rem;">
+                            <span id="logEntriesTitle" style="font-size:0.75rem; font-weight:600; color:var(--text-muted);">Log Entries</span>
+                            <span id="logEntriesCount" class="badge" style="background:#374151; font-size:0.65rem; padding:0.1rem 0.4rem; border-radius:9999px;">0 entries</span>
+                        </div>
+                    </div>
+
+                    <div class="table-container" style="flex:1; max-height:none; overflow-y:auto;">
+                        <table>
+                            <thead id="logTableHead">
+                            <tr>
+                                <th style="width:40px;">Idx</th>
+                                <th style="width:40px;">Term</th>
+                                <th style="width:50px;">Kind</th>
+                                <th>Summary</th>
+                            </tr>
+                            </thead>
+                            <tbody id="logTableBody">
+                            <tr>
+                                <td colspan="4" style="text-align:center; color:var(--text-subtle);">Log empty</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </div>
+
+    <!-- CHANNEL PACKET DETAILS MODAL -->
+    <div id="channelModal" class="modal-backdrop">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <div class="modal-title" id="channelModalTitle">Channel Packets: p-0 &rarr; p-1</div>
+                <button class="btn-sm" onclick="closeChannelModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:0.8rem; color:var(--text-muted);" id="channelModalSubtitle">Packets in transit: 0</span>
+                    <div style="display:flex; gap:0.4rem;">
+                        <button class="btn-sm btn-primary" id="btnDispatchNext">Deliver Next</button>
+                        <button class="btn-sm btn-danger" id="btnDropNext">Drop Next</button>
+                        <button class="btn-sm" id="btnDispatchAllChannel">Deliver All</button>
+                    </div>
+                </div>
+
+                <div class="table-container" style="flex:1; min-height:120px; overflow:auto;">
+                    <table style="width:100%; min-width:500px;">
+                        <thead>
+                        <tr>
+                            <th style="white-space:nowrap;">ID</th>
+                            <th style="white-space:nowrap;">Kind</th>
+                            <th>Summary</th>
+                            <th style="width:70px; text-align:right; white-space:nowrap;">Action</th>
+                        </tr>
+                        </thead>
+                        <tbody id="channelModalTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button onclick="closeChannelModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DYNAMIC SETTINGS DRAWER -->
+    <div id="settingsDrawer" class="settings-drawer">
+        <div class="panel-header">
+            <span class="panel-title">⚙ Dynamic Runtime Settings</span>
+            <button class="btn-sm" onclick="toggleSettingsDrawer()">✕</button>
+        </div>
+        <div class="panel-body">
+            <p style="font-size: 0.72rem; color: var(--text-subtle);">
+                These parameters correspond to dynamic <code style="color:#a7f3d0;">def</code> methods in <code style="color:#93c5fd;">ConsensusParticipantSdm</code> and can be mutated on-the-fly without resetting cluster state.
+            </p>
+
+            <div class="card">
+                <div class="card-title">Retiring Participant Retries</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.3rem;">
+                    Maximum retries allowed when driving append-records to a retiring peer.
+                </div>
+                <input type="number" id="drawerRetiringMaxRetries" value="2" min="1" max="50">
+            </div>
+
+            <div class="card">
+                <div class="card-title">Log Retention After Snapshot</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.3rem;">
+                    Number of log entries preserved after snapshot compaction for catching up slow peers.
+                </div>
+                <input type="number" id="drawerLogRetention" value="1" min="0" max="100">
+            </div>
+
+            <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
+                <button class="btn-primary" style="flex: 1;" onclick="applyDynamicSettings()">Apply Settings</button>
+                <button class="btn-sm" onclick="toggleSettingsDrawer()">Close</button>
+            </div>
+        </div>
+    </div>
+
+</div> <!-- Close viewWorkspace -->
+
+<!-- TOAST CONTAINER -->
+<div id="toastContainer"></div>
+
+<!-- JAVASCRIPT APP LOGIC -->
+<script>
+    // App State
+    let currentState = null;
+    let selectedNodeId = "p-0";
+    let selectedLogNodeId = "p-0";
+    let activeChannel = null;
+    let eventSource = null;
+    let pollInterval = null;
+    let serverAvailable = true;
+    let isShuttingDown = false;
+    let selectedConfigNodeIds = new Set();
+    let configPillsDirty = false;
+
+    // View & Preset State
+    let currentView = "initializer";
+    let selectedPreset = "default";
+    let initSeedNodes = new Set(["p-0", "p-1", "p-2"]);
+
+    const PRESETS = {
+        default: {
+            id: "default",
+            name: "Default 3-Node Cluster",
+            description: "Standard 3-node Raft cluster with all nodes in initial seed quorum.",
+            clusterSize: 3,
+            seedNodes: ["p-0", "p-1", "p-2"],
+            maxInFlight: 2,
+            logCompaction: 5
+        },
+        figure7: {
+            id: "figure7",
+            name: "Figure 7: Log Repair",
+            description: "Leader p-0 reconciles log inconsistencies with followers a-f.",
+            clusterSize: 7,
+            seedNodes: ["p-0", "p-1", "p-2", "p-3", "p-4", "p-5", "p-6"],
+            maxInFlight: 2,
+            logCompaction: 5
+        },
+        figure8: {
+            id: "figure8",
+            name: "Figure 8: §5.4.2 Commit Invariant",
+            description: "Demonstrates that leaders cannot directly commit entries from older terms.",
+            clusterSize: 5,
+            seedNodes: ["p-0", "p-1", "p-2", "p-3", "p-4"],
+            maxInFlight: 2,
+            logCompaction: 5
+        },
+        figure10: {
+            id: "figure10",
+            name: "Figure 10: Joint Consensus",
+            description: "Cold/new transition where p-3 joins an initial 3-node seed quorum {p-0, p-1, p-2}.",
+            clusterSize: 4,
+            seedNodes: ["p-0", "p-1", "p-2"],
+            maxInFlight: 2,
+            logCompaction: 5
+        },
+        figure13: {
+            id: "figure13",
+            name: "Figure 13: Snapshot Installation",
+            description: "Leader compacts logs and streams snapshot data to lagged follower p-1.",
+            clusterSize: 3,
+            seedNodes: ["p-0", "p-1", "p-2"],
+            maxInFlight: 2,
+            logCompaction: 5
+        },
+        custom: {
+            id: "custom",
+            name: "Custom Scenario",
+            description: "Freely configure arbitrary cluster size, seed quorums, and protocol limits.",
+            clusterSize: 3,
+            seedNodes: ["p-0", "p-1", "p-2"],
+            maxInFlight: 2,
+            logCompaction: 5
+        }
+    };
+
+    const API_BASE = (window.location.protocol === "http:" || window.location.protocol === "https:") && window.location.host
+        ? ""
+        : "http://localhost:8080";
+
+    // Virtual Coordinate & Pan/Zoom State
+    const VIRTUAL_WIDTH = 1000;
+    const VIRTUAL_HEIGHT = 700;
+    let zoomLevel = 1.0;
+    let panX = 0;
+    let panY = 0;
+    let isPanning = false;
+    let startPointerX = 0;
+    let startPointerY = 0;
+
+    function applyTransform() {
+        const viewport = document.getElementById("viewportTransform");
+        if (viewport) {
+            viewport.setAttribute(
+                "transform",
+                `translate(${panX}, ${panY}) translate(${VIRTUAL_WIDTH / 2}, ${VIRTUAL_HEIGHT / 2}) scale(${zoomLevel}) translate(-${VIRTUAL_WIDTH / 2}, -${VIRTUAL_HEIGHT / 2})`
+            );
+        }
+    }
+
+    function zoomIn() {
+        zoomLevel = Math.min(3.0, zoomLevel * 1.25);
+        applyTransform();
+    }
+
+    function zoomOut() {
+        zoomLevel = Math.max(0.35, zoomLevel / 1.25);
+        applyTransform();
+    }
+
+    function resetZoom() {
+        zoomLevel = 1.0;
+        panX = 0;
+        panY = 0;
+        applyTransform();
+    }
+
+    function setupPanAndZoom() {
+        const svg = document.getElementById("topologySvg");
+        if (!svg) return;
+
+        svg.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 0.85;
+            zoomLevel = Math.max(0.35, Math.min(3.0, zoomLevel * factor));
+            applyTransform();
+        }, {passive: false});
+
+        svg.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            if (e.target.closest(".svg-node-group") || e.target.closest(".svg-packet-badge")) {
+                return;
+            }
+            isPanning = true;
+            startPointerX = e.clientX - panX;
+            startPointerY = e.clientY - panY;
+            svg.classList.add("panning");
+        });
+
+        window.addEventListener("mousemove", (e) => {
+            if (!isPanning) return;
+            panX = e.clientX - startPointerX;
+            panY = e.clientY - startPointerY;
+            applyTransform();
+        });
+
+        window.addEventListener("mouseup", () => {
+            if (isPanning) {
+                isPanning = false;
+                svg.classList.remove("panning");
+            }
+        });
+    }
+
+    function setupGutterResizers() {
+        const gutterLeft = document.getElementById("gutterLeft");
+        const gutterRight = document.getElementById("gutterRight");
+        const leftPanel = document.getElementById("leftPanel");
+        const rightPanel = document.getElementById("rightPanel");
+
+        if (gutterLeft && leftPanel) {
+            let isDragging = false;
+            let startX = 0;
+            let startW = 0;
+
+            gutterLeft.addEventListener("pointerdown", (e) => {
+                isDragging = true;
+                startX = e.clientX;
+                startW = leftPanel.offsetWidth;
+                gutterLeft.classList.add("dragging");
+                gutterLeft.setPointerCapture(e.pointerId);
+                document.body.style.userSelect = "none";
+                document.body.style.cursor = "col-resize";
+            });
+
+            gutterLeft.addEventListener("pointermove", (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const maxW = Math.max(800, window.innerWidth - 300);
+                const newW = Math.max(240, Math.min(maxW, startW + dx));
+                leftPanel.style.width = `${newW}px`;
+            });
+
+            const stopDrag = (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                gutterLeft.classList.remove("dragging");
+                try {
+                    gutterLeft.releasePointerCapture(e.pointerId);
+                } catch (err) {
+                }
+                document.body.style.userSelect = "";
+                document.body.style.cursor = "";
+            };
+
+            gutterLeft.addEventListener("pointerup", stopDrag);
+            gutterLeft.addEventListener("pointercancel", stopDrag);
+        }
+
+        if (gutterRight && rightPanel) {
+            let isDragging = false;
+            let startX = 0;
+            let startW = 0;
+
+            gutterRight.addEventListener("pointerdown", (e) => {
+                isDragging = true;
+                startX = e.clientX;
+                startW = rightPanel.offsetWidth;
+                gutterRight.classList.add("dragging");
+                gutterRight.setPointerCapture(e.pointerId);
+                document.body.style.userSelect = "none";
+                document.body.style.cursor = "col-resize";
+            });
+
+            gutterRight.addEventListener("pointermove", (e) => {
+                if (!isDragging) return;
+                const dx = startX - e.clientX;
+                const maxW = Math.max(800, window.innerWidth - 300);
+                const newW = Math.max(240, Math.min(maxW, startW + dx));
+                rightPanel.style.width = `${newW}px`;
+            });
+
+            const stopDrag = (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                gutterRight.classList.remove("dragging");
+                try {
+                    gutterRight.releasePointerCapture(e.pointerId);
+                } catch (err) {
+                }
+                document.body.style.userSelect = "";
+                document.body.style.cursor = "";
+            };
+
+            gutterRight.addEventListener("pointerup", stopDrag);
+            gutterRight.addEventListener("pointercancel", stopDrag);
+        }
+    }
+
+    // Initialization
+    window.addEventListener("DOMContentLoaded", () => {
+        setupPanAndZoom();
+        setupModalDraggable();
+        setupGutterResizers();
+        renderClientList();
+        renderPresetCards();
+        renderInitSeedPills();
+
+        const savedView = sessionStorage.getItem("consensus_view");
+        if (savedView === "workspace") {
+            switchToWorkspace();
+        } else {
+            switchToInitializer();
+        }
+
+        fetchState();
+        initEventSource();
+        window.addEventListener("resize", renderTopology);
+    });
+
+    // Toast Notifications
+    function showToast(message, type = "info") {
+        const container = document.getElementById("toastContainer");
+        const toast = document.createElement("div");
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `<span>${type === 'error' ? '⚠️' : '✓'}</span> <span>${escapeHtml(message)}</span>`;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = "0";
+            setTimeout(() => toast.remove(), 200);
+        }, 2500);
+    }
+
+    function escapeHtml(str) {
+        if (!str) return "";
+        return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // State Synchronization (Server-Sent Events with Fetch Fallback)
+    function initEventSource() {
+        if (eventSource) {
+            try {
+                eventSource.close();
+            } catch (e) {
+            }
+            eventSource = null;
+        }
+        if (isShuttingDown) return;
+
+        try {
+            eventSource = new EventSource(`${API_BASE}/api/events`);
+
+            eventSource.onopen = () => {
+                if (isShuttingDown) return;
+                if (!serverAvailable) {
+                    serverAvailable = true;
+                    updateServerStatusBadge(true);
+                }
+            };
+
+            eventSource.onmessage = (e) => {
+                if (isShuttingDown) return;
+                try {
+                    const data = JSON.parse(e.data);
+                    currentState = data;
+                    if (!serverAvailable) {
+                        serverAvailable = true;
+                        updateServerStatusBadge(true);
+                    }
+                    if (currentState?.nodes && currentState.nodes.length > 0) {
+                        const btnReturn = document.getElementById("btnReturnWorkspace");
+                        if (btnReturn) btnReturn.style.display = "inline-flex";
+                    }
+                    updateUI();
+                } catch (err) {
+                    console.error("Failed to parse SSE payload:", err);
+                }
+            };
+
+            eventSource.onerror = () => {
+                if (isShuttingDown) return;
+                if (serverAvailable) {
+                    serverAvailable = false;
+                    updateServerStatusBadge(false);
+                }
+                if (!currentState) {
+                    currentState = getMockInitialState();
+                    updateUI();
+                }
+            };
+        } catch (err) {
+            console.error("Failed to initialize EventSource:", err);
+        }
+    }
+
+    async function fetchState() {
+        if (isShuttingDown) return;
+        try {
+            const resp = await fetch(`${API_BASE}/api/state`, {cache: "no-store"});
+            if (isShuttingDown) return;
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (isShuttingDown) return;
+            currentState = data;
+            if (!serverAvailable) {
+                serverAvailable = true;
+                updateServerStatusBadge(true);
+            }
+            if (currentState?.nodes && currentState.nodes.length > 0) {
+                const btnReturn = document.getElementById("btnReturnWorkspace");
+                if (btnReturn) btnReturn.style.display = "inline-flex";
+            }
+            updateUI();
+        } catch (err) {
+            if (isShuttingDown) return;
+            if (serverAvailable) {
+                serverAvailable = false;
+                updateServerStatusBadge(false);
+            }
+            if (!currentState) {
+                // Initialize with mock state for standalone preview if server not yet started
+                currentState = getMockInitialState();
+                updateUI();
+            }
+        }
+    }
+
+    function updateServerStatusBadge(online, customText = null) {
+        const badges = [
+            document.getElementById("connStatus"),
+            document.getElementById("connStatusInit")
+        ];
+        badges.forEach(badge => {
+            if (!badge) return;
+            if (online) {
+                badge.style.background = "#064e3b";
+                badge.style.color = "#34d399";
+                badge.innerHTML = customText || "● Connected (localhost:8080)";
+            } else {
+                badge.style.background = "#7f1d1d";
+                badge.style.color = "#fca5a5";
+                badge.innerHTML = customText || "○ Disconnected (Local Fallback)";
+            }
+        });
+    }
+
+    // Actions API Execution
+    async function triggerAction(actionName, params = {}) {
+        const payload = {action: actionName, ...params};
+        try {
+            const resp = await fetch(`${API_BASE}/api/action`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+            const result = await resp.json();
+            if (!result.success) {
+                showToast(result.message || "Action failed", "error");
+            } else {
+                showToast(`Executed: ${actionName}`, "success");
+            }
+            if (!eventSource || eventSource.readyState !== EventSource.OPEN) {
+                await fetchState();
+            }
+        } catch (err) {
+            showToast(`Server action error: ${err.message}`, "error");
+        }
+    }
+
+    // Main UI Update
+    function updateUI() {
+        if (!currentState) return;
+
+        // Virtual Time
+        document.getElementById("virtualTimeDisplay").textContent = currentState.virtualTime ?? 0;
+
+        // Invariants
+        const invBadge = document.getElementById("invariantBadge");
+        if (currentState.invariants && currentState.invariants.logMatching) {
+            invBadge.className = "status-badge badge-leader";
+            invBadge.innerHTML = "🛡️ Log Matching: OK";
+        } else {
+            invBadge.className = "status-badge badge-down";
+            invBadge.style.backgroundColor = "#7f1d1d";
+            invBadge.style.color = "#fecaca";
+            invBadge.innerHTML = `⚠️ Violation: ${escapeHtml(currentState.invariants?.error || 'Mismatch')}`;
+        }
+
+        // Update Node List & Selection
+        if (!currentState.nodes.some(n => n.id === selectedNodeId) && currentState.nodes.length > 0) {
+            selectedNodeId = currentState.nodes[0].id;
+        }
+
+        renderTopology();
+        renderSelectedNode();
+        renderRightPanel();
+        renderClientList();
+        renderConfigPills();
+
+        if (activeChannel) {
+            refreshChannelModal();
+        }
+    }
+
+    // Topology SVG Rendering
+    function renderTopology() {
+        const channelsLayer = document.getElementById("channelsLayer");
+        const packetsLayer = document.getElementById("packetsLayer");
+        const nodesLayer = document.getElementById("nodesLayer");
+
+        channelsLayer.innerHTML = "";
+        packetsLayer.innerHTML = "";
+        nodesLayer.innerHTML = "";
+
+        if (!currentState || !currentState.nodes || currentState.nodes.length === 0) return;
+
+        const centerX = VIRTUAL_WIDTH / 2;
+        const centerY = VIRTUAL_HEIGHT / 2;
+        const nodeCount = currentState.nodes.length;
+        const radius = Math.min(centerX, centerY) * (nodeCount > 5 ? 0.70 : 0.58);
+
+        const nodePositions = {};
+
+        // Calculate node positions in circle
+        currentState.nodes.forEach((n, idx) => {
+            const angle = (idx / nodeCount) * 2 * Math.PI - Math.PI / 2;
+            const x = centerX + radius * Math.cos(angle);
+            const y = centerY + radius * Math.sin(angle);
+            nodePositions[n.id] = {x, y, angle};
+        });
+
+        // Build Channel Map: (src, dst) -> count
+        const channelPacketsMap = {};
+        if (currentState.channels) {
+            currentState.channels.forEach(ch => {
+                channelPacketsMap[`${ch.source}->${ch.destination}`] = ch.packets;
+            });
+        }
+
+        // Render Channels (Curved directed arcs)
+        const drawnPairs = new Set();
+        currentState.nodes.forEach(srcNode => {
+            currentState.nodes.forEach(dstNode => {
+                if (srcNode.id === dstNode.id) return;
+                const p1 = nodePositions[srcNode.id];
+                const p2 = nodePositions[dstNode.id];
+                if (!p1 || !p2) return;
+
+                const key = `${srcNode.id}->${dstNode.id}`;
+                const packets = channelPacketsMap[key] || [];
+                const hasPackets = packets.length > 0;
+
+                // Draw slight curve between nodes
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const dist = Math.hypot(dx, dy);
+                const curvature = 24;
+                const midX = (p1.x + p2.x) / 2 - (dy / dist) * curvature;
+                const midY = (p1.y + p2.y) / 2 + (dx / dist) * curvature;
+
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("d", `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`);
+                path.setAttribute("class", `svg-channel ${hasPackets ? "has-packets" : ""}`);
+                path.setAttribute("marker-end", hasPackets ? "url(#arrow-active)" : "url(#arrow)");
+                const pathTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+                pathTitle.textContent = `Directed Channel: ${srcNode.id} ➔ ${dstNode.id}. ${packets.length} packet(s) currently in transit.`;
+                path.appendChild(pathTitle);
+                channelsLayer.appendChild(path);
+
+                // If packets are in transit, draw an interactive floating badge on curve
+                if (hasPackets) {
+                    const badgeG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                    badgeG.setAttribute("class", "svg-packet-badge");
+                    badgeG.setAttribute("transform", `translate(${midX}, ${midY})`);
+
+                    const p0 = packets[0];
+                    const rpcOp = p0.rpcKind || (p0.kind === "Request" ? "REQ" : "RES");
+                    const suffix = p0.kind === "Request" ? "?" : "!";
+                    const opTag = `${rpcOp}${suffix}`;
+                    const label = packets.length > 1 ? `${opTag} • ${packets.length}` : opTag;
+
+                    const badgeTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+                    badgeTitle.textContent = `Channel ${srcNode.id} ➔ ${dstNode.id} (${packets.length} in transit, next: ${opTag} #${p0.id}). Left-click: deliver first | Middle-click: drop first | Right-click: open details dialog.`;
+                    badgeG.appendChild(badgeTitle);
+
+                    // Left-click: Deliver next packet in FIFO order
+                    badgeG.onclick = (e) => {
+                        e.stopPropagation();
+                        triggerAction("dispatchNext", {from: srcNode.id, to: dstNode.id});
+                    };
+
+                    // Middle-click: Drop next packet in FIFO order
+                    badgeG.onauxclick = (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (e.button === 1) {
+                            triggerAction("dropNext", {from: srcNode.id, to: dstNode.id});
+                        }
+                    };
+                    badgeG.onmousedown = (e) => {
+                        if (e.button === 1) {
+                            e.preventDefault(); // Suppress browser autoscroll panning icon
+                        }
+                    };
+
+                    // Right-click: Open channel inspection and management dialog
+                    badgeG.oncontextmenu = (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        openChannelModal(srcNode.id, dstNode.id, packets);
+                    };
+
+                    const pillW = Math.max(38, label.length * 7.5 + 14);
+                    const pillH = 20;
+
+                    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    rect.setAttribute("x", -pillW / 2);
+                    rect.setAttribute("y", -pillH / 2);
+                    rect.setAttribute("width", pillW);
+                    rect.setAttribute("height", pillH);
+                    rect.setAttribute("rx", "10");
+                    rect.setAttribute("ry", "10");
+                    rect.setAttribute("fill", "#4f46e5");
+                    rect.setAttribute("stroke", "#c7d2fe");
+                    rect.setAttribute("stroke-width", "1.5");
+
+                    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                    text.setAttribute("text-anchor", "middle");
+                    text.setAttribute("dominant-baseline", "central");
+                    text.setAttribute("fill", "#ffffff");
+                    text.setAttribute("font-size", "9.5");
+                    text.setAttribute("font-weight", "bold");
+                    text.textContent = label;
+
+                    badgeG.appendChild(rect);
+                    badgeG.appendChild(text);
+                    packetsLayer.appendChild(badgeG);
+                }
+            });
+        });
+
+        // Render Nodes
+        currentState.nodes.forEach(n => {
+            const pos = nodePositions[n.id];
+            if (!pos) return;
+
+            const isSelected = n.id === selectedNodeId;
+            const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            g.setAttribute("class", `svg-node-group ${isSelected ? "selected" : ""}`);
+            const nodeTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+            const roleDesc = n.isDown ? "DOWN (unresponsive)" : `${n.role} (Term ${n.currentTerm})`;
+            nodeTitle.textContent = `Node ${n.id} [${roleDesc}]: ${n.pendingTasksCount || 0} queued task(s), applied index ${n.highestAppliedCommandIndex || 0}. Click to select and inspect.`;
+            g.appendChild(nodeTitle);
+            g.onclick = () => selectNode(n.id);
+
+            let roleClass = "node-follower";
+            let glow = "";
+            if (n.isDown) roleClass = "node-down";
+            else if (n.role === "LEADER") {
+                roleClass = "node-leader";
+                glow = 'filter="url(#glow-leader)"';
+            } else if (n.role === "CANDIDATE") roleClass = "node-candidate";
+
+            // Circle
+            const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            circle.setAttribute("cx", pos.x);
+            circle.setAttribute("cy", pos.y);
+            circle.setAttribute("r", "34");
+            circle.setAttribute("class", `svg-node-circle ${roleClass}`);
+            if (n.role === "LEADER" && !n.isDown) {
+                circle.setAttribute("filter", "url(#glow-leader)");
+            }
+            g.appendChild(circle);
+
+            // Node ID Text
+            const titleText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            titleText.setAttribute("x", pos.x);
+            titleText.setAttribute("y", pos.y - 8);
+            titleText.setAttribute("text-anchor", "middle");
+            titleText.setAttribute("fill", "#f8fafc");
+            titleText.setAttribute("font-size", "13");
+            titleText.setAttribute("font-weight", "bold");
+            titleText.textContent = n.id;
+            g.appendChild(titleText);
+
+            // Role / Term Text
+            const subText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            subText.setAttribute("x", pos.x);
+            subText.setAttribute("y", pos.y + 10);
+            subText.setAttribute("text-anchor", "middle");
+            subText.setAttribute("fill", n.isDown ? "#9ca3af" : "#93c5fd");
+            subText.setAttribute("font-size", "9");
+            subText.setAttribute("font-weight", "600");
+            subText.textContent = n.isDown ? "DOWN" : `T:${n.currentTerm} | ${n.role.substring(0, 4)}`;
+            g.appendChild(subText);
+
+            // Interactive Pending Tasks indicator (Step on left-click, Drain on middle-click)
+            const isDown = !!n.isDown;
+            const tasksCount = n.pendingTasksCount || 0;
+            const hasTasks = !isDown && tasksCount > 0;
+
+            if (hasTasks) {
+                const badgeDist = 34 + 13; // node radius (34) + task circle radius (13)
+                const taskAngle = pos.angle - 20 * Math.PI / 180;
+                const badgeX = pos.x + badgeDist * Math.cos(taskAngle);
+                const badgeY = pos.y + badgeDist * Math.sin(taskAngle);
+
+                const taskBadgeG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                taskBadgeG.setAttribute("class", "interactive-task-badge active");
+                taskBadgeG.setAttribute("transform", `translate(${badgeX}, ${badgeY})`);
+
+                const badgeTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+                badgeTitle.textContent = `Node ${n.id}: ${tasksCount} queued task(s).\n• Left-click: Step 1 task\n• Middle-click: Drain all tasks`;
+                taskBadgeG.appendChild(badgeTitle);
+
+                const taskCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                taskCircle.setAttribute("r", "13");
+                taskCircle.setAttribute("fill", "#e11d48");
+                taskCircle.setAttribute("stroke", "#ffffff");
+                taskCircle.setAttribute("stroke-width", "1.5");
+                taskCircle.style.cursor = "pointer";
+                taskBadgeG.appendChild(taskCircle);
+
+                const taskCount = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                taskCount.setAttribute("text-anchor", "middle");
+                taskCount.setAttribute("dominant-baseline", "central");
+                taskCount.setAttribute("fill", "#ffffff");
+                taskCount.setAttribute("font-size", "10");
+                taskCount.setAttribute("font-weight", "bold");
+                taskCount.style.cursor = "pointer";
+                taskCount.style.userSelect = "none";
+                taskCount.textContent = tasksCount;
+                taskBadgeG.appendChild(taskCount);
+
+                taskBadgeG.onclick = (e) => {
+                    e.stopPropagation();
+                    stepNode(n.id);
+                };
+
+                taskBadgeG.onauxclick = (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (e.button === 1) {
+                        drainNode(n.id);
+                    }
+                };
+
+                taskBadgeG.onmousedown = (e) => {
+                    if (e.button === 1) {
+                        e.preventDefault(); // Suppress browser autoscroll panning icon
+                    }
+                };
+
+                g.appendChild(taskBadgeG);
+            }
+
+            // Action Dock: Save Button
+            const pendingSaves = (currentState.pendingPersistence || []).filter(p => p.nodeId === n.id);
+            const hasPendingStorage = pendingSaves.length > 0;
+            const isAutoSucceed = n.isStorageAutoSucceed !== false;
+
+            const saveAngle = pos.angle + 20 * Math.PI / 180;
+            const saveDist = 34 + 13; // 47
+            const saveCenterX = pos.x + saveDist * Math.cos(saveAngle);
+            const saveCenterY = pos.y + saveDist * Math.sin(saveAngle);
+
+            const dockG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            dockG.setAttribute("class", "node-action-dock");
+
+            let saveLabel = "save";
+            let btnWidth = 32;
+            if (hasPendingStorage) {
+                saveLabel = pendingSaves.length > 1 ? `save (${pendingSaves.length})` : "save";
+                btnWidth = pendingSaves.length > 1 ? 44 : 34;
+            } else if (!isAutoSucceed) {
+                saveLabel = "save ⏸";
+                btnWidth = 38;
+            }
+
+            const btnHeight = 16;
+            const btnX = saveCenterX - btnWidth / 2;
+            const btnY = saveCenterY - btnHeight / 2;
+
+            const btnClass = hasPendingStorage
+                ? "approve-active"
+                : (!isAutoSucceed ? "approve-paused" : "approve-standby");
+
+            const btnG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            btnG.setAttribute("class", `svg-node-btn ${btnClass}`);
+            btnG.setAttribute("style", "cursor:pointer;");
+
+            const modeText = isAutoSucceed ? "Auto-succeed" : "Paused (manual approval)";
+            const toggleHint = isAutoSucceed ? "pause persistence (require manual approval)" : "enable auto-succeed";
+
+            const saveTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+            if (isDown) {
+                saveTitle.textContent = `Node ${n.id} is DOWN.`;
+            } else if (hasPendingStorage) {
+                saveTitle.textContent = `Node ${n.id}: ${pendingSaves.length} pending workspace save(s).\n• Left-click: Execute next pending workspace save\n• Right-click: Toggle persistence mode (Currently: ${modeText}). Right-click to ${toggleHint}.`;
+            } else {
+                saveTitle.textContent = `Node ${n.id}: No pending workspace saves.\n• Right-click: Toggle persistence mode (Currently: ${modeText}). Right-click to ${toggleHint}.`;
+            }
+            btnG.appendChild(saveTitle);
+
+            const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            rect.setAttribute("x", btnX);
+            rect.setAttribute("y", btnY);
+            rect.setAttribute("width", btnWidth);
+            rect.setAttribute("height", btnHeight);
+            rect.setAttribute("rx", "3");
+            rect.setAttribute("ry", "3");
+
+            if (hasPendingStorage) {
+                rect.setAttribute("fill", "#d97706");
+                rect.setAttribute("stroke", "#f59e0b");
+            } else if (!isAutoSucceed) {
+                rect.setAttribute("fill", "#291505");
+                rect.setAttribute("stroke", "#f59e0b");
+            } else {
+                rect.setAttribute("fill", "#1f2430");
+                rect.setAttribute("stroke", "#374151");
+            }
+            rect.setAttribute("stroke-width", "1");
+            btnG.appendChild(rect);
+
+            const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            txt.setAttribute("x", saveCenterX);
+            txt.setAttribute("y", saveCenterY);
+            txt.setAttribute("text-anchor", "middle");
+            txt.setAttribute("dominant-baseline", "central");
+
+            if (hasPendingStorage) {
+                txt.setAttribute("fill", "#ffffff");
+            } else if (!isAutoSucceed) {
+                txt.setAttribute("fill", "#fbbf24");
+            } else {
+                txt.setAttribute("fill", isDown ? "#6b7280" : "#9ca3af");
+            }
+            txt.setAttribute("font-size", "8");
+            txt.setAttribute("font-weight", "600");
+            txt.textContent = saveLabel;
+            btnG.appendChild(txt);
+
+            btnG.onclick = (e) => {
+                e.stopPropagation();
+                if (hasPendingStorage && !isDown) {
+                    completeStorageSave(n.id);
+                }
+            };
+
+            btnG.oncontextmenu = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                triggerAction("toggleStorageAutoSucceed", {node: n.id});
+            };
+
+            dockG.appendChild(btnG);
+            g.appendChild(dockG);
+
+            nodesLayer.appendChild(g);
+        });
+        applyTransform();
+    }
+
+    // Node Selection & Left Panel Rendering
+    function selectNode(nodeId) {
+        selectedNodeId = nodeId;
+        renderTopology();
+        renderSelectedNode();
+    }
+
+    function renderSelectedNode() {
+        if (!currentState) return;
+        const node = currentState.nodes.find(n => n.id === selectedNodeId) || currentState.nodes[0];
+        if (!node) return;
+
+        document.getElementById("selectedNodeId").textContent = node.id;
+        document.getElementById("nodeTerm").textContent = node.currentTerm;
+        document.getElementById("nodeTasks").textContent = node.pendingTasksCount ?? 0;
+        document.getElementById("nodeApplied").textContent = node.highestAppliedCommandIndex ?? 0;
+        document.getElementById("nodeOffset").textContent = node.logBufferOffset ?? 1;
+
+        // Role badge
+        const roleBadge = document.getElementById("selectedNodeRoleBadge");
+        roleBadge.textContent = `${node.id} (${node.isDown ? 'DOWN' : node.role})`;
+        roleBadge.className = `status-badge badge-${node.isDown ? 'down' : node.role.toLowerCase()}`;
+
+        // Power toggle button
+        const powerBtn = document.getElementById("nodePowerBtn");
+        if (node.isDown) {
+            powerBtn.className = "btn-success btn-sm";
+            powerBtn.textContent = "Start Node";
+            powerBtn.title = "Restart node: initialize participant and resume actor execution.";
+        } else {
+            powerBtn.className = "btn-danger btn-sm";
+            powerBtn.textContent = "Stop (Crash)";
+            powerBtn.title = "Simulate node crash: purge uncompleted volatile task queue and stop execution.";
+        }
+
+        // Step and Drain buttons status
+        const hasTasks = !node.isDown && (node.pendingTasksCount || 0) > 0;
+        const stepBtn = document.getElementById("btnStepNode");
+        if (stepBtn) {
+            stepBtn.disabled = !hasTasks;
+            stepBtn.style.opacity = hasTasks ? "1" : "0.45";
+            stepBtn.style.cursor = hasTasks ? "pointer" : "not-allowed";
+            stepBtn.title = node.isDown
+                ? `Node ${node.id} is DOWN. Execution halted.`
+                : !hasTasks
+                    ? `Node ${node.id} has no pending tasks to execute.`
+                    : `Execute a single pending task in this node's StepDoer queue (${node.pendingTasksCount} queued)`;
+        }
+
+        const drainBtn = document.getElementById("btnDrainNode");
+        if (drainBtn) {
+            drainBtn.disabled = !hasTasks;
+            drainBtn.style.opacity = hasTasks ? "1" : "0.45";
+            drainBtn.style.cursor = hasTasks ? "pointer" : "not-allowed";
+            drainBtn.title = node.isDown
+                ? `Node ${node.id} is DOWN. Execution halted.`
+                : !hasTasks
+                    ? `Node ${node.id} has no pending tasks to drain.`
+                    : `Execute all queued tasks in this node's StepDoer until idle (${node.pendingTasksCount} queued)`;
+        }
+
+        // Pending Persistence Operations for this node
+        const storageList = document.getElementById("storageOpsList");
+        const pendingSaves = (currentState.pendingPersistence || []).filter(p => p.nodeId === node.id);
+        document.getElementById("nodePendingStorageCount").textContent = pendingSaves.length;
+
+        const isAutoSucceed = node.isStorageAutoSucceed !== false;
+        const modeHeader = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem; font-size:0.72rem; padding:0.25rem 0.4rem; background:rgba(0,0,0,0.25); border:1px solid rgba(255,255,255,0.05); border-radius:4px;">
+            <span style="color:var(--text-subtle);">Mode: <strong style="color:${isAutoSucceed ? '#86efac' : '#fbbf24'};">${isAutoSucceed ? 'Auto-succeed' : 'Paused (manual)'}</strong></span>
+            <button class="btn-sm" style="font-size:0.65rem; padding:0.1rem 0.35rem;" onclick="triggerAction('toggleStorageAutoSucceed', {node: '${node.id}'})" title="Toggle persistence mode (or right-click 'save' on canvas)">${isAutoSucceed ? 'Pause' : 'Auto-succeed'}</button>
+          </div>`;
+
+        if (pendingSaves.length === 0) {
+            storageList.innerHTML = `${modeHeader}<div style="font-size:0.75rem; color:var(--text-subtle); text-align:center; padding:0.4rem;">No pending disk writes.</div>`;
+        } else {
+            storageList.innerHTML = modeHeader + pendingSaves.map(op => `
+          <div style="background:rgba(0,0,0,0.3); border:1px solid var(--border-color); border-radius:0.375rem; padding:0.4rem 0.6rem; display:flex; justify-content:space-between; align-items:center; margin-bottom:0.3rem;">
+            <div>
+              <div style="font-size:0.75rem; font-weight:600; color:#c7d2fe;">Save Op #${op.opId}</div>
+              <div style="font-size:0.7rem; color:var(--text-subtle);">Term: ${op.term} | ${op.recordsCount} record(s)</div>
+            </div>
+            <div style="display:flex; gap:0.25rem;">
+              <button class="btn-sm btn-success" onclick="handleCompleteStorageSave('${node.id}')" title="Execute next pending workspace save">Save</button>
+              <button class="btn-sm btn-danger" onclick="handleFailStorageSave(${op.opId})" title="Simulate disk failure">Fail</button>
+            </div>
+          </div>
+        `).join("");
+        }
+
+        updateClientCommandTooltips();
+    }
+
+    // Independent Log Tab Node Selector & Renderer
+    function handleLogNodeChange(nodeId) {
+        selectedLogNodeId = nodeId;
+        const badge = document.getElementById("logTabNodeBadge");
+        if (badge) badge.textContent = nodeId;
+        renderLogTable();
+    }
+
+    function renderLogNodeSelector() {
+        const sel = document.getElementById("logNodeSelect");
+        if (!sel || !currentState || !currentState.nodes) return;
+        const currentNodes = currentState.nodes.map(n => n.id);
+        if (!currentNodes.includes(selectedLogNodeId)) {
+            selectedLogNodeId = currentNodes[0] || "p-0";
+        }
+        const badge = document.getElementById("logTabNodeBadge");
+        if (badge) badge.textContent = selectedLogNodeId;
+
+        const optionsHtml = currentState.nodes.map(n => {
+            const roleStr = n.isDown ? "DOWN" : n.role;
+            return `<option value="${n.id}" ${n.id === selectedLogNodeId ? "selected" : ""}>${n.id} (${roleStr})</option>`;
+        }).join("");
+
+        if (sel.innerHTML !== optionsHtml) {
+            sel.innerHTML = optionsHtml;
+        }
+        sel.value = selectedLogNodeId;
+    }
+
+    function renderLogTable() {
+        if (!currentState || !currentState.nodes) return;
+        const node = currentState.nodes.find(n => n.id === selectedLogNodeId) || currentState.nodes[0];
+        if (!node) return;
+
+        const logBody = document.getElementById("logTableBody");
+        const logHead = document.getElementById("logTableHead");
+        const records = node.records || [];
+        const isLeader = node.role === "LEADER";
+
+        const title = document.getElementById("logEntriesTitle");
+        if (title) title.textContent = `📜 Log: ${node.id} (${node.isDown ? 'DOWN' : node.role})`;
+        const count = document.getElementById("logEntriesCount");
+        if (count) count.textContent = `${records.length} record(s)`;
+
+        if (logHead) {
+            if (isLeader) {
+                logHead.innerHTML = `
+            <tr>
+              <th colspan="4" style="text-align:center; border-bottom:1px solid var(--border-color); background:rgba(0,0,0,0.2);">Log</th>
+              <th colspan="2" style="text-align:center; border-bottom:1px solid var(--border-color); border-left:1px solid var(--border-color); background:rgba(0,0,0,0.35);">Progress</th>
+            </tr>
+            <tr>
+              <th style="width:40px;">Idx</th>
+              <th style="width:40px;">Term</th>
+              <th style="width:50px;">Kind</th>
+              <th>Summary</th>
+              <th style="width:75px; text-align:center; border-left:1px solid var(--border-color);" title="Number of remote peers that appended this record / total remote peers">Appended</th>
+              <th style="width:75px; text-align:center;" title="Number of remote peers that committed this record / total remote peers">Committed</th>
+            </tr>
+          `;
+            } else {
+                logHead.innerHTML = `
+            <tr>
+              <th style="width:40px;">Idx</th>
+              <th style="width:40px;">Term</th>
+              <th style="width:50px;">Kind</th>
+              <th>Summary</th>
+            </tr>
+          `;
+            }
+        }
+
+        if (!logBody) return;
+        if (records.length === 0) {
+            logBody.innerHTML = `<tr><td colspan="${isLeader ? 6 : 4}" style="text-align:center; color:var(--text-subtle);">Log empty</td></tr>`;
+        } else {
+            logBody.innerHTML = records.map(r => {
+                const isApplied = r.index <= node.highestAppliedCommandIndex;
+                const statusDesc = isApplied ? "Committed & applied to local StateMachine" : "Uncommitted / unapplied record";
+                return `
+            <tr class="${isApplied ? 'row-applied' : ''}" title="Index ${r.index}, Term ${r.term}: ${escapeHtml(r.kind)}. ${statusDesc}.">
+              <td style="font-family:monospace; font-weight:bold;">${r.index} ${isApplied ? '✓' : ''}</td>
+              <td style="font-family:monospace;">${r.term}</td>
+              <td><span style="font-size:0.65rem; padding:0.1rem 0.35rem; border-radius:3px; background:rgba(255,255,255,0.1); font-weight:600;">${escapeHtml(r.kind)}</span></td>
+              <td style="font-family:monospace; font-size:0.75rem;" title="${escapeHtml(r.summary)}">${escapeHtml(r.summary)}</td>
+              ${isLeader ? `
+                <td style="font-family:monospace; text-align:center; font-size:0.75rem; color:#93c5fd; border-left:1px solid var(--border-color);">${r.peersAppended || '—'}</td>
+                <td style="font-family:monospace; text-align:center; font-size:0.75rem; color:#86efac;">${r.peersCommitted || '—'}</td>
+              ` : ''}
+            </tr>
+          `;
+            }).join("");
+        }
+    }
+
+    // Right Panel Tabs & Queues
+    function switchRightTab(tabId) {
+        document.querySelectorAll(".tab-content").forEach(el => el.style.display = "none");
+        document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active"));
+        const tabEl = document.getElementById(tabId);
+        if (tabEl) tabEl.style.display = "flex";
+        const btn = event?.currentTarget || document.querySelector(`button[onclick*="${tabId}"]`);
+        if (btn) btn.classList.add("active");
+        if (tabId === "logTab") {
+            renderLogNodeSelector();
+            renderLogTable();
+        }
+    }
+
+    function renderRightPanel() {
+        if (!currentState) return;
+
+        // Packets Tab
+        const packets = currentState.pendingPackets || [];
+        document.getElementById("inFlightTabCount").textContent = packets.length;
+        const packetsBody = document.getElementById("packetsTableBody");
+
+        if (packets.length === 0) {
+            packetsBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-subtle);">No packets in flight</td></tr>`;
+        } else {
+            packetsBody.innerHTML = packets.map(p => `
+          <tr title="Packet #${p.id} (${p.kind}): ${p.source} ➔ ${p.destination}, departed at virtual time ${p.departureTime}">
+            <td style="font-family:monospace; font-weight:600; color:#93c5fd;">${p.source} &rarr; ${p.destination}</td>
+            <td>
+              <div style="font-size:0.75rem; font-weight:500;">${escapeHtml(p.summary)}</div>
+              <div style="font-size:0.65rem; color:var(--text-subtle);">Departed: t=${p.departureTime} | ${p.kind}</div>
+            </td>
+            <td style="text-align:right;">
+              <button class="btn-sm btn-primary" onclick="triggerAction('dispatchPacket', { packetId: ${p.id} })" title="Deliver packet #${p.id} to destination ${p.destination}">Deliver</button>
+              <button class="btn-sm btn-danger" onclick="triggerAction('dropPacket', { packetId: ${p.id} })" title="Drop packet #${p.id} to simulate network loss">Drop</button>
+            </td>
+          </tr>
+        `).join("");
+        }
+
+        // Timers Tab
+        const wakeups = currentState.pendingWakeUps || [];
+        document.getElementById("timersTabCount").textContent = wakeups.length;
+        const timersBody = document.getElementById("timersTableBody");
+
+        if (wakeups.length === 0) {
+            timersBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--text-subtle);">No scheduled timers</td></tr>`;
+        } else {
+            timersBody.innerHTML = wakeups.map(w => {
+                const delta = w.scheduledTime - (currentState.virtualTime || 0);
+                return `
+            <tr title="Timer token #${w.tokenId} on ${w.nodeId}: scheduled for t=${w.scheduledTime} (${delta > 0 ? delta + ' ticks remaining' : 'elapsed'}). Reason: ${escapeHtml(w.reason)}">
+              <td style="font-family:monospace; font-weight:600;">${w.nodeId}</td>
+              <td style="font-size:0.75rem;">${escapeHtml(w.reason)}</td>
+              <td style="font-family:monospace; font-size:0.75rem;">t=${w.scheduledTime} (${delta > 0 ? '+' + delta : delta})</td>
+            </tr>
+          `;
+            }).join("");
+        }
+
+        // Client Commands Tab
+        const commands = currentState.clientCommands || [];
+        document.getElementById("commandsTabCount").textContent = commands.length;
+        const commandsBody = document.getElementById("commandsTableBody");
+
+        if (commands.length === 0) {
+            commandsBody.innerHTML = `<tr><td colspan="2" style="text-align:center; color:var(--text-subtle);">No commands recorded</td></tr>`;
+        } else {
+            commandsBody.innerHTML = commands.map(c => `
+          <tr title="Command #${c.commandId}: ${escapeHtml(c.status)}">
+            <td style="font-family:monospace; font-weight:600;">Cmd #${c.commandId}</td>
+            <td>
+              <span class="status-badge ${c.status.startsWith('Processed') ? 'badge-leader' : c.status.startsWith('Failed') ? 'badge-down' : 'badge-candidate'}" title="Client command lifecycle outcome: ${escapeHtml(c.status)}">
+                ${escapeHtml(c.status)}
+              </span>
+            </td>
+          </tr>
+        `).join("");
+        }
+
+        // Node Log Tab
+        renderLogNodeSelector();
+        renderLogTable();
+    }
+
+    // Modal Channel Interaction
+    function openChannelModal(src, dst, packets) {
+        activeChannel = {src, dst};
+        document.getElementById("channelModalTitle").textContent = `Channel: ${src} ➔ ${dst}`;
+        refreshChannelModal();
+
+        const modal = document.getElementById("channelModal");
+        modal.classList.add("open");
+
+        const dialog = modal.querySelector(".modal-dialog");
+        if (dialog) {
+            if (!dialog.dataset.dragged) {
+                dialog.style.left = "50%";
+                dialog.style.top = "50%";
+                dialog.style.transform = "translate(-50%, -50%)";
+            } else {
+                const rect = dialog.getBoundingClientRect();
+                const maxW = window.innerWidth - dialog.offsetWidth;
+                const maxH = window.innerHeight - dialog.offsetHeight;
+                const clampedX = Math.max(0, Math.min(rect.left, Math.max(0, maxW)));
+                const clampedY = Math.max(0, Math.min(rect.top, Math.max(0, maxH)));
+                dialog.style.left = `${clampedX}px`;
+                dialog.style.top = `${clampedY}px`;
+            }
+        }
+
+        const btnNext = document.getElementById("btnDispatchNext");
+        const btnDrop = document.getElementById("btnDropNext");
+        const btnAll = document.getElementById("btnDispatchAllChannel");
+
+        btnNext.title = `Deliver next in-order packet from ${src} to ${dst}`;
+        btnDrop.title = `Drop next in-order packet from ${src} to ${dst}`;
+        btnAll.title = `Deliver all ${packets ? packets.length : 0} packet(s) on channel ${src} ➔ ${dst}`;
+
+        btnNext.onclick = () => triggerAction("dispatchNext", {from: src, to: dst});
+        btnDrop.onclick = () => triggerAction("dropNext", {from: src, to: dst});
+        btnAll.onclick = () => triggerAction("dispatchAllBetween", {from: src, to: dst});
+    }
+
+    function closeChannelModal() {
+        activeChannel = null;
+        expandedPacketRecords.clear();
+        document.getElementById("channelModal").classList.remove("open");
+    }
+
+    function setupModalDraggable() {
+        const dialog = document.querySelector("#channelModal .modal-dialog");
+        const header = document.querySelector("#channelModal .modal-header");
+        if (!dialog || !header) return;
+
+        let isDragging = false;
+        let startX = 0, startY = 0, initLeft = 0, initTop = 0;
+
+        header.addEventListener("pointerdown", (e) => {
+            if (e.target.closest("button")) return;
+            isDragging = true;
+            const rect = dialog.getBoundingClientRect();
+            dialog.style.transform = "none";
+            dialog.style.left = `${rect.left}px`;
+            dialog.style.top = `${rect.top}px`;
+            dialog.dataset.dragged = "true";
+            startX = e.clientX;
+            startY = e.clientY;
+            initLeft = rect.left;
+            initTop = rect.top;
+            try {
+                header.setPointerCapture(e.pointerId);
+            } catch (err) {
+            }
+        });
+
+        header.addEventListener("pointermove", (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            let newX = initLeft + dx;
+            let newY = initTop + dy;
+            const maxW = window.innerWidth - dialog.offsetWidth;
+            const maxH = window.innerHeight - dialog.offsetHeight;
+            newX = Math.max(0, Math.min(newX, Math.max(0, maxW)));
+            newY = Math.max(0, Math.min(newY, Math.max(0, maxH)));
+            dialog.style.left = `${newX}px`;
+            dialog.style.top = `${newY}px`;
+        });
+
+        header.addEventListener("pointerup", (e) => {
+            if (isDragging) {
+                isDragging = false;
+                try {
+                    header.releasePointerCapture(e.pointerId);
+                } catch (err) {
+                }
+            }
+        });
+
+        header.addEventListener("pointercancel", () => {
+            isDragging = false;
+        });
+
+        window.addEventListener("resize", () => {
+            if (dialog.dataset.dragged === "true") {
+                const rect = dialog.getBoundingClientRect();
+                const maxW = window.innerWidth - dialog.offsetWidth;
+                const maxH = window.innerHeight - dialog.offsetHeight;
+                if (rect.left > maxW && maxW > 0) dialog.style.left = `${maxW}px`;
+                if (rect.top > maxH && maxH > 0) dialog.style.top = `${maxH}px`;
+            }
+        });
+    }
+
+    // Client List Management
+    let clientList = ["client-1"];
+    let nextClientCounter = 2;
+
+    function renderClientList() {
+        const container = document.getElementById("clientListContainer");
+        if (!container) return;
+
+        const stats = (currentState && currentState.clientStats) ? currentState.clientStats : {};
+
+        let html = `
+        <table style="width:100%; border-collapse:collapse; font-size:0.75rem;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border-color); color:var(--text-subtle); text-transform:uppercase; font-size:0.65rem;">
+              <th style="padding:0.3rem 0.4rem; text-align:left;">Client</th>
+              <th style="padding:0.3rem 0.4rem; text-align:center;" title="Serial number of last command sent">Sent</th>
+              <th style="padding:0.3rem 0.4rem; text-align:center;" title="Serial number of last successful response received">Success</th>
+              <th style="padding:0.3rem 0.4rem; text-align:center;" title="Log RecordIndex where last command was applied">Rec Idx</th>
+              <th style="padding:0.3rem 0.4rem; text-align:right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+        clientList.forEach(clientId => {
+            const cStat = stats[clientId] || {};
+            const sentStr = (cStat.lastSent !== null && cStat.lastSent !== undefined) ? `#${cStat.lastSent}` : "—";
+            const succStr = (cStat.lastSuccess !== null && cStat.lastSuccess !== undefined) ? `#${cStat.lastSuccess}` : "—";
+            const recStr = (cStat.lastRecordIndex !== null && cStat.lastRecordIndex !== undefined) ? `@${cStat.lastRecordIndex}` : "—";
+
+            html += `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+            <td style="padding:0.3rem 0.4rem; font-family:monospace; font-weight:600; color:var(--text-main); white-space:nowrap;">${clientId}</td>
+            <td style="padding:0.3rem 0.4rem; text-align:center; font-family:monospace; color:#93c5fd;">${sentStr}</td>
+            <td style="padding:0.3rem 0.4rem; text-align:center; font-family:monospace; color:#34d399;">${succStr}</td>
+            <td style="padding:0.3rem 0.4rem; text-align:center; font-family:monospace; color:#fbbf24;">${recStr}</td>
+            <td style="padding:0.3rem 0.4rem; text-align:right; white-space:nowrap;">
+              <button class="btn-sm btn-success" style="padding:0.15rem 0.4rem; font-size:0.7rem;" onclick="submitClientCommand('${clientId}')" title="Submit command from ${clientId} to selected node (${selectedNodeId})">Send</button>
+              <button class="btn-sm btn-danger" style="padding:0.15rem 0.35rem; font-size:0.7rem;" onclick="handleRemoveClient('${clientId}')" title="Remove ${clientId}">✕</button>
+            </td>
+          </tr>
+        `;
+        });
+
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+    }
+
+    function updateClientCommandTooltips() {
+        renderClientList();
+    }
+
+    function handleAddClient() {
+        const id = `client-${nextClientCounter++}`;
+        clientList.push(id);
+        renderClientList();
+        showToast(`Added ${id}`, "info");
+    }
+
+    function handleRemoveClient(id) {
+        if (clientList.length <= 1) {
+            showToast("Cannot remove the last client", "warning");
+            return;
+        }
+        clientList = clientList.filter(c => c !== id);
+        renderClientList();
+        showToast(`Removed ${id}`, "info");
+    }
+
+    function submitClientCommand(clientId) {
+        triggerAction("submitCommand", {targetNode: selectedNodeId, client: clientId});
+    }
+
+    const expandedPacketRecords = new Set();
+
+    function toggleRecordTable(packetId) {
+        if (expandedPacketRecords.has(packetId)) {
+            expandedPacketRecords.delete(packetId);
+        } else {
+            expandedPacketRecords.add(packetId);
+        }
+        const isExpanded = expandedPacketRecords.has(packetId);
+        const row = document.getElementById(`records-row-${packetId}`);
+        const btn = document.getElementById(`btn-content-${packetId}`);
+        if (row) {
+            row.style.display = isExpanded ? "table-row" : "none";
+        }
+        if (btn) {
+            btn.textContent = isExpanded ? btn.dataset.expandedText : btn.dataset.collapsedText;
+        }
+    }
+
+    function refreshChannelModal() {
+        if (!activeChannel || !currentState) return;
+        const chKey = `${activeChannel.src}->${activeChannel.dst}`;
+        const channel = (currentState.channels || []).find(c => c.source === activeChannel.src && c.destination === activeChannel.dst);
+        const packets = channel ? channel.packets : [];
+
+        if (packets.length === 0) {
+            closeChannelModal();
+            return;
+        }
+
+        document.getElementById("channelModalSubtitle").textContent = `Packets in transit: ${packets.length}`;
+        const body = document.getElementById("channelModalTableBody");
+
+        let html = "";
+        packets.forEach(p => {
+            const isReq = p.kind === 'Request';
+            const opStr = p.rpcKind ? `${p.rpcKind}${isReq ? '?' : '!'}` : p.kind;
+            const hasRecords = p.records && p.records.length > 0;
+            const isExpanded = expandedPacketRecords.has(p.id);
+            const collapsedText = `Content (${p.records ? p.records.length : 0}) ▼`;
+            const expandedText = `Content (${p.records ? p.records.length : 0}) ▲`;
+            const contentBtn = hasRecords
+                ? `<button id="btn-content-${p.id}" class="btn-sm" style="margin-left:6px; font-size:0.65rem; padding:0.1rem 0.35rem; background:#1e1b4b; border-color:#4338ca; color:#c7d2fe;" onclick="toggleRecordTable(${p.id})" data-collapsed-text="${collapsedText}" data-expanded-text="${expandedText}" title="Toggle batch records table">${isExpanded ? expandedText : collapsedText}</button>`
+                : "";
+
+            html += `
+          <tr title="Packet #${p.id} (${opStr}): ${escapeHtml(p.summary)}">
+            <td style="font-family:monospace; white-space:nowrap;">#${p.id}</td>
+            <td style="white-space:nowrap;"><span class="status-badge ${isReq ? 'badge-follower' : 'badge-candidate'}">${opStr}</span></td>
+            <td style="font-size:0.75rem;">
+              <span>${escapeHtml(p.summary)}</span>${contentBtn}
+            </td>
+            <td style="text-align:right; white-space:nowrap;">
+              <button class="btn-sm btn-primary" onclick="triggerAction('dispatchPacket', { packetId: ${p.id} })" title="Deliver packet #${p.id} to ${activeChannel.dst}">Deliver</button>
+              <button class="btn-sm btn-danger" onclick="triggerAction('dropPacket', { packetId: ${p.id} })" title="Drop packet #${p.id}">Drop</button>
+            </td>
+          </tr>
+        `;
+
+            if (hasRecords) {
+                html += `
+            <tr id="records-row-${p.id}" class="record-detail-row" style="display:${isExpanded ? 'table-row' : 'none'}; background:rgba(15, 23, 42, 0.85);">
+              <td colspan="4" style="padding:0.5rem 0.8rem;">
+                <table style="width:100%; border-collapse:collapse; font-size:0.75rem;">
+                  <thead>
+                    <tr style="border-bottom:1px solid #374151; color:var(--text-subtle); text-transform:uppercase; font-size:0.65rem;">
+                      <th style="padding:0.2rem 0.4rem; text-align:left; width:50px;">Index</th>
+                      <th style="padding:0.2rem 0.4rem; text-align:left; width:50px;">Term</th>
+                      <th style="padding:0.2rem 0.4rem; text-align:left; width:120px;">Kind</th>
+                      <th style="padding:0.2rem 0.4rem; text-align:left;">Payload Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${p.records.map(r => `
+                      <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+                        <td style="padding:0.2rem 0.4rem; font-family:monospace; color:#93c5fd;">@${r.index}</td>
+                        <td style="padding:0.2rem 0.4rem; font-family:monospace; color:#fcd34d;">T:${r.term}</td>
+                        <td style="padding:0.2rem 0.4rem; color:#a7f3d0;">${escapeHtml(r.kind)}</td>
+                        <td style="padding:0.2rem 0.4rem; color:var(--text-main); font-family:monospace; font-size:0.7rem;">${escapeHtml(r.summary)}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          `;
+            }
+        });
+
+        body.innerHTML = html;
+    }
+
+    // Node & Cluster Action Handlers
+    function stepNode(nodeId) {
+        triggerAction("stepNode", {node: nodeId});
+    }
+
+    function drainNode(nodeId) {
+        triggerAction("drainNode", {node: nodeId});
+    }
+
+    function completeStorageSave(nodeId) {
+        triggerAction("completeStorageSave", {node: nodeId});
+    }
+
+    function handleStepNode() {
+        stepNode(selectedNodeId);
+    }
+
+    function handleDrainNode() {
+        drainNode(selectedNodeId);
+    }
+
+    function handleToggleNodePower() {
+        const node = currentState?.nodes.find(n => n.id === selectedNodeId);
+        if (!node) return;
+        if (node.isDown) {
+            triggerAction("startNode", {node: selectedNodeId});
+        } else {
+            triggerAction("releaseNode", {node: selectedNodeId});
+        }
+    }
+
+    function renderConfigPills() {
+        const container = document.getElementById("configPillsContainer");
+        const btn = document.getElementById("btnRequestConfigChange");
+        if (!container || !currentState || !currentState.nodes) return;
+
+        const currentIds = currentState.nodes.map(n => n.id);
+        const invalidIds = Array.from(selectedConfigNodeIds).filter(id => !currentIds.includes(id));
+        if (invalidIds.length > 0 || selectedConfigNodeIds.size === 0) {
+            selectedConfigNodeIds.clear();
+            currentIds.forEach(id => selectedConfigNodeIds.add(id));
+            configPillsDirty = false;
+        }
+
+        container.innerHTML = currentIds.map(id => {
+            const active = selectedConfigNodeIds.has(id);
+            return `<button type="button" class="config-pill ${active ? 'active' : ''}" onclick="toggleConfigPill('${id}')" title="Click to ${active ? 'exclude' : 'include'} ${id} in desired configuration">${id}</button>`;
+        }).join("");
+
+        if (btn) {
+            btn.disabled = !configPillsDirty;
+            btn.style.opacity = configPillsDirty ? "1" : "0.5";
+            btn.style.cursor = configPillsDirty ? "pointer" : "not-allowed";
+        }
+    }
+
+    function toggleConfigPill(nodeId) {
+        if (selectedConfigNodeIds.has(nodeId)) {
+            selectedConfigNodeIds.delete(nodeId);
+        } else {
+            selectedConfigNodeIds.add(nodeId);
+        }
+        configPillsDirty = true;
+        renderConfigPills();
+    }
+
+    function handleSubmitConfig() {
+        if (!configPillsDirty) return;
+        const desired = Array.from(selectedConfigNodeIds).join(",");
+        if (!desired) {
+            showToast("Desired configuration cannot be empty", "warning");
+            return;
+        }
+        triggerAction("submitConfigChange", {targetNode: selectedNodeId, desired});
+        configPillsDirty = false;
+        renderConfigPills();
+    }
+
+    function handleCompleteStorageSave(nodeId) {
+        completeStorageSave(nodeId);
+    }
+
+    function handleFailStorageSave(opId) {
+        triggerAction("failStorageSave", {opId: opId, error: "Simulated write failure"});
+    }
+
+    function handleResetCluster() {
+        selectedConfigNodeIds.clear();
+        configPillsDirty = false;
+        const size = parseInt(document.getElementById("clusterSizeInput").value) || 3;
+        triggerAction("resetCluster", {clusterSize: size});
+    }
+
+    function handlePresetChange(preset) {
+        if (!preset || preset === "empty") return;
+        selectedConfigNodeIds.clear();
+        configPillsDirty = false;
+        clientList = ["client-1"];
+        nextClientCounter = 2;
+        renderClientList();
+        if (preset === "default") {
+            handleResetCluster();
+        } else {
+            triggerAction("loadPreset", {preset});
+        }
+    }
+
+    // =========================================================================
+    // View 1 (Scenario Initializer) & Dynamic Settings Drawer Logic
+    // =========================================================================
+
+    function renderPresetCards() {
+        const container = document.getElementById("presetCardsContainer");
+        if (!container) return;
+
+        container.innerHTML = Object.values(PRESETS).map(p => {
+            const isActive = selectedPreset === p.id;
+            const seedStr = p.id === "custom" ? "customizable" : `{${p.seedNodes.join(", ")}}`;
+            return `
+          <div class="preset-card ${isActive ? 'active' : ''}" onclick="selectPreset('${p.id}')">
+            <div class="preset-card-title">${escapeHtml(p.name)}</div>
+            <div class="preset-card-desc">${escapeHtml(p.description)}</div>
+            <div class="preset-card-meta">Pool: ${p.clusterSize} | Seeds: ${seedStr}</div>
+          </div>
+        `;
+        }).join("");
+    }
+
+    function selectPreset(presetId) {
+        selectedPreset = presetId;
+        const preset = PRESETS[presetId];
+        if (!preset) return;
+
+        const sizeInput = document.getElementById("initClusterSize");
+        const inFlightInput = document.getElementById("initMaxInFlight");
+        const compactInput = document.getElementById("initLogCompaction");
+
+        if (presetId !== "custom") {
+            if (sizeInput) sizeInput.value = preset.clusterSize;
+            if (inFlightInput) inFlightInput.value = preset.maxInFlight;
+            if (compactInput) compactInput.value = preset.logCompaction;
+            initSeedNodes = new Set(preset.seedNodes);
+        }
+
+        renderPresetCards();
+        renderInitSeedPills();
+    }
+
+    function onInitClusterSizeChange(newSizeVal) {
+        let size = parseInt(newSizeVal) || 3;
+        size = Math.max(1, Math.min(9, size));
+        const sizeInput = document.getElementById("initClusterSize");
+        if (sizeInput) sizeInput.value = size;
+
+        // Keep only valid nodes in initSeedNodes, add newly created nodes
+        const validIds = new Set();
+        for (let i = 0; i < size; i++) validIds.add(`p-${i}`);
+        for (const id of Array.from(initSeedNodes)) {
+            if (!validIds.has(id)) initSeedNodes.delete(id);
+        }
+        for (let i = 0; i < size; i++) {
+            const id = `p-${i}`;
+            if (!initSeedNodes.has(id)) initSeedNodes.add(id);
+        }
+
+        selectedPreset = "custom";
+        renderPresetCards();
+        renderInitSeedPills();
+    }
+
+    function renderInitSeedPills() {
+        const container = document.getElementById("initSeedPillsContainer");
+        if (!container) return;
+
+        const sizeInput = document.getElementById("initClusterSize");
+        const size = parseInt(sizeInput?.value) || 3;
+
+        let html = "";
+        for (let i = 0; i < size; i++) {
+            const id = `p-${i}`;
+            const active = initSeedNodes.has(id);
+            html += `<button type="button" class="seed-pill ${active ? 'active' : ''}" onclick="toggleInitSeedPill('${id}')" title="Click to ${active ? 'exclude from' : 'include in'} initial seed configuration">${id} ${active ? '✓' : '✗'}</button>`;
+        }
+        container.innerHTML = html;
+    }
+
+    function toggleInitSeedPill(nodeId) {
+        if (initSeedNodes.has(nodeId)) {
+            initSeedNodes.delete(nodeId);
+        } else {
+            initSeedNodes.add(nodeId);
+        }
+        selectedPreset = "custom";
+        renderPresetCards();
+        renderInitSeedPills();
+    }
+
+    function selectAllSeedNodes(all) {
+        const sizeInput = document.getElementById("initClusterSize");
+        const size = parseInt(sizeInput?.value) || 3;
+        initSeedNodes.clear();
+        if (all) {
+            for (let i = 0; i < size; i++) initSeedNodes.add(`p-${i}`);
+        }
+        selectedPreset = "custom";
+        renderPresetCards();
+        renderInitSeedPills();
+    }
+
+    function handleLaunchScenario() {
+        const sizeInput = document.getElementById("initClusterSize");
+        const inFlightInput = document.getElementById("initMaxInFlight");
+        const compactInput = document.getElementById("initLogCompaction");
+
+        const size = parseInt(sizeInput?.value) || 3;
+        const maxInFlight = parseInt(inFlightInput?.value) || 2;
+        const logCompaction = parseInt(compactInput?.value) || 5;
+
+        if (initSeedNodes.size === 0) {
+            showToast("Seed quorum cannot be empty. Select at least one seed node.", "error");
+            return;
+        }
+
+        const seedNodesStr = Array.from(initSeedNodes).join(",");
+
+        triggerAction("initScenario", {
+            preset: selectedPreset,
+            clusterSize: size,
+            seedNodes: seedNodesStr,
+            maxInFlight: maxInFlight,
+            logCompaction: logCompaction
+        });
+
+        const badge = document.getElementById("activeScenarioBadge");
+        if (badge) {
+            badge.textContent = PRESETS[selectedPreset]?.name || "Custom Scenario";
+        }
+
+        sessionStorage.setItem("consensus_view", "workspace");
+        switchToWorkspace();
+    }
+
+    function switchToWorkspace() {
+        currentView = "workspace";
+        sessionStorage.setItem("consensus_view", "workspace");
+        const vInit = document.getElementById("viewInitializer");
+        const vWork = document.getElementById("viewWorkspace");
+        if (vInit) vInit.style.display = "none";
+        if (vWork) vWork.style.display = "flex";
+        const btnReturn = document.getElementById("btnReturnWorkspace");
+        if (btnReturn) btnReturn.style.display = "inline-flex";
+
+        setTimeout(() => {
+            applyTransform();
+            renderTopology();
+        }, 50);
+    }
+
+    function switchToInitializer() {
+        currentView = "initializer";
+        sessionStorage.setItem("consensus_view", "initializer");
+        const vInit = document.getElementById("viewInitializer");
+        const vWork = document.getElementById("viewWorkspace");
+        if (vWork) vWork.style.display = "none";
+        if (vInit) vInit.style.display = "flex";
+
+        // If currentState has settings, pre-populate View 1 fields
+        if (currentState?.settings) {
+            const s = currentState.settings;
+            const sizeInput = document.getElementById("initClusterSize");
+            const inFlightInput = document.getElementById("initMaxInFlight");
+            const compactInput = document.getElementById("initLogCompaction");
+            if (sizeInput) sizeInput.value = s.clusterSize;
+            if (inFlightInput) inFlightInput.value = s.maxInFlightAppendsPerPeer;
+            if (compactInput) compactInput.value = s.logCompactionThreshold;
+            if (s.seedNodes) {
+                initSeedNodes = new Set(s.seedNodes);
+            }
+            renderPresetCards();
+            renderInitSeedPills();
+        }
+
+        const btnReturn = document.getElementById("btnReturnWorkspace");
+        if (btnReturn && currentState?.nodes && currentState.nodes.length > 0) {
+            btnReturn.style.display = "inline-flex";
+        }
+    }
+
+    function toggleSettingsDrawer() {
+        const drawer = document.getElementById("settingsDrawer");
+        if (!drawer) return;
+        const isOpen = drawer.classList.contains("open");
+        if (isOpen) {
+            drawer.classList.remove("open");
+        } else {
+            drawer.classList.add("open");
+            // Populate current values
+            if (currentState?.settings) {
+                const retriesInput = document.getElementById("drawerRetiringMaxRetries");
+                const retentionInput = document.getElementById("drawerLogRetention");
+                if (retriesInput) retriesInput.value = currentState.settings.retiringParticipantMaxRetries;
+                if (retentionInput) retentionInput.value = currentState.settings.logRetentionAfterSnapshot;
+            }
+        }
+    }
+
+    function applyDynamicSettings() {
+        const retriesInput = document.getElementById("drawerRetiringMaxRetries");
+        const retentionInput = document.getElementById("drawerLogRetention");
+
+        const params = {};
+        if (retriesInput?.value) params.retiringMaxRetries = parseInt(retriesInput.value);
+        if (retentionInput?.value) params.logRetention = parseInt(retentionInput.value);
+
+        triggerAction("updateDynamicSettings", params);
+        toggleSettingsDrawer();
+    }
+
+    function handleAdvanceToNextWakeUp() {
+        if (!currentState || !currentState.pendingWakeUps || currentState.pendingWakeUps.length === 0) {
+            showToast("No pending timers scheduled", "info");
+            return;
+        }
+        const sorted = [...currentState.pendingWakeUps].sort((a, b) => a.scheduledTime - b.scheduledTime);
+        const nextTime = sorted[0].scheduledTime;
+        const ticks = Math.max(1, nextTime - (currentState.virtualTime || 0));
+        triggerAction("advanceTime", {ticks});
+    }
+
+    async function handleShutdownServer() {
+        if (!confirm("Are you sure you want to stop the consensus playground server?")) return;
+        isShuttingDown = true;
+        serverAvailable = false;
+        if (eventSource) {
+            try {
+                eventSource.close();
+            } catch (e) {
+            }
+            eventSource = null;
+        }
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+        }
+        updateServerStatusBadge(false, "○ Disconnected (Server Stopped)");
+        showToast("Server shutdown initiated. Process exiting...", "info");
+
+        try {
+            await fetch(`${API_BASE}/api/action`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({action: "shutdown"})
+            });
+        } catch (err) {
+            // Socket closed or connection aborted during shutdown is expected
+        }
+    }
+
+    // Client-side Initial Mock State (Used when viewed directly as file or before server launch)
+    function getMockInitialState() {
+        return {
+            virtualTime: 0,
+            clusterSize: 3,
+            nodes: [
+                {
+                    id: "p-0",
+                    role: "LEADER",
+                    currentTerm: 1,
+                    isDown: false,
+                    logBufferOffset: 1,
+                    firstEmptyRecordIndex: 2,
+                    highestAppliedCommandIndex: 1,
+                    pendingTasksCount: 0,
+                    hasPendingTasks: false,
+                    records: [{index: 1, term: 1, kind: "TCC", summary: "{} -> {p-0, p-1, p-2}", peersAppended: "2/2", peersCommitted: "2/2"}]
+                },
+                {
+                    id: "p-1",
+                    role: "FOLLOWER",
+                    currentTerm: 1,
+                    isDown: false,
+                    logBufferOffset: 1,
+                    firstEmptyRecordIndex: 2,
+                    highestAppliedCommandIndex: 1,
+                    pendingTasksCount: 0,
+                    hasPendingTasks: false,
+                    records: [{index: 1, term: 1, kind: "TCC", summary: "{} -> {p-0, p-1, p-2}"}]
+                },
+                {
+                    id: "p-2",
+                    role: "FOLLOWER",
+                    currentTerm: 1,
+                    isDown: false,
+                    logBufferOffset: 1,
+                    firstEmptyRecordIndex: 2,
+                    highestAppliedCommandIndex: 1,
+                    pendingTasksCount: 0,
+                    hasPendingTasks: false,
+                    records: [{index: 1, term: 1, kind: "TCC", summary: "{} -> {p-0, p-1, p-2}"}]
+                }
+            ],
+            channels: [
+                {source: "p-0", destination: "p-1", packets: [{id: 1, source: "p-0", destination: "p-1", departureTime: 0, kind: "Request", summary: "appendRecords(term=1, prevIdx=1)"}]}
+            ],
+            pendingPackets: [
+                {id: 1, source: "p-0", destination: "p-1", departureTime: 0, kind: "Request", summary: "appendRecords(term=1, prevIdx=1)"}
+            ],
+            pendingPersistence: [],
+            pendingWakeUps: [
+                {tokenId: 1, nodeId: "p-0", reason: "HeartbeatBroadcast", scheduledTime: 10, wakeupsDone: 0}
+            ],
+            clientCommands: [],
+            invariants: {logMatching: true, error: ""}
+        };
+    }
+</script>
+</body>
+</html>

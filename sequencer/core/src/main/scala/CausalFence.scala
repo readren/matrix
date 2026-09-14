@@ -112,12 +112,12 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 	 * @return a [[doer.Capture]] yielding the state that the next update will be causally anchored to — i.e. the same state an updater would see if [[advance]] were called at this moment.
 	 * @note When derived updates (those done to secondary state that derives from the primary state) have causal dependencies among themselves, you must enforce deterministic order by other means: use causal derivation functions (anchor only the dependent update and derive prerequisites synchronously from the anchored state), or, if derived updates are fast and the advance is not speculative, compose them into the `primaryStateUpdater` passed to [[advanceIf]] or [[advanceIf]]. Composition is not safe for speculative advances, because rollback during the derived update phase could succeed when it should not.\
 	 * Independent subscriptions to [[causalAnchor]] are appropriate only for derived updates that are order‑independent. */
-	def causalAnchor(completionObserver: CompletionObserver[A]): doer.Capture[A] = { // TODO Consolidate the callbacks into a trait.
+	def causalAnchor(completionObserver: CompletionObserver[A]): doer.Capture[A] = {
 		doer.checkWithin()
 		val lec = lastEnqueuedCovenant
 		val lcc = lastCommittedCovenant
 		if lec eq lcc then {
-			lcc.maybeResult.fold(throw IllegalStateException())(e => completionObserver.onError(e, ARRIVED_BEFORE))(a => completionObserver.onSuccess(a, ARRIVED_BEFORE))
+			if completionObserver ne CompletionIgnorer then lcc.maybeResult.fold(throw IllegalStateException())(e => completionObserver.onError(e, ARRIVED_BEFORE))(a => completionObserver.onSuccess(a, ARRIVED_BEFORE))
 			lec
 		} else {
 			val thisStepCovenant = doer.Captor[A]()
@@ -171,16 +171,12 @@ class CausalFence[A, D <: Doer](val doer: D)(initialState: A) {
 		step((a, _) => primaryStateUpdater(a), isGuarded)
 	}
 
-	/** A non-speculative state updater that natively bridges to the internal Function2 signature of [[step]].
-	 *
-	 * In an ideal world, when an updater needs to produce an auxiliary result (like a report), dvanceIf would have the signature:
-	 * dvanceIf[B <: A, X](primaryStateUpdater: A => Maybe[doer.Mono[(B, X)]]): doer.Capture[(A | B, X)]`n	 * However, that elegant approach incurs at least two allocations per call to instantiate the tuples.
-	 *
-	 * Extending this trait allows callers to overcome that limitation efficiently. By implementing this trait on a stateful object (which acts as a side-channel reporter),
-	 * the caller can consolidate the reporter and the functional argument into a single object.
-	 * Because this trait natively extends the Function2 signature expected by [[step]], it can be passed to [[advanceIfWith]] without incurring closure adapter allocations,
-	 * while completely hiding the speculative [[RollbackAccessor]] from the implementer.
-	 */
+	/** A non-speculative state updater that natively bridges to the internal Function2 signature of [[step]]. \
+	 * In an ideal world, when an updater needs to produce an auxiliary result (like a report), `advanceIf` would have the signature:
+	 * {{{def advanceIf[B <: A, X](primaryStateUpdater: A => Maybe[doer.Mono[(B, X)]]): doer.Capture[(A | B, X)]}}}
+	 * However, that elegant approach incurs at least two allocations per call to instantiate the tuples. \
+	 * Extending this trait allows callers to overcome that limitation efficiently. By implementing this trait on a stateful object (which acts as a side-channel reporter), the caller can consolidate the reporter and the functional argument into a single object.\
+	 * Because this trait natively extends the Function2 signature expected by [[step]], it can be passed to [[advanceIfWith]] without incurring closure adapter allocations, while completely hiding the speculative [[RollbackAccessor]] from the implementer. */
 	trait Updater[B <: A] extends ((A, RollbackAccessor[B]) => Maybe[doer.Mono[A | B]]) {
 		def update(state: A): Maybe[doer.Mono[B]]
 

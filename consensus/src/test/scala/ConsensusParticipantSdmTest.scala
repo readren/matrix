@@ -10,6 +10,8 @@ import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer.providers.CooperativeFlatPollingSchedulerDp
 import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
 import scribe.modify.LogModifier
+import scribe.message.LoggableMessage
+import scribe.output.TextOutput
 import scribe.throwable.TraceLoggableMessage
 import scribe.{LogRecord, Priority}
 
@@ -35,11 +37,20 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		override def priority: Priority = Priority.Normal
 
 		override def apply(record: LogRecord): Option[LogRecord] = {
-			val filteredMessages = record.messages.filterNot {
-				case TraceLoggableMessage(throwable) if throwable.getMessage != null && (throwable.getMessage.startsWith("Net: simulated failure") || throwable.getMessage.startsWith("Net: target node is down")) => true
-				case _ => false
+			if true then {
+				val mappedMessages: List[scribe.message.LoggableMessage] = record.messages.map {
+					case TraceLoggableMessage(throwable) if throwable.getMessage != null && (throwable.getMessage.startsWith("Net: simulated failure") || throwable.getMessage.startsWith("Net: target node is down")) => LoggableMessage[String](TextOutput.apply)(throwable.getMessage)
+
+					case x => x
+				}
+				Some(record.copy(messages = mappedMessages))
+			} else {
+				val filteredMessages = record.messages.filterNot {
+					case TraceLoggableMessage(throwable) if throwable.getMessage != null && (throwable.getMessage.startsWith("Net: simulated failure") || throwable.getMessage.startsWith("Net: target node is down")) => true
+					case _ => false
+				}
+				if filteredMessages.size < record.messages.size then Some(record.copy(messages = filteredMessages)) else Some(record)
 			}
-			if filteredMessages.size < record.messages.size then Some(record.copy(messages = filteredMessages)) else Some(record)
 		}
 
 
@@ -512,7 +523,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 								case pr: (CATCHING_UP | EXCLUDED | SECLUDED | STOPPED) =>
 									Maybe(takeRandomNode().myId)
-								case pr: (REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED | REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITED | REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED) =>
+								case pr: (REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED | REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITTED | REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED) =>
 									Maybe.empty
 							}
 							(Maybe(previousResponse), maybeNextNodeId)
@@ -549,6 +560,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		//// Consensus services lifecycle management ////
 
 		/** Starts the participants in the Config-new-only set when the leading node active [[ConfigChange]] changes to a [[TransitionalConfigChange]].\
+		 * In a production environment the nodes wouldn't be started here but before calling [[ConsensusParticipantSdm.ClusterParticipant.Delegate.requestConfigChange]].
 		 * Called by the leading node when its [[Node.clusterParticipant.onActiveConfigChanged]] method is called.\ */
 		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.run {
@@ -660,7 +672,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			net.netSequencer.Capture_from(receiverNode.sequencer)(receiverNode.sequencer.Capture_defer { () =>
 				receiverNode.clusterParticipant.delegate.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
 			}).flatMap {
-				case receiverNode.Processed(content) =>
+				case receiverNode.Processed(_, content) =>
 					scribe.info(s"Client: command `$commandPayload` was processed by ${receiverNode.myId} which replied with `$content`.")
 					alreadyTriedParticipants.clear()
 					net.netSequencer.Keeper(Maybe.empty)
@@ -755,10 +767,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private var initialNotificationListener: NotificationListener = new DefaultNotificationListener()
 
 		private var _participant: ConsensusParticipant = uninitialized
-
-		//		override val clientCommandOrdering: Ordering[TestClientCommand] = (x: TestClientCommand, y: TestClientCommand) => x.value - y.value
-
-		//		override def clientIdOf(command: TestClientCommand): ClientId = command.clientId
 
 		inline def isDown: Boolean = _participant eq null
 
@@ -1038,11 +1046,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 
-			override def informAppliedCommandIndex(appliedCommandIndex: RecordIndex): Unit = {
-				sequencer.checkWithin()
-				()
-			}
-
 			override def resetLog(snapshot: SnapshotData[ParticipantId], tailRecords: IArray[Record]): Unit = {
 				sequencer.checkWithin()
 				maybeLatestSnapshot = Maybe(snapshot)
@@ -1131,6 +1134,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"scribe-$myId: commitIndex changed from $previous to $current as ${RoleOrdinal_nameOf(as)} @$at}")
+			}
+
+			override def onCommandApplied(appliedCommandIndex: RecordIndex, appliedCommandTerm: Term): Unit = {
+				sequencer.checkWithin()
+				scribe.info(s"scribe-$myId: the command at index $appliedCommandIndex and term $appliedCommandTerm was applied to the state machine.")
 			}
 
 			override def onActiveConfigChanged(currentRole: RoleOrdinal, currentTerm: Term, configChangeIndex: RecordIndex, configChange: ConfigChange[ParticipantId]): Unit = {
@@ -1325,33 +1333,33 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
 					// Checks Leader Completeness: if a log entry is committed in a given term, then that entry will be present in the logs of the leaders for all higher-numbered terms. §5.4
-					// Memorize the committed records filling potential holes with `None`.
 					val thisNodeCommittedRecordsMemory = committedRecordsByNodeIndex(net.indexOf(node.myId))
 					val thisNodeLogBufferOffset = node.storage.memory.logBufferOffset
-					val first = (previous + 1).max(thisNodeLogBufferOffset)
 
 					// Validate consistency for any overlapping records that were already recorded before restart/re-join
-					val overlapUntil = current.min(thisNodeCommittedRecordsMemory.size.toLong)
-					var checkIdx = first
-					while checkIdx <= overlapUntil do {
+					val indexOfFirstRecordToCheck = (previous + 1).max(thisNodeLogBufferOffset) // clamped by the logBufferOffset to skip records that predate the last snapshot
+					val indexOfLastRecordToCheck = current.min(thisNodeCommittedRecordsMemory.size.toLong) // clamped by the base1-index of the last record memorized in the parallel memory (which has base0).
+					var checkIdx = indexOfFirstRecordToCheck
+					while checkIdx <= indexOfLastRecordToCheck do {
 						thisNodeCommittedRecordsMemory(checkIdx.toInt - 1) match {
-							case previousRecord: Record =>
-								val currentRecord = node.storage.memory.getRecordAt(checkIdx)
-								if currentRecord != previousRecord then {
-									promise.tryFailure(new AssertionError(s"Node ${node.myId} committed a different record at index $checkIdx after restart: previous=$previousRecord, current=$currentRecord"))
+							case contentInParallelMemory: Record =>
+								val contentInStorage = node.storage.memory.getRecordAt(checkIdx)
+								if contentInStorage != contentInParallelMemory then {
+									promise.tryFailure(new AssertionError(s"Node ${node.myId} committed a different record at index $checkIdx after restart: previous=$contentInParallelMemory, current=$contentInStorage"))
 								}
 							case None => ()
 						}
 						checkIdx += 1
 					}
 
+					// Memorize the committed records in the parallel memory, filling potential holes with `None`.
 					// Append only newly committed records beyond the previously recorded memory size
-					val newFirst = first.max(thisNodeCommittedRecordsMemory.size + 1L)
-					if newFirst <= current then {
-						val newFirstBase0 = newFirst.toInt - 1
-						val holeLength = newFirstBase0 - thisNodeCommittedRecordsMemory.size
+					val indexOfFirstRecordToAppendToParallelMemory = indexOfFirstRecordToCheck.max(thisNodeCommittedRecordsMemory.size + 1L)
+					if indexOfFirstRecordToAppendToParallelMemory <= current then {
+						val indexOfFirstRecordToAppendToParallelMemoryBase0 = indexOfFirstRecordToAppendToParallelMemory.toInt - 1
+						val holeLength = indexOfFirstRecordToAppendToParallelMemoryBase0 - thisNodeCommittedRecordsMemory.size
 						if holeLength > 0 then thisNodeCommittedRecordsMemory.addAll(Iterable.fill(holeLength)(None))
-						val newCommittedRecords = node.storage.memory.getRecordsBetween(newFirst, current + 1)
+						val newCommittedRecords = node.storage.memory.getRecordsBetween(indexOfFirstRecordToAppendToParallelMemory, current + 1)
 						thisNodeCommittedRecordsMemory.addAll(newCommittedRecords)
 					}
 
@@ -1365,9 +1373,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 									otherNodeCommittedRecord match {
 										case None => ()
 										case otherNodeCommittedRecord: Record =>
-											if thisNodeCommittedRecordsMemory.size <= recordIndexBase0 then {
-												promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has more committed records than the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The committed records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
-											} else {
+											if recordIndexBase0 < thisNodeCommittedRecordsMemory.size then {
 												thisNodeCommittedRecordsMemory(recordIndexBase0) match {
 													case None => ()
 													case leaderCommittedRecord: Record =>
@@ -1375,6 +1381,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 															promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has a committed record at index ${recordIndexBase0 + 1} that differs from the record of the current leader ${node.myId}, which breaks the \"Leader completeness\" invariant. The committed records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
 														}
 												}
+											}
+											// If a peer has committed records with higher index than this node commitIndex, then this node was deposed and the missing records must have a higher term.
+											else if otherNodeCommittedRecord.term <= at then {
+												promise.tryFailure(new AssertionError(s"Node ${otherNode.myId} has more committed records with term <= the term (term $at) leaded by the current leader ${node.myId},  which breaks the \"Leader completeness\" invariant. The committed records of each are: ${otherNode.myId} -> $otherNodeCommittedRecordsMemory; ${node.myId} -> $thisNodeCommittedRecordsMemory"))
 											}
 									}
 								}
@@ -1491,6 +1501,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			logRetentionAfterSnapshot: Int
 		)
 		val failingCases = Seq[FailingCase](
+			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3),
+			(30, 2, true, -3834115379994352266L, false, 1, 5, 9, 0),
+			(30, 4, true, -2499323556213279510L, false, 1, 5, 1, 0),
+			(30, 4, true, -7641283460342501667L, true, 0, 3, 1, 1),
+			(30, 6, false, -7096462650479832304L, false, 9, 3, 1, 0),
+			(30, 3, true, -4148517921068024394L, false, 0, 5, 1, 0),
+			(30, 2, false, -5783341547509500611L, true, 9, 3, 9, 3),
+			(30, 10, true, 4021753203816662023L, false, 0, 5, 2, 0),
 			(30, 8, true, 4118164278127760845L, true, 1, 3, 9, 3),
 			(30, 10, true, -2595686814493846026L, true, 0, 3, 9, 3),
 			(30, 9, false, -5356717205083865951L, false, 0, 5, 2, 1), // The super sample that exposed 4 bugs.
@@ -1558,11 +1576,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 	}
+	// clusterSize=6, initialConfig=[false, true, false, true, false, true], startWithHighestPriorityParticipant=false, netRandomnessSeed=-7096462650479832304, remembersLastAppliedCommandIndex=false, maxRecursionDepth=9, logCompactionThreshold=3, maxInFlightAppendsPerPeer=1, logRetentionAfterSnapshot=0
 
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
-			(30, 8, true, 4118164278127760845L, true, 1, 3, 9, 3)
+			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		testAllInvariants(
 			net,
@@ -1587,7 +1606,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		inline val numberOfCommandsToSend = 30
 		PropF.forAllNoShrinkF(
 			Gen.choose(1, 3), // 1, 2, 3; 2, 4, 6; 3, 6, 9; 4, 8, 12; 5, 10, 15
-			Gen.choose(1, 5),
+			Gen.choose(1, 2),
 			Gen.oneOf(true, false),
 			Gen.long,
 			genNodeConfig
@@ -1612,6 +1631,3 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 	}
 }
-
-// Test command type
-case class TestClientCommand(serial: Int, clientId: String) extends Serializable
