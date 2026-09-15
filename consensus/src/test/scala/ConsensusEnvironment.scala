@@ -605,6 +605,53 @@ class EnvironmentNode(
 	}
 }
 
+/** An operation applied to [[ConsensusEnvironment]] recorded for deterministic replay and undo. */
+sealed trait EnvOperation
+
+object EnvOperation {
+	final case class StepNode(node: String) extends EnvOperation
+	case object StepAllNodes extends EnvOperation
+	final case class RunNodeUntilIdle(node: String, maxSteps: Int) extends EnvOperation
+	final case class RunAllNodesUntilIdle(maxRounds: Int) extends EnvOperation
+
+	final case class DispatchPacket(packetId: PacketId) extends EnvOperation
+	final case class DropPacket(packetId: PacketId) extends EnvOperation
+	final case class DispatchNext(from: String, to: String) extends EnvOperation
+	final case class DropNext(from: String, to: String) extends EnvOperation
+	final case class DispatchFirstN(from: String, to: String, n: Int) extends EnvOperation
+	final case class DropFirstN(from: String, to: String, n: Int) extends EnvOperation
+	final case class DispatchAllBetween(from: String, to: String) extends EnvOperation
+	final case class DropAllBetween(from: String, to: String) extends EnvOperation
+	final case class DispatchAllTo(to: String) extends EnvOperation
+	case object DispatchAll extends EnvOperation
+	final case class FailPacket(packetId: PacketId, errorMsg: String) extends EnvOperation
+
+	final case class AdvanceTime(ticks: Int) extends EnvOperation
+	final case class TriggerWakeUp(tokenId: Int) extends EnvOperation
+
+	final case class CompleteStorageSave(opId: StorageOpId) extends EnvOperation
+	final case class CompleteNextStorageSave(node: String) extends EnvOperation
+	final case class CompleteAllStorageSaves(node: String) extends EnvOperation
+	final case class FailStorageSave(opId: StorageOpId, errorMsg: String) extends EnvOperation
+
+	final case class StartNode(node: String) extends EnvOperation
+	final case class CrashNode(node: String) extends EnvOperation
+	final case class RestartNode(node: String) extends EnvOperation
+	case object StartAllNodes extends EnvOperation
+
+	final case class SubmitClientCommand(targetNode: String, client: String, serial: Option[Int], attemptFlag: CommandAttemptFlag) extends EnvOperation
+	final case class SubmitConfigChange(targetNode: String, desiredParticipants: Set[String]) extends EnvOperation
+
+	final case class UpdateDynamicSettings(
+		retiringMaxRetries: Option[Int],
+		logRetention: Option[Int],
+		autoSucceedUntilTerm: Option[Term],
+		autoSucceedUntilRecordIndex: Option[RecordIndex],
+		targetNode: Option[String]
+	) extends EnvOperation
+	final case class ToggleStorageAutoSucceed(targetNode: Option[String]) extends EnvOperation
+}
+
 /** The discrete-event, fine-grained testing harness for [[ConsensusParticipantSdm]]. */
 class ConsensusEnvironment(
 	val clusterSize: Int = 3,
@@ -612,9 +659,13 @@ class ConsensusEnvironment(
 	val ticksPerMilli: Int = 10,
 	val maxInFlightAppendsPerPeer: Int = 2,
 	val logCompactionThreshold: Int = 5,
-	var retiringParticipantMaxRetries: Int = 2,
-	var logRetentionAfterSnapshot: Int = 1
+	val initialRetiringParticipantMaxRetries: Int = 2,
+	val initialLogRetentionAfterSnapshot: Int = 1,
+	var initializer: ConsensusEnvironment => Unit = _ => ()
 ) {
+	var retiringParticipantMaxRetries: Int = initialRetiringParticipantMaxRetries
+	var logRetentionAfterSnapshot: Int = initialLogRetentionAfterSnapshot
+
 	private var _virtualTime: VirtualTime = 0
 	private var packetIdSequencer: PacketId = 0
 	private var storageOpIdSequencer: StorageOpId = 0
@@ -638,6 +689,12 @@ class ConsensusEnvironment(
 	private val appliedCommandsByIndex: mutable.Map[RecordIndex, (String, TestClientCommand)] = mutable.Map.empty
 	private val committedRecordsByNode: mutable.Map[String, mutable.ArrayBuffer[Record]] = mutable.Map.empty
 
+	// Operation Memory & Tags
+	private val _appliedOperations: mutable.ArrayBuffer[EnvOperation] = mutable.ArrayBuffer.empty
+	private val _tags: mutable.Map[String, List[EnvOperation]] = mutable.Map.empty
+	private var isReplaying: Boolean = false
+	private var operationDepth: Int = 0
+
 	val defaultInitialParticipants: ListSet[String] = initialSeedParticipants match {
 		case Some(seeds) => ListSet.from(seeds.map(_.asNodeId))
 		case None => ListSet.from((0 until clusterSize).map(i => s"p-$i"))
@@ -650,6 +707,186 @@ class ConsensusEnvironment(
 	}
 
 	inline def currentVirtualTime: VirtualTime = _virtualTime
+
+	private inline def recordOrExecute[T](op: => EnvOperation)(action: => T): T = {
+		if !isReplaying && operationDepth == 0 then {
+			_appliedOperations.append(op)
+		}
+		operationDepth += 1
+		try {
+			action
+		} finally {
+			operationDepth -= 1
+		}
+	}
+
+	def appliedOperations: Seq[EnvOperation] = _appliedOperations.toSeq
+
+	def appliedOperationsCount: Int = _appliedOperations.size
+
+	def tags: Map[String, List[EnvOperation]] = _tags.toMap
+
+	def createTag(name: String): Unit = {
+		_tags(name) = _appliedOperations.toList
+	}
+
+	def restoreTag(name: String): Boolean = {
+		_tags.get(name) match {
+			case None => false
+			case Some(savedOps) =>
+				reset()
+				_appliedOperations.clear()
+				_appliedOperations.addAll(savedOps)
+				isReplaying = true
+				try {
+					for op <- savedOps do applyOperation(op)
+				} finally {
+					isReplaying = false
+				}
+				true
+		}
+	}
+
+	def deleteTag(name: String): Boolean = {
+		_tags.remove(name).isDefined
+	}
+
+	def undo(): Boolean = {
+		if _appliedOperations.isEmpty then false
+		else {
+			val opsToReplay = _appliedOperations.dropRight(1).toList
+			reset()
+			_appliedOperations.clear()
+			_appliedOperations.addAll(opsToReplay)
+			isReplaying = true
+			try {
+				for op <- opsToReplay do applyOperation(op)
+			} finally {
+				isReplaying = false
+			}
+			true
+		}
+	}
+
+	def reset(): Unit = {
+		_virtualTime = 0
+		packetIdSequencer = 0
+		storageOpIdSequencer = 0
+		commandIdSequencer = 0
+		configReqIdSequencer = 0
+		wakeUpTokenSequencer = 0
+
+		channels.clear()
+		nodesMap.clear()
+		pendingWakeUpsMap.clear()
+		pendingPersistenceMap.clear()
+		clientStatuses.clear()
+		clientSerialCounters.clear()
+		clientLastSent.clear()
+		clientLastSuccess.clear()
+		clientLastRecordIndex.clear()
+		configStatuses.clear()
+		leaderByTerm.clear()
+		appliedCommandsByIndex.clear()
+		committedRecordsByNode.clear()
+
+		retiringParticipantMaxRetries = initialRetiringParticipantMaxRetries
+		logRetentionAfterSnapshot = initialLogRetentionAfterSnapshot
+
+		for i <- 0 until clusterSize do {
+			val id = s"p-$i"
+			nodesMap(id) = new EnvironmentNode(id, defaultInitialParticipants, this)
+			committedRecordsByNode(id) = mutable.ArrayBuffer.empty
+		}
+
+		val prevReplaying = isReplaying
+		isReplaying = true
+		try {
+			initializer(this)
+		} finally {
+			isReplaying = prevReplaying
+		}
+	}
+
+	def applyOperation(op: EnvOperation): Unit = op match {
+		case EnvOperation.StepNode(node) => stepNode(node)
+		case EnvOperation.StepAllNodes => stepAllNodes()
+		case EnvOperation.RunNodeUntilIdle(node, maxSteps) => runNodeUntilIdle(node, maxSteps)
+		case EnvOperation.RunAllNodesUntilIdle(maxRounds) => runAllNodesUntilIdle(maxRounds)
+		case EnvOperation.DispatchPacket(id) => dispatchPacket(id)
+		case EnvOperation.DropPacket(id) => dropPacket(id)
+		case EnvOperation.DispatchNext(from, to) => dispatchNext(from, to)
+		case EnvOperation.DropNext(from, to) => dropNext(from, to)
+		case EnvOperation.DispatchFirstN(from, to, n) => dispatchFirstN(from, to, n)
+		case EnvOperation.DropFirstN(from, to, n) => dropFirstN(from, to, n)
+		case EnvOperation.DispatchAllBetween(from, to) => dispatchAllBetween(from, to)
+		case EnvOperation.DropAllBetween(from, to) => dropAllBetween(from, to)
+		case EnvOperation.DispatchAllTo(to) => dispatchAllTo(to)
+		case EnvOperation.DispatchAll => dispatchAll()
+		case EnvOperation.FailPacket(id, msg) => failPacket(id, new java.io.IOException(msg))
+		case EnvOperation.AdvanceTime(ticks) => advanceTime(ticks)
+		case EnvOperation.TriggerWakeUp(tokenId) => triggerWakeUp(tokenId)
+		case EnvOperation.CompleteStorageSave(opId) => completeStorageSave(opId)
+		case EnvOperation.CompleteNextStorageSave(node) => completeNextStorageSave(node)
+		case EnvOperation.CompleteAllStorageSaves(node) => completeAllStorageSaves(node)
+		case EnvOperation.FailStorageSave(opId, msg) => failStorageSave(opId, new RuntimeException(msg))
+		case EnvOperation.StartNode(node) => startNode(node)
+		case EnvOperation.CrashNode(node) => crashNode(node)
+		case EnvOperation.RestartNode(node) => restartNode(node)
+		case EnvOperation.StartAllNodes => startAllNodes()
+		case EnvOperation.SubmitClientCommand(target, client, serial, flag) => submitClientCommand(target, client, serial, flag)
+		case EnvOperation.SubmitConfigChange(target, desired) => submitConfigChange(target, desired.asInstanceOf[Set[NodeRef]])
+		case EnvOperation.UpdateDynamicSettings(retries, retention, term, idx, target) => updateDynamicSettings(retries, retention, term, idx, target)
+		case EnvOperation.ToggleStorageAutoSucceed(target) => toggleStorageAutoSucceed(target)
+	}
+
+	def updateDynamicSettings(
+		retiringMaxRetries: Option[Int] = None,
+		logRetention: Option[Int] = None,
+		autoSucceedUntilTerm: Option[Term] = None,
+		autoSucceedUntilRecordIndex: Option[RecordIndex] = None,
+		targetNode: Option[NodeRef] = None
+	): Unit = recordOrExecute(EnvOperation.UpdateDynamicSettings(retiringMaxRetries, logRetention, autoSucceedUntilTerm, autoSucceedUntilRecordIndex, targetNode.map(_.asNodeId))) {
+		retiringMaxRetries.foreach(v => retiringParticipantMaxRetries = v)
+		logRetention.foreach(v => logRetentionAfterSnapshot = v)
+		targetNode match {
+			case Some(ref) if ref.asNodeId.nonEmpty && ref.asNodeId != "all" =>
+				val n = node(ref)
+				autoSucceedUntilTerm.foreach(t => n.autoSucceedUntilTerm = t)
+				autoSucceedUntilRecordIndex.foreach(i => n.autoSucceedUntilRecordIndex = i)
+			case _ =>
+				for i <- 0 until clusterSize do {
+					val n = node(i)
+					autoSucceedUntilTerm.foreach(t => n.autoSucceedUntilTerm = t)
+					autoSucceedUntilRecordIndex.foreach(i => n.autoSucceedUntilRecordIndex = i)
+				}
+		}
+	}
+
+	def toggleStorageAutoSucceed(targetNode: Option[NodeRef] = None): Unit = recordOrExecute(EnvOperation.ToggleStorageAutoSucceed(targetNode.map(_.asNodeId))) {
+		targetNode match {
+			case Some(ref) if ref.asNodeId.nonEmpty && ref.asNodeId != "all" =>
+				val n = node(ref)
+				val currentlyAuto = n.autoSucceedUntilTerm == Int.MaxValue && n.autoSucceedUntilRecordIndex == Long.MaxValue
+				if currentlyAuto then {
+					n.autoSucceedUntilRecordIndex = 0L
+				} else {
+					n.autoSucceedUntilTerm = Int.MaxValue.asInstanceOf[Term]
+					n.autoSucceedUntilRecordIndex = Long.MaxValue
+				}
+			case _ =>
+				val anyAuto = (0 until clusterSize).exists(i => node(i).autoSucceedUntilTerm == Int.MaxValue && node(i).autoSucceedUntilRecordIndex == Long.MaxValue)
+				for i <- 0 until clusterSize do {
+					val n = node(i)
+					if anyAuto then {
+						n.autoSucceedUntilRecordIndex = 0L
+					} else {
+						n.autoSucceedUntilTerm = Int.MaxValue.asInstanceOf[Term]
+						n.autoSucceedUntilRecordIndex = Long.MaxValue
+					}
+				}
+		}
+	}
 
 	private[readren] def nextPacketId(): PacketId = {
 		packetIdSequencer += 1
@@ -682,22 +919,22 @@ class ConsensusEnvironment(
 	// Node Management
 	def node(ref: NodeRef): EnvironmentNode = nodesMap(ref.asNodeId)
 
-	def startNode(ref: NodeRef): Unit = {
+	def startNode(ref: NodeRef): Unit = recordOrExecute(EnvOperation.StartNode(ref.asNodeId)) {
 		val n = node(ref)
 		n.startIfNotRunning(0, defaultInitialParticipants)
 	}
 
-	def startAllNodes(): Unit = {
+	def startAllNodes(): Unit = recordOrExecute(EnvOperation.StartAllNodes) {
 		for id <- defaultInitialParticipants do startNode(id)
 	}
 
-	def crashNode(ref: NodeRef): Unit = {
+	def crashNode(ref: NodeRef): Unit = recordOrExecute(EnvOperation.CrashNode(ref.asNodeId)) {
 		val n = node(ref)
 		n.isDown = true
 		n.stepDoer.clear()
 	}
 
-	def restartNode(ref: NodeRef): Unit = {
+	def restartNode(ref: NodeRef): Unit = recordOrExecute(EnvOperation.RestartNode(ref.asNodeId)) {
 		val n = node(ref)
 		n.isDown = false
 		n.startIfNotRunning(0, defaultInitialParticipants)
@@ -710,11 +947,11 @@ class ConsensusEnvironment(
 	}
 
 	// Stepping Operations
-	def stepNode(ref: NodeRef): Boolean = {
+	def stepNode(ref: NodeRef): Boolean = recordOrExecute(EnvOperation.StepNode(ref.asNodeId)) {
 		node(ref).stepDoer.step()
 	}
 
-	def stepAllNodes(): Int = {
+	def stepAllNodes(): Int = recordOrExecute(EnvOperation.StepAllNodes) {
 		var stepped = 0
 		for n <- nodesMap.values do {
 			if n.stepDoer.step() then stepped += 1
@@ -722,11 +959,11 @@ class ConsensusEnvironment(
 		stepped
 	}
 
-	def runNodeUntilIdle(ref: NodeRef, maxSteps: Int = 1000): Int = {
+	def runNodeUntilIdle(ref: NodeRef, maxSteps: Int = 1000): Int = recordOrExecute(EnvOperation.RunNodeUntilIdle(ref.asNodeId, maxSteps)) {
 		node(ref).stepDoer.drain(maxSteps)
 	}
 
-	def runAllNodesUntilIdle(maxRounds: Int = 1000): Int = {
+	def runAllNodesUntilIdle(maxRounds: Int = 1000): Int = recordOrExecute(EnvOperation.RunAllNodesUntilIdle(maxRounds)) {
 		var totalExecuted = 0
 		var rounds = 0
 		var progressed = true
@@ -748,7 +985,7 @@ class ConsensusEnvironment(
 		channelQueue(from.asNodeId, to.asNodeId).toSeq
 	}
 
-	def dispatchPacket(packetId: PacketId): DispatchOutcome = {
+	def dispatchPacket(packetId: PacketId): DispatchOutcome = recordOrExecute(EnvOperation.DispatchPacket(packetId)) {
 		val targetQueueOpt = channels.find(_._2.exists(_.id == packetId))
 		targetQueueOpt match {
 			case None => throw new NoSuchElementException(s"Packet $packetId not found in any channel")
@@ -759,19 +996,19 @@ class ConsensusEnvironment(
 		}
 	}
 
-	def dispatchNext(from: NodeRef, to: NodeRef): Option[DispatchOutcome] = {
+	def dispatchNext(from: NodeRef, to: NodeRef): Option[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchNext(from.asNodeId, to.asNodeId)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
 		if queue.isEmpty then None
 		else Some(executeDispatch(queue.removeHead()))
 	}
 
-	def dispatchFirstN(from: NodeRef, to: NodeRef, n: Int): Seq[DispatchOutcome] = {
+	def dispatchFirstN(from: NodeRef, to: NodeRef, n: Int): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchFirstN(from.asNodeId, to.asNodeId, n)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
 		val count = math.min(n, queue.size)
 		(0 until count).map(_ => executeDispatch(queue.removeHead()))
 	}
 
-	def dispatchAllBetween(from: NodeRef, to: NodeRef): Seq[DispatchOutcome] = {
+	def dispatchAllBetween(from: NodeRef, to: NodeRef): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAllBetween(from.asNodeId, to.asNodeId)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
 		val res = mutable.ArrayBuffer.empty[DispatchOutcome]
 		while queue.nonEmpty do {
@@ -780,7 +1017,7 @@ class ConsensusEnvironment(
 		res.toSeq
 	}
 
-	def dispatchAllTo(to: NodeRef): Seq[DispatchOutcome] = {
+	def dispatchAllTo(to: NodeRef): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAllTo(to.asNodeId)) {
 		val toId = to.asNodeId
 		val res = mutable.ArrayBuffer.empty[DispatchOutcome]
 		for ((f, t), q) <- channels if t == toId do {
@@ -789,20 +1026,20 @@ class ConsensusEnvironment(
 		res.toSeq
 	}
 
-	def dispatchAll(): Seq[DispatchOutcome] = {
+	def dispatchAll(): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAll) {
 		val all = pendingPackets
 		all.map(p => dispatchPacket(p.id))
 	}
 
-	def dropPacket(packetId: PacketId): Boolean = {
+	def dropPacket(packetId: PacketId): Boolean = recordOrExecute(EnvOperation.DropPacket(packetId)) {
 		failPacket(packetId, new java.io.IOException(s"Network packet $packetId dropped in transit"))
 	}
 
-	def dropNext(from: NodeRef, to: NodeRef): Boolean = {
+	def dropNext(from: NodeRef, to: NodeRef): Boolean = recordOrExecute(EnvOperation.DropNext(from.asNodeId, to.asNodeId)) {
 		dropFirstN(from, to, 1) > 0
 	}
 
-	def dropFirstN(from: NodeRef, to: NodeRef, n: Int): Int = {
+	def dropFirstN(from: NodeRef, to: NodeRef, n: Int): Int = recordOrExecute(EnvOperation.DropFirstN(from.asNodeId, to.asNodeId, n)) {
 		val q = channelQueue(from.asNodeId, to.asNodeId)
 		val count = math.min(n, q.size)
 		for _ <- 0 until count do {
@@ -816,13 +1053,12 @@ class ConsensusEnvironment(
 		count
 	}
 
-	def dropAllBetween(from: NodeRef, to: NodeRef): Int = {
+	def dropAllBetween(from: NodeRef, to: NodeRef): Int = recordOrExecute(EnvOperation.DropAllBetween(from.asNodeId, to.asNodeId)) {
 		val q = channelQueue(from.asNodeId, to.asNodeId)
 		dropFirstN(from, to, q.size)
 	}
 
-
-	def failPacket(packetId: PacketId, error: Throwable): Boolean = {
+	def failPacket(packetId: PacketId, error: Throwable): Boolean = recordOrExecute(EnvOperation.FailPacket(packetId, error.getMessage)) {
 		channels.values.find(_.exists(_.id == packetId)).fold(false) { q =>
 			val idx = q.indexWhere(_.id == packetId)
 			val packet = q.remove(idx)
@@ -917,7 +1153,7 @@ class ConsensusEnvironment(
 
 	def pendingWakeUps: Seq[PendingWakeUp] = pendingWakeUpsMap.values.toSeq.sortBy(_.scheduledTime)
 
-	def advanceTime(ticks: Int): Seq[PendingWakeUp] = {
+	def advanceTime(ticks: Int): Seq[PendingWakeUp] = recordOrExecute(EnvOperation.AdvanceTime(ticks)) {
 		_virtualTime += ticks
 		val expired = pendingWakeUpsMap.values.filter(_.scheduledTime <= _virtualTime).toSeq.sortBy(_.scheduledTime)
 		for w <- expired do {
@@ -930,7 +1166,7 @@ class ConsensusEnvironment(
 
 	def advanceTimeMillis(ms: Int): Seq[PendingWakeUp] = advanceTime(ms * ticksPerMilli)
 
-	def triggerWakeUp(tokenId: Int): Boolean = {
+	def triggerWakeUp(tokenId: Int): Boolean = recordOrExecute(EnvOperation.TriggerWakeUp(tokenId)) {
 		pendingWakeUpsMap.remove(tokenId).fold(false) { w =>
 			val n = nodesMap(w.nodeId)
 			n.stepDoer.executeSequentially(() => w.callback())
@@ -945,28 +1181,28 @@ class ConsensusEnvironment(
 
 	def pendingPersistenceOperations: Seq[PendingPersistence] = pendingPersistenceMap.values.toSeq.sortBy(_.opId)
 
-	def completeStorageSave(opId: StorageOpId): Boolean = {
+	def completeStorageSave(opId: StorageOpId): Boolean = recordOrExecute(EnvOperation.CompleteStorageSave(opId)) {
 		pendingPersistenceMap.remove(opId).fold(false) { p =>
 			p.completeOp()
 			true
 		}
 	}
 
-	def completeNextStorageSave(nodeRef: NodeRef): Boolean = {
+	def completeNextStorageSave(nodeRef: NodeRef): Boolean = recordOrExecute(EnvOperation.CompleteNextStorageSave(nodeRef.asNodeId)) {
 		val nodeId = nodeRef.asNodeId
 		pendingPersistenceOperations.find(_.nodeId == nodeId).fold(false) { p =>
 			completeStorageSave(p.opId)
 		}
 	}
 
-	def completeAllStorageSaves(nodeRef: NodeRef): Int = {
+	def completeAllStorageSaves(nodeRef: NodeRef): Int = recordOrExecute(EnvOperation.CompleteAllStorageSaves(nodeRef.asNodeId)) {
 		val nodeId = nodeRef.asNodeId
 		val matching = pendingPersistenceOperations.filter(_.nodeId == nodeId)
 		for p <- matching do completeStorageSave(p.opId)
 		matching.size
 	}
 
-	def failStorageSave(opId: StorageOpId, error: Throwable): Boolean = {
+	def failStorageSave(opId: StorageOpId, error: Throwable): Boolean = recordOrExecute(EnvOperation.FailStorageSave(opId, error.getMessage)) {
 		pendingPersistenceMap.remove(opId).fold(false) { p =>
 			p.failOp(error)
 			true
@@ -982,39 +1218,45 @@ class ConsensusEnvironment(
 	): ClientCommandHandle = {
 		val clientId = client.asClientId
 		val targetId = targetNode.asNodeId
-		val cmdSerial = serial.getOrElse {
-			val s = clientSerialCounters(clientId) + 1
-			clientSerialCounters(clientId) = s
-			s
+		val cmdSerial = serial match {
+			case Some(s) =>
+				clientSerialCounters(clientId) = math.max(clientSerialCounters(clientId), s)
+				s
+			case None =>
+				val s = clientSerialCounters(clientId) + 1
+				clientSerialCounters(clientId) = s
+				s
 		}
-		val cmdId = nextCommandId()
-		val handle = ClientCommandHandle(cmdId, clientId, cmdSerial, targetId, _virtualTime)
-		clientStatuses(cmdId) = ClientCommandStatus.InFlight
-		clientLastSent(clientId) = cmdSerial
+		recordOrExecute(EnvOperation.SubmitClientCommand(targetId, clientId, Some(cmdSerial), attemptFlag)) {
+			val cmdId = nextCommandId()
+			val handle = ClientCommandHandle(cmdId, clientId, cmdSerial, targetId, _virtualTime)
+			clientStatuses(cmdId) = ClientCommandStatus.InFlight
+			clientLastSent(clientId) = cmdSerial
 
-		val n = node(targetId)
-		n.stepDoer.executeSequentially(() => {
-			if n.isDown || n.participant == null then {
-				clientStatuses(cmdId) = ClientCommandStatus.Failed(new RuntimeException(s"Node $targetId is down"))
-			} else {
-				val command = TestClientCommand(cmdSerial, clientId)
-				val capture = n.clusterParticipant.delegate.onCommandFromClient(command, attemptFlag)
-				capture.triggerSyncCallbacks(
-					{
-						case n.Processed(recIdx, content) =>
-							clientStatuses(cmdId) = ClientCommandStatus.Processed(recIdx, content)
-							clientLastSuccess(clientId) = cmdSerial
-							clientLastRecordIndex(clientId) = recIdx
-						case n.RedirectTo(leaderId) => clientStatuses(cmdId) = ClientCommandStatus.Redirected(leaderId)
-						case n.Unable(flag, others) => clientStatuses(cmdId) = ClientCommandStatus.Unable(flag, others)
-					},
-					ex => {
-						clientStatuses(cmdId) = ClientCommandStatus.Failed(ex)
-					}
-				)
-			}
-		})
-		handle
+			val n = node(targetId)
+			n.stepDoer.executeSequentially(() => {
+				if n.isDown || n.participant == null then {
+					clientStatuses(cmdId) = ClientCommandStatus.Failed(new RuntimeException(s"Node $targetId is down"))
+				} else {
+					val command = TestClientCommand(cmdSerial, clientId)
+					val capture = n.clusterParticipant.delegate.onCommandFromClient(command, attemptFlag)
+					capture.triggerSyncCallbacks(
+						{
+							case n.Processed(recIdx, content) =>
+								clientStatuses(cmdId) = ClientCommandStatus.Processed(recIdx, content)
+								clientLastSuccess(clientId) = cmdSerial
+								clientLastRecordIndex(clientId) = recIdx
+							case n.RedirectTo(leaderId) => clientStatuses(cmdId) = ClientCommandStatus.Redirected(leaderId)
+							case n.Unable(flag, others) => clientStatuses(cmdId) = ClientCommandStatus.Unable(flag, others)
+						},
+						ex => {
+							clientStatuses(cmdId) = ClientCommandStatus.Failed(ex)
+						}
+					)
+				}
+			})
+			handle
+		}
 	}
 
 	def clientCommandStatus(commandId: Int): ClientCommandStatus = clientStatuses.getOrElse(commandId, ClientCommandStatus.InFlight)
@@ -1035,27 +1277,29 @@ class ConsensusEnvironment(
 	): ConfigChangeHandle = {
 		val targetId = targetNode.asNodeId
 		val desiredIds = desiredParticipants.map(_.asNodeId)
-		val reqId = s"ccReq-${nextConfigReqId()}"
-		val handle = ConfigChangeHandle(reqId, targetId, desiredIds, _virtualTime)
-		configStatuses(reqId) = ConfigChangeStatus.InFlight
+		recordOrExecute(EnvOperation.SubmitConfigChange(targetId, desiredIds)) {
+			val reqId = s"ccReq-${nextConfigReqId()}"
+			val handle = ConfigChangeHandle(reqId, targetId, desiredIds, _virtualTime)
+			configStatuses(reqId) = ConfigChangeStatus.InFlight
 
-		val n = node(targetId)
-		n.stepDoer.executeSequentially(() => {
-			if n.isDown || n.participant == null then {
-				configStatuses(reqId) = ConfigChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
-			} else {
-				val capture = n.clusterParticipant.delegate.requestConfigChange(reqId, desiredIds, priorAnswer)
-				capture.triggerSyncCallbacks(
-					res => {
-						configStatuses(reqId) = ConfigChangeStatus.Completed(res)
-					},
-					ex => {
-						configStatuses(reqId) = ConfigChangeStatus.Failed(ex)
-					}
-				)
-			}
-		})
-		handle
+			val n = node(targetId)
+			n.stepDoer.executeSequentially(() => {
+				if n.isDown || n.participant == null then {
+					configStatuses(reqId) = ConfigChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
+				} else {
+					val capture = n.clusterParticipant.delegate.requestConfigChange(reqId, desiredIds, priorAnswer)
+					capture.triggerSyncCallbacks(
+						res => {
+							configStatuses(reqId) = ConfigChangeStatus.Completed(res)
+						},
+						ex => {
+							configStatuses(reqId) = ConfigChangeStatus.Failed(ex)
+						}
+					)
+				}
+			})
+			handle
+		}
 	}
 
 	def configChangeStatus(requestId: String): ConfigChangeStatus = configStatuses.getOrElse(requestId, ConfigChangeStatus.InFlight)

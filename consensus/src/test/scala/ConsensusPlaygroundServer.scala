@@ -28,8 +28,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	private val threadCounter = new AtomicInteger(0)
 	private val sseClients = new CopyOnWriteArrayList[SseClient]()
 	private var env: ConsensusEnvironment = {
-		val e = new ConsensusEnvironment(clusterSize = 3)
-		e.startAllNodes()
+		val e = new ConsensusEnvironment(clusterSize = 3, initializer = _.startAllNodes())
+		e.reset()
 		e
 	}
 
@@ -77,6 +77,155 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	// PRESETS
 	// =========================================================================
 
+	private def setupPresetFigure7(e: ConsensusEnvironment): Unit = {
+		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
+
+		// Leader p-0
+		val m0 = e.node(0).storage.savedMemory
+		m0.currentTerm = 8.asInstanceOf[Term]
+		m0.logBuffer.clear()
+		m0.appendRecord(initConfig)
+		m0.appendRecord(cmd(1, 2))
+		m0.appendRecord(cmd(1, 3))
+		m0.appendRecord(cmd(4, 4))
+		m0.appendRecord(cmd(4, 5))
+		m0.appendRecord(cmd(5, 6))
+		m0.appendRecord(cmd(5, 7))
+		m0.appendRecord(cmd(6, 8))
+		m0.appendRecord(cmd(6, 9))
+		m0.appendRecord(cmd(6, 10))
+
+		// Followers a-f
+		val mA = e.node(1).storage.savedMemory
+		mA.currentTerm = 6.asInstanceOf[Term]
+		mA.logBuffer.clear()
+		for i <- 1 to 9 do mA.appendRecord(m0.getRecordAt(i))
+
+		val mB = e.node(2).storage.savedMemory
+		mB.currentTerm = 4.asInstanceOf[Term]
+		mB.logBuffer.clear()
+		for i <- 1 to 4 do mB.appendRecord(m0.getRecordAt(i))
+
+		val mC = e.node(3).storage.savedMemory
+		mC.currentTerm = 6.asInstanceOf[Term]
+		mC.logBuffer.clear()
+		for i <- 1 to 10 do mC.appendRecord(m0.getRecordAt(i))
+		mC.appendRecord(cmd(6, 11))
+
+		val mD = e.node(4).storage.savedMemory
+		mD.currentTerm = 7.asInstanceOf[Term]
+		mD.logBuffer.clear()
+		for i <- 1 to 10 do mD.appendRecord(m0.getRecordAt(i))
+		mD.appendRecord(cmd(7, 11))
+		mD.appendRecord(cmd(7, 12))
+
+		val mE = e.node(5).storage.savedMemory
+		mE.currentTerm = 4.asInstanceOf[Term]
+		mE.logBuffer.clear()
+		for i <- 1 to 3 do mE.appendRecord(m0.getRecordAt(i))
+		mE.appendRecord(cmd(4, 4))
+		mE.appendRecord(cmd(4, 5))
+		mE.appendRecord(cmd(4, 6))
+		mE.appendRecord(cmd(4, 7))
+
+		val mF = e.node(6).storage.savedMemory
+		mF.currentTerm = 3.asInstanceOf[Term]
+		mF.logBuffer.clear()
+		for i <- 1 to 3 do mF.appendRecord(m0.getRecordAt(i))
+		mF.appendRecord(cmd(2, 4))
+		mF.appendRecord(cmd(2, 5))
+		mF.appendRecord(cmd(2, 6))
+		mF.appendRecord(cmd(3, 7))
+		mF.appendRecord(cmd(3, 8))
+
+		e.startNode(0)
+		e.startNode(1)
+		e.startNode(2)
+		e.startNode(5)
+		e.startNode(6)
+	}
+
+	private def setupPresetFigure8(e: ConsensusEnvironment): Unit = {
+		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
+
+		val m0 = e.node(0).storage.savedMemory
+		m0.currentTerm = 3.asInstanceOf[Term]
+		m0.logBuffer.clear()
+		m0.appendRecord(initConfig)
+		m0.appendRecord(cmd(2, 2))
+
+		val m1 = e.node(1).storage.savedMemory
+		m1.currentTerm = 2.asInstanceOf[Term]
+		m1.logBuffer.clear()
+		m1.appendRecord(initConfig)
+		m1.appendRecord(cmd(2, 2))
+
+		val m2 = e.node(2).storage.savedMemory
+		m2.currentTerm = 1.asInstanceOf[Term]
+		m2.logBuffer.clear()
+		m2.appendRecord(initConfig)
+
+		val m3 = e.node(3).storage.savedMemory
+		m3.currentTerm = 1.asInstanceOf[Term]
+		m3.logBuffer.clear()
+		m3.appendRecord(initConfig)
+
+		val m4 = e.node(4).storage.savedMemory
+		m4.currentTerm = 3.asInstanceOf[Term]
+		m4.logBuffer.clear()
+		m4.appendRecord(initConfig)
+		m4.appendRecord(cmd(3, 2))
+
+		e.startNode(0)
+		e.startNode(1)
+		e.startNode(2)
+	}
+
+	private def setupPresetFigure10(e: ConsensusEnvironment): Unit = {
+		e.startNode(0)
+		e.startNode(1)
+		e.startNode(2)
+	}
+
+	private def setupPresetFigure13(e: ConsensusEnvironment): Unit = {
+		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
+
+		val smBytes = new ByteArrayOutputStream()
+		val smOut = new ObjectOutputStream(smBytes)
+		smOut.writeInt(0)
+		smOut.writeLong(5L)
+		smOut.flush()
+		val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
+
+		val snap = new SnapshotData[String](5, 1.asInstanceOf[Term], initConfig, 1, snapshotData)
+
+		val m0 = e.node(0).storage.savedMemory
+		m0.currentTerm = 1.asInstanceOf[Term]
+		m0.maybeLatestSnapshot = Maybe(snap)
+		m0._logBufferOffset = 6
+		m0.logBuffer.clear()
+		m0.appendRecord(cmd(1, 6))
+
+		e.node(0).machine.highestAppliedCommandIndex = 5
+		e.node(2).machine.highestAppliedCommandIndex = 5
+
+		val m2 = e.node(2).storage.savedMemory
+		m2.currentTerm = 1.asInstanceOf[Term]
+		m2.maybeLatestSnapshot = Maybe(snap)
+		m2._logBufferOffset = 6
+		m2.logBuffer.clear()
+		m2.appendRecord(cmd(1, 6))
+
+		val m1 = e.node(1).storage.savedMemory
+		m1.currentTerm = 1.asInstanceOf[Term]
+		m1.logBuffer.clear()
+
+		e.startAllNodes()
+	}
+
 	def resetCluster(
 		size: Int = 3,
 		seedNodes: Option[Set[String]] = None,
@@ -87,9 +236,10 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			clusterSize = size,
 			initialSeedParticipants = seedNodes,
 			maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
-			logCompactionThreshold = logCompactionThreshold
+			logCompactionThreshold = logCompactionThreshold,
+			initializer = _.startAllNodes()
 		)
-		env.startAllNodes()
+		env.reset()
 	}
 
 	def loadPreset(
@@ -104,119 +254,20 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 					clusterSize = 7,
 					initialSeedParticipants = seedNodes,
 					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
-					logCompactionThreshold = logCompactionThreshold
+					logCompactionThreshold = logCompactionThreshold,
+					initializer = setupPresetFigure7
 				)
-				val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, env.defaultInitialParticipants)
-
-				def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
-
-				// Leader p-0
-				val m0 = env.node(0).storage.savedMemory
-				m0.currentTerm = 8.asInstanceOf[Term]
-				m0.logBuffer.clear()
-				m0.appendRecord(initConfig)
-				m0.appendRecord(cmd(1, 2))
-				m0.appendRecord(cmd(1, 3))
-				m0.appendRecord(cmd(4, 4))
-				m0.appendRecord(cmd(4, 5))
-				m0.appendRecord(cmd(5, 6))
-				m0.appendRecord(cmd(5, 7))
-				m0.appendRecord(cmd(6, 8))
-				m0.appendRecord(cmd(6, 9))
-				m0.appendRecord(cmd(6, 10))
-
-				// Followers a-f
-				val mA = env.node(1).storage.savedMemory
-				mA.currentTerm = 6.asInstanceOf[Term];
-				mA.logBuffer.clear()
-				for i <- 1 to 9 do mA.appendRecord(m0.getRecordAt(i))
-
-				val mB = env.node(2).storage.savedMemory
-				mB.currentTerm = 4.asInstanceOf[Term];
-				mB.logBuffer.clear()
-				for i <- 1 to 4 do mB.appendRecord(m0.getRecordAt(i))
-
-				val mC = env.node(3).storage.savedMemory
-				mC.currentTerm = 6.asInstanceOf[Term];
-				mC.logBuffer.clear()
-				for i <- 1 to 10 do mC.appendRecord(m0.getRecordAt(i))
-				mC.appendRecord(cmd(6, 11))
-
-				val mD = env.node(4).storage.savedMemory
-				mD.currentTerm = 7.asInstanceOf[Term];
-				mD.logBuffer.clear()
-				for i <- 1 to 10 do mD.appendRecord(m0.getRecordAt(i))
-				mD.appendRecord(cmd(7, 11))
-				mD.appendRecord(cmd(7, 12))
-
-				val mE = env.node(5).storage.savedMemory
-				mE.currentTerm = 4.asInstanceOf[Term];
-				mE.logBuffer.clear()
-				for i <- 1 to 3 do mE.appendRecord(m0.getRecordAt(i))
-				mE.appendRecord(cmd(4, 4))
-				mE.appendRecord(cmd(4, 5))
-				mE.appendRecord(cmd(4, 6))
-				mE.appendRecord(cmd(4, 7))
-
-				val mF = env.node(6).storage.savedMemory
-				mF.currentTerm = 3.asInstanceOf[Term];
-				mF.logBuffer.clear()
-				for i <- 1 to 3 do mF.appendRecord(m0.getRecordAt(i))
-				mF.appendRecord(cmd(2, 4))
-				mF.appendRecord(cmd(2, 5))
-				mF.appendRecord(cmd(2, 6))
-				mF.appendRecord(cmd(3, 7))
-				mF.appendRecord(cmd(3, 8))
-
-				// Start nodes (p-3 and p-4 partitioned during election per scenario)
-				env.startNode(0)
-				env.startNode(1)
-				env.startNode(2)
-				env.startNode(5)
-				env.startNode(6)
+				env.reset()
 
 			case "figure8" =>
 				env = new ConsensusEnvironment(
 					clusterSize = 5,
 					initialSeedParticipants = seedNodes,
 					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
-					logCompactionThreshold = logCompactionThreshold
+					logCompactionThreshold = logCompactionThreshold,
+					initializer = setupPresetFigure8
 				)
-				val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, env.defaultInitialParticipants)
-
-				def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
-
-				val m0 = env.node(0).storage.savedMemory
-				m0.currentTerm = 3.asInstanceOf[Term];
-				m0.logBuffer.clear()
-				m0.appendRecord(initConfig);
-				m0.appendRecord(cmd(2, 2))
-
-				val m1 = env.node(1).storage.savedMemory
-				m1.currentTerm = 2.asInstanceOf[Term];
-				m1.logBuffer.clear()
-				m1.appendRecord(initConfig);
-				m1.appendRecord(cmd(2, 2))
-
-				val m2 = env.node(2).storage.savedMemory
-				m2.currentTerm = 1.asInstanceOf[Term];
-				m2.logBuffer.clear()
-				m2.appendRecord(initConfig)
-
-				val m3 = env.node(3).storage.savedMemory
-				m3.currentTerm = 1.asInstanceOf[Term];
-				m3.logBuffer.clear()
-				m3.appendRecord(initConfig)
-
-				val m4 = env.node(4).storage.savedMemory
-				m4.currentTerm = 3.asInstanceOf[Term];
-				m4.logBuffer.clear()
-				m4.appendRecord(initConfig);
-				m4.appendRecord(cmd(3, 2))
-
-				env.startNode(0)
-				env.startNode(1)
-				env.startNode(2)
+				env.reset()
 
 			case "figure10" =>
 				val seeds = seedNodes.orElse(Some(Set("p-0", "p-1", "p-2")))
@@ -224,54 +275,20 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 					clusterSize = 4,
 					initialSeedParticipants = seeds,
 					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
-					logCompactionThreshold = logCompactionThreshold
+					logCompactionThreshold = logCompactionThreshold,
+					initializer = setupPresetFigure10
 				)
-				env.startNode(0)
-				env.startNode(1)
-				env.startNode(2)
+				env.reset()
 
 			case "figure13" =>
 				env = new ConsensusEnvironment(
 					clusterSize = 3,
 					initialSeedParticipants = seedNodes,
 					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
-					logCompactionThreshold = logCompactionThreshold
+					logCompactionThreshold = logCompactionThreshold,
+					initializer = setupPresetFigure13
 				)
-				val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, env.defaultInitialParticipants)
-
-				def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
-
-				val smBytes = new ByteArrayOutputStream()
-				val smOut = new ObjectOutputStream(smBytes)
-				smOut.writeInt(0);
-				smOut.writeLong(5L);
-				smOut.flush()
-				val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
-
-				val snap = new SnapshotData[String](5, 1.asInstanceOf[Term], initConfig, 1, snapshotData)
-
-				val m0 = env.node(0).storage.savedMemory
-				m0.currentTerm = 1.asInstanceOf[Term];
-				m0.maybeLatestSnapshot = Maybe(snap)
-				m0._logBufferOffset = 6;
-				m0.logBuffer.clear();
-				m0.appendRecord(cmd(1, 6))
-
-				env.node(0).machine.highestAppliedCommandIndex = 5
-				env.node(2).machine.highestAppliedCommandIndex = 5
-
-				val m2 = env.node(2).storage.savedMemory
-				m2.currentTerm = 1.asInstanceOf[Term];
-				m2.maybeLatestSnapshot = Maybe(snap)
-				m2._logBufferOffset = 6;
-				m2.logBuffer.clear();
-				m2.appendRecord(cmd(1, 6))
-
-				val m1 = env.node(1).storage.savedMemory
-				m1.currentTerm = 1.asInstanceOf[Term];
-				m1.logBuffer.clear()
-
-				env.startAllNodes()
+				env.reset()
 
 			case _ =>
 				resetCluster(3, seedNodes, maxInFlightAppendsPerPeer, logCompactionThreshold)
@@ -581,7 +598,18 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		sb.append("\"invariants\":{")
 		sb.append("\"logMatching\":").append(logMatchingPass).append(",")
 		sb.append("\"error\":\"").append(escapeJson(invariantError)).append("\"")
-		sb.append("}")
+		sb.append("},")
+
+		// History & Tags
+		sb.append("\"appliedOperationsCount\":").append(env.appliedOperationsCount).append(",")
+		sb.append("\"tags\":[")
+		val tagList = env.tags.toSeq.sortBy(_._1)
+		for tIdx <- tagList.indices do {
+			if tIdx > 0 then sb.append(",")
+			val (tName, tOps) = tagList(tIdx)
+			sb.append("{\"name\":\"").append(escapeJson(tName)).append("\",\"opsCount\":").append(tOps.size).append("}")
+		}
+		sb.append("]")
 
 		sb.append("}")
 		sb.toString
@@ -857,56 +885,71 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 								loadPreset(preset, seedNodesOpt, maxInFlight, logCompaction)
 							}
 
-						case "toggleStorageAutoSucceed" =>
-							params.get("node") match {
-								case Some("all") =>
-									val anyAuto = (0 until env.clusterSize).exists(i => env.node(i).autoSucceedUntilTerm == Int.MaxValue && env.node(i).autoSucceedUntilRecordIndex == Long.MaxValue)
-									for i <- 0 until env.clusterSize do {
-										val n = env.node(i)
-										if anyAuto then n.autoSucceedUntilRecordIndex = 0L
-										else {
-											n.autoSucceedUntilTerm = Int.MaxValue.asInstanceOf[Term]
-											n.autoSucceedUntilRecordIndex = Long.MaxValue
-										}
-									}
-									message = if anyAuto then "Persistence paused on all nodes" else "Persistence auto-succeed enabled on all nodes"
-								case Some(nodeId) if nodeId.nonEmpty =>
-									val n = env.node(nodeId)
-									val currentlyAuto = n.autoSucceedUntilTerm == Int.MaxValue && n.autoSucceedUntilRecordIndex == Long.MaxValue
-									if currentlyAuto then {
-										n.autoSucceedUntilRecordIndex = 0L
-										message = s"Persistence paused on $nodeId (disk writes require manual approval)"
-									} else {
-										n.autoSucceedUntilTerm = Int.MaxValue.asInstanceOf[Term]
-										n.autoSucceedUntilRecordIndex = Long.MaxValue
-										message = s"Persistence auto-succeed enabled on $nodeId"
-									}
-								case _ =>
+						case "undo" =>
+							val undone = env.undo()
+							if undone then {
+								message = "Undid last operation"
+							} else {
+								success = false
+								message = "No operations to undo"
+							}
+
+						case "createTag" =>
+							val name = params.getOrElse("name", "").trim
+							if name.isEmpty then {
+								success = false
+								message = "Tag name cannot be empty"
+							} else {
+								env.createTag(name)
+								message = s"Created tag '$name'"
+							}
+
+						case "restoreTag" =>
+							val name = params.getOrElse("name", "").trim
+							if name.isEmpty then {
+								success = false
+								message = "Tag name cannot be empty"
+							} else {
+								val restored = env.restoreTag(name)
+								if restored then {
+									message = s"Restored to tag '$name'"
+								} else {
 									success = false
-									message = "Missing node parameter"
+									message = s"Tag '$name' not found"
+								}
+							}
+
+						case "deleteTag" =>
+							val name = params.getOrElse("name", "").trim
+							if name.isEmpty then {
+								success = false
+								message = "Tag name cannot be empty"
+							} else {
+								val deleted = env.deleteTag(name)
+								if deleted then {
+									message = s"Deleted tag '$name'"
+								} else {
+									success = false
+									message = s"Tag '$name' not found"
+								}
+							}
+
+						case "toggleStorageAutoSucceed" =>
+							val targetOpt = params.get("node").filter(n => n.nonEmpty && n != "all")
+							env.toggleStorageAutoSucceed(targetOpt)
+							message = params.get("node") match {
+								case Some("all") | None => "Toggled storage auto-succeed on all nodes"
+								case Some(nodeId) => s"Toggled storage auto-succeed on $nodeId"
 							}
 
 						case "updateDynamicSettings" =>
-							params.get("retiringMaxRetries").foreach { v =>
-								env.retiringParticipantMaxRetries = v.toInt
-							}
-							params.get("logRetention").foreach { v =>
-								env.logRetentionAfterSnapshot = v.toInt
-							}
-							val termOpt = params.get("autoSucceedUntilTerm").map(_.toInt)
+							val retriesOpt = params.get("retiringMaxRetries").map(_.toInt)
+							val retentionOpt = params.get("logRetention").map(_.toInt)
+							val termOpt = params.get("autoSucceedUntilTerm").map(_.toInt.asInstanceOf[Term])
 							val idxOpt = params.get("autoSucceedUntilRecordIndex").map(_.toLong)
-							params.get("node") match {
-								case Some(nodeId) if nodeId.nonEmpty && nodeId != "all" =>
-									val n = env.node(nodeId)
-									termOpt.foreach(t => n.autoSucceedUntilTerm = t.asInstanceOf[Term])
-									idxOpt.foreach(i => n.autoSucceedUntilRecordIndex = i)
-								case _ =>
-									for i <- 0 until env.clusterSize do {
-										val n = env.node(i)
-										termOpt.foreach(t => n.autoSucceedUntilTerm = t.asInstanceOf[Term])
-										idxOpt.foreach(i => n.autoSucceedUntilRecordIndex = i)
-									}
-							}
+							val nodeOpt = params.get("node").filter(n => n.nonEmpty && n != "all")
+							env.updateDynamicSettings(retriesOpt, retentionOpt, termOpt, idxOpt, nodeOpt)
+							message = "Dynamic settings updated"
 
 						case "shutdown" =>
 							message = "Server shutting down"

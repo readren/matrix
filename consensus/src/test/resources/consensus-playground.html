@@ -977,6 +977,12 @@
             <button id="btnToggleSettingsDrawer" class="btn-sm" onclick="toggleSettingsDrawer()" title="Configure dynamic runtime parameters (retries, snapshot retention, disk failure simulation)">
                 ⚙ Dynamic Settings
             </button>
+            <button id="btnUndo" class="btn-sm" onclick="triggerUndo()" title="Undo last applied operation by resetting and replaying all operations except the last">
+                ↩ Undo (<span id="appliedOpsCount">0</span>)
+            </button>
+            <button id="btnToggleTagsDrawer" class="btn-sm" onclick="toggleTagsDrawer()" title="Manage scenario tags / checkpoints">
+                🏷️ Tags (<span id="tagsCount">0</span>)
+            </button>
         </div>
 
         <!-- Global Operations -->
@@ -1343,6 +1349,41 @@
         </div>
     </div>
 
+    <!-- Tags & Checkpoints Drawer -->
+    <div id="tagsDrawer" class="settings-drawer">
+        <div class="panel-header">
+            <span class="panel-title">🏷️ Scenario Tags & Checkpoints</span>
+            <button class="btn-sm" onclick="toggleTagsDrawer()">✕</button>
+        </div>
+        <div class="panel-body">
+            <p style="font-size: 0.72rem; color: var(--text-subtle);">
+                Tags snapshot the sequence of applied operations. Restoring a tag resets the environment and deterministically replays all operations recorded in that tag.
+            </p>
+
+            <div class="card">
+                <div class="card-title">Create Checkpoint Tag</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.3rem;">
+                    Save current scenario state into a named checkpoint.
+                </div>
+                <div style="display: flex; gap: 0.4rem;">
+                    <input type="text" id="newTagNameInput" placeholder="Tag name (e.g. before-election)" style="flex: 1;" onkeydown="if(event.key === 'Enter') handleCreateTag()">
+                    <button class="btn-primary" onclick="handleCreateTag()">Save</button>
+                </div>
+            </div>
+
+            <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+                <div class="card-title">Saved Tags</div>
+                <div id="tagsListContainer" style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; max-height: 320px; overflow-y: auto;">
+                    <span style="font-size: 0.75rem; color: var(--text-subtle);">No tags created yet.</span>
+                </div>
+            </div>
+
+            <div style="margin-top: 0.5rem; display: flex; justify-content: flex-end;">
+                <button class="btn-sm" onclick="toggleTagsDrawer()">Close</button>
+            </div>
+        </div>
+    </div>
+
 </div> <!-- Close viewWorkspace -->
 
 <!-- TOAST CONTAINER -->
@@ -1606,6 +1647,16 @@
         fetchState();
         initEventSource();
         window.addEventListener("resize", renderTopology);
+
+        // Keyboard shortcuts
+        window.addEventListener("keydown", (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+                const activeTag = document.activeElement?.tagName?.toLowerCase();
+                if (activeTag === "input" || activeTag === "textarea") return;
+                e.preventDefault();
+                triggerUndo();
+            }
+        });
     });
 
     // Toast Notifications
@@ -1786,6 +1837,23 @@
         renderRightPanel();
         renderClientList();
         renderConfigPills();
+
+        // Operations & Undo state
+        const opsCount = currentState.appliedOperationsCount ?? 0;
+        const opsEl = document.getElementById("appliedOpsCount");
+        if (opsEl) opsEl.textContent = opsCount;
+        const btnUndo = document.getElementById("btnUndo");
+        if (btnUndo) {
+            btnUndo.disabled = opsCount === 0;
+            btnUndo.style.opacity = opsCount === 0 ? "0.5" : "1.0";
+            btnUndo.style.cursor = opsCount === 0 ? "not-allowed" : "pointer";
+        }
+
+        // Tags
+        const tags = currentState.tags || [];
+        const tagsCountEl = document.getElementById("tagsCount");
+        if (tagsCountEl) tagsCountEl.textContent = tags.length;
+        renderTagsList(tags);
 
         if (activeChannel) {
             refreshChannelModal();
@@ -2995,6 +3063,8 @@
         if (isOpen) {
             drawer.classList.remove("open");
         } else {
+            const tagsDrawer = document.getElementById("tagsDrawer");
+            if (tagsDrawer) tagsDrawer.classList.remove("open");
             drawer.classList.add("open");
             // Populate current values
             if (currentState?.settings) {
@@ -3016,6 +3086,74 @@
 
         triggerAction("updateDynamicSettings", params);
         toggleSettingsDrawer();
+    }
+
+    function triggerUndo() {
+        if (!currentState || (currentState.appliedOperationsCount ?? 0) === 0) {
+            showToast("No operations to undo", "info");
+            return;
+        }
+        triggerAction("undo");
+    }
+
+    function toggleTagsDrawer() {
+        const drawer = document.getElementById("tagsDrawer");
+        if (!drawer) return;
+        const isOpen = drawer.classList.contains("open");
+        if (isOpen) {
+            drawer.classList.remove("open");
+        } else {
+            const settingsDrawer = document.getElementById("settingsDrawer");
+            if (settingsDrawer) settingsDrawer.classList.remove("open");
+            drawer.classList.add("open");
+            const input = document.getElementById("newTagNameInput");
+            if (input) {
+                input.value = "";
+                setTimeout(() => input.focus(), 50);
+            }
+        }
+    }
+
+    function handleCreateTag() {
+        const input = document.getElementById("newTagNameInput");
+        if (!input) return;
+        const name = input.value.trim();
+        if (!name) {
+            showToast("Tag name cannot be empty", "warning");
+            return;
+        }
+        triggerAction("createTag", {name});
+        input.value = "";
+    }
+
+    function handleRestoreTag(name) {
+        if (!confirm(`Restore cluster state to tag '${name}'? This will reset and replay all operations recorded in this tag.`)) return;
+        triggerAction("restoreTag", {name});
+    }
+
+    function handleDeleteTag(name) {
+        triggerAction("deleteTag", {name});
+    }
+
+    function renderTagsList(tags) {
+        const container = document.getElementById("tagsListContainer");
+        if (!container) return;
+        if (!tags || tags.length === 0) {
+            container.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-subtle);">No tags created yet.</span>';
+            return;
+        }
+        container.innerHTML = tags.map(tag => `
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0.5rem; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 4px;">
+                <div style="display: flex; flex-direction: column; overflow: hidden; margin-right: 0.5rem;">
+                    <span style="font-weight: 600; font-size: 0.8rem; color: #a7f3d0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">🏷️ ${escapeHtml(tag.name)}</span>
+                    <span style="font-size: 0.68rem; color: var(--text-subtle);">${tag.opsCount} ops</span>
+                </div>
+                <div style="display: flex; gap: 0.3rem;">
+                    <button class="btn-sm" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="handleRestoreTag('${escapeHtml(tag.name)}')" title="Restore state to tag '${escapeHtml(tag.name)}'">Restore</button>
+                    <button class="btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.72rem; color: #f87171;" onclick="handleDeleteTag('${escapeHtml(tag.name)}')" title="Delete tag">✕</button>
+                </div>
+            </div>
+        `).join("");
     }
 
     function handleAdvanceToNextWakeUp() {
@@ -3112,6 +3250,8 @@
                 {tokenId: 1, nodeId: "p-0", reason: "HeartbeatBroadcast", scheduledTime: 10, wakeupsDone: 0}
             ],
             clientCommands: [],
+            appliedOperationsCount: 0,
+            tags: [],
             invariants: {logMatching: true, error: ""}
         };
     }
