@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-12T01:35:00Z"
+timestamp: "2026-09-17T21:05:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -294,8 +294,19 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Uncommitted Entry Barrier**: A leader must never apply a command record to its state machine, respond success to a client, or trigger log compaction based solely on peer RPC transport success.
 - **Raft §5.4.2 Transitive Commitment Constraint**: Log entries from previous terms cannot be committed directly by majority acknowledgment alone. They can only be committed indirectly by committing a log entry from the leader's current
   term.
-- **Current-Term Entry Insertion**: If RPC replication succeeds over log entries containing previous-term records, but the leader's commit index cannot advance because no current-term entry has been committed, the leader must append a
-  current-term no-op entry and replicate it to force transitive commitment across all preceding entries.
+- **Upfront Current-Term Entry Insertion for Prior-Term Records**: Under Raft §5.4.2, a leader cannot advance its commit index directly on an uncommitted entry appended in a previous term. If an uncommitted entry (such as a recovered stable
+  configuration change) has a term strictly lower than the leader's active term and no subsequent entry in the active term exists in the log, the leader must append a current-term no-op transition entry upfront before awaiting commitment.
+  Awaiting commitment directly on a previous-term entry without a current-term entry in the log deadlocks, as commitment verification rules permanently refuse to advance the commit index.
+- **In-Flight Reconfiguration Pipeline Serializability**: Upon assuming leadership with an uncommitted configuration change in the persistent log, the replication pipeline driving that configuration change to commitment must be linked to
+  the leader's in-flight configuration change completion handle. Subsequent configuration change requests must serialize behind this recovery pipeline. Permitting subsequent configuration changes to execute before the recovered
+  configuration change reaches the commit index causes false transitional-phase rejections, as the cluster configuration remains derived from the uncommitted transitional state.
+- **Commit Watermark Barrier Invariant**: Awaiting record commitment functions strictly as a monotonic watermark barrier, never an RPC-style request-reply operation. The barrier never resolves with an uncommitted or failure status while the
+  leader remains in office. When the barrier resolves for an active leader, the target record index is mathematically guaranteed to be committed. In the event of quorum loss or network partition, the barrier remains suspended indefinitely
+  until quorum is restored or the leader is deposed and exits office, eliminating phantom retry loops in post-barrier continuations.
+- **Peer vs. Retiree Replication Pipeline Disjunction**: An active peer participating in the current cluster configuration cannot simultaneously be tracked as a retiring participant. When the active configuration changes to include a
+  participant, any pending retirement pipeline and quiescence authorization for that participant must be cancelled and removed. Furthermore, if an active peer responds with a role of `RETIRING` (because it has not yet received the
+  configuration change that includes it), the leader must treat the rejection as needing earlier records rather than abandoning replication. The leader must rewind replication to include the configuration entry that brings the follower out
+  of retirement, preventing deadlock.
 
 ### II. Universal Log Fusion & Obsolete Suffix Truncation Invariants
 
@@ -352,47 +363,84 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 ### I. Multi-Phase Reactive Election Architecture
 
-Unlike monolithic consensus systems with background heartbeat timeouts, leader elections are executed on-demand in four coordinated phases:
+Unlike monolithic consensus systems with background heartbeat timeouts, leader elections are executed on-demand in coordinated phases:
 
-1. **State Discovery Phase (`HowAreYou`)**:
-    - An uncoordinated participant (`Isolated` or `Candidate`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active configuration.
+1. **State Discovery Phase (`HowAreYou` / Pre-Vote)**:
+    - An uncoordinated participant (`Isolated`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active configuration.
+    - This phase is term-neutral and acts as a reactive Pre-Vote: querying nodes do not advance their terms, ensuring active leaders are never disrupted by exploratory queries from partitioned or restarting nodes.
     - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, log tail metadata, and current ballot.
 
 2. **Deterministic Candidate Ranking (`decideMyVote`)**:
-    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(term, electionRank, commitIndex, termAtCommitIndex, lastRecordTerm, lastRecordIndex, participantId)`.
-    - Active leaders take precedence over candidates, candidates take precedence over retirees, and higher terms take precedence over lower terms.
-    - If terms match, higher commit indices and matching log prefixes are preferred.
-    - Ties between equal-state candidates are broken deterministically by participant identifier, guaranteeing that all participants with identical peer views select the same candidate.
+    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonConfig, participantId)`.
+    - **Precedence Order & Safety Invariants**:
+        - `currentTerm`: Higher terms strictly dominate lower terms.
+        - `isLeading` over Log Completeness: An active leader (`ER_LEADING`) within the same term takes precedence over other participants regardless of log tail comparisons. Assuming term invariants hold, this avoids unnecessary leadership
+          churn, abdications, and re-elections during exploratory discovery.
+        - Log Completeness over `isCandidate`: Log completeness (`lastRecordTerm`, then `lastRecordIndex`) strictly dominates candidate status (`ER_CANDIDATE`). Lagging candidates cannot bypass more complete logs held by retiring
+          (`ER_RETIREE`) or joining (`ER_JOINER`) participants. If a non-candidate peer holds newer committed entries, the comparison prioritizes that peer's state, preventing the candidate from voting for itself or achieving nomination
+          until it absorbs those committed records.
+        - `isCandidate` over Non-Candidate: Among participants with equal terms and identical log completeness, active candidates take precedence over passive participants (followers, retirees, joiners).
+        - `isInCommonConfig`: Participants belonging to the common configuration set take precedence over non-common peers to preserve configuration stability during joint consensus.
+        - `participantId`: Deterministic tie-breaker ensuring that all participants with identical peer views select the exact same candidate.
 
-3. **Voting Phase (`ChooseALeader`)**:
-    - If a participant deterministically selects itself and reached a majority in the discovery phase, it solicits explicit votes from peers via `ChooseALeader`.
-    - Peers evaluate the solicitation against their local state and return an explicit `Vote` tagged with the election term and ballot.
+3. **Candidate Elevation & Preemptive Term Bumping**:
+    - When a participant deterministically selects itself and has observed responses from a majority of active participants, it initiates Phase 2.
+    - Before issuing vote solicitations, the candidate advances its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$, records its vote for itself, and persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ in stable
+      storage via the primary state causal fence.
 
-4. **Quorum & Role Determination**:
-    - **Stable Configuration Quorum**: A candidate must receive votes from a strict majority (`> N / 2`) of active configuration participants.
+4. **Voting Phase (`ChooseALeader`) & Voter Epoch Fencing**:
+    - The candidate solicits explicit votes via `ChooseALeader` carrying $T_{\text{target}}$ and its updated `StateInfo`.
+    - Responding peers observing $T_{\text{target}} > T_{\text{local}}$ atomically advance their local term to $T_{\text{target}}$ and clear prior votes in persistent storage before evaluating the vote.
+    - Peers evaluate the solicitation against log completeness and single-vote-per-term constraints. If the candidate's log is up-to-date and the voter has not voted for another candidate in $T_{\text{target}}$, the voter persists
+      `votedFor = candidateId` and returns an explicit `Vote` at $T_{\text{target}}$.
+    - **Local Voter Evaluation Boundary**: Voters evaluate vote solicitations strictly against local log completeness and the single-vote-per-term invariant without dispatching discovery queries (`HowAreYou`) to third-party peers. This
+      prevents $O (N^2)$ query cascades and ensures that an unreachable or partitioned minority cannot deadlock majority quorum formation.
+    - **Epoch Fencing Effect**: Advancing and persisting $T_{\text{target}}$ permanently fences the voter against all prior terms ($\le T_{\text{target}} - 1$). Any delayed append requests from an old deposed leader at prior terms are
+      unconditionally rejected with `StaleTerm`.
+
+5. **Quorum & Role Inauguration**:
+    - **Stable Configuration Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active configuration participants.
     - **Transitional Configuration Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old configuration set (`Cold`) and the new configuration set (`Cnew`).
-    - If the candidate obtains the required quorum, it transitions to `Promoting`. If quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
+    - If the candidate obtains the required quorum, it transitions through `Promoting` directly into `Leader(term = targetTerm)`. Because the term was already persisted prior to voting, no further term bumping occurs during promotion. If
+      quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
 
-### II. Ballot Mechanics & The "One Vote Per Ballot" Invariant
+### II. Ballot Mechanics & Single-Vote-Per-Term Invariant
 
 - **Ballot Monotonicity**: Every participant maintains a local monotonic ballot counter (`currentBallot`). The ballot counter distinguishes distinct election rounds within the participant's lifecycle.
 - **Ballot Invalidation on Disruption**: The ballot counter is bumped whenever an election round fails to establish a leader, whenever higher ballots are observed in peer RPC responses, or when client retries incite new election rounds.
   Advancing the ballot immediately purges all cached peer state information.
-- **One Vote per Ballot Invariant**: A participant may cast at most one vote per ballot round. `StateInfo` and `Vote` records are strictly bound to their issuing ballot. If concurrent activity or peer RPCs advance the ballot, all votes cast
-  under prior ballots are invalidated.
-- **Split-Brain Prevention**: Because each voter participates at most once per ballot, and any valid leadership requires a majority quorum (or overlapping joint majorities in transitional configurations), two distinct candidates can never
-  simultaneously secure valid majorities in the same ballot round.
+- **One Vote per Ballot & Term Invariant**: A participant may cast at most one vote per ballot round and at most one vote per term. When a vote is granted, the candidate's identity is recorded in persistent storage (`Workspace.votedFor`)
+  alongside the term. Advancing to a higher term resets the recorded vote.
+- **Split-Brain Prevention**: Because voters persist their term and granted vote before responding to `ChooseALeader`, intersecting majorities across terms are prevented from acknowledging divergent logs, strictly preserving Raft's Leader
+  Completeness and State Machine Safety.
 
 ### III. Promotion Phase (`Promoting`) & Term Bumping Invariants
 
 - **Hidden Transitional Substate**: `Promoting` is a transient, internal role entered immediately upon securing an election quorum. Outside participants never observe a node in the `Promoting` state because inbound RPCs are held pending
   during this interval.
-- **Mandatory Persistent Term Advancement**: A participant entering `Promoting` from term $T$ does not become leader of term $T$. Instead, it atomically increments its term to $T + 1$ in persistent storage through the primary state causal
-  fence.
+- **Pre-Election Epoch Bumping**: Unlike designs that defer term bumping until after quorum acquisition, the term is bumped and persisted *prior* to Phase 2 vote collection. `Promoting` serves to finalize asynchronous pipeline
+  initialization and causally anchor active configuration state before client command processing commences.
 - **Strict Role-Exit Cleanliness**: All active replication waves and retry tokens are canceled upon role transitions. Role references are updated before invoking exit handlers to ensure synchronous cancellation continuations immediately
   observe that the node is no longer in the previous role.
-- **Leadership Inauguration**: Only after the bumped term $T + 1$ is safely stored in persistent state does the participant instantiate and transition to `Leader(term = T + 1)`. As a consequence, concurrent dual leadership within the same
-  term is strictly impossible.
+- **Leadership Inauguration**: Once causal state anchoring completes, the participant instantiates and transitions to `Leader(term = targetTerm)`.
+
+### IV. Out-of-Band Commit Index Absorption Invariant (Log Matching Safety)
+
+- **Deadlock Vulnerability with Ineligible Candidates**:
+    - Because log completeness strictly dominates candidate rank (`completeness > isCandidate`), an active candidate in Phase 1 discovery will lose the election to a retiring (`ER_RETIREE`) or joining (`ER_JOINER`) participant whenever that
+      peer possesses a higher commit index or a more complete log tail.
+    - Retiring and joining participants are structurally ineligible for leadership (`rank != ER_LEADING` and cannot transition to `Leader`). Consequently, they will never broadcast `AppendEntries` to advance followers' commit indices.
+    - If candidates were restricted to standard Raft leader-driven commit index advancement, candidates would repeatedly yield blank votes or select ineligible peers, causing the cluster to deadlock indefinitely.
+- **Out-of-Band Advancement via Raft's Log Matching Property**:
+    - To break election deadlocks without requiring heartbeats or active leaders, active participants evaluate out-of-band commit index absorption (`absorbHigherCommitIndexFromPeers`).
+    - By Raft's Log Matching Property: *If two entries in different logs have the same index and term, the logs are identical in all preceding entries.*
+    - An active participant safely advances its local `commitIndex` out-of-band to a peer's `peerCommitIndex` without leader intervention if and only if:
+      $$\text{firstEmptyRecordIndex} > \text{peerCommitIndex} \quad \text{and} \quad \text{getRecordTermAt} (\text{peerCommitIndex}) == \text{peerStateInfo.termAtCommitIndex}$$
+    - Matching the term at `peerCommitIndex` provides mathematical proof that all entries up to `peerCommitIndex` in the local log are identical to the committed entries on the peer.
+- **Post-Absorption Dynamic Reconfiguration**:
+    - Once `commitIndex` is advanced, the node triggers local application of newly committed commands and configuration entries.
+    - When the absorbed commit index covers the `StableConfigChange` that finalized a retiree's exclusion, the candidate updates its active configuration, removes the retired peer from consideration, and becomes eligible to secure majority
+      quorum and inaugurate leadership in the subsequent election round.
 
 ---
 
@@ -413,24 +461,65 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 To guarantee strictly sequential state transitions without the stalling overhead of Thread/Actor-blocking or the race-condition vulnerabilities of Mutexes (lock-and-release), the consensus participant wraps its PrimaryState inside a
 CausalFence. This acts as a non-blocking promise queue dedicated solely to state synchronization.
 
-### The Game-Changing Invariant
+### The Game-Changing Invariant & Temporal Window of Causal Safety
 
 By attaching continuations synchronously to the Capture returned by advance or causalAnchor, the algorithm guarantees execution ordering. Continuations inherently execute in the exact causal timeline slot following the anchored mutation,
 ensuring they receive the perfectly synchronized, fresh state.
 
-### The Decoupled Mutation Contract (A Design Decision)
+Crucially, this guarantee is strictly bounded by the **Temporal Window of Causal Safety**:
 
-While CausalFence enforces the timeline, the consensus algorithm specifically enforces a **Decoupled Mutation Contract** across its internal pub-sub boundaries (such as CommitIndexAwaiters fulfilling Captures).
+- The causal guarantee holds only during the synchronous execution of a consumer synchronously subscribed to the returned `Capture`.
+- Once execution yields, crosses an asynchronous completion (such as `waitRecordBecomesCommitted`), or defers via `Capture_defer`, the captured `PrimaryState` reference is obsolete and outside the causal window.
+- Any subsequent derivation of configuration, role synchronization, or invariant verification that inspects `PrimaryState` after an asynchronous boundary or deferred dispatch MUST acquire a fresh anchor via
+  `primaryStateFence.causalAnchor()` and perform derivations strictly within that anchor's synchronous continuation.
 
-This contract strictly forbids observers from mutating the PrimaryState synchronously upon notification. Consequential side-effects (e.g., initiating log compaction or appending new records based on a commit index bump) must be fully
-decoupled—either chained asynchronously onto the causal timeline or dispatched via sequencer.run.
+### The Decoupled Mutation Contract (An Asymmetric Performance Decision)
 
-**Rationale & Alternative Considered:**
-An alternative to this contract would be allowing observers to synchronously mutate the state. However, if this were permitted, any consensus method invoking an observer (like recalculateCommitIndex iterating through awaiters) would have to
-defensively assume its local PrimaryState reference was instantly poisoned by the observer. It would be forced to execute a new causalAnchor () to fetch the fresh state before continuing to the next line of code.
+While `CausalFence` enforces the sequential timeline, the consensus algorithm specifically enforces an asymmetric **Decoupled Mutation Contract** across all internal reactive notification boundaries (such as `CommitIndexAwaiter` fulfillment
+and state event observers).
 
-By universally adopting the Decoupled Mutation Contract inside ConsensusParticipantSdm, the consensus algorithm entirely eliminates the massive overhead and syntactic boilerplate of constantly re-anchoring state references. It guarantees
-that within any synchronous block of execution, a valid PrimaryState reference remains pristine and temporally safe from beginning to end.
+This contract strictly mandates that observers and continuation callbacks MUST NOT synchronously mutate the protected `PrimaryState` (`CausalFence`) within their notification context. Any consequential state mutation or side-effect
+resulting from a notification (such as appending records, transitioning configuration phases, or initiating log compaction) must be decoupled from the notification stack—either by self-deferring via `sequencer.Capture_defer` or dispatching
+via `sequencer.run`.
+
+#### 1. Rationale: The Hot-Path Performance Asymmetry
+
+The Decoupled Mutation Contract is not an accidental restriction; it is an intentional architectural tradeoff designed to optimize the primary throughput path of the consensus engine:
+
+- **Zero-Cost Happy Path for Client Commands**: In a production consensus cluster, over 99.999% of commit index advancements represent client command replication. On this hot path, when a command commits, the leader applies the command to
+  the state machine, notifies client awaiters, and returns the response. Applying committed records to the state machine does not mutate the `PrimaryState` or touch the `CausalFence`. Because the contract guarantees that awaiters do not
+  mutate the fence, `recalculateCommitIndex` can notify awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline scheduling, and dispatch latency, allowing the happy path to execute with
+  absolute minimum overhead.
+- **Asymmetric Caller Burden**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as the fallback
+  branches of command replication (appending no-op records) and configuration change completions (advancing from transitional to stable configurations)—must explicitly wrap their continuations in `Capture_defer`. This trades caller
+  simplicity on rare paths to maximize performance on the critical path.
+
+#### 2. Rejection of Alternative 1: Synchronous Inline Re-Anchoring
+
+A naive alternative to the contract would be to permit observers to mutate the state synchronously, under the assumption that the notifier could simply re-anchor after calling each observer. This alternative is structurally impossible:
+
+- **The Asynchronous Promise Reality**: `CausalFence.causalAnchor()` is fundamentally an asynchronous primitive that returns a `Capture[PrimaryState]`, not a synchronous value. The moment an advance is enqueued onto the fence (such as an
+  observer appending an entry to disk), the new state does not exist synchronously; it is an in-flight operation awaiting persistence or pipeline sequencing.
+- **Inability to Resume Synchronously**: A synchronous loop (such as `recalculateCommitIndex` iterating over fulfilled awaiters) cannot block or inline-await an asynchronous promise. To pass a freshly anchored state to subsequent awaiters,
+  the entire remainder of the loop would have to be severed and converted into an asynchronous callback chain (`awaiter.seizeWith(causalAnchor())`), destroying synchronous stack execution.
+
+#### 3. Rejection of Alternative 2: Dynamic Mutation Detection
+
+Another tempting design is dynamic fallback detection: having `recalculateCommitIndex` notify synchronously by default, but dynamically check if the fence was modified
+(`!primaryStateFence.committedState.is(primaryState0) || !primaryStateFence.isEmpty`), re-anchoring remaining awaiters only when a mutation occurs. This alternative was formally rejected due to two fatal concurrency hazards:
+
+- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., a configuration change and subsequent client commands), and an early awaiter mutates the fence,
+  dynamically re-anchoring subsequent awaiters via `seizeWith(causalAnchor())` defers them to future sequencer turns. Consequently, awaiters that achieved consensus within the exact same batch are arbitrarily split across different
+  execution frames, violating linear dispatch expectations.
+- **Stack Re-Entrancy and State Invalidation**: Allowing an observer to mutate the fence synchronously executes arbitrary state mutation logic while `recalculateCommitIndex` is actively running on the call stack. The observer's callback
+  could alter roles (triggering abdication or follower transitions), schedule pipeline drives, or mutate the pending awaiter collection while the outer loop is still traversing it.
+
+#### 4. The Resulting Purity Invariant
+
+By enforcing the Decoupled Mutation Contract, `recalculateCommitIndex` maintains the strict assertion:
+`assert(primaryStateFence.committedState.is(primaryState0))`
+This mathematical invariant proves that commit index calculation and notification is strictly pure with respect to the causal state. It guarantees that a valid `PrimaryState` reference remains pristine and temporally safe from the beginning
+of the notification loop to the end, eliminating re-entrancy bugs, stale-state references, and batch turn-splitting.
 
 ## 11. Diagnostic Inspection & Causally Consistent Observation
 

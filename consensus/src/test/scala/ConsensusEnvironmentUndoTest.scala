@@ -46,7 +46,7 @@ class ConsensusEnvironmentUndoTest extends FunSuite {
 		env.stepNode(0)
 		assertEquals(env.pendingPackets.size, 2)
 
-		val dispatchedOutcome = env.dispatchNext(0, 1)
+		val dispatchedOutcome = env.deliverNext(0, 1)
 		assert(dispatchedOutcome.isDefined)
 		assertEquals(env.pendingPackets.size, 1)
 
@@ -85,7 +85,7 @@ class ConsensusEnvironmentUndoTest extends FunSuite {
 		assertEquals(env.tags("checkpoint-1").size, checkpointOps)
 
 		// Further progress
-		env.dispatchNext(0, 1)
+		env.deliverNext(0, 1)
 		env.stepNode(1)
 		assert(env.appliedOperationsCount > checkpointOps)
 

@@ -3,7 +3,7 @@ type: "ADR"
 title: "CausalFence and the Decoupled Mutation Contract"
 description: "Architectural decision and specification for safe, non-blocking sequential state mutation using CausalFence."
 tags: [ "adr", "concurrency", "causalfence", "state-machine", "consensus" ]
-timestamp: "2026-09-09T00:22:00Z"
+timestamp: "2026-09-17T21:05:00Z"
 ---
 
 # ADR: CausalFence and the Decoupled Mutation Contract
@@ -23,9 +23,7 @@ Traditional paradigms handle this poorly:
 We introduced `CausalFence` as a non-blocking state mutex built around a promise queue. Instead of synchronizing threads or message inboxes, it strictly synchronizes the *state itself* (`PrimaryState`). This decouples the state's causal
 timeline from the underlying execution engine (`Doer`), allowing the node to multiplex tasks while guaranteeing mathematically safe state transitions.
 
-## The Invariants
-
-### 1. The Game-Changing Invariant
+### 1. The Game-Changing Invariant & Temporal Window of Causal Safety
 
 By attaching continuations synchronously to the `Capture` returned by `advance`, `advanceIf`, or `causalAnchor`, the framework mathematically guarantees execution ordering.
 
@@ -33,20 +31,54 @@ By attaching continuations synchronously to the `Capture` returned by `advance`,
 - The continuation is guaranteed to receive the *fresh, correct state* corresponding to that specific moment in time.
 - State references should not be passed to deferred or asynchronous boundaries without re-anchoring, as they instantly become stale once the initial execution block yields.
 
-### 2. The Decoupled Mutation Contract (Design Decision)
+### 2. The Decoupled Mutation Contract (An Asymmetric Performance Decision)
 
-While the `CausalFence` enforces the timeline, the consensus algorithm specifically enforces a **Decoupled Mutation Contract** across its internal components (such as observer notifications and `Capture` fulfillments).
+While the `CausalFence` enforces the sequential timeline, the consensus algorithm specifically enforces an asymmetric **Decoupled Mutation Contract** across all internal reactive notification boundaries (such as `CommitIndexAwaiter`
+fulfillment and state event observers).
 
 To prevent stalling the timeline and avoid poisoning nested execution contexts, state mutations and their resulting side-effects must be strictly separated.
 
 - **Synchronous Updates Only:** All writes to the protected state (e.g., updating the term, appending records, truncating the log) must occur strictly within the synchronous updater function passed to `advance`.
-- **Decoupled Side-Effects:** Consequential side-effects (e.g., initiating log compaction, triggering replication pipelines) MUST NOT be executed synchronously inside the updater or synchronously by an observer. They must be decoupled,
-  chained onto the returned `Capture`, or dispatched via `sequencer.run`.
+- **Decoupled Side-Effects:** Consequential side-effects (e.g., initiating log compaction, triggering replication pipelines, appending no-op records, or starting second-phase configuration changes) MUST NOT be executed synchronously inside
+  the updater or synchronously by an observer. They must be decoupled, chained onto the returned `Capture`, deferred via `sequencer.Capture_defer`, or dispatched via `sequencer.run`.
 
-**Alternative Considered & Rationale:**
-An alternative would be to permit observers (e.g., subscribers to `Captor.captureSync`) to mutate the `PrimaryState` synchronously. However, if this were allowed, the caller invoking the observer would have to defensively assume its local
-`PrimaryState` reference was instantly poisoned. It would be forced to execute a `causalAnchor()` to fetch the fresh state before proceeding to the next line of code. By adopting the Decoupled Mutation Contract, the consensus layer entirely
-avoids the heavy performance overhead and syntactic boilerplate of constantly re-anchoring state references.
+#### Architectural Rationale: The Hot-Path Performance Asymmetry
+
+This contract is an intentional, asymmetric performance optimization:
+
+- **Zero-Cost Happy Path for Client Commands**: Over 99.999% of commit index advancements represent client command replication. On this hot path, committed commands are applied to the state machine, client responses are formed, and awaiters
+  are resolved. Applying committed records to the state machine does not mutate the `PrimaryState` or touch the `CausalFence`. Because the contract guarantees that awaiters do not mutate the fence, `recalculateCommitIndex` can notify
+  awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline hops, and dispatch latency, allowing the happy path to execute with absolute minimum overhead.
+- **Asymmetric Burden on Mutating Callers**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as
+  fallback branches of command replication (appending no-op records) and configuration change completions (transitioning from transitional to stable configurations)—must explicitly wrap their continuations in `Capture_defer`. This
+  sacrifices caller simplicity on rare paths to maximize performance on the critical path.
+
+#### Rejection of Alternative 1: Synchronous Inline Re-Anchoring
+
+A naive alternative to the contract would be to permit observers to mutate the state synchronously, assuming the notifier could simply re-anchor after calling each observer. This alternative is structurally impossible:
+
+- **The Asynchronous Promise Reality**: `CausalFence.causalAnchor()` is fundamentally an asynchronous primitive that returns a `Capture[PrimaryState]`, not a synchronous value. The moment an advance is enqueued onto the fence (such as an
+  observer appending an entry to disk), the new state does not exist synchronously; it is an in-flight operation awaiting persistence or pipeline sequencing.
+- **Inability to Resume Synchronously**: A synchronous loop (such as `recalculateCommitIndex` iterating over fulfilled awaiters) cannot block or inline-await an asynchronous promise. To pass a freshly anchored state to subsequent awaiters,
+  the entire remainder of the loop would have to be severed and converted into an asynchronous callback chain (`awaiter.seizeWith(causalAnchor())`), destroying synchronous stack execution.
+
+#### Rejection of Alternative 2: Dynamic Mutation Detection in Notifier Loops
+
+Another tempting alternative is dynamic fallback detection: having `recalculateCommitIndex` notify synchronously by default, but dynamically check if the fence was modified
+(`!primaryStateFence.committedState.is(primaryState0) || !primaryStateFence.isEmpty`), re-anchoring remaining awaiters only when a mutation occurs. This alternative was formally rejected due to two fatal concurrency hazards:
+
+- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., a configuration change and subsequent client commands), and an early awaiter mutates the fence,
+  dynamically re-anchoring subsequent awaiters via `seizeWith(causalAnchor())` defers them to future sequencer turns. Consequently, awaiters that achieved consensus within the exact same batch are arbitrarily split across different
+  execution frames, violating linear dispatch expectations.
+- **Stack Re-Entrancy and State Invalidation**: Allowing an observer to mutate the fence synchronously executes arbitrary state mutation logic while `recalculateCommitIndex` is actively running on the call stack. The observer's callback
+  could alter roles (triggering abdication or follower transitions), schedule pipeline drives, or mutate the pending awaiter collection while the outer loop is still traversing it.
+
+#### The Resulting Purity Invariant
+
+By enforcing the Decoupled Mutation Contract, `recalculateCommitIndex` maintains the strict assertion:
+`assert(primaryStateFence.committedState.is(primaryState0))`
+This mathematical invariant proves that commit index calculation and notification is strictly pure with respect to the causal state. It guarantees that a valid `PrimaryState` reference remains pristine and temporally safe from the beginning
+of the notification loop to the end, eliminating re-entrancy bugs, stale-state references, and batch turn-splitting.
 
 ## Consequential Designs
 

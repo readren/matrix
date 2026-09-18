@@ -19,7 +19,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// p-4 (scenario d): has entries 1-10, plus extra entries 11-12 (term 7), was crashed/down during election
 		// p-5 (scenario e): has entries 1-3 (term 1), entries 4-7 (term 4)
 		// p-6 (scenario f): has entries 1-3 (term 1), entries 4-6 (term 2), entries 7-8 (term 3)
-		val env = new ConsensusEnvironment(clusterSize = 7)
+		val env = new ConsensusEnvironment(clusterSize = 7, logCompactionThreshold = 100)
 
 		val initConfig = TransitionalConfigChange[String](
 			1.asInstanceOf[Term],
@@ -109,7 +109,7 @@ class RaftPaperExamplesTest extends FunSuite {
 
 		// Dispatch discovery and election packets
 		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -125,7 +125,7 @@ class RaftPaperExamplesTest extends FunSuite {
 
 		// Dispatch all append requests and replies across the cluster until all logs are repaired
 		while env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -205,7 +205,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.runAllNodesUntilIdle()
 
 		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -217,7 +217,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// This replicates index 2 to p-2, reaching a majority {p-0, p-1, p-2} of 3 out of 5.
 		while env.pendingPackets.exists(p => p.destination == "p-2" || p.source == "p-2") do {
 			for p <- env.pendingPackets.filter(p => p.destination == "p-2" || p.source == "p-2") do {
-				env.dispatchPacket(p.id)
+				env.deliverPacket(p.id)
 			}
 			env.runAllNodesUntilIdle()
 		}
@@ -235,7 +235,7 @@ class RaftPaperExamplesTest extends FunSuite {
 
 		// Phase (e): Now deliver replication to p-1 as well, so current-term entry 3 reaches majority
 		while env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -255,11 +255,11 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.runAllNodesUntilIdle()
 
 		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 		while env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 		val ClientCommandStatus.Processed(_, resInit) = env.clientCommandStatus(hInit.commandId): @unchecked
@@ -280,7 +280,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// Phase 1: TransitionalConfigChange (Cold,new) replicated and committed across joint quorum
 		// Phase 2: StableConfigChange (Cnew) replicated and committed
 		while env.configChangeStatus(ccHandle.requestId) == ConfigChangeStatus.InFlight && env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -362,7 +362,7 @@ class RaftPaperExamplesTest extends FunSuite {
 
 		// Run leader election and initial synchronization between p-0 and p-2
 		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -376,7 +376,7 @@ class RaftPaperExamplesTest extends FunSuite {
 			for packet <- env.pendingPackets do {
 				if packet.summary.toLowerCase.contains("installsnapshot") then snapshotTransmitted = true
 			}
-			env.dispatchAll()
+			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 

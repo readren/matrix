@@ -87,8 +87,8 @@ final case class ResponsePacket(
 	summary: String
 ) extends Packet
 
-/** The outcome of a packet dispatch operation. */
-final case class DispatchOutcome(
+/** The outcome of a packet deliver operation. */
+final case class DeliverOutcome(
 	packetId: PacketId,
 	source: String,
 	destination: String,
@@ -273,6 +273,7 @@ class EnvironmentNode(
 
 	class TestWorkspace extends Workspace {
 		var currentTerm: Term = PRE_INIT
+		var _votedFor: Maybe[ParticipantId] = Maybe.empty
 		val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 		var _logBufferOffset: RecordIndex = 1
 		var maybeLatestSnapshot: Maybe[SnapshotData[ParticipantId]] = Maybe.empty
@@ -280,7 +281,19 @@ class EnvironmentNode(
 		override def getCurrentTerm: Term = currentTerm
 
 		override def setCurrentTerm(term: Term): Unit = {
+			if term != currentTerm then _votedFor = Maybe.empty
 			currentTerm = term
+		}
+
+		override def getVotedFor: Maybe[ParticipantId] = _votedFor
+
+		override def setVotedFor(votedFor: Maybe[ParticipantId]): Unit = {
+			_votedFor = votedFor
+		}
+
+		override def setTermAndVote(term: Term, votedFor: Maybe[ParticipantId]): Unit = {
+			currentTerm = term
+			_votedFor = votedFor
 		}
 
 		override def logBufferOffset: RecordIndex = _logBufferOffset
@@ -341,6 +354,7 @@ class EnvironmentNode(
 		def deepCopy(): TestWorkspace = {
 			val cp = new TestWorkspace()
 			cp.currentTerm = this.currentTerm
+			cp._votedFor = this._votedFor
 			cp._logBufferOffset = this._logBufferOffset
 			cp.logBuffer.addAll(this.logBuffer)
 			cp.maybeLatestSnapshot = this.maybeLatestSnapshot
@@ -614,16 +628,21 @@ object EnvOperation {
 	final case class RunNodeUntilIdle(node: String, maxSteps: Int) extends EnvOperation
 	final case class RunAllNodesUntilIdle(maxRounds: Int) extends EnvOperation
 
-	final case class DispatchPacket(packetId: PacketId) extends EnvOperation
+	final case class DeliverPacket(packetId: PacketId) extends EnvOperation
 	final case class DropPacket(packetId: PacketId) extends EnvOperation
-	final case class DispatchNext(from: String, to: String) extends EnvOperation
+
+	final case class DeliverNext(from: String, to: String) extends EnvOperation
 	final case class DropNext(from: String, to: String) extends EnvOperation
-	final case class DispatchFirstN(from: String, to: String, n: Int) extends EnvOperation
+
+	final case class DeliverFirstN(from: String, to: String, n: Int) extends EnvOperation
 	final case class DropFirstN(from: String, to: String, n: Int) extends EnvOperation
-	final case class DispatchAllBetween(from: String, to: String) extends EnvOperation
+
+	final case class DeliverAllBetween(from: String, to: String) extends EnvOperation
 	final case class DropAllBetween(from: String, to: String) extends EnvOperation
-	final case class DispatchAllTo(to: String) extends EnvOperation
-	case object DispatchAll extends EnvOperation
+
+	final case class DeliverAllTo(to: String) extends EnvOperation
+
+	case object DeliverAll extends EnvOperation
 	final case class FailPacket(packetId: PacketId, errorMsg: String) extends EnvOperation
 
 	final case class AdvanceTime(ticks: Int) extends EnvOperation
@@ -813,16 +832,16 @@ class ConsensusEnvironment(
 		case EnvOperation.StepAllNodes => stepAllNodes()
 		case EnvOperation.RunNodeUntilIdle(node, maxSteps) => runNodeUntilIdle(node, maxSteps)
 		case EnvOperation.RunAllNodesUntilIdle(maxRounds) => runAllNodesUntilIdle(maxRounds)
-		case EnvOperation.DispatchPacket(id) => dispatchPacket(id)
+		case EnvOperation.DeliverPacket(id) => deliverPacket(id)
 		case EnvOperation.DropPacket(id) => dropPacket(id)
-		case EnvOperation.DispatchNext(from, to) => dispatchNext(from, to)
+		case EnvOperation.DeliverNext(from, to) => deliverNext(from, to)
 		case EnvOperation.DropNext(from, to) => dropNext(from, to)
-		case EnvOperation.DispatchFirstN(from, to, n) => dispatchFirstN(from, to, n)
+		case EnvOperation.DeliverFirstN(from, to, n) => deliverFirstN(from, to, n)
 		case EnvOperation.DropFirstN(from, to, n) => dropFirstN(from, to, n)
-		case EnvOperation.DispatchAllBetween(from, to) => dispatchAllBetween(from, to)
+		case EnvOperation.DeliverAllBetween(from, to) => deliverAllBetween(from, to)
 		case EnvOperation.DropAllBetween(from, to) => dropAllBetween(from, to)
-		case EnvOperation.DispatchAllTo(to) => dispatchAllTo(to)
-		case EnvOperation.DispatchAll => dispatchAll()
+		case EnvOperation.DeliverAllTo(to) => deliverAllTo(to)
+		case EnvOperation.DeliverAll => deliverAll()
 		case EnvOperation.FailPacket(id, msg) => failPacket(id, new java.io.IOException(msg))
 		case EnvOperation.AdvanceTime(ticks) => advanceTime(ticks)
 		case EnvOperation.TriggerWakeUp(tokenId) => triggerWakeUp(tokenId)
@@ -985,50 +1004,50 @@ class ConsensusEnvironment(
 		channelQueue(from.asNodeId, to.asNodeId).toSeq
 	}
 
-	def dispatchPacket(packetId: PacketId): DispatchOutcome = recordOrExecute(EnvOperation.DispatchPacket(packetId)) {
+	def deliverPacket(packetId: PacketId): DeliverOutcome = recordOrExecute(EnvOperation.DeliverPacket(packetId)) {
 		val targetQueueOpt = channels.find(_._2.exists(_.id == packetId))
 		targetQueueOpt match {
 			case None => throw new NoSuchElementException(s"Packet $packetId not found in any channel")
 			case Some((fromTo, queue)) =>
 				val idx = queue.indexWhere(_.id == packetId)
 				val packet = queue.remove(idx)
-				executeDispatch(packet)
+				executeDeliver(packet)
 		}
 	}
 
-	def dispatchNext(from: NodeRef, to: NodeRef): Option[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchNext(from.asNodeId, to.asNodeId)) {
+	def deliverNext(from: NodeRef, to: NodeRef): Option[DeliverOutcome] = recordOrExecute(EnvOperation.DeliverNext(from.asNodeId, to.asNodeId)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
 		if queue.isEmpty then None
-		else Some(executeDispatch(queue.removeHead()))
+		else Some(executeDeliver(queue.removeHead()))
 	}
 
-	def dispatchFirstN(from: NodeRef, to: NodeRef, n: Int): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchFirstN(from.asNodeId, to.asNodeId, n)) {
+	def deliverFirstN(from: NodeRef, to: NodeRef, n: Int): Seq[DeliverOutcome] = recordOrExecute(EnvOperation.DeliverFirstN(from.asNodeId, to.asNodeId, n)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
 		val count = math.min(n, queue.size)
-		(0 until count).map(_ => executeDispatch(queue.removeHead()))
+		(0 until count).map(_ => executeDeliver(queue.removeHead()))
 	}
 
-	def dispatchAllBetween(from: NodeRef, to: NodeRef): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAllBetween(from.asNodeId, to.asNodeId)) {
+	def deliverAllBetween(from: NodeRef, to: NodeRef): Seq[DeliverOutcome] = recordOrExecute(EnvOperation.DeliverAllBetween(from.asNodeId, to.asNodeId)) {
 		val queue = channelQueue(from.asNodeId, to.asNodeId)
-		val res = mutable.ArrayBuffer.empty[DispatchOutcome]
+		val res = mutable.ArrayBuffer.empty[DeliverOutcome]
 		while queue.nonEmpty do {
-			res.append(executeDispatch(queue.removeHead()))
+			res.append(executeDeliver(queue.removeHead()))
 		}
 		res.toSeq
 	}
 
-	def dispatchAllTo(to: NodeRef): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAllTo(to.asNodeId)) {
+	def deliverAllTo(to: NodeRef): Seq[DeliverOutcome] = recordOrExecute(EnvOperation.DeliverAllTo(to.asNodeId)) {
 		val toId = to.asNodeId
-		val res = mutable.ArrayBuffer.empty[DispatchOutcome]
+		val res = mutable.ArrayBuffer.empty[DeliverOutcome]
 		for ((f, t), q) <- channels if t == toId do {
-			while q.nonEmpty do res.append(executeDispatch(q.removeHead()))
+			while q.nonEmpty do res.append(executeDeliver(q.removeHead()))
 		}
 		res.toSeq
 	}
 
-	def dispatchAll(): Seq[DispatchOutcome] = recordOrExecute(EnvOperation.DispatchAll) {
+	def deliverAll(): Seq[DeliverOutcome] = recordOrExecute(EnvOperation.DeliverAll) {
 		val all = pendingPackets
-		all.map(p => dispatchPacket(p.id))
+		all.map(p => deliverPacket(p.id))
 	}
 
 	def dropPacket(packetId: PacketId): Boolean = recordOrExecute(EnvOperation.DropPacket(packetId)) {
@@ -1070,10 +1089,10 @@ class ConsensusEnvironment(
 		}
 	}
 
-	private def executeDispatch(packet: Packet): DispatchOutcome = {
+	private def executeDeliver(packet: Packet): DeliverOutcome = {
 		val destNode = nodesMap.getOrElse(packet.destination, throw new IllegalStateException(s"Destination node ${packet.destination} does not exist"))
 		val hadPending = destNode.stepDoer.hasPendingTasks
-		val warning = if hadPending then Some(s"Destination node ${packet.destination} had ${destNode.stepDoer.pendingTasksCount} pending task(s) when packet ${packet.id} was dispatched.") else None
+		val warning = if hadPending then Some(s"Destination node ${packet.destination} had ${destNode.stepDoer.pendingTasksCount} pending task(s) when packet ${packet.id} was delivered.") else None
 
 		packet match {
 			case req: RequestPacket =>
@@ -1130,7 +1149,7 @@ class ConsensusEnvironment(
 				resp.completeCaller(resp.response)
 		}
 
-		DispatchOutcome(packet.id, packet.source, packet.destination, hadPending, warning)
+		DeliverOutcome(packet.id, packet.source, packet.destination, hadPending, warning)
 	}
 
 	// Virtual Clock & Wake-Ups

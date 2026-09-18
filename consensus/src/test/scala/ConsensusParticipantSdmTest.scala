@@ -982,6 +982,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 */
 		class TestWorkspace extends Workspace {
 			private var currentTerm: Term = PRE_INIT
+			private var _votedFor: Maybe[ParticipantId] = Maybe.empty
 			private val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
 			private var _logBufferOffset: RecordIndex = 1
 			private var maybeLatestSnapshot: Maybe[SnapshotData[ParticipantId]] = Maybe.empty
@@ -998,7 +999,24 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def setCurrentTerm(term: Term): Unit = {
 				sequencer.checkWithin()
+				if term != currentTerm then _votedFor = Maybe.empty
 				currentTerm = term
+			}
+
+			override def getVotedFor: Maybe[ParticipantId] = {
+				sequencer.checkWithin()
+				_votedFor
+			}
+
+			override def setVotedFor(votedFor: Maybe[ParticipantId]): Unit = {
+				sequencer.checkWithin()
+				_votedFor = votedFor
+			}
+
+			override def setTermAndVote(term: Term, votedFor: Maybe[ParticipantId]): Unit = {
+				sequencer.checkWithin()
+				currentTerm = term
+				_votedFor = votedFor
 			}
 
 			override def logBufferOffset: RecordIndex = {
@@ -1501,6 +1519,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			logRetentionAfterSnapshot: Int
 		)
 		val failingCases = Seq[FailingCase](
+			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0),
 			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3),
 			(30, 2, true, -3834115379994352266L, false, 1, 5, 9, 0),
 			(30, 4, true, -2499323556213279510L, false, 1, 5, 1, 0),
@@ -1581,7 +1600,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
-			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3)
+			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		testAllInvariants(
 			net,

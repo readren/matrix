@@ -3,8 +3,35 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-12T01:35:00Z"
+timestamp: "2026-09-17T15:40:00Z"
 ---
+
+## [2026-09-17T15:40:00Z]
+
+- Documented Temporal Window of Causal Safety & Asynchronous Re-Anchoring in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that `PrimaryState` references are strictly valid only within the synchronous body of consumers
+  subscribed to `advance` or `causalAnchor`. Crossing asynchronous boundaries (such as commit index awaiters) or deferred dispatches renders prior state references obsolete, requiring explicit re-anchoring via
+  `primaryStateFence.causalAnchor()` before inspecting primary or derived state.
+
+## [2026-09-17T15:03:00Z]
+
+- Documented Out-of-Band Commit Index Absorption Invariant in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing how active candidates resolve election deadlocks when losing to structurally ineligible participants
+  (retirees/joiners with more complete logs) by advancing `commitIndex` out-of-band via Raft's Log Matching Property without active leader heartbeats.
+
+## [2026-09-17T14:56:00Z]
+
+- Documented Deterministic Candidate Ranking Precedence Order in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing the exact evaluation tuple
+  `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonConfig, participantId)` and articulating the architectural rationale for prioritizing `isLeading > completeness` (minimizing unprovoked leader abdications
+  within an active term) and `completeness > isCandidate` (forcing lagging candidates to absorb committed records from retiring or joining participants before election eligibility).
+
+## [2026-09-16T23:05:00Z]
+
+- Documented Local Voter Evaluation Boundary in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing that voters evaluate candidate vote solicitations strictly against local log completeness and the single-vote-per-term invariant
+  without dispatching secondary discovery queries to third-party peers, preventing query cascades and cluster election deadlock under minority partitions.
+
+## [2026-09-16T22:30:00Z]
+
+- Documented Pre-Vote State Discovery, Preemptive Candidate Term Bumping, and Voter Epoch Fencing in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing the Fenced Epoch Voting Invariant, Single-Vote-Per-Term Invariant, and the
+  elimination of post-quorum term bumping.
 
 ## [2026-09-12T01:35:00Z]
 
@@ -360,6 +387,29 @@ timestamp: "2026-09-12T01:35:00Z"
 - Updated component specifications in `okf/sequencer-core.md` to reflect the renaming of the memoized reactive trait `Capturer` (and `DefaultCapturer`) to `Capture` (and `DefaultCapture`), aligning architectural documentation with the
   concept-noun to agent-noun taxonomy (`Capture` vs. `Captor` / `Keeper`).
 - Synchronized scheduling extension specifications in `okf/adr-scheduling-subscription-design.md` and reactive primitive evaluations in `okf/adr-spare-slot-pattern-evaluation.md` with the `Capture` nomenclature.
-- : Added ADR adr-causal-fence-state-synchronization.md to document the Game-Changing Invariant and the Decoupled Mutation Contract for CausalFence.
+- 2026-09-09: Added ADR `okf/adr-causal-fence-state-synchronization.md` to document the Game-Changing Invariant and the Decoupled Mutation Contract for `CausalFence`.
 
-- 2026-09-09: Added ADR adr-causal-fence-state-synchronization.md to document the Game-Changing Invariant and the Decoupled Mutation Contract for CausalFence.
+## [2026-09-17T21:05:00Z]
+
+- Expanded Section 10 of `okf/lazy-multi-raft-consensus.md` and Section 2 of `okf/adr-causal-fence-state-synchronization.md` with an exhaustive architectural specification of the Decoupled Mutation Contract.
+- Documented the hot-path performance asymmetry rationale (allocations and latency eliminated from client command replication in exchange for caller self-deferral on rare mutating paths).
+- Documented the technical rejection of synchronous inline re-anchoring due to the asynchronous nature of `CausalFence.causalAnchor()`.
+- Documented the technical rejection of dynamic mutation detection in `recalculateCommitIndex` due to intra-batch turn-splitting and stack re-entrancy hazards.
+- Specified the resulting purity invariant `assert(primaryStateFence.committedState.is(primaryState0))` for commit index recalculation.
+
+## [2026-09-17T22:30:00Z]
+
+- Updated Section 7.I of `okf/lazy-multi-raft-consensus.md` with the Upfront Current-Term Entry Insertion invariant under Raft §5.4.2 to prevent deadlock when resuming uncommitted log entries from superseded terms.
+- Specified the In-Flight Reconfiguration Pipeline Serializability invariant in Section 7.I of `okf/lazy-multi-raft-consensus.md` requiring leader recovery pipelines for uncommitted configuration changes to be bound to the configuration
+  completion handle to serialize subsequent reconfiguration requests.
+
+## [2026-09-18T18:15:00Z]
+
+- Documented the Commit Watermark Barrier Invariant in Section 7.I of `okf/lazy-multi-raft-consensus.md`, establishing that awaiting commitment operates strictly as a monotonic watermark barrier that guarantees commitment upon resolution
+  and never completes with uncommitted or transient failure statuses while leading.
+
+## [2026-09-18T20:20:00Z]
+
+- Added the Peer vs. Retiree Replication Pipeline Disjunction invariant to Section 7.I of `okf/lazy-multi-raft-consensus.md`, establishing mutual exclusion between active peer and retiring learner pipelines and defining recovery semantics
+  for active peers responding in the `RETIRING` role.
+

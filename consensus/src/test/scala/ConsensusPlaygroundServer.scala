@@ -805,7 +805,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 						case "dispatchPacket" =>
 							val id = params("packetId").toInt
-							env.dispatchPacket(id)
+							env.deliverPacket(id)
 
 						case "dropPacket" =>
 							val id = params("packetId").toInt
@@ -814,7 +814,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 						case "dispatchNext" =>
 							val from = params("from")
 							val to = params("to")
-							env.dispatchNext(from, to)
+							env.deliverNext(from, to)
 
 						case "dropNext" =>
 							val from = params("from")
@@ -824,10 +824,10 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 						case "dispatchAllBetween" =>
 							val from = params("from")
 							val to = params("to")
-							env.dispatchAllBetween(from, to)
+							env.deliverAllBetween(from, to)
 
 						case "dispatchAll" =>
-							env.dispatchAll()
+							env.deliverAll()
 
 						case "advanceTime" =>
 							val ticks = params.getOrElse("ticks", "10").toInt
