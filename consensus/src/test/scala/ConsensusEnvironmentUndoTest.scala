@@ -18,7 +18,7 @@ class ConsensusEnvironmentUndoTest extends FunSuite {
 
 		env.stepNode(0)
 		assertEquals(env.appliedOperationsCount, 3)
-		assertEquals(env.appliedOperations.last, EnvOperation.StepNode("p-0"))
+		assertEquals(env.appliedOperations.last, EnvOperation.StepNode(NodeId("p-0")))
 		assertEquals(env.pendingPackets.size, 2)
 	}
 
@@ -54,8 +54,8 @@ class ConsensusEnvironmentUndoTest extends FunSuite {
 		val undone = env.undo()
 		assert(undone)
 		assertEquals(env.pendingPackets.size, 2)
-		assert(env.pendingPackets.exists(_.destination == "p-1"))
-		assert(env.pendingPackets.exists(_.destination == "p-2"))
+		assert(env.pendingPackets.exists(_.destination == NodeId("p-1")))
+		assert(env.pendingPackets.exists(_.destination == NodeId("p-2")))
 	}
 
 	test("undo rolls back dynamic settings") {

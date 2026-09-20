@@ -21,7 +21,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// p-6 (scenario f): has entries 1-3 (term 1), entries 4-6 (term 2), entries 7-8 (term 3)
 		val env = new ConsensusEnvironment(clusterSize = 7, logCompactionThreshold = 100)
 
-		val initConfig = TransitionalConfigChange[String](
+		val initConfig = TransitionalConfigChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -151,7 +151,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// 5 nodes: p-0 to p-4 (corresponding to S1 to S5 in Raft paper Figure 8)
 		val env = new ConsensusEnvironment(clusterSize = 5)
 
-		val initConfig = TransitionalConfigChange[String](
+		val initConfig = TransitionalConfigChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -302,7 +302,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// 3 nodes: p-0, p-1, p-2
 		val env = new ConsensusEnvironment(clusterSize = 3)
 
-		val initConfig = TransitionalConfigChange[String](
+		val initConfig = TransitionalConfigChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -320,7 +320,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// Seed leader p-0 with a snapshot covering entries 1 to 5, and logBufferOffset = 6
 		val leaderMem = env.node(0).storage.savedMemory
 		leaderMem.currentTerm = 1.asInstanceOf[Term]
-		val snapshot = new SnapshotData[String](
+		val snapshot = new SnapshotData[NodeId](
 			lastIncludedRecordIndex = 5,
 			lastIncludedRecordTerm = 1.asInstanceOf[Term],
 			latestConfigChange = initConfig,
@@ -374,7 +374,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		var snapshotTransmitted = false
 		while env.pendingPackets.nonEmpty do {
 			for packet <- env.pendingPackets do {
-				if packet.summary.toLowerCase.contains("installsnapshot") then snapshotTransmitted = true
+				if packet.rpc.isInstanceOf[ConsensusRpc.InstallSnapshot] then snapshotTransmitted = true
 			}
 			env.deliverAll()
 			env.runAllNodesUntilIdle()

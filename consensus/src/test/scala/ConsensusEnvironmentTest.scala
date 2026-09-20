@@ -20,7 +20,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 		val discoveryPackets = env.pendingPackets
 		assertEquals(discoveryPackets.size, 2)
-		assert(discoveryPackets.forall(_.source == "p-0"))
+		assert(discoveryPackets.forall(_.source == NodeId("p-0")))
 
 		// Deliver discovery requests to peers
 		env.deliverNext(0, 1)
@@ -154,7 +154,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 
 		val pendingOps = env.pendingPersistenceOperations
 		assertEquals(pendingOps.size, 1)
-		assertEquals(pendingOps.head.nodeId, "p-0")
+		assertEquals(pendingOps.head.nodeId, NodeId("p-0"))
 
 		// Complete the pending persistence explicitly
 		val completed = env.completeNextStorageSave(0)
@@ -263,10 +263,10 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assertEquals(env.nodeRole(1), "LEADER")
 		assertEquals(env.node(1).storage.savedMemory.currentTerm, 2.asInstanceOf[Term])
 		assertEquals(env.node(2).storage.savedMemory.currentTerm, 2.asInstanceOf[Term])
-		assertEquals(env.node(2).storage.savedMemory.getVotedFor, readren.common.Maybe("p-1"))
+		assertEquals(env.node(2).storage.savedMemory.getVotedFor, readren.common.Maybe(NodeId("p-1")))
 
 		// p-1 has queued AppendRecords for command h3 (term 2) to p-2. Hold it in flight!
-		assert(env.pendingPacketsBetween(1, 2).exists(_.rpcKind == "APR"))
+		assert(env.pendingPacketsBetween(1, 2).exists(_.rpc.isInstanceOf[ConsensusRpc.AppendRecords]))
 
 		// 5. Fatal race averted: deliver p-0's delayed AppendRecords (command h2, term 1) to p-2
 		// Because p-2 epoch-fenced term 1 when voting for p-1, p-2 rejects p-0's append at term 1!

@@ -78,7 +78,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	// =========================================================================
 
 	private def setupPresetFigure7(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		// Leader p-0
@@ -147,7 +147,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	}
 
 	private def setupPresetFigure8(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		val m0 = e.node(0).storage.savedMemory
@@ -190,7 +190,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	}
 
 	private def setupPresetFigure13(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[String](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		val smBytes = new ByteArrayOutputStream()
@@ -200,7 +200,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		smOut.flush()
 		val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
 
-		val snap = new SnapshotData[String](5, 1.asInstanceOf[Term], initConfig, 1, snapshotData)
+		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, snapshotData)
 
 		val m0 = e.node(0).storage.savedMemory
 		m0.currentTerm = 1.asInstanceOf[Term]
@@ -308,7 +308,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			.replace("\t", "\\t")
 	}
 
-	private def serializeRecord(r: Record, index: RecordIndex, leaderDiagOpt: Option[LeaderRoleDiagnostic[String]], nodeId: String): String = {
+	private def serializeRecord(r: Record, index: RecordIndex, leaderDiagOpt: Option[LeaderRoleDiagnostic[NodeId]], nodeId: NodeId): String = {
 		val kind = r match {
 			case _: CommandRecord[?] => "Cmd"
 			case _: TransitionalConfigChange[?] => "TCC"
@@ -335,8 +335,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			case Some(ld) =>
 				ld.activeConfigChange match {
 					case tcc: TransitionalConfigChange[?] =>
-						val oldPeers = tcc.oldParticipants.asInstanceOf[Set[String]] - nodeId
-						val newPeers = tcc.newParticipants.asInstanceOf[Set[String]] - nodeId
+						val oldPeers = tcc.oldParticipants.asInstanceOf[Set[NodeId]] - nodeId
+						val newPeers = tcc.newParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val appendedOld = ld.peerProgress.count(p => oldPeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val appendedNew = ld.peerProgress.count(p => newPeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val committedOld = ld.peerProgress.count(p => oldPeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
@@ -344,7 +344,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 						sb.append(s""","peersAppended":"(${appendedOld}/${oldPeers.size}, ${appendedNew}/${newPeers.size})"""")
 						sb.append(s""","peersCommitted":"(${committedOld}/${oldPeers.size}, ${committedNew}/${newPeers.size})"""")
 					case scc: StableConfigChange[?] =>
-						val remotePeers = scc.newParticipants.asInstanceOf[Set[String]] - nodeId
+						val remotePeers = scc.newParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val appended = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val committed = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
 						sb.append(s""","peersAppended":"${appended}/${remotePeers.size}"""")
@@ -355,6 +355,108 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		}
 		sb.append("}")
 		sb.toString
+	}
+
+	private final case class LocalPacketRecordInfo(
+		index: RecordIndex,
+		term: Term,
+		kind: String,
+		summary: String
+	)
+
+	private def rpcKind(rpc: ConsensusRpc): String = rpc match {
+		case _: ConsensusRpc.HowAreYou => "HAY"
+		case _: ConsensusRpc.ChooseALeader => "CAL"
+		case _: ConsensusRpc.AppendRecords => "APR"
+		case _: ConsensusRpc.InstallSnapshot => "SNP"
+		case _: ConsensusRpc.PermitQuiescence => "QUI"
+	}
+
+	private def rpcRecords(rpc: ConsensusRpc): IArray[LocalPacketRecordInfo] = rpc match {
+		case apr: ConsensusRpc.AppendRecords =>
+			IArray.tabulate(apr.batch.length) { i =>
+				val rec = apr.batch(i)
+				val idx = apr.prevLogIndex + 1L + i
+				formatRecordInfo(idx, rec)
+			}
+		case snp: ConsensusRpc.InstallSnapshot =>
+			IArray.tabulate(snp.batch.length) { i =>
+				val rec = snp.batch(i)
+				val idx = snp.snapshot.lastIncludedRecordIndex + 1L + i
+				formatRecordInfo(idx, rec)
+			}
+		case _ => IArray.empty
+	}
+
+	private def formatRecordInfo(idx: RecordIndex, rec: Record): LocalPacketRecordInfo = {
+		val kind = rec match {
+			case _: CommandRecord[?] => "Cmd"
+			case _: LeaderTransition => "LT"
+			case _: TransitionalConfigChange[?] => "TCC"
+			case _: StableConfigChange[?] => "SCC"
+		}
+		val summary = rec match {
+			case cmd: CommandRecord[?] => cmd.command match {
+				case tc: TestClientCommand => s"#${tc.serial} from ${tc.clientId}"
+				case other => s"$other"
+			}
+			case tcc: TransitionalConfigChange[?] =>
+				val oldStr = tcc.oldParticipants.toSeq.map(_.toString).sorted.mkString(", ")
+				val newStr = tcc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
+				s"{$oldStr} -> {$newStr}"
+			case scc: StableConfigChange[?] =>
+				val newStr = scc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
+				s"{$newStr}"
+			case lt: LeaderTransition => s"term=${lt.term}"
+		}
+		LocalPacketRecordInfo(idx, rec.term, kind, summary)
+	}
+
+	private def rpcSummary(rpc: ConsensusRpc): String = rpc match {
+		case r: ConsensusRpc.HowAreYou => s"howAreYou(${r.inquirerInfo})"
+		case r: ConsensusRpc.ChooseALeader => s"chooseALeader(inquirerId=${r.inquirerId}, term=${r.inquirerInfo.currentTerm})"
+		case r: ConsensusRpc.AppendRecords => s"appendRecords(term=${r.inquirerTerm}, prevIdx=${r.prevLogIndex}, commit=${r.leaderCommit})"
+		case r: ConsensusRpc.InstallSnapshot => s"installSnapshot(term=${r.inquirerTerm}, lastIncludedIdx=${r.snapshot.lastIncludedRecordIndex})"
+		case r: ConsensusRpc.PermitQuiescence => s"permitQuiescence(configIdx=${r.indexOfGrantedStableConfigChange})"
+	}
+
+	private def packetSummary(p: Packet): String = p match {
+		case req: RequestPacket => rpcSummary(req.rpc)
+		case resp: ResponsePacket => resp.response match {
+			case Success(v) => s"Response($v)"
+			case Failure(ex) => s"Failure($ex)"
+		}
+	}
+
+	private def serializePacket(sb: java.lang.StringBuilder, p: Packet): Unit = {
+		val kind = if p.isInstanceOf[RequestPacket] then "Request" else "Response"
+		val opKind = rpcKind(p.rpc)
+		val summary = packetSummary(p)
+		sb.append("{")
+		sb.append("\"id\":").append(p.id).append(",")
+		sb.append("\"source\":\"").append(p.source).append("\",")
+		sb.append("\"destination\":\"").append(p.destination).append("\",")
+		sb.append("\"departureTime\":").append(p.departureTime).append(",")
+		sb.append("\"kind\":\"").append(kind).append("\",")
+		sb.append("\"rpcKind\":\"").append(escapeJson(opKind)).append("\",")
+		if p.isInstanceOf[RequestPacket] then {
+			val records = rpcRecords(p.rpc)
+			sb.append("\"recordCount\":").append(records.length).append(",")
+			sb.append("\"records\":[")
+			for rIdx <- records.indices do {
+				if rIdx > 0 then sb.append(",")
+				val r = records(rIdx)
+				sb.append("{")
+				sb.append("\"index\":").append(r.index).append(",")
+				sb.append("\"term\":").append(r.term).append(",")
+				sb.append("\"kind\":\"").append(escapeJson(r.kind)).append("\",")
+				sb.append("\"summary\":\"").append(escapeJson(r.summary)).append("\"")
+				sb.append("}")
+			}
+			sb.append("],")
+		}
+		sb.append("\"summary\":\"").append(escapeJson(summary)).append("\"")
+		sb.append("}")
 	}
 
 	def serializeState(): String = lock.synchronized {
@@ -377,7 +479,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			val highestApplied = n.machine.highestAppliedCommandIndex
 			val pendingTasks = n.stepDoer.pendingTasksCount
 			val leaderDiagOpt = n.inspectRole match {
-				case Some(ld: LeaderRoleDiagnostic[?]) => Some(ld.asInstanceOf[LeaderRoleDiagnostic[String]])
+				case Some(ld: LeaderRoleDiagnostic[?]) => Some(ld.asInstanceOf[LeaderRoleDiagnostic[NodeId]])
 				case _ => None
 			}
 
@@ -430,33 +532,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			sb.append("\"packets\":[")
 			for pIdx <- packets.indices do {
 				if pIdx > 0 then sb.append(",")
-				val p = packets(pIdx)
-				val kind = if p.isInstanceOf[RequestPacket] then "Request" else "Response"
-				sb.append("{")
-				sb.append("\"id\":").append(p.id).append(",")
-				sb.append("\"source\":\"").append(p.source).append("\",")
-				sb.append("\"destination\":\"").append(p.destination).append("\",")
-				sb.append("\"departureTime\":").append(p.departureTime).append(",")
-				sb.append("\"kind\":\"").append(kind).append("\",")
-				sb.append("\"rpcKind\":\"").append(escapeJson(p.rpcKind)).append("\",")
-				if p.isInstanceOf[RequestPacket] then {
-					val req = p.asInstanceOf[RequestPacket]
-					sb.append("\"recordCount\":").append(req.records.length).append(",")
-					sb.append("\"records\":[")
-					for rIdx <- req.records.indices do {
-						if rIdx > 0 then sb.append(",")
-						val r = req.records(rIdx)
-						sb.append("{")
-						sb.append("\"index\":").append(r.index).append(",")
-						sb.append("\"term\":").append(r.term).append(",")
-						sb.append("\"kind\":\"").append(escapeJson(r.kind)).append("\",")
-						sb.append("\"summary\":\"").append(escapeJson(r.summary)).append("\"")
-						sb.append("}")
-					}
-					sb.append("],")
-				}
-				sb.append("\"summary\":\"").append(escapeJson(p.summary)).append("\"")
-				sb.append("}")
+				serializePacket(sb, packets(pIdx))
 			}
 			sb.append("]")
 			sb.append("}")
@@ -469,33 +545,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		val allPackets = env.pendingPackets
 		for pIdx <- allPackets.indices do {
 			if pIdx > 0 then sb.append(",")
-			val p = allPackets(pIdx)
-			val kind = if p.isInstanceOf[RequestPacket] then "Request" else "Response"
-			sb.append("{")
-			sb.append("\"id\":").append(p.id).append(",")
-			sb.append("\"source\":\"").append(p.source).append("\",")
-			sb.append("\"destination\":\"").append(p.destination).append("\",")
-			sb.append("\"departureTime\":").append(p.departureTime).append(",")
-			sb.append("\"kind\":\"").append(kind).append("\",")
-			sb.append("\"rpcKind\":\"").append(escapeJson(p.rpcKind)).append("\",")
-			if p.isInstanceOf[RequestPacket] then {
-				val req = p.asInstanceOf[RequestPacket]
-				sb.append("\"recordCount\":").append(req.records.length).append(",")
-				sb.append("\"records\":[")
-				for rIdx <- req.records.indices do {
-					if rIdx > 0 then sb.append(",")
-					val r = req.records(rIdx)
-					sb.append("{")
-					sb.append("\"index\":").append(r.index).append(",")
-					sb.append("\"term\":").append(r.term).append(",")
-					sb.append("\"kind\":\"").append(escapeJson(r.kind)).append("\",")
-					sb.append("\"summary\":\"").append(escapeJson(r.summary)).append("\"")
-					sb.append("}")
-				}
-				sb.append("],")
-			}
-			sb.append("\"summary\":\"").append(escapeJson(p.summary)).append("\"")
-			sb.append("}")
+			serializePacket(sb, allPackets(pIdx))
 		}
 		sb.append("],")
 

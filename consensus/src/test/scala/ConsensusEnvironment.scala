@@ -7,15 +7,24 @@ import readren.sequencer.Doer
 import scala.collection.immutable.{ListMap, ListSet}
 import scala.collection.mutable
 import scala.compiletime.uninitialized
+import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
-/** Ergonomic reference to a node/participant, supporting either String ("p-0") or Int (0 -> "p-0"). */
-type NodeRef = String | Int
+opaque type NodeId <: String = String
+
+object NodeId {
+	inline def apply(s: String): NodeId = s
+
+	given ClassTag[NodeId] = summon[ClassTag[String]]
+}
+
+/** Ergonomic reference to a node/participant, supporting NodeId, String ("p-0", "0"), or Int (0 -> "p-0"). */
+type NodeRef = NodeId | String | Int
 
 extension (ref: NodeRef) {
-	def asNodeId: String = ref match {
-		case s: String => if s.forall(_.isDigit) then s"p-$s" else s
-		case i: Int => s"p-$i"
+	def asNodeId: NodeId = ref match {
+		case s: String => NodeId(if s.forall(_.isDigit) then s"p-$s" else s)
+		case i: Int => NodeId(s"p-$i")
 	}
 }
 
@@ -38,69 +47,106 @@ type StorageOpId = Int
 /** Virtual time in integer ticks. */
 type VirtualTime = Int
 
-/** Metadata about a log record contained in an in-transit packet. */
-final case class PacketRecordInfo(
-	index: RecordIndex,
-	term: Term,
-	kind: String,
-	summary: String
-)
+/** Sealed domain representation of consensus RPC requests and their expected response types. */
+sealed trait ConsensusRpc {
+	type Response
+}
+
+object ConsensusRpc {
+	final case class HowAreYou(inquirerInfo: StateInfo) extends ConsensusRpc {
+		type Response = StateInfo
+	}
+
+	final case class ChooseALeader(inquirerId: NodeId, inquirerInfo: StateInfo) extends ConsensusRpc {
+		type Response = Vote[NodeId]
+	}
+
+	final case class AppendRecords(
+		inquirerTerm: Term,
+		prevLogIndex: RecordIndex,
+		prevLogTerm: Term,
+		batch: IArray[Record],
+		leaderCommit: RecordIndex,
+		termAtLeaderCommit: Term
+	) extends ConsensusRpc {
+		type Response = AppendResult
+	}
+
+	final case class InstallSnapshot(
+		inquirerTerm: Term,
+		snapshot: SnapshotData[NodeId],
+		batch: IArray[Record],
+		leaderCommit: RecordIndex,
+		termAtLeaderCommit: Term
+	) extends ConsensusRpc {
+		type Response = AppendResult
+	}
+
+	final case class PermitQuiescence(indexOfGrantedStableConfigChange: RecordIndex) extends ConsensusRpc {
+		type Response = Unit
+	}
+}
 
 /** A packet traveling between two nodes across the network. */
 sealed trait Packet {
 	def id: PacketId
 
-	def source: String
+	def source: NodeId
 
-	def destination: String
+	def destination: NodeId
 
 	def departureTime: VirtualTime
 
-	def rpcKind: String
-
-	def summary: String
+	def rpc: ConsensusRpc
 }
 
 /** A packet representing an outbound RPC request from source to destination. */
 final case class RequestPacket(
 	id: PacketId,
-	source: String,
-	destination: String,
+	source: NodeId,
+	destination: NodeId,
 	departureTime: VirtualTime,
-	rpcKind: String,
-	executeOn: (EnvironmentNode, Any => Unit, Throwable => Unit) => Unit,
-	completeCaller: Try[Any] => Unit,
-	summary: String,
-	records: IArray[PacketRecordInfo] = IArray.empty
+	rpc: ConsensusRpc,
+	completeCaller: Try[Any] => Unit
 ) extends Packet
 
 /** A packet representing the outbound response to an earlier RPC request. */
 final case class ResponsePacket(
 	id: PacketId,
-	source: String,
-	destination: String,
+	source: NodeId,
+	destination: NodeId,
 	departureTime: VirtualTime,
 	correlationRequestId: PacketId,
-	rpcKind: String,
+	rpc: ConsensusRpc,
 	response: Try[Any],
-	completeCaller: Try[Any] => Unit,
-	summary: String
+	completeCaller: Try[Any] => Unit
 ) extends Packet
 
 /** The outcome of a packet deliver operation. */
 final case class DeliverOutcome(
 	packetId: PacketId,
-	source: String,
-	destination: String,
+	source: NodeId,
+	destination: NodeId,
 	destinationHadPendingRunnables: Boolean,
 	warning: Option[String]
 )
+
+/** Listener interface for observing RPC packet lifecycle events. */
+trait RpcLifecycleListener {
+	def onRpcEnqueued(req: RequestPacket, travelingCount: Int): Unit
+
+	def onRpcDelivering(req: RequestPacket, travelingCount: Int): Unit
+
+	def onRpcCompleted(req: RequestPacket, outcome: Try[Any], travelingCount: Int): Unit
+
+	def onResponseDelivered(resp: ResponsePacket, travelingCount: Int): Unit
+}
 
 /** A pending wake-up registered via [[ClusterParticipant.requestWakeUp]]. */
 final case class PendingWakeUp(
 	tokenId: Int,
 	token: WakeUpToken,
-	nodeId: String,
+	nodeId: NodeId,
 	reason: WakeUpReason,
 	wakeupsDone: Int,
 	scheduledTime: VirtualTime,
@@ -110,12 +156,12 @@ final case class PendingWakeUp(
 /** A pending persistence operation waiting for explicit completion or failure. */
 final case class PendingPersistence(
 	opId: StorageOpId,
-	nodeId: String,
+	nodeId: NodeId,
 	term: Term,
 	logBufferOffset: RecordIndex,
 	firstEmptyRecordIndex: RecordIndex,
 	records: IArray[Record],
-	snapshot: Maybe[SnapshotData[String]],
+	snapshot: Maybe[SnapshotData[NodeId]],
 	completeOp: () => Unit,
 	failOp: Throwable => Unit
 )
@@ -128,9 +174,9 @@ object ClientCommandStatus {
 
 	final case class Processed(recordIndex: RecordIndex, response: Int) extends ClientCommandStatus
 
-	final case class Redirected(leaderId: String) extends ClientCommandStatus
+	final case class Redirected(leaderId: NodeId) extends ClientCommandStatus
 
-	final case class Unable(nextAttemptFlag: CommandAttemptFlag, otherParticipants: Set[String]) extends ClientCommandStatus
+	final case class Unable(nextAttemptFlag: CommandAttemptFlag, otherParticipants: Set[NodeId]) extends ClientCommandStatus
 
 	final case class Failed(cause: Throwable) extends ClientCommandStatus
 }
@@ -158,26 +204,26 @@ final case class ClientCommandHandle(
 	commandId: Int,
 	clientId: String,
 	serial: Int,
-	targetNodeId: String,
+	targetNodeId: NodeId,
 	submissionTime: VirtualTime
 )
 
 /** A handle to an in-flight or completed configuration change request. */
 final case class ConfigChangeHandle(
 	requestId: String,
-	targetNodeId: String,
-	desiredParticipants: Set[String],
+	targetNodeId: NodeId,
+	desiredParticipants: Set[NodeId],
 	submissionTime: VirtualTime
 )
 
 /** A node instance managed by [[ConsensusEnvironment]]. */
 class EnvironmentNode(
-	val myId: String,
-	val initialParticipants: ListSet[String],
+	val myId: NodeId,
+	val initialParticipants: ListSet[NodeId],
 	val env: ConsensusEnvironment
 ) extends ConsensusParticipantSdm { thisNode =>
 
-	override type ParticipantId = String
+	override type ParticipantId = NodeId
 	override type ClientCommand = TestClientCommand
 	override type StateMachineResponse = Int
 	override type ClientId = String
@@ -249,7 +295,12 @@ class EnvironmentNode(
 
 		override def recoverIndexOfLastAppliedCommand: sequencer.Capture[RecordIndex] = {
 			sequencer.checkWithin()
-			sequencer.Keeper(highestAppliedCommandIndex)
+			if env.remembersLastAppliedCommandIndex then sequencer.Keeper(highestAppliedCommandIndex)
+			else {
+				highestAppliedCommandSerial = 0
+				highestAppliedCommandIndex = 0
+				sequencer.Keeper(0)
+			}
 		}
 
 		override def takeSnapshot(): sequencer.Capture[IArray[Byte]] = {
@@ -440,12 +491,8 @@ class EnvironmentNode(
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpcKind = "HAY",
-					executeOn = (target, onSuccess, onError) => {
-						target.clusterParticipant.delegate.onHowAreYou(myId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
-					},
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[StateInfo]))),
-					summary = s"howAreYou($inquirerInfo)"
+					rpc = ConsensusRpc.HowAreYou(inquirerInfo),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[StateInfo])))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -459,12 +506,8 @@ class EnvironmentNode(
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpcKind = "CAL",
-					executeOn = (target, onSuccess, onError) => {
-						target.clusterParticipant.delegate.onChooseALeader(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
-					},
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[Vote[ParticipantId]]))),
-					summary = s"chooseALeader(inquirerId=$inquirerId, term=${inquirerInfo.currentTerm})"
+					rpc = ConsensusRpc.ChooseALeader(inquirerId, inquirerInfo),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[Vote[ParticipantId]])))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -473,43 +516,13 @@ class EnvironmentNode(
 			override def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult] = {
 				sequencer.checkWithin()
 				val captor = sequencer.Captor[AppendResult]()
-				val recordInfos: IArray[PacketRecordInfo] = IArray.tabulate(batch.length) { i =>
-					val rec = batch(i)
-					val idx = prevLogIndex + 1L + i
-					val kind = rec match {
-						case _: CommandRecord[?] => "Cmd"
-						case _: LeaderTransition => "LT"
-						case _: TransitionalConfigChange[?] => "TCC"
-						case _: StableConfigChange[?] => "SCC"
-					}
-					val summary = rec match {
-						case cmd: CommandRecord[?] => cmd.command match {
-							case tc: TestClientCommand => s"#${tc.serial} from ${tc.clientId}"
-							case other => s"$other"
-						}
-						case tcc: TransitionalConfigChange[?] =>
-							val oldStr = tcc.oldParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							val newStr = tcc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							s"{$oldStr} -> {$newStr}"
-						case scc: StableConfigChange[?] =>
-							val newStr = scc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							s"{$newStr}"
-						case lt: LeaderTransition => s"term=${lt.term}"
-					}
-					PacketRecordInfo(idx, rec.term, kind, summary)
-				}
 				val req = RequestPacket(
 					id = env.nextPacketId(),
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpcKind = "APR",
-					executeOn = (target, onSuccess, onError) => {
-						target.clusterParticipant.delegate.onAppendRecords(myId, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
-					},
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[AppendResult]))),
-					summary = s"appendRecords(term=$inquirerTerm, prevIdx=$prevLogIndex, commit=$leaderCommit)",
-					records = recordInfos
+					rpc = ConsensusRpc.AppendRecords(inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[AppendResult])))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -518,43 +531,13 @@ class EnvironmentNode(
 			override def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult] = {
 				sequencer.checkWithin()
 				val captor = sequencer.Captor[AppendResult]()
-				val recordInfos: IArray[PacketRecordInfo] = IArray.tabulate(batch.length) { i =>
-					val rec = batch(i)
-					val idx = snapshot.lastIncludedRecordIndex + 1L + i
-					val kind = rec match {
-						case _: CommandRecord[?] => "Cmd"
-						case _: LeaderTransition => "LT"
-						case _: TransitionalConfigChange[?] => "TCC"
-						case _: StableConfigChange[?] => "SCC"
-					}
-					val summary = rec match {
-						case cmd: CommandRecord[?] => cmd.command match {
-							case tc: TestClientCommand => s"#${tc.serial} from ${tc.clientId}"
-							case other => s"$other"
-						}
-						case tcc: TransitionalConfigChange[?] =>
-							val oldStr = tcc.oldParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							val newStr = tcc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							s"{$oldStr} -> {$newStr}"
-						case scc: StableConfigChange[?] =>
-							val newStr = scc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
-							s"{$newStr}"
-						case lt: LeaderTransition => s"term=${lt.term}"
-					}
-					PacketRecordInfo(idx, rec.term, kind, summary)
-				}
 				val req = RequestPacket(
 					id = env.nextPacketId(),
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpcKind = "SNP",
-					executeOn = (target, onSuccess, onError) => {
-						target.clusterParticipant.delegate.onInstallSnapshot(myId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
-					},
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[AppendResult]))),
-					summary = s"installSnapshot(term=$inquirerTerm, lastIncludedIdx=${snapshot.lastIncludedRecordIndex})",
-					records = recordInfos
+					rpc = ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[AppendResult])))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -568,13 +551,8 @@ class EnvironmentNode(
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpcKind = "QUI",
-					executeOn = (target, onSuccess, onError) => {
-						target.clusterParticipant.delegate.onQuiescencePermitted(myId, indexOfGrantedStableConfigChange)
-						onSuccess(())
-					},
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), _ => captor.captureSync(()))),
-					summary = s"permitQuiescence(configIdx=$indexOfGrantedStableConfigChange)"
+					rpc = ConsensusRpc.PermitQuiescence(indexOfGrantedStableConfigChange),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), _ => captor.captureSync(())))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -610,7 +588,7 @@ class EnvironmentNode(
 		override def onRoleLeft(left: RoleOrdinal, term: Term): Unit = ()
 
 		override def onCommitIndexChanged(previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
-			env.onCommitIndexChanged(thisNode, current, as, at)
+			env.onCommitIndexChanged(thisNode, previous, current, as, at)
 		}
 
 		override def onCommandApplied(appliedCommandIndex: RecordIndex, appliedCommandTerm: Term): Unit = ()
@@ -623,24 +601,28 @@ class EnvironmentNode(
 sealed trait EnvOperation
 
 object EnvOperation {
-	final case class StepNode(node: String) extends EnvOperation
+	final case class StepNode(node: NodeId) extends EnvOperation
 	case object StepAllNodes extends EnvOperation
-	final case class RunNodeUntilIdle(node: String, maxSteps: Int) extends EnvOperation
+
+	final case class RunNodeUntilIdle(node: NodeId, maxSteps: Int) extends EnvOperation
 	final case class RunAllNodesUntilIdle(maxRounds: Int) extends EnvOperation
 
 	final case class DeliverPacket(packetId: PacketId) extends EnvOperation
 	final case class DropPacket(packetId: PacketId) extends EnvOperation
 
-	final case class DeliverNext(from: String, to: String) extends EnvOperation
-	final case class DropNext(from: String, to: String) extends EnvOperation
+	final case class DeliverNext(from: NodeId, to: NodeId) extends EnvOperation
 
-	final case class DeliverFirstN(from: String, to: String, n: Int) extends EnvOperation
-	final case class DropFirstN(from: String, to: String, n: Int) extends EnvOperation
+	final case class DropNext(from: NodeId, to: NodeId) extends EnvOperation
 
-	final case class DeliverAllBetween(from: String, to: String) extends EnvOperation
-	final case class DropAllBetween(from: String, to: String) extends EnvOperation
+	final case class DeliverFirstN(from: NodeId, to: NodeId, n: Int) extends EnvOperation
 
-	final case class DeliverAllTo(to: String) extends EnvOperation
+	final case class DropFirstN(from: NodeId, to: NodeId, n: Int) extends EnvOperation
+
+	final case class DeliverAllBetween(from: NodeId, to: NodeId) extends EnvOperation
+
+	final case class DropAllBetween(from: NodeId, to: NodeId) extends EnvOperation
+
+	final case class DeliverAllTo(to: NodeId) extends EnvOperation
 
 	case object DeliverAll extends EnvOperation
 	final case class FailPacket(packetId: PacketId, errorMsg: String) extends EnvOperation
@@ -649,32 +631,38 @@ object EnvOperation {
 	final case class TriggerWakeUp(tokenId: Int) extends EnvOperation
 
 	final case class CompleteStorageSave(opId: StorageOpId) extends EnvOperation
-	final case class CompleteNextStorageSave(node: String) extends EnvOperation
-	final case class CompleteAllStorageSaves(node: String) extends EnvOperation
+
+	final case class CompleteNextStorageSave(node: NodeId) extends EnvOperation
+
+	final case class CompleteAllStorageSaves(node: NodeId) extends EnvOperation
 	final case class FailStorageSave(opId: StorageOpId, errorMsg: String) extends EnvOperation
 
-	final case class StartNode(node: String) extends EnvOperation
-	final case class CrashNode(node: String) extends EnvOperation
-	final case class RestartNode(node: String) extends EnvOperation
+	final case class StartNode(node: NodeId) extends EnvOperation
+
+	final case class CrashNode(node: NodeId) extends EnvOperation
+
+	final case class RestartNode(node: NodeId) extends EnvOperation
 	case object StartAllNodes extends EnvOperation
 
-	final case class SubmitClientCommand(targetNode: String, client: String, serial: Option[Int], attemptFlag: CommandAttemptFlag) extends EnvOperation
-	final case class SubmitConfigChange(targetNode: String, desiredParticipants: Set[String]) extends EnvOperation
+	final case class SubmitClientCommand(targetNode: NodeId, client: String, serial: Option[Int], attemptFlag: CommandAttemptFlag) extends EnvOperation
+
+	final case class SubmitConfigChange(targetNode: NodeId, desiredParticipants: Set[NodeId]) extends EnvOperation
 
 	final case class UpdateDynamicSettings(
 		retiringMaxRetries: Option[Int],
 		logRetention: Option[Int],
 		autoSucceedUntilTerm: Option[Term],
 		autoSucceedUntilRecordIndex: Option[RecordIndex],
-		targetNode: Option[String]
+		targetNode: Option[NodeId]
 	) extends EnvOperation
-	final case class ToggleStorageAutoSucceed(targetNode: Option[String]) extends EnvOperation
+
+	final case class ToggleStorageAutoSucceed(targetNode: Option[NodeId]) extends EnvOperation
 }
 
 /** The discrete-event, fine-grained testing harness for [[ConsensusParticipantSdm]]. */
 class ConsensusEnvironment(
 	val clusterSize: Int = 3,
-	val initialSeedParticipants: Option[Set[String]] = None,
+	val initialSeedParticipants: Option[Set[? <: NodeRef]] = None,
 	val ticksPerMilli: Int = 10,
 	val maxInFlightAppendsPerPeer: Int = 2,
 	val logCompactionThreshold: Int = 5,
@@ -684,6 +672,9 @@ class ConsensusEnvironment(
 ) {
 	var retiringParticipantMaxRetries: Int = initialRetiringParticipantMaxRetries
 	var logRetentionAfterSnapshot: Int = initialLogRetentionAfterSnapshot
+	var remembersLastAppliedCommandIndex: Boolean = false
+	var onNodeQuiescedHook: (EnvironmentNode, Try[String]) => Unit = (node, _) => node.release()
+	var rpcLifecycleListener: Option[RpcLifecycleListener] = None
 
 	private var _virtualTime: VirtualTime = 0
 	private var packetIdSequencer: PacketId = 0
@@ -692,8 +683,8 @@ class ConsensusEnvironment(
 	private var configReqIdSequencer: Int = 0
 	private var wakeUpTokenSequencer: Int = 0
 
-	private val channels: mutable.Map[(String, String), mutable.ArrayDeque[Packet]] = mutable.Map.empty
-	private val nodesMap: mutable.Map[String, EnvironmentNode] = mutable.Map.empty
+	private val channels: mutable.Map[(NodeId, NodeId), mutable.ArrayDeque[Packet]] = mutable.Map.empty
+	private val nodesMap: mutable.Map[NodeId, EnvironmentNode] = mutable.Map.empty
 	private val pendingWakeUpsMap: mutable.Map[Int, PendingWakeUp] = mutable.Map.empty
 	private val pendingPersistenceMap: mutable.Map[StorageOpId, PendingPersistence] = mutable.Map.empty
 	private val clientStatuses: mutable.Map[Int, ClientCommandStatus] = mutable.Map.empty
@@ -704,9 +695,9 @@ class ConsensusEnvironment(
 	private val configStatuses: mutable.Map[String, ConfigChangeStatus] = mutable.Map.empty
 
 	// Invariant Tracking
-	private val leaderByTerm: mutable.Map[Term, String] = mutable.Map.empty
-	private val appliedCommandsByIndex: mutable.Map[RecordIndex, (String, TestClientCommand)] = mutable.Map.empty
-	private val committedRecordsByNode: mutable.Map[String, mutable.ArrayBuffer[Record]] = mutable.Map.empty
+	private val leaderByTerm: mutable.Map[Term, NodeId] = mutable.Map.empty
+	private val appliedCommandsByIndex: mutable.Map[RecordIndex, (NodeId, TestClientCommand)] = mutable.Map.empty
+	private val committedRecordsByNode: mutable.Map[NodeId, mutable.ArrayBuffer[Record | None.type]] = mutable.Map.empty
 
 	// Operation Memory & Tags
 	private val _appliedOperations: mutable.ArrayBuffer[EnvOperation] = mutable.ArrayBuffer.empty
@@ -714,13 +705,13 @@ class ConsensusEnvironment(
 	private var isReplaying: Boolean = false
 	private var operationDepth: Int = 0
 
-	val defaultInitialParticipants: ListSet[String] = initialSeedParticipants match {
+	val defaultInitialParticipants: ListSet[NodeId] = initialSeedParticipants match {
 		case Some(seeds) => ListSet.from(seeds.map(_.asNodeId))
-		case None => ListSet.from((0 until clusterSize).map(i => s"p-$i"))
+		case None => ListSet.from((0 until clusterSize).map(i => NodeId(s"p-$i")))
 	}
 
 	for i <- 0 until clusterSize do {
-		val id = s"p-$i"
+		val id = NodeId(s"p-$i")
 		nodesMap(id) = new EnvironmentNode(id, defaultInitialParticipants, this)
 		committedRecordsByNode(id) = mutable.ArrayBuffer.empty
 	}
@@ -811,9 +802,11 @@ class ConsensusEnvironment(
 
 		retiringParticipantMaxRetries = initialRetiringParticipantMaxRetries
 		logRetentionAfterSnapshot = initialLogRetentionAfterSnapshot
+		remembersLastAppliedCommandIndex = false
+		onNodeQuiescedHook = (node, _) => node.release()
 
 		for i <- 0 until clusterSize do {
-			val id = s"p-$i"
+			val id = NodeId(s"p-$i")
 			nodesMap(id) = new EnvironmentNode(id, defaultInitialParticipants, this)
 			committedRecordsByNode(id) = mutable.ArrayBuffer.empty
 		}
@@ -854,7 +847,7 @@ class ConsensusEnvironment(
 		case EnvOperation.RestartNode(node) => restartNode(node)
 		case EnvOperation.StartAllNodes => startAllNodes()
 		case EnvOperation.SubmitClientCommand(target, client, serial, flag) => submitClientCommand(target, client, serial, flag)
-		case EnvOperation.SubmitConfigChange(target, desired) => submitConfigChange(target, desired.asInstanceOf[Set[NodeRef]])
+		case EnvOperation.SubmitConfigChange(target, desired) => submitConfigChange(target, desired)
 		case EnvOperation.UpdateDynamicSettings(retries, retention, term, idx, target) => updateDynamicSettings(retries, retention, term, idx, target)
 		case EnvOperation.ToggleStorageAutoSucceed(target) => toggleStorageAutoSucceed(target)
 	}
@@ -927,12 +920,20 @@ class ConsensusEnvironment(
 		configReqIdSequencer
 	}
 
-	private def channelQueue(from: String, to: String): mutable.ArrayDeque[Packet] = {
+	def travelingPacketsCount: Int = channels.values.map(_.size).sum
+
+	private def channelQueue(from: NodeId, to: NodeId): mutable.ArrayDeque[Packet] = {
 		channels.getOrElseUpdate((from, to), mutable.ArrayDeque.empty)
 	}
 
 	private[readren] def enqueuePacket(packet: Packet): Unit = {
+		val onTheWay = travelingPacketsCount
 		channelQueue(packet.source, packet.destination).append(packet)
+		packet match {
+			case req: RequestPacket =>
+				rpcLifecycleListener.foreach(_.onRpcEnqueued(req, onTheWay))
+			case _ => ()
+		}
 	}
 
 	// Node Management
@@ -1065,8 +1066,23 @@ class ConsensusEnvironment(
 			val packet = q.removeHead()
 			val error = new java.io.IOException(s"Network packet ${packet.id} dropped in transit")
 			packet match {
-				case req: RequestPacket => req.completeCaller(Failure(error))
-				case resp: ResponsePacket => resp.completeCaller(Failure(error))
+				case req: RequestPacket =>
+					val syntheticResp = ResponsePacket(
+						id = packet.id,
+						source = req.destination,
+						destination = req.source,
+						departureTime = _virtualTime,
+						correlationRequestId = req.id,
+						rpc = req.rpc,
+						response = Failure(error),
+						completeCaller = req.completeCaller
+					)
+					rpcLifecycleListener.foreach(_.onResponseDelivered(syntheticResp, travelingPacketsCount))
+					req.completeCaller(Failure(error))
+				case resp: ResponsePacket =>
+					val failedResp = resp.copy(response = Failure(error))
+					rpcLifecycleListener.foreach(_.onResponseDelivered(failedResp, travelingPacketsCount))
+					resp.completeCaller(Failure(error))
 			}
 		}
 		count
@@ -1082,8 +1098,23 @@ class ConsensusEnvironment(
 			val idx = q.indexWhere(_.id == packetId)
 			val packet = q.remove(idx)
 			packet match {
-				case req: RequestPacket => req.completeCaller(Failure(error))
-				case resp: ResponsePacket => resp.completeCaller(Failure(error))
+				case req: RequestPacket =>
+					val syntheticResp = ResponsePacket(
+						id = packet.id,
+						source = req.destination,
+						destination = req.source,
+						departureTime = _virtualTime,
+						correlationRequestId = req.id,
+						rpc = req.rpc,
+						response = Failure(error),
+						completeCaller = req.completeCaller
+					)
+					rpcLifecycleListener.foreach(_.onResponseDelivered(syntheticResp, travelingPacketsCount))
+					req.completeCaller(Failure(error))
+				case resp: ResponsePacket =>
+					val failedResp = resp.copy(response = Failure(error))
+					rpcLifecycleListener.foreach(_.onResponseDelivered(failedResp, travelingPacketsCount))
+					resp.completeCaller(Failure(error))
 			}
 			true
 		}
@@ -1098,54 +1129,71 @@ class ConsensusEnvironment(
 			case req: RequestPacket =>
 				destNode.stepDoer.executeSequentially(() => {
 					if destNode.isDown || (destNode.participant eq null) then {
+						val failure = Failure(new RuntimeException(s"Node ${destNode.myId} is down"))
+						rpcLifecycleListener.foreach(_.onRpcCompleted(req, failure, travelingPacketsCount))
 						val resp = ResponsePacket(
 							id = nextPacketId(),
 							source = req.destination,
 							destination = req.source,
 							departureTime = _virtualTime,
 							correlationRequestId = req.id,
-							rpcKind = req.rpcKind,
-							response = Failure(new RuntimeException(s"Node ${destNode.myId} is down")),
-							completeCaller = req.completeCaller,
-							summary = s"Node ${destNode.myId} is down"
+							rpc = req.rpc,
+							response = failure,
+							completeCaller = req.completeCaller
 						)
 						enqueuePacket(resp)
 					} else {
-						req.executeOn(
-							destNode,
-							result => {
-								val resp = ResponsePacket(
-									id = nextPacketId(),
-									source = req.destination,
-									destination = req.source,
-									departureTime = _virtualTime,
-									correlationRequestId = req.id,
-									rpcKind = req.rpcKind,
-									response = Success(result),
-									completeCaller = req.completeCaller,
-									summary = s"Response($result)"
-								)
-								enqueuePacket(resp)
-							},
-							ex => {
-								val resp = ResponsePacket(
-									id = nextPacketId(),
-									source = req.destination,
-									destination = req.source,
-									departureTime = _virtualTime,
-									correlationRequestId = req.id,
-									rpcKind = req.rpcKind,
-									response = Failure(ex),
-									completeCaller = req.completeCaller,
-									summary = s"Failure($ex)"
-								)
-								enqueuePacket(resp)
-							}
-						)
+						val onSuccess: Any => Unit = result => {
+							val outcome = Success(result)
+							rpcLifecycleListener.foreach(_.onRpcCompleted(req, outcome, travelingPacketsCount))
+							val resp = ResponsePacket(
+								id = nextPacketId(),
+								source = req.destination,
+								destination = req.source,
+								departureTime = _virtualTime,
+								correlationRequestId = req.id,
+								rpc = req.rpc,
+								response = outcome,
+								completeCaller = req.completeCaller
+							)
+							enqueuePacket(resp)
+						}
+						val onError: Throwable => Unit = ex => {
+							val outcome = Failure(ex)
+							rpcLifecycleListener.foreach(_.onRpcCompleted(req, outcome, travelingPacketsCount))
+							val resp = ResponsePacket(
+								id = nextPacketId(),
+								source = req.destination,
+								destination = req.source,
+								departureTime = _virtualTime,
+								correlationRequestId = req.id,
+								rpc = req.rpc,
+								response = outcome,
+								completeCaller = req.completeCaller
+							)
+							enqueuePacket(resp)
+						}
+
+						rpcLifecycleListener.foreach(_.onRpcDelivering(req, travelingPacketsCount))
+
+						req.rpc match {
+							case ConsensusRpc.HowAreYou(inquirerInfo) =>
+								destNode.clusterParticipant.delegate.onHowAreYou(req.source, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
+							case ConsensusRpc.ChooseALeader(inquirerId, inquirerInfo) =>
+								destNode.clusterParticipant.delegate.onChooseALeader(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
+							case ConsensusRpc.AppendRecords(inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit) =>
+								destNode.clusterParticipant.delegate.onAppendRecords(req.source, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
+							case ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit) =>
+								destNode.clusterParticipant.delegate.onInstallSnapshot(req.source, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
+							case ConsensusRpc.PermitQuiescence(indexOfGrantedStableConfigChange) =>
+								destNode.clusterParticipant.delegate.onQuiescencePermitted(req.source, indexOfGrantedStableConfigChange)
+								onSuccess(())
+						}
 					}
 				})
 
 			case resp: ResponsePacket =>
+				rpcLifecycleListener.foreach(_.onResponseDelivered(resp, travelingPacketsCount))
 				resp.completeCaller(resp.response)
 		}
 
@@ -1291,11 +1339,11 @@ class ConsensusEnvironment(
 	// Configuration Change Injections
 	def submitConfigChange(
 		targetNode: NodeRef,
-		desiredParticipants: Set[NodeRef],
+		desiredParticipants: Set[? <: NodeRef],
 		priorAnswer: Maybe[ConfigChangeResponse] = Maybe.empty
 	): ConfigChangeHandle = {
 		val targetId = targetNode.asNodeId
-		val desiredIds = desiredParticipants.map(_.asNodeId)
+		val desiredIds: Set[NodeId] = desiredParticipants.map(_.asNodeId)
 		recordOrExecute(EnvOperation.SubmitConfigChange(targetId, desiredIds)) {
 			val reqId = s"ccReq-${nextConfigReqId()}"
 			val handle = ConfigChangeHandle(reqId, targetId, desiredIds, _virtualTime)
@@ -1343,28 +1391,55 @@ class ConsensusEnvironment(
 		}
 	}
 
-	private[readren] def onCommitIndexChanged(node: EnvironmentNode, commitIndex: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
-		val nodeCommitted = committedRecordsByNode(node.myId)
+	private[readren] def onCommitIndexChanged(node: EnvironmentNode, previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
+		val thisNodeCommitted = committedRecordsByNode.getOrElseUpdate(node.myId, mutable.ArrayBuffer.empty)
 		val mem = node.storage.savedMemory
-		val offset = mem.logBufferOffset
-		val startIdx = (nodeCommitted.size + 1L).max(offset)
-		if startIdx <= commitIndex then {
-			val newRecords = mem.getRecordsBetween(startIdx, commitIndex + 1)
-			nodeCommitted.addAll(newRecords)
+		val thisNodeLogBufferOffset = mem.logBufferOffset
+
+		// Validate consistency for any overlapping records that were already recorded before restart/re-join
+		val indexOfFirstRecordToCheck = (previous + 1).max(thisNodeLogBufferOffset)
+		val indexOfLastRecordToCheck = current.min(thisNodeCommitted.size.toLong)
+		var checkIdx = indexOfFirstRecordToCheck
+		while checkIdx <= indexOfLastRecordToCheck do {
+			thisNodeCommitted(checkIdx.toInt - 1) match {
+				case contentInParallelMemory: Record =>
+					val contentInStorage = mem.getRecordAt(checkIdx)
+					if contentInStorage != contentInParallelMemory then {
+						throw new AssertionError(s"Node ${node.myId} committed a different record at index $checkIdx after restart: previous=$contentInParallelMemory, current=$contentInStorage")
+					}
+				case None => ()
+			}
+			checkIdx += 1
+		}
+
+		// Memorize the committed records in parallel memory, filling potential holes with None
+		val indexOfFirstRecordToAppend = indexOfFirstRecordToCheck.max(thisNodeCommitted.size + 1L)
+		if indexOfFirstRecordToAppend <= current then {
+			val indexOfFirstRecordToAppendBase0 = indexOfFirstRecordToAppend.toInt - 1
+			val holeLength = indexOfFirstRecordToAppendBase0 - thisNodeCommitted.size
+			if holeLength > 0 then thisNodeCommitted.addAll(Iterable.fill(holeLength)(None))
+			val newCommittedRecords = mem.getRecordsBetween(indexOfFirstRecordToAppend, current + 1)
+			thisNodeCommitted.addAll(newCommittedRecords)
 		}
 
 		if as == LEADER then {
-			// Leader Completeness: all records committed by any peer in term <= at must match leader log
+			// Check that records committed in the past by other nodes are present in the leader's log
 			for (otherId, otherCommitted) <- committedRecordsByNode if otherId != node.myId do {
-				for (otherRec, idxBase0) <- otherCommitted.zipWithIndex do {
-					val recordIndex = idxBase0 + 1L
-					if otherRec.term <= at then {
-						if recordIndex <= nodeCommitted.size then {
-							val leaderRec = nodeCommitted(idxBase0)
-							if leaderRec != otherRec then {
-								throw new AssertionError(s"Leader Completeness invariant violated at index $recordIndex: Leader ${node.myId} has $leaderRec, but $otherId committed $otherRec in term <= $at")
+				for (otherRec, recordIndexBase0) <- otherCommitted.zipWithIndex do {
+					otherRec match {
+						case None => ()
+						case otherNodeCommittedRecord: Record =>
+							if recordIndexBase0 < thisNodeCommitted.size then {
+								thisNodeCommitted(recordIndexBase0) match {
+									case None => ()
+									case leaderCommittedRecord: Record =>
+										if leaderCommittedRecord != otherNodeCommittedRecord then {
+											throw new AssertionError(s"Node $otherId has a committed record at index ${recordIndexBase0 + 1} that differs from the record of current leader ${node.myId}, breaking Leader Completeness: $otherId -> $otherNodeCommittedRecord; ${node.myId} -> $leaderCommittedRecord")
+										}
+								}
+							} else if otherNodeCommittedRecord.term <= at then {
+								throw new AssertionError(s"Node $otherId has more committed records with term <= $at than current leader ${node.myId}, breaking Leader Completeness.")
 							}
-						}
 					}
 				}
 			}
@@ -1382,9 +1457,11 @@ class ConsensusEnvironment(
 		}
 	}
 
-	private[readren] def onActiveConfigChanged(node: EnvironmentNode, change: ConfigChange[String], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = ()
+	private[readren] def onActiveConfigChanged(node: EnvironmentNode, change: ConfigChange[NodeId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = ()
 
-	private[readren] def onNodeQuiesced(node: EnvironmentNode, motive: Try[String]): Unit = ()
+	private[readren] def onNodeQuiesced(node: EnvironmentNode, motive: Try[String]): Unit = {
+		onNodeQuiescedHook(node, motive)
+	}
 
 	def checkLogMatching(): Unit = {
 		val activeNodes = nodesMap.values.filterNot(_.isDown).toSeq
@@ -1413,7 +1490,7 @@ class ConsensusEnvironment(
 
 	def allNodes: Seq[EnvironmentNode] = (0 until clusterSize).map(i => node(i))
 
-	def allChannels: Seq[((String, String), Seq[Packet])] = channels.map((k, v) => (k, v.toSeq)).toSeq
+	def allChannels: Seq[((NodeId, NodeId), Seq[Packet])] = channels.map((k, v) => (k, v.toSeq)).toSeq
 
 	def allClientStatuses: Map[Int, ClientCommandStatus] = clientStatuses.toMap
 
@@ -1424,5 +1501,5 @@ class ConsensusEnvironment(
 
 	def allConfigStatuses: Map[String, ConfigChangeStatus] = configStatuses.toMap
 
-	def leaderByTermMap: Map[Term, String] = leaderByTerm.toMap
+	def leaderByTermMap: Map[Term, NodeId] = leaderByTerm.toMap
 }
