@@ -3,8 +3,38 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-17T15:40:00Z"
+timestamp: "2026-09-22T03:30:00Z"
 ---
+
+## [2026-09-22T03:30:00Z]
+
+- Removed the obsolete transitional `Promoting` role and its associated `PROMOTING` ordinal, realigning `LEADER` as the sole leading role ordinal (`32`) matching `ER_LEADING`.
+- Documented Direct Leadership Inauguration in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing that because candidate term bumping and self-voting are committed to persistent storage prior to Phase 2 vote collection, winning an
+  election permits immediate synchronous inauguration into `Leader` without an intermediate persistence holding state or covenant barriers.
+
+## [2026-09-22T00:55:00Z]
+
+- Updated Section 1 of `okf/adr-causal-fence-state-synchronization.md` to formalize the Temporal Window of Causal Validity invariant, specifying that state references are invalidated across asynchronous suspension points and requiring
+  explicit re-anchoring via `causalAnchor()` before accessing state.
+- Updated Command-Query Separation in State Discovery in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing the three-phase decoupling of consensus role updates into a side-effect-free discovery query, an asynchronous state
+  reconciliation command advancing causal fences and absorbing committed logs, and a pure synchronous electoral vote calculation.
+
+## [2026-09-21T19:55:00Z]
+
+- Documented the Commit Watermark Broadcast Invariant in Section 8 and Command-Query Separation in State Discovery in Section 9 of `okf/lazy-multi-raft-consensus.md`, establishing the obligation to re-drive replication across all active and
+  retiring peer pipelines upon commit index advancement to prevent ghost leader retirement deadlocks in heartbeat-free clusters, and formalizing that state discovery evaluation operates strictly as a side-effect-free query whose active
+  leader outcome bypasses numerical quorum constraints in the subsequent command transition.
+
+## [2026-09-20T16:20:00Z]
+
+- Documented Read Consistency Architecture & Omission of Quorum Verification (`ReadIndex`) in Section 7 of `okf/lazy-multi-raft-consensus.md`, formalizing the architectural rationale for omitting lease-free quorum verification and leader
+  leases in favor of network-quiescent session watermarks, defining the applied command boundary invariant over commit index bounds for reads, and detailing in-memory sequencer awaiters over database triggers.
+
+## [2026-09-20T01:45:00Z]
+
+- Documented Early-Terminating Quorum Accumulation & Strict Phase Isolation in Section 9 of `okf/lazy-multi-raft-consensus.md`, formalizing reactive incremental quorum resolution for Phase 1 discovery and Phase 2 voting across stable and
+  transitional configurations, short-circuiting on decisive victory or mathematical impossibility, immediate term preemption and active leader aborts, instant cancellation and disposal of in-flight peer inquiries, and the strict prohibition
+  of cross-phase trailing reply preemption.
 
 ## [2026-09-17T15:40:00Z]
 
@@ -413,3 +443,9 @@ timestamp: "2026-09-17T15:40:00Z"
 - Added the Peer vs. Retiree Replication Pipeline Disjunction invariant to Section 7.I of `okf/lazy-multi-raft-consensus.md`, establishing mutual exclusion between active peer and retiring learner pipelines and defining recovery semantics
   for active peers responding in the `RETIRING` role.
 
+## [2026-09-21T13:10:00Z]
+
+- Updated `okf/adr-causal-fence-state-synchronization.md` and Section 11 of `okf/lazy-multi-raft-consensus.md` to specify the Role Exit Decoupling & Re-Entrancy Prevention invariant under the Decoupled Mutation Contract.
+- Documented that leader abdication must resolve in-flight commit watermark awaiters in a decoupled manner (e.g. via `sequencer.run`) to prevent vacated client command handoffs from re-entrantly executing role transitions and mutating the
+  primary state fence inside inbound RPC turns (such as `onAppendRecords`).
+- Documented that sequential configuration change chaining must explicitly self-defer via `Capture_defer` before executing the synchronous prologue of chained requests.

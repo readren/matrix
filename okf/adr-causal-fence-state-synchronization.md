@@ -29,7 +29,9 @@ By attaching continuations synchronously to the `Capture` returned by `advance`,
 
 - The continuation is inherently scheduled in the exact causal timeline slot immediately following the anchored mutation.
 - The continuation is guaranteed to receive the *fresh, correct state* corresponding to that specific moment in time.
-- State references should not be passed to deferred or asynchronous boundaries without re-anchoring, as they instantly become stale once the initial execution block yields.
+- **Temporal Window of Causal Validity**: A state reference yielded by the fence or passed into an execution scope is temporally valid *only within the synchronous execution block directly attached to that operation*. Crossing an
+  asynchronous boundary or suspension point (e.g., awaiting an external RPC, a timer, or an unanchored asynchronous effect) yields the execution context, allowing interleaved tasks to advance the fence. Upon resuming past an asynchronous
+  suspension, all previously held state references are temporally invalidated and poisoned; execution must explicitly re-anchor via `causalAnchor()` before accessing state or driving downstream transitions.
 
 ### 2. The Decoupled Mutation Contract (An Asymmetric Performance Decision)
 
@@ -50,8 +52,11 @@ This contract is an intentional, asymmetric performance optimization:
   are resolved. Applying committed records to the state machine does not mutate the `PrimaryState` or touch the `CausalFence`. Because the contract guarantees that awaiters do not mutate the fence, `recalculateCommitIndex` can notify
   awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline hops, and dispatch latency, allowing the happy path to execute with absolute minimum overhead.
 - **Asymmetric Burden on Mutating Callers**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as
-  fallback branches of command replication (appending no-op records) and configuration change completions (transitioning from transitional to stable configurations)—must explicitly wrap their continuations in `Capture_defer`. This
-  sacrifices caller simplicity on rare paths to maximize performance on the critical path.
+  fallback branches of command replication (appending no-op records), configuration change completions (transitioning from transitional to stable configurations), and sequential configuration change chaining—must explicitly wrap their
+  continuations in `Capture_defer`.
+- **Role Exit Decoupling & Re-Entrancy Prevention**: During role transitions (e.g., leader abdication), in-flight watermark awaiters must be resolved in a decoupled manner (e.g., via `sequencer.run`). Because observers react to abdication
+  by delegating vacated commands to the incoming role—which synchronously triggers role evaluations and state fence mutations—resolving awaiters synchronously inside `handleExit` creates re-entrant state mutations on the caller's call stack
+  (such as an enclosing `onAppendRecords` turn). Decoupling awaiter seizure ensures that role transitions and enclosing RPC turns complete atomically before vacated operations are processed.
 
 #### Rejection of Alternative 1: Synchronous Inline Re-Anchoring
 

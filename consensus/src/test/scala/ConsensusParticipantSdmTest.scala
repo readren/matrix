@@ -1127,11 +1127,6 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became follower of $leaderId from ${RoleOrdinal_nameOf(previous)} during term $term")
 			}
 
-			override def onPromoting(previous: RoleOrdinal, term: Term): Unit = {
-				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is claiming leadership at term $term from ${RoleOrdinal_nameOf(previous)}.")
-			}
-
 			override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 				sequencer.checkWithin()
 				scribe.info(s"scribe-$myId: became leader of term $term from ${RoleOrdinal_nameOf(previous)}")
@@ -1519,11 +1514,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			logRetentionAfterSnapshot: Int
 		)
 		val failingCases = Seq[FailingCase](
+			(30, 4, true, 6565188240402498618L, true, 0, 3, 9, 0),
 			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0),
 			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3),
 			(30, 2, true, -3834115379994352266L, false, 1, 5, 9, 0),
 			(30, 4, true, -2499323556213279510L, false, 1, 5, 1, 0),
-			(30, 4, true, -7641283460342501667L, true, 0, 3, 1, 1),
+			(30, 4, true, -7641283460342501667L, true, 0, 3, 1, 1), // Primary state touched in wrong place
 			(30, 6, false, -7096462650479832304L, false, 9, 3, 1, 0),
 			(30, 3, true, -4148517921068024394L, false, 0, 5, 1, 0),
 			(30, 2, false, -5783341547509500611L, true, 9, 3, 9, 3),
@@ -1600,7 +1596,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
-			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0)
+			(30, 4, true, 6565188240402498618L, true, 0, 3, 9, 0)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		testAllInvariants(
 			net,

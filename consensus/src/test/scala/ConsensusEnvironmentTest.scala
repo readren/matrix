@@ -259,7 +259,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		while env.pendingPacketsBetween(2, 1).nonEmpty do env.deliverNext(2, 1)
 		env.runNodeUntilIdle(1)
 
-		// p-1 receives p-2's vote, enters Promoting, and becomes leader of term 2
+		// p-1 receives p-2's vote and becomes leader of term 2
 		assertEquals(env.nodeRole(1), "LEADER")
 		assertEquals(env.node(1).storage.savedMemory.currentTerm, 2.asInstanceOf[Term])
 		assertEquals(env.node(2).storage.savedMemory.currentTerm, 2.asInstanceOf[Term])
@@ -294,5 +294,240 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assertEquals(res3, 1)
 		val p1Record = env.node(1).storage.savedMemory.getRecordAt(recIdx3)
 		assertEquals(p1Record.term, 2.asInstanceOf[Term])
+	}
+
+	test("voting quorum: early victory elects leader without waiting for remaining peers") {
+		val env = new ConsensusEnvironment(clusterSize = 3)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// Reach majority on discovery: deliver to p-1, drop to p-2
+		env.deliverNext(0, 1)
+		env.dropNext(0, 2)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+		env.runNodeUntilIdle(0)
+
+		// ChooseALeader triggered for peers p-1 and p-2
+		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(calRequests.size, 2)
+
+		// Deliver chooseALeader only to p-1, leaving p-2 in flight
+		env.deliverNext(0, 1)
+		env.stepNode(1)
+
+		// p-1 queries p-2 to determine best candidate; drop it so p-1 resolves with p-0 as winner
+		env.dropNext(1, 2)
+		env.stepNode(1)
+
+		// Now p-1 sends its vote for p-0 back to p-0
+		env.deliverNext(1, 0)
+
+		// p-0 processes p-1's vote: quorum won immediately (2/3) without waiting for p-2
+		env.runNodeUntilIdle(0)
+		assertEquals(env.nodeRole(0), "LEADER")
+
+		// p-2's chooseALeader request is still in flight, never needed
+		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(remainingCal.size, 1)
+		assertEquals(remainingCal.head.destination, NodeId("p-2"))
+	}
+
+	test("voting quorum: early impossible loss demotes candidate to isolated without waiting for remaining peers") {
+		val env = new ConsensusEnvironment(clusterSize = 5)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// Reach majority on discovery: deliver to p-1, p-2; drop p-3, p-4
+		env.deliverNext(0, 1)
+		env.deliverNext(0, 2)
+		env.dropNext(0, 3)
+		env.dropNext(0, 4)
+		env.stepNode(1)
+		env.stepNode(2)
+		env.deliverNext(1, 0)
+		env.deliverNext(2, 0)
+		env.runNodeUntilIdle(0)
+
+		// ChooseALeader triggered for all 4 peers
+		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(calRequests.size, 4)
+
+		// Drop/fail 3 of them (p-1, p-2, p-3). Remaining possible votes = 1 (self) + 1 (p-4) = 2 <= 5/2
+		env.dropNext(0, 1)
+		env.dropNext(0, 2)
+		env.dropNext(0, 3)
+		env.runNodeUntilIdle(0)
+
+		// p-0 immediately demotes to ISOLATED due to mathematical impossibility, without waiting for p-4
+		assertEquals(env.nodeRole(0), "ISOLATED")
+
+		// p-4's CAL packet is still pending in channel, never delivered
+		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(remainingCal.size, 1)
+		assertEquals(remainingCal.head.destination, NodeId("p-4"))
+	}
+
+	test("voting quorum: higher term from peer aborts election immediately") {
+		val env = new ConsensusEnvironment(clusterSize = 3)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// Reach majority on discovery
+		env.deliverNext(0, 1)
+		env.dropNext(0, 2)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+		env.runNodeUntilIdle(0)
+
+		// ChooseALeader triggered
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 2)
+
+		// Advance p-1's term via an AppendRecords RPC from a higher term (term 5)
+		env.node(1).stepDoer.executeSequentially(() => {
+			env.node(1).clusterParticipant.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
+		})
+		env.stepNode(1)
+
+		// Deliver chooseALeader to p-1 only
+		env.deliverNext(0, 1)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+
+		// p-0 receives vote with term 5: aborts and updates term without waiting for p-2
+		env.runNodeUntilIdle(0)
+		assertEquals(env.node(0).storage.savedMemory.currentTerm, 5.asInstanceOf[Term])
+		assert(env.nodeRole(0) != "LEADER")
+
+		// p-2's CAL request is still pending
+		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(remainingCal.size, 1)
+		assertEquals(remainingCal.head.destination, NodeId("p-2"))
+	}
+
+	test("voting quorum: early termination unsubscribes remaining queries and ignores late arrivals") {
+		val env = new ConsensusEnvironment(clusterSize = 3)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// Reach majority on discovery
+		env.deliverNext(0, 1)
+		env.dropNext(0, 2)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+		env.runNodeUntilIdle(0)
+
+		// ChooseALeader triggered
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 2)
+
+		// Win early with p-1's vote
+		env.deliverNext(0, 1)
+		env.stepNode(1)
+		env.dropNext(1, 2)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+		env.runNodeUntilIdle(0)
+		assertEquals(env.nodeRole(0), "LEADER")
+
+		// Now deliver late request to p-2 and its response back to p-0
+		env.deliverNext(0, 2)
+		env.stepNode(2)
+		env.dropNext(2, 1)
+		env.stepNode(2)
+		env.deliverNext(2, 0)
+		env.runNodeUntilIdle(0)
+
+		// Leader p-0 remains stably LEADER without crashing or regressing
+		assertEquals(env.nodeRole(0), "LEADER")
+	}
+
+	test("discovery quorum: early majority unblocks vote determination without waiting for delayed peer") {
+		val env = new ConsensusEnvironment(clusterSize = 3)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// howAreYou queries triggered for p-1 and p-2
+		val hayRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		assertEquals(hayRequests.size, 2)
+
+		// Deliver howAreYou to p-1 only, leave p-2 in flight
+		env.deliverNext(0, 1)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+
+		// p-0 receives p-1's state info: reaches discovery majority (2/3) without waiting for p-2
+		env.runNodeUntilIdle(0)
+
+		// Phase 2 (CAL) is launched for both peers
+		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
+		assertEquals(calRequests.size, 2)
+
+		// p-2's HAY request is still pending in flight
+		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		assertEquals(remainingHay.size, 1)
+	}
+
+	test("discovery quorum: impossible majority demotes to isolated immediately") {
+		val env = new ConsensusEnvironment(clusterSize = 5)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// 4 HAY queries sent to p-1, p-2, p-3, p-4
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou]), 4)
+
+		// Drop/fail 3 of them (p-1, p-2, p-3). Remaining possible = 1 (self) + 1 (p-4) = 2 <= 5/2
+		env.dropNext(0, 1)
+		env.dropNext(0, 2)
+		env.dropNext(0, 3)
+		env.runNodeUntilIdle(0)
+
+		// p-0 immediately demotes to ISOLATED due to mathematical impossibility, without waiting for p-4
+		assertEquals(env.nodeRole(0), "ISOLATED")
+
+		// p-4's HAY request was never needed
+		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		assertEquals(remainingHay.size, 1)
+		assertEquals(remainingHay.head.destination, NodeId("p-4"))
+	}
+
+	test("discovery quorum: higher term or active leader detected in discovery aborts election") {
+		val env = new ConsensusEnvironment(clusterSize = 3)
+		env.startAllNodes()
+
+		val h = env.submitClientCommand(0, 1)
+		env.stepNode(0)
+
+		// Advance p-1's term via an AppendRecords RPC from term 5
+		env.node(1).stepDoer.executeSequentially(() => {
+			env.node(1).clusterParticipant.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
+		})
+		env.stepNode(1)
+
+		// Deliver howAreYou to p-1 only
+		env.deliverNext(0, 1)
+		env.stepNode(1)
+		env.deliverNext(1, 0)
+
+		// p-0 receives StateInfo with term 5: aborts election and updates term without waiting for p-2
+		env.runNodeUntilIdle(0)
+		assertEquals(env.node(0).storage.savedMemory.currentTerm, 5.asInstanceOf[Term])
+		assert(env.nodeRole(0) != "LEADER")
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 0)
+
+		// p-2's HAY query is still pending
+		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		assertEquals(remainingHay.size, 1)
 	}
 }

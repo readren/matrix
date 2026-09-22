@@ -575,8 +575,6 @@ class EnvironmentNode(
 
 		override def onBecameFollower(previous: RoleOrdinal, term: Term, leaderId: ParticipantId): Unit = ()
 
-		override def onPromoting(previous: RoleOrdinal, term: Term): Unit = ()
-
 		override def onBecameLeader(previous: RoleOrdinal, term: Term): Unit = {
 			env.onBecameLeader(thisNode, term)
 		}

@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-17T21:05:00Z"
+timestamp: "2026-09-22T03:30:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -335,6 +335,20 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Decoupled Session Consistency**: Exposing `RecordIndex` directly in the consensus response contract allows client runtimes, gateway routers, and caching layers to track monotonically increasing commit watermarks without deserializing or
   coupling to application-specific `StateMachineResponse` envelopes, enabling standardized read-your-writes and session-level linearizable consistency across cluster participants.
 
+### V. Read Consistency Architecture & Omission of Quorum-Verified Reads (ReadIndex)
+
+- **Omission of Quorum-Verified Reads (`ReadIndex`)**: The framework deliberately omits lease-free linearizable read protocols (such as Raft's `ReadIndex`) as well as physical clock-based leader leases. In an idle Lazy Multi-Raft cluster
+  with thousands or millions of quiescent shards, executing an on-demand quorum exchange for read operations destroys network quiescence, introduces distributed round-trip network latency, and turns read paths into consensus bottlenecks.
+- **Session Consistency via Applied Watermark Barrier**: Read operations are served directly from co-located state machines or embedded databases by gating queries on the monotonic applied watermark
+  (`highestAppliedCommandIndex >= targetIndex`). Clients, gateways, or caching layers propagate the `RecordIndex` returned by prior write operations as their `targetIndex`, ensuring monotonic reads and read-your-writes guarantees without
+  distributed consensus overhead.
+- **Applied Boundary vs. Commit Boundary**: Read barriers must synchronize strictly against the state machine's application index (`highestAppliedCommandIndex`), never the consensus `commitIndex`. While reaching `commitIndex` guarantees log
+  durability across a quorum, the co-located database only reflects state mutations once the entry is sequentially applied via `applyClientCommand`. Reading when `commitIndex >= targetIndex` before state machine application completes yields
+  stale or unapplied state.
+- **In-Memory Sequencer Awaiters vs. External Database Triggers**: Synchronization against a pending `targetIndex` is performed strictly in memory within the single-threaded sequencer (`Doer`) using non-blocking reactive awaiters attached
+  to the state machine applier. The co-located database functions as an embedded storage sink driven sequentially by the consensus participant; it requires no external database triggers, polling, or storage-level notification mechanisms to
+  notify readers when a watermark is reached.
+
 ---
 
 ## 8. Ghost Leader Reconfiguration & Learner Convergence Dynamics
@@ -356,6 +370,9 @@ Quiescence authorization ensures that a retiring participant does not shut down 
   acknowledgment across all active learners.
 - **Asynchronous Retry Decoupling**: When a replication wave completes via majority quorum while lagging or unreachable learners remain pending, retries targeting unreachable learners must be scheduled asynchronously on dedicated timers.
   Ghost leaders must never execute re-entrant, synchronous replication loops during configuration change request handling.
+- **Commit Watermark Broadcast Invariant**: When the leader's commit index advances upon receiving an append acknowledgment from any peer, replication must be triggered across all active and retiring peer pipelines. In a heartbeat-free lazy
+  consensus architecture, idle peer pipelines (whose logs are caught up but whose knowledge of the commit index is stale) only learn of newly committed records when the leader drives replication. Failure to broadcast commit index
+  advancements leaves idle followers unaware of commitments, preventing excluded ghost leaders from observing universal learner acknowledgment and retiring.
 
 ---
 
@@ -401,8 +418,8 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 5. **Quorum & Role Inauguration**:
     - **Stable Configuration Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active configuration participants.
     - **Transitional Configuration Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old configuration set (`Cold`) and the new configuration set (`Cnew`).
-    - If the candidate obtains the required quorum, it transitions through `Promoting` directly into `Leader(term = targetTerm)`. Because the term was already persisted prior to voting, no further term bumping occurs during promotion. If
-      quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
+   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active configuration. Because the term and self-vote were committed to persistent
+     storage prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
 
 ### II. Ballot Mechanics & Single-Vote-Per-Term Invariant
 
@@ -414,15 +431,13 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Split-Brain Prevention**: Because voters persist their term and granted vote before responding to `ChooseALeader`, intersecting majorities across terms are prevented from acknowledging divergent logs, strictly preserving Raft's Leader
   Completeness and State Machine Safety.
 
-### III. Promotion Phase (`Promoting`) & Term Bumping Invariants
+### III. Direct Leadership Inauguration & In-Flight Cleanup Invariants
 
-- **Hidden Transitional Substate**: `Promoting` is a transient, internal role entered immediately upon securing an election quorum. Outside participants never observe a node in the `Promoting` state because inbound RPCs are held pending
-  during this interval.
-- **Pre-Election Epoch Bumping**: Unlike designs that defer term bumping until after quorum acquisition, the term is bumped and persisted *prior* to Phase 2 vote collection. `Promoting` serves to finalize asynchronous pipeline
-  initialization and causally anchor active configuration state before client command processing commences.
+- **Pre-Election Persistence & Direct Inauguration**: Unlike legacy designs that defer term bumping until after quorum acquisition, the term is advanced and persisted alongside the self-vote *prior* to Phase 2 vote collection. Consequently,
+  securing an election quorum allows the node to immediately and synchronously inaugurate `Leader(term = targetTerm)` without entering an intermediate transitional state or gating inbound RPC traffic behind promise covenants.
 - **Strict Role-Exit Cleanliness**: All active replication waves and retry tokens are canceled upon role transitions. Role references are updated before invoking exit handlers to ensure synchronous cancellation continuations immediately
   observe that the node is no longer in the previous role.
-- **Leadership Inauguration**: Once causal state anchoring completes, the participant instantiates and transitions to `Leader(term = targetTerm)`.
+- **Leadership Inauguration**: Upon entering leadership, the leader initializes learner replication progress baselines from the first uncommitted record index and immediately drives replication to active peers.
 
 ### IV. Out-of-Band Commit Index Absorption Invariant (Log Matching Safety)
 
@@ -442,9 +457,28 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
     - When the absorbed commit index covers the `StableConfigChange` that finalized a retiree's exclusion, the candidate updates its active configuration, removes the retired peer from consideration, and becomes eligible to secure majority
       quorum and inaugurate leadership in the subsequent election round.
 
+### V. Early-Terminating Quorum Accumulation & Strict Phase Isolation
+
+- **Reactive Incremental Evaluation**: Rather than awaiting all in-flight peer responses across the entire configuration, election phases evaluate decisive quorum conditions reactively upon each individual reply. In a stable configuration,
+  solicitations achieve decisive resolution early as soon as a strict majority ($> N / 2$) of affirmative responses are collected, or as soon as accumulated rejections and failures prove that obtaining a majority is mathematically
+  impossible ($N - \text{failures} \le N / 2$). In transitional configurations ($C_{\text{old}} \to C_{\text{new}}$), independent majorities in both the old and new participant sets are strictly required; accumulation short-circuits to
+  success when both subsets reach majority, or short-circuits to failure immediately if failures in either subset preclude reaching a majority.
+- **Immediate Higher Term and Active Leader Short-Circuiting**: In both Phase 1 discovery and Phase 2 voting, receiving an RPC response from a peer carrying a term higher than the local term ($T_{\text{peer}} > T_{\text{local}}$)
+  immediately short-circuits the accumulator with a stale outcome, aborting election progression without awaiting pending peer replies. In Phase 1 discovery, observing an active leader ($T_{\text{peer}} == T_{\text{local}}$ with rank
+  `ER_LEADING`) immediately terminates state discovery and transitions the participant to `Follower` under that leader.
+- **Strict Phase Isolation & Disposal of Trailing Queries**: The instant an accumulator reaches a decisive outcome, it unconditionally invokes an unsubscription callback to cancel and discard all remaining in-flight peer inquiries. Trailing
+  discovery queries are strictly prohibited from resolving or preempting state across role transitions into Phase 2 voting. Because Phase 2 voting is mandatory and enforces epoch fencing alongside log completeness verification, trailing
+  Phase 1 discovery replies are mathematically redundant for consensus safety. Eliminating cross-phase preemption prevents causal timeline desynchronization and ensures clean, decoupled actor role transitions. Aborted inquiries are resolved
+  with cancellation failures to release memory without triggering error recovery routines.
+- **Command-Query Separation in State Discovery**: State discovery evaluation operates strictly as a side-effect-free query that collects peer metadata without mutating local log state, commit indices, or terms. Upon discovery completion, a
+  dedicated reconciliation command phase ingests peer replies, updates observed terms, absorbs eligible commit indices via Log Matching, and adjusts peer caches. Once state is reconciled, a synchronous query evaluates candidate completeness
+  to compute the electoral vote. When an active leader of the current term is observed during early-terminating discovery, the evaluation returns an electoral vote cast for that leader rather than executing a role mutation directly or
+  returning an abstaining blank vote. The subsequent command phase executes the role transition to follower unconditionally upon evaluating an active leader vote, bypassing numerical discovery quorum requirements because the existence of an
+  active leader in the current term constitutes decisive mathematical proof of quorum validity.
+
 ---
 
-## 9. Configuration Change Response & Ballot Propagation Invariants
+## 10. Configuration Change Response & Ballot Propagation Invariants
 
 - **Terminal vs. Non-Terminal Response Partitioning**: Configuration change responses are strictly partitioned into terminal and non-terminal variants:
     - **Terminal Responses**: Represent final consensus outcomes (completed or already matching configuration changes) that definitively satisfy the requester and terminate retry loops. Terminal responses do not carry election ballot
@@ -456,7 +490,7 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Reconfiguration Quiescence Decoupling**: Successful replication and commitment of a stable configuration change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
   returned upon majority consensus commitment without requiring post-commit causal anchoring against persistent state.
 
-## 10. Decoupled Mutation Contract & Causal State Synchronization
+## 11. Decoupled Mutation Contract & Causal State Synchronization
 
 To guarantee strictly sequential state transitions without the stalling overhead of Thread/Actor-blocking or the race-condition vulnerabilities of Mutexes (lock-and-release), the consensus participant wraps its PrimaryState inside a
 CausalFence. This acts as a non-blocking promise queue dedicated solely to state synchronization.
@@ -491,8 +525,11 @@ The Decoupled Mutation Contract is not an accidental restriction; it is an inten
   mutate the fence, `recalculateCommitIndex` can notify awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline scheduling, and dispatch latency, allowing the happy path to execute with
   absolute minimum overhead.
 - **Asymmetric Caller Burden**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as the fallback
-  branches of command replication (appending no-op records) and configuration change completions (advancing from transitional to stable configurations)—must explicitly wrap their continuations in `Capture_defer`. This trades caller
-  simplicity on rare paths to maximize performance on the critical path.
+  branches of command replication (appending no-op records), configuration change completions (advancing from transitional to stable configurations), and sequential configuration change chaining—must explicitly wrap their continuations in
+  `Capture_defer`.
+- **Role Exit Decoupling & Re-Entrancy Prevention**: During role transitions (such as leader abdication), in-flight watermark awaiters must be resolved in a decoupled manner (e.g., via `sequencer.run`). Because observers react to abdication
+  by delegating vacated in-flight commands to the incoming role—which synchronously triggers role evaluations and state fence mutations—resolving awaiters synchronously inside `handleExit` creates re-entrant state mutations on the caller's
+  call stack (such as an enclosing `onAppendRecords` turn). Decoupling awaiter seizure ensures that role transitions and enclosing RPC turns complete atomically before vacated operations are processed.
 
 #### 2. Rejection of Alternative 1: Synchronous Inline Re-Anchoring
 
@@ -521,14 +558,14 @@ By enforcing the Decoupled Mutation Contract, `recalculateCommitIndex` maintains
 This mathematical invariant proves that commit index calculation and notification is strictly pure with respect to the causal state. It guarantees that a valid `PrimaryState` reference remains pristine and temporally safe from the beginning
 of the notification loop to the end, eliminating re-entrancy bugs, stale-state references, and batch turn-splitting.
 
-## 11. Diagnostic Inspection & Causally Consistent Observation
+## 12. Diagnostic Inspection & Causally Consistent Observation
 
 - **Quiescent Diagnostic State Boundary**: Diagnostic observation of internal participant and role state (such as peer learner replication progress and configuration tracking) must not bypass single-threaded sequencer confinement or observe
   partially applied causal mutations.
 - **Inter-Step Temporal Consistency**: In discrete-event simulation, test harnesses, and external diagnostics, inspecting the active role's diagnostic snapshot is causally consistent at step boundaries (whenever a discrete sequencer step
   completes or when the runnable queue is empty). At these boundaries, all synchronous causal chain derivations (including active configuration changes and peer replication metrics) are guaranteed to be in identical lockstep.
 
-## 12. Host Bridge RPC Completion & Transport Termination Invariants
+## 13. Host Bridge RPC Completion & Transport Termination Invariants
 
 - **Asynchronous Completion Guarantee**: The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `chooseALeader`,
   `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying

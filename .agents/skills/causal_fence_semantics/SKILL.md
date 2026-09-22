@@ -47,3 +47,41 @@ This is the "Game-changing invariant": by attaching synchronously to the `Latchi
 2. **Never attempt to cancel an executing update:** If an update becomes moot, handle it via `RollbackAccessor` inside the `advanceSpeculatively` block. Do not attempt to drop Runnables from the execution queue.
 3. **Never persist sequence links:** Do not store the `LatchingDuty` returned by `advance` in class fields or external state to subscribe to later. Once the synchronous execution block finishes, that link is obsolete. If you need to anchor
    to the current state at a later time, always call `causalAnchor()` to retrieve the fresh tail.
+4. **Lexical Scope vs. Temporal Invalidation Invariant:** A `State` reference yielded by `advance`, `advanceIf`, `jump`, or `causalAnchor` (or received as a method parameter) is temporally valid **only within the synchronous execution block
+   directly attached to that operation**. Crossing any asynchronous generator (`<-`) in a `for` comprehension (such as a network RPC, delay schedule, or external `Capture`) suspends execution, allowing interleaved sequencer tasks to advance
+   the fence. This immediately invalidates and poisons all preceding `State` variables. Reusing a `State` variable across an asynchronous generator without immediately re-anchoring via `fence.causalAnchor()` is an automatic correctness
+   defect.
+
+### Anti-Pattern: Reusing Lexically Scoped State Across Async Generators
+
+```scala
+// ❌ ANTI-PATTERN: Lexical reuse across an asynchronous suspension
+def executePhase(state0: PrimaryState): sequencer.Capture[Unit] = {
+	for {
+		rpcResult <- queryPeersAsync(state0) // Asynchronous suspension gap
+		// BUG: state0 remains lexically in scope, but is temporally stale! Interleaved tasks may have advanced the fence.
+		outcome <- processResult(state0, rpcResult)
+	} yield outcome
+}
+
+// ✅ CORRECT PATTERN: Mandatory re-anchoring across asynchronous gaps
+def executePhase(state0: PrimaryState): sequencer.Capture[Unit] = {
+	for {
+		rpcResult <- queryPeersAsync(state0) // Asynchronous suspension gap
+		state1 <- fence.causalAnchor() // Mandatory re-anchoring to the committed tail!
+		outcome <- processResult(state1, rpcResult)
+	} yield outcome
+}
+```
+
+## Mandatory Causal Fence Pre-Commit Checklist
+
+Before finalizing any change that interacts with `CausalFence` or `CausalStuckableFence`:
+
+1. **Async Generator Audit**: Inspect every `for` comprehension containing a `State` variable. If an asynchronous method call (`RPC`, `schedule`, `accumulateDiscoveryQuorum`, etc.) appears on the right-hand side of a `<-`, verify that all
+   `State` variables defined above that line are never referenced below it.
+2. **Re-anchor Assertion**: Verify that the line immediately following the asynchronous generator retrieves a fresh anchor:
+   ```scala
+   freshState <- primaryStateFence.causalAnchor()
+   ```
+3. **Restart Parameter Audit**: Verify that any restart invocation (such as `updateRole(state)`) passes a freshly anchored instance, never an unanchored variable passed down from a previous phase.
