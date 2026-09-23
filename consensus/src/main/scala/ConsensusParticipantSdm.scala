@@ -562,13 +562,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		private var quiescenceGrantor: Maybe[ParticipantId] = Maybe.empty
 		/** Memory where the [[Role.onQuiescencePermitted]] method stores the [[RecordIndex]] of the last [[SoleElectorateChange]] for which quiescence was authorized. */
 		private var indexOfSecForWhichQuiescenceWasPermitted: RecordIndex = 0
-		/** Memorizes the token for the pending wake-up used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
-		private var retryPermitQuiescenceWakeUpToken: Maybe[WakeUpToken] = Maybe.empty
-		/** Knows the participants that are waiting for an acknowledgment to the quiescence authorizations, and the corresponding [[RecordIndex]] of the [[SoleElectorateChange]] for which the permission granted. */
-		private val nonAcknowledgedQuiescencePermissions: mutable.Map[ParticipantId, RecordIndex] = mutable.Map.empty
-
-		/** Knows the [[LearnerProgress]]s corresponding to the participants that were excluded from the electorate and potentially have not received the appends to notice that they can leave. */
-		private val retiringLearnersById: mutable.Map[ParticipantId, LearnerProgress] = mutable.Map.empty
 
 		/** The current election round.
 		 * Should be bumped whenever the part of the state of this participant that is exposed in questions to other participants (term and commitIndex as of this writing) changes.
@@ -1779,10 +1772,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			override def handleEnter(previousRole: Role)(using Context): Unit = {
 				Trace.step("Quiesced.onEnter") {
 					notifyListeners(_.onBecameQuiesced(previousRole.ordinal, previousRole.getCommittedTerm, motive))
-					retiringLearnersById.clear()
-					retryPermitQuiescenceWakeUpToken.foreach(_.cancel())
-					retryPermitQuiescenceWakeUpToken = Maybe.empty
-					nonAcknowledgedQuiescencePermissions.clear()
 					cluster.onQuiesced(motive)
 				}
 			}
@@ -1840,7 +1829,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		 * This [[Role]] is part of the **Retiring Quorum-Buffering** mechanism.\
 		 * The purpose of this mechanism is to maintain the quorum safety of the old participant set during joint consensus.\
 		 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute toward the old set's quorum. Although they do not cast a specific vote, they effectively lower the required threshold of active votes by one, acting as a neutral "don't care" participant until a succeeding leader establishes a stable majority in the new electorate.\
-		 * Since this role must exist for that reason, we also take advantage of its presence to wait for the retirement pipelines to conclude their job. In this scenario, the job of the retirement pipelines of this retiring ex-leader will overlap with the job of the retirement pipelines of the succeeding [[Leader]], but, if I am not mistaken, this overlap is more beneficial than harmful because it removes some burden to the new [[Leader]].\
+		 * While in this role, the participant is stateless and waits for quiescence authorization from an incoming stable leader (or from its own prior leadership if its active electorate vanished). All retirement replication pipelines are encapsulated within and driven by the [[Leader]] role while active, ensuring followers commit the excluding change before ghost leader retirement.\
 		 * @param finalTerm the [[Term]] during which this participant became [[Retiring]]. Used only as argument for the [[NotificationListener.onRetiring]] method, and [[AppendResult]] responses.
 		 * @param termAtExcludingElectorateIndex the [[Term]] of the [[SoleElectorateChange]] that excluded this participant causing its retirement. This is the term that a [[Retiring]] participant exposes in [[StateInfo]] during elections.
 		 * @param excludingElectorateIndex the index of the [[SoleElectorateChange]] that excluded this participant causing its retirement.
@@ -2310,6 +2299,18 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			private var learnerProgressByIndex: IArray[LearnerProgress] = IArray.tabulate(initialElectorate.peers.size)(_ => new LearnerProgress(initialPrimaryState.firstEmptyRecordIndex))
 
+			/** Tracks the progress of log replication to retired participants, each represented by a [[LearnerProgress]].
+			 * A participant is retired when a [[SoleElectorateChange]] that excludes it becomes active.
+			 * An entry is added to this map when the leader discovers that a participant is retiring.
+			 * An entry is removed from this map when the leader discovers that the participant has quiesced. */
+			private val retiringLearnersById: mutable.Map[ParticipantId, LearnerProgress] = mutable.Map.empty
+
+			/** Memorizes the token for the pending wake-up used to retry failed calls to [[permitQuiescence]]. Needed to be able to cancel the retry. */
+			private var retryPermitQuiescenceWakeUpToken: Maybe[WakeUpToken] = Maybe.empty
+
+			/** Knows the participants that are waiting for an acknowledgment to the quiescence authorizations, and the corresponding [[RecordIndex]] of the [[SoleElectorateChange]] for which the permission granted. */
+			private val nonAcknowledgedQuiescencePermissions: mutable.Map[ParticipantId, RecordIndex] = mutable.Map.empty
+
 			/** Either, the index of the [[SoleElectorateChange]] that excluded this leading participant causing it become a ghost leader, or zero if in joint consensus or not excluded.
 			 * Set by the [[Leader.driveTheRetirements]] method, which is called by [[deriveElectorateFrom]] when the active [[Electorate]] changes from a [[JointElectorate]] to a [[SoleElectorate]]. */
 			private var indexOfElectorateChangeThatExcludedThisParticipant: RecordIndex = 0
@@ -2361,8 +2362,12 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			override def handleExit()(using Trace.Context): Unit = {
 				learnerProgressByIndex.foreach(_.unreachableRetryWakeUpToken.foreach(_.cancel()))
 				retiringLearnersById.values.foreach(_.unreachableRetryWakeUpToken.foreach(_.cancel()))
-				retryPermitQuiescenceWakeUpToken.foreach(_.cancel())
-				retryPermitQuiescenceWakeUpToken = Maybe.empty
+				retiringLearnersById.clear()
+				if !currentRole.isInstanceOf[Retiring] then {
+					retryPermitQuiescenceWakeUpToken.foreach(_.cancel())
+					retryPermitQuiescenceWakeUpToken = Maybe.empty
+					nonAcknowledgedQuiescencePermissions.clear()
+				}
 				val awaitersToSeize = recordBecomesCommittedCaptors.toArray
 				recordBecomesCommittedCaptors.clear()
 				super.handleExit()
@@ -3199,13 +3204,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		}
 
 		/** Attempts to transition this participant to the [[QUIESCED]] role.\
-		 * This check is performed whenever a potential prerequisite for quiescence is met (e.g., is retiring, a retirement pipeline finishes, or permission to quiesce is granted).\
-		 * The transition only proceeds if the participant is in the [[RETIRING]] role, no retirement pipeline is active, and protocol permission was granted.\
-		 * Three independent async processes must converge: (a) all retirement pipelines must complete and be removed from `retiringLearnersById`, (b) role must be RETIRING, (c) quiescence permission must be granted. And that these are fulfilled by different mechanisms (driveReplicationPipeline, become(Retiring), authorizeQuiescenceTo). */
+		 * This check is performed whenever a potential prerequisite for quiescence is met (e.g., entering the retiring role, or receiving permission to quiesce).\
+		 * The transition proceeds if the participant is in the [[RETIRING]] role and protocol permission was granted at or after the excluding electorate change.\
+		 * Outbound log replication pipelines and quiescence authorization tracking are strictly encapsulated within [[Leader]] and cease upon exiting that role (or upon completing the authorization loop in the case of a vanishing ghost leader). */
 		private def becomeQuiescedIfEligible(indexOfExcludingElectorateChange: RecordIndex)(using Trace.Context): Unit = {
 			Trace.step("becomeQuiescedIfEligible") {
-				if retiringLearnersById.isEmpty && nonAcknowledgedQuiescencePermissions.isEmpty && currentRole.ordinal == RETIRING && indexOfExcludingElectorateChange <= indexOfSecForWhichQuiescenceWasPermitted
-				then become(Quiesced(Success(s"The incoming leader ${quiescenceGrantor.value} authorized quiescence and no retirement driver exists.")))
+				if currentRole.ordinal == RETIRING && indexOfExcludingElectorateChange <= indexOfSecForWhichQuiescenceWasPermitted
+				then become(Quiesced(Success(s"The incoming leader ${quiescenceGrantor.value} authorized quiescence.")))
 			}
 		}
 

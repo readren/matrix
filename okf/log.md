@@ -3,8 +3,16 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-23T17:45:00Z"
+timestamp: "2026-09-23T20:45:00Z"
 ---
+
+## [2026-09-23T20:45:00Z]
+
+- Updated Section III (Quiescence Protocol & Convergence Preconditions) in `okf/lazy-multi-raft-consensus.md`, formalizing that quiescence authorization tracking and retry wake-up scheduling are strictly encapsulated within the `Leader` role lifecycle alongside retirement log replication pipelines, eliminating cross-role tracking state leaks and simplifying quiescence convergence preconditions.
+
+## [2026-09-23T20:13:00Z]
+
+- Updated Section III (Quiescence Protocol & Convergence Preconditions) in `okf/lazy-multi-raft-consensus.md`, formalizing that log replication pipelines for retiring participants are strictly encapsulated within the `Leader` role lifecycle and terminate upon leaving `Leader`, eliminating stale driver registry leaks across subsequent role transitions and refining quiescence convergence preconditions.
 
 ## [2026-09-23T17:45:00Z]
 

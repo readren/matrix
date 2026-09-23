@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-23T17:45:00Z"
+timestamp: "2026-09-23T20:45:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -257,11 +257,10 @@ Quiescence authorization ensures that a retiring participant does not shut down 
     3. If initial permission requests fail due to transient network drops, the leader retries permission delivery up to a configured retry limit before clearing remaining unacknowledged permissions.
 
 - **Convergence Preconditions for Quiescence**:
-  A participant in the `Retiring` role can transition to `Quiesced` if and only if four independent conditions converge:
+  A participant in the `Retiring` role can transition to `Quiesced` if and only if the following conditions converge:
     1. **Role Eligibility**: The participant's current role is `Retiring`.
-    2. **Local Driver Clearance**: The participant's local retirement drivers tracking registry is empty. If the participant acted as leader during the electorate transition, all retirement drivers it initiated to catch up excluded
-       followers must have completed or aborted and unregistered from its local registry.
-    3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster.
+    2. **Outbound Pipeline & Authorization Encapsulation**: Active retirement log replication pipelines and outbound quiescence authorization tracking are strictly encapsulated within the `Leader` role lifecycle; any such pipelines or retry wake-up tokens terminate and unregister upon leaving `Leader` (or complete prior to self-granting permission in the case of a vanishing ghost leader), ensuring retiring participants are stateless and never harbor active or leaked drivers or unacknowledged permission tracking.
+    3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster (received from an active leader, or self-authorized by a vanishing ghost leader once all peers have acknowledged or retries are exhausted).
     4. **Index Verification**: The authorized electorate change index is greater than or equal to the participant's excluding electorate index.
 
 ---
