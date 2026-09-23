@@ -1,6 +1,7 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 import readren.common.{Maybe, Trial}
 import readren.sequencer.Doer
 
@@ -82,7 +83,7 @@ object ConsensusRpc {
 		type Response = AppendResult
 	}
 
-	final case class PermitQuiescence(indexOfGrantedStableConfigChange: RecordIndex) extends ConsensusRpc {
+	final case class PermitQuiescence(indexOfGrantedSec: RecordIndex) extends ConsensusRpc {
 		type Response = Unit
 	}
 }
@@ -188,15 +189,15 @@ final case class ClientStats(
 	lastRecordIndex: Option[Long]
 )
 
-/** Status of an injected configuration change request. */
-sealed trait ConfigChangeStatus
+/** Status of an injected electorate change request. */
+sealed trait ElectorateChangeStatus
 
-object ConfigChangeStatus {
-	case object InFlight extends ConfigChangeStatus
+object ElectorateChangeStatus {
+	case object InFlight extends ElectorateChangeStatus
 
-	final case class Completed(response: ConfigChangeResponse) extends ConfigChangeStatus
+	final case class Completed(response: ElectorateChangeResponse) extends ElectorateChangeStatus
 
-	final case class Failed(cause: Throwable) extends ConfigChangeStatus
+	final case class Failed(cause: Throwable) extends ElectorateChangeStatus
 }
 
 /** A handle to an in-flight or completed client command. */
@@ -208,8 +209,8 @@ final case class ClientCommandHandle(
 	submissionTime: VirtualTime
 )
 
-/** A handle to an in-flight or completed configuration change request. */
-final case class ConfigChangeHandle(
+/** A handle to an in-flight or completed electorate change request. */
+final case class ElectorateChangeHandle(
 	requestId: String,
 	targetNodeId: NodeId,
 	desiredParticipants: Set[NodeId],
@@ -470,8 +471,8 @@ class EnvironmentNode(
 			this.delegate = null
 		}
 
-		override def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
-			env.onActiveConfigChanged(thisNode, change, changeIndex, roleOrdinal)
+		override def onActiveElectorateChanged(change: ElectorateChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
+			env.onActiveElectorateChanged(thisNode, change, changeIndex, roleOrdinal)
 		}
 
 		override def onQuiesced(motive: Try[String]): Unit = {
@@ -543,7 +544,7 @@ class EnvironmentNode(
 				captor
 			}
 
-			override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Capture[Unit] = {
+			override def permitQuiescence(indexOfGrantedSec: RecordIndex): sequencer.Capture[Unit] = {
 				sequencer.checkWithin()
 				val captor = sequencer.Captor[Unit]()
 				val req = RequestPacket(
@@ -551,7 +552,7 @@ class EnvironmentNode(
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpc = ConsensusRpc.PermitQuiescence(indexOfGrantedStableConfigChange),
+					rpc = ConsensusRpc.PermitQuiescence(indexOfGrantedSec),
 					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), _ => captor.captureSync(())))
 				)
 				env.enqueuePacket(req)
@@ -561,13 +562,13 @@ class EnvironmentNode(
 	}
 
 	object notificationListener extends NotificationListener {
-		override def onStarting(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = ()
+		override def onStarting(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = ()
 
-		override def onStarted(previous: RoleOrdinal, term: Term, initialConfigChange: ConfigChange[ParticipantId], isSeed: Boolean): Unit = ()
+		override def onStarted(previous: RoleOrdinal, term: Term, initialElectorateChange: ElectorateChange[ParticipantId], isSeed: Boolean): Unit = ()
 
 		override def onBecameQuiesced(previous: RoleOrdinal, term: Term, motive: Try[String]): Unit = ()
 
-		override def onJoining(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = ()
+		override def onJoining(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = ()
 
 		override def onBecameIsolated(previous: RoleOrdinal, term: Term): Unit = ()
 
@@ -591,7 +592,7 @@ class EnvironmentNode(
 
 		override def onCommandApplied(appliedCommandIndex: RecordIndex, appliedCommandTerm: Term): Unit = ()
 
-		override def onActiveConfigChanged(currentRole: RoleOrdinal, currentTerm: Term, configChangeIndex: RecordIndex, configChange: ConfigChange[ParticipantId]): Unit = ()
+		override def onActiveElectorateChanged(currentRole: RoleOrdinal, currentTerm: Term, electorateChangeIndex: RecordIndex, electorateChange: ElectorateChange[ParticipantId]): Unit = ()
 	}
 }
 
@@ -644,7 +645,7 @@ object EnvOperation {
 
 	final case class SubmitClientCommand(targetNode: NodeId, client: String, serial: Option[Int], attemptFlag: CommandAttemptFlag) extends EnvOperation
 
-	final case class SubmitConfigChange(targetNode: NodeId, desiredParticipants: Set[NodeId]) extends EnvOperation
+	final case class SubmitElectorateChange(targetNode: NodeId, desiredParticipants: Set[NodeId]) extends EnvOperation
 
 	final case class UpdateDynamicSettings(
 		retiringMaxRetries: Option[Int],
@@ -678,7 +679,7 @@ class ConsensusEnvironment(
 	private var packetIdSequencer: PacketId = 0
 	private var storageOpIdSequencer: StorageOpId = 0
 	private var commandIdSequencer: Int = 0
-	private var configReqIdSequencer: Int = 0
+	private var electorateReqIdSequencer: Int = 0
 	private var wakeUpTokenSequencer: Int = 0
 
 	private val channels: mutable.Map[(NodeId, NodeId), mutable.ArrayDeque[Packet]] = mutable.Map.empty
@@ -690,7 +691,7 @@ class ConsensusEnvironment(
 	private val clientLastSent: mutable.Map[String, Int] = mutable.Map.empty
 	private val clientLastSuccess: mutable.Map[String, Int] = mutable.Map.empty
 	private val clientLastRecordIndex: mutable.Map[String, Long] = mutable.Map.empty
-	private val configStatuses: mutable.Map[String, ConfigChangeStatus] = mutable.Map.empty
+	private val electorateChangeStatuses: mutable.Map[String, ElectorateChangeStatus] = mutable.Map.empty
 
 	// Invariant Tracking
 	private val leaderByTerm: mutable.Map[Term, NodeId] = mutable.Map.empty
@@ -781,7 +782,7 @@ class ConsensusEnvironment(
 		packetIdSequencer = 0
 		storageOpIdSequencer = 0
 		commandIdSequencer = 0
-		configReqIdSequencer = 0
+		electorateReqIdSequencer = 0
 		wakeUpTokenSequencer = 0
 
 		channels.clear()
@@ -793,7 +794,7 @@ class ConsensusEnvironment(
 		clientLastSent.clear()
 		clientLastSuccess.clear()
 		clientLastRecordIndex.clear()
-		configStatuses.clear()
+		electorateChangeStatuses.clear()
 		leaderByTerm.clear()
 		appliedCommandsByIndex.clear()
 		committedRecordsByNode.clear()
@@ -845,7 +846,7 @@ class ConsensusEnvironment(
 		case EnvOperation.RestartNode(node) => restartNode(node)
 		case EnvOperation.StartAllNodes => startAllNodes()
 		case EnvOperation.SubmitClientCommand(target, client, serial, flag) => submitClientCommand(target, client, serial, flag)
-		case EnvOperation.SubmitConfigChange(target, desired) => submitConfigChange(target, desired)
+		case EnvOperation.SubmitElectorateChange(target, desired) => submitElectorateChange(target, desired)
 		case EnvOperation.UpdateDynamicSettings(retries, retention, term, idx, target) => updateDynamicSettings(retries, retention, term, idx, target)
 		case EnvOperation.ToggleStorageAutoSucceed(target) => toggleStorageAutoSucceed(target)
 	}
@@ -914,8 +915,8 @@ class ConsensusEnvironment(
 	}
 
 	private[readren] def nextConfigReqId(): Int = {
-		configReqIdSequencer += 1
-		configReqIdSequencer
+		electorateReqIdSequencer += 1
+		electorateReqIdSequencer
 	}
 
 	def travelingPacketsCount: Int = channels.values.map(_.size).sum
@@ -1183,8 +1184,8 @@ class ConsensusEnvironment(
 								destNode.clusterParticipant.delegate.onAppendRecords(req.source, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit) =>
 								destNode.clusterParticipant.delegate.onInstallSnapshot(req.source, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
-							case ConsensusRpc.PermitQuiescence(indexOfGrantedStableConfigChange) =>
-								destNode.clusterParticipant.delegate.onQuiescencePermitted(req.source, indexOfGrantedStableConfigChange)
+							case ConsensusRpc.PermitQuiescence(indexOfGrantedSec) =>
+								destNode.clusterParticipant.delegate.onQuiescencePermitted(req.source, indexOfGrantedSec)
 								onSuccess(())
 						}
 					}
@@ -1334,31 +1335,31 @@ class ConsensusEnvironment(
 		}
 	}
 
-	// Configuration Change Injections
-	def submitConfigChange(
+	// Electorate Change Injections
+	def submitElectorateChange(
 		targetNode: NodeRef,
 		desiredParticipants: Set[? <: NodeRef],
-		priorAnswer: Maybe[ConfigChangeResponse] = Maybe.empty
-	): ConfigChangeHandle = {
+		priorAnswer: Maybe[ElectorateChangeResponse] = Maybe.empty
+	): ElectorateChangeHandle = {
 		val targetId = targetNode.asNodeId
 		val desiredIds: Set[NodeId] = desiredParticipants.map(_.asNodeId)
-		recordOrExecute(EnvOperation.SubmitConfigChange(targetId, desiredIds)) {
+		recordOrExecute(EnvOperation.SubmitElectorateChange(targetId, desiredIds)) {
 			val reqId = s"ccReq-${nextConfigReqId()}"
-			val handle = ConfigChangeHandle(reqId, targetId, desiredIds, _virtualTime)
-			configStatuses(reqId) = ConfigChangeStatus.InFlight
+			val handle = ElectorateChangeHandle(reqId, targetId, desiredIds, _virtualTime)
+			electorateChangeStatuses(reqId) = ElectorateChangeStatus.InFlight
 
 			val n = node(targetId)
 			n.stepDoer.executeSequentially(() => {
 				if n.isDown || n.participant == null then {
-					configStatuses(reqId) = ConfigChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
+					electorateChangeStatuses(reqId) = ElectorateChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
 				} else {
-					val capture = n.clusterParticipant.delegate.requestConfigChange(reqId, desiredIds, priorAnswer)
+					val capture = n.clusterParticipant.delegate.requestElectorateChange(reqId, desiredIds, priorAnswer)
 					capture.triggerSyncCallbacks(
 						res => {
-							configStatuses(reqId) = ConfigChangeStatus.Completed(res)
+							electorateChangeStatuses(reqId) = ElectorateChangeStatus.Completed(res)
 						},
 						ex => {
-							configStatuses(reqId) = ConfigChangeStatus.Failed(ex)
+							electorateChangeStatuses(reqId) = ElectorateChangeStatus.Failed(ex)
 						}
 					)
 				}
@@ -1367,7 +1368,7 @@ class ConsensusEnvironment(
 		}
 	}
 
-	def configChangeStatus(requestId: String): ConfigChangeStatus = configStatuses.getOrElse(requestId, ConfigChangeStatus.InFlight)
+	def electorateChangeStatus(requestId: String): ElectorateChangeStatus = electorateChangeStatuses.getOrElse(requestId, ElectorateChangeStatus.InFlight)
 
 	// Invariant Checks & Internal Callbacks
 	private[readren] def onLogTruncated(node: EnvironmentNode, index: RecordIndex, firstRemovedRecord: Record): Unit = {
@@ -1455,7 +1456,7 @@ class ConsensusEnvironment(
 		}
 	}
 
-	private[readren] def onActiveConfigChanged(node: EnvironmentNode, change: ConfigChange[NodeId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = ()
+	private[readren] def onActiveElectorateChanged(node: EnvironmentNode, change: ElectorateChange[NodeId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = ()
 
 	private[readren] def onNodeQuiesced(node: EnvironmentNode, motive: Try[String]): Unit = {
 		onNodeQuiescedHook(node, motive)
@@ -1497,7 +1498,7 @@ class ConsensusEnvironment(
 		allIds.map(id => id -> ClientStats(clientLastSent.get(id), clientLastSuccess.get(id), clientLastRecordIndex.get(id))).toMap
 	}
 
-	def allConfigStatuses: Map[String, ConfigChangeStatus] = configStatuses.toMap
+	def allConfigStatuses: Map[String, ElectorateChangeStatus] = electorateChangeStatuses.toMap
 
 	def leaderByTermMap: Map[Term, NodeId] = leaderByTerm.toMap
 }

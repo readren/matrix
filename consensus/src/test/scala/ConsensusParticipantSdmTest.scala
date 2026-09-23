@@ -1,6 +1,7 @@
 package readren.consensus
 
-import ConsensusParticipantSdm.{ALREADY_CHANGED, SnapshotData, WAIT_GHOST_LEADER_IS_DEMOTED, *}
+import ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
@@ -91,9 +92,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val randomnessSeed: Long = 0,
 		requestFailurePercentage: Int = 10,
 		responseFailurePercentage: Int = 10,
-		configChangeBeforeRequestDelivered_probability: Float = 0.05,
-		configChangeBeforeResponseDelivered_probability: Float = 0.05,
-		configChangeAfterResponseDelivered_probability: Float = 0.05,
+		electorateChangeBeforeRequestDelivered_probability: Float = 0.05,
+		electorateChangeBeforeResponseDelivered_probability: Float = 0.05,
+		electorateChangeAfterResponseDelivered_probability: Float = 0.05,
 		threadPoolSize: Int = 1,
 		stimulusSettlingTime: Int = 0,
 		enqueueThresholdForEarlyDelivery: Int = Int.MaxValue
@@ -103,7 +104,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		//// The following fields implement the communication between nodes of this net.
 		private type RequestId = (global: Int, channel: Int)
 		private val random = new Random(randomnessSeed)
-		val initialConfigMask: ConfigMask = {
+		val initialElectorateMask: ElectorateMask = {
 			val a = Array.fill(clusterSize)(random.nextBoolean())
 			if a.contains(true) then IArray.unsafeFromArray(a)
 			else IArray.fill(clusterSize)(true)
@@ -114,7 +115,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/** Duration (expressed as the number of requests initiated by [[Node]]s) for which communication between two nodes remains in a failure state once it begins.
 		 * This value represents the square root of the intended failure duration, due to the underlying probability distribution: the actual duration is sampled as the square of a uniform random variable. */
-		private var failureMaxDurationSqrt: Int = initialConfigMask.count(identity)
+		private var failureMaxDurationSqrt: Int = initialElectorateMask.count(identity)
 
 		/** The indices of the [[Node]]s in this [[Net]], indexed by node identifier. */
 		private var indexById: Map[Id, Int] = Map.empty
@@ -123,29 +124,29 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private val nodeByIndex: Array[Node | Null] = new Array(clusterSize)
 
 
-		//// The following fields correspond to the mechanism that produces configuration changes. ////
+		//// The following fields correspond to the mechanism that produces electorate changes. ////
 
-		type ConfigMask = IArray[Boolean]
+		type ElectorateMask = IArray[Boolean]
 
 		private var isConfigNoiseEnabled: Boolean = true
 
-		private var configChangeRequestSequencer: Int = 0
+		private var electorateChangeRequestSequencer: Int = 0
 		/** Counts how many times the [[TestClientCommand]] was sent. */
 		private var commandsSentByClients_count = 0
-		/** Counts how many times the [[injectConfigurationNoise]] method was invoked in all nodes. The probability that a configuration change actually occurs in an invocation is very low. */
-		private var configNoiseInjection_count = 0
-		/** Counts how many times the [[injectConfigurationNoise]] method was invoked since the last [[TestClientCommand]] was sent. */
-		private var configNoiseInjectionsSinceLastClientCommand_count = 2 * clusterSize * clusterSize // Initialized with an estimation
+		/** Counts how many times the [[injectElectorateNoise]] method was invoked in all nodes. The probability that a electorate change actually occurs in an invocation is very low. */
+		private var electorateNoiseInjection_count = 0
+		/** Counts how many times the [[injectElectorateNoise]] method was invoked since the last [[TestClientCommand]] was sent. */
+		private var electorateNoiseInjectionsSinceLastClientCommand_count = 2 * clusterSize * clusterSize // Initialized with an estimation
 		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
-		private var lastProposedConfigMask: ConfigMask = initialConfigMask
+		private var lastProposedElectorateMask: ElectorateMask = initialElectorateMask
 
-		/** The [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
+		/** The [[ElectorateChange]] heard by the [[Node.clusterParticipant.onActiveElectorateChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
-		private var activeConfigChange: ConfigChange[Id] = TransitionalConfigChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialConfigMask))
+		private var activeElectorateChange: ElectorateChange[Id] = JointElectorateChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialElectorateMask))
 
-		/** The index of the [[ConfigChange]] heard by the [[Node.clusterParticipant.onActiveConfigChanged]] of the leading node.
+		/** The index of the [[ElectorateChange]] heard by the [[Node.clusterParticipant.onActiveElectorateChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
-		private var indexOfActiveConfigChange: RecordIndex = 0
+		private var indexOfActiveElectorateChange: RecordIndex = 0
 
 		//// The Provider of Doer instances. Will produce one Doer for the Net and one for each of the nodes. ////
 
@@ -262,7 +263,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		private def onSystemSettled(): Unit = {
-			failureMaxDurationSqrt = Math.max(1, Math.min(activeConfigChange.oldParticipants.size, activeConfigChange.newParticipants.size))
+			failureMaxDurationSqrt = Math.max(1, Math.min(activeElectorateChange.oldParticipants.size, activeElectorateChange.newParticipants.size))
 		}
 
 
@@ -353,17 +354,17 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							responseChannel.markAsFailing(failureDurationSqrt)
 						}
 
-						// Determine the fate of configuration changes during the different phases of this RPC.
-						injectConfigurationNoise(configChangeBeforeRequestDelivered_probability)
+						// Determine the fate of electorate changes during the different phases of this RPC.
+						injectElectorateNoise(electorateChangeBeforeRequestDelivered_probability)
 
 						// Create a lazy task that perform the RPC
 						val replierNode = getNode(replierId)
 						val requestingTask =
 							if requestIsCursed then {
 								netSequencer.Task_apply[Unit] { () =>
-									injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
+									injectElectorateNoise(electorateChangeBeforeResponseDelivered_probability)
 									captor.capture((Failure(new RuntimeException(s"Net: simulated failure of request $requestId")), requestId), true)
-									injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
+									injectElectorateNoise(electorateChangeAfterResponseDelivered_probability)
 								}
 							} else {
 								for {
@@ -380,9 +381,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 									case null =>
 										scribe.trace(s"$inquirerId -< $replierId: $requestId:$requestDescription failed because the node is down, $numberOfTravelingMessages messages are traveling.")
 										val respondingTask = netSequencer.Task_apply[Unit] { () =>
-											injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
+											injectElectorateNoise(electorateChangeBeforeResponseDelivered_probability)
 											captor.capture((Failure(new RuntimeException(s"Net: target node is down: requestId=$requestId")), requestId), true)
-											injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
+											injectElectorateNoise(electorateChangeAfterResponseDelivered_probability)
 										}
 										responseChannel.enqueue(respondingTask)
 
@@ -395,9 +396,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 											if responseIsCursed then Failure(new RuntimeException(s"Net: simulated failure of response $requestId"))
 											else reply
 										val respondingTask = netSequencer.Task_apply[Unit] { () =>
-											injectConfigurationNoise(configChangeBeforeResponseDelivered_probability)
+											injectElectorateNoise(electorateChangeBeforeResponseDelivered_probability)
 											captor.capture((response, requestId), true)
-											injectConfigurationNoise(configChangeAfterResponseDelivered_probability)
+											injectElectorateNoise(electorateChangeAfterResponseDelivered_probability)
 										}
 										responseChannel.enqueue(respondingTask)
 								}
@@ -439,59 +440,59 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			alternatives(random.between(0, alternatives.size))
 		}
 
-		//// Configuration changes injection ////
+		//// Electorate changes injection ////
 
 		/** Should be called when the client simulator sends a command to a consensus-participant, before it is received.
-		 * Needed to allow the [[Net]] to count the number of commands sent, which is required to adjust the configuration noise probability. */
+		 * Needed to allow the [[Net]] to count the number of commands sent, which is required to adjust the electorate noise probability. */
 		def onBeforeClientCommandSent(): Unit = {
-			numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = configNoiseInjectionsSinceLastClientCommand_count
-			configNoiseInjectionsSinceLastClientCommand_count = 0
+			numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = electorateNoiseInjectionsSinceLastClientCommand_count
+			electorateNoiseInjectionsSinceLastClientCommand_count = 0
 			commandsSentByClients_count += 1
 		}
 
-		/** Introduces a configuration change during test execution based on the provided probability. */
-		private def injectConfigurationNoise(changeProbability: Float): Unit = {
+		/** Introduces a electorate change during test execution based on the provided probability. */
+		private def injectElectorateNoise(changeProbability: Float): Unit = {
 			assert(netSequencer.isInSequence)
 			if isConfigNoiseEnabled then {
-				configNoiseInjection_count += 1
-				configNoiseInjectionsSinceLastClientCommand_count += 1
+				electorateNoiseInjection_count += 1
+				electorateNoiseInjectionsSinceLastClientCommand_count += 1
 				determineNewConfig(changeProbability).foreach { (previousConfigMask, newConfigMask) =>
-					val configChangeRequest = createNewConfigChangeRequestId()
+					val electorateChangeRequest = createNewElectorateChangeRequestId()
 
 					// trigger all those duties in their respective node's sequencer
-					for configChangeReplies <- sendsConfigChangeRequests(nodesIds, configChangeRequest, nodesIncludedIn(newConfigMask)) do {
-						scribe.info(s"Net: the configuration change request #$configChangeRequest sent to each node completed with: ${configChangeReplies.mkString("[", ", ", "]")}.")
+					for electorateChangeReplies <- sendsElectorateChangeRequests(nodesIds, electorateChangeRequest, nodesIncludedIn(newConfigMask)) do {
+						scribe.info(s"Net: the electorate change request #$electorateChangeRequest sent to each node completed with: ${electorateChangeReplies.mkString("[", ", ", "]")}.")
 					}
 				}
 			}
 		}
 
-		private def determineNewConfig(changeProbabilityBetweenClientCommands: Float): Maybe[(previousConfig: ConfigMask, newConfig: ConfigMask)] = {
+		private def determineNewConfig(changeProbabilityBetweenClientCommands: Float): Maybe[(previousConfig: ElectorateMask, newConfig: ElectorateMask)] = {
 			assert(netSequencer.isInSequence)
-			val numberOfConfigNoiseInjectionsPerClientCommand = configNoiseInjection_count / commandsSentByClients_count
+			val numberOfConfigNoiseInjectionsPerClientCommand = electorateNoiseInjection_count / commandsSentByClients_count
 			val adjustedProbability = changeProbabilityBetweenClientCommands / numberOfConfigNoiseInjectionsPerClientCommand
 			if random.nextFloat() >= adjustedProbability then Maybe.empty
 			else {
 				val newConfigMask = IArray.unsafeFromArray(Array.fill[Boolean](clusterSize)(random.nextBoolean()))
 				if newConfigMask.contains(true) then {
-					val oldConfigMask = lastProposedConfigMask
-					lastProposedConfigMask = newConfigMask
+					val oldConfigMask = lastProposedElectorateMask
+					lastProposedElectorateMask = newConfigMask
 					Maybe((oldConfigMask, newConfigMask))
 				} else Maybe.empty
 			}
 		}
 
-		private def createNewConfigChangeRequestId(): String = {
-			configChangeRequestSequencer += 1
-			s"ccReq-$configChangeRequestSequencer"
+		private def createNewElectorateChangeRequestId(): String = {
+			electorateChangeRequestSequencer += 1
+			s"ccReq-$electorateChangeRequestSequencer"
 		}
 
-		/** Sends a configuration change request to each [[Node]] of this [[Net]].
+		/** Sends a electorate change request to each [[Node]] of this [[Net]].
 		 * @return a [[Capture]] of the responses of the [[Node]]s */
-		private def sendsConfigChangeRequests(targetNodes: Seq[Id], configChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Capture[ListMap[Id, ConfigChangeResponse]] = {
-			scribe.info(s"Net: About to request (#$configChangeRequest) a configuration change to $includedParticipants")
+		private def sendsElectorateChangeRequests(targetNodes: Seq[Id], electorateChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse]] = {
+			scribe.info(s"Net: About to request (#$electorateChangeRequest) a electorate change to $includedParticipants")
 
-			def loop(previousResponses: ListMap[Id, ConfigChangeResponse], alreadyTriedNodes: List[Id]): netSequencer.Capture[ListMap[Id, ConfigChangeResponse]] = {
+			def loop(previousResponses: ListMap[Id, ElectorateChangeResponse], alreadyTriedNodes: List[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse]] = {
 				val remainingTargetNodes = ArrayBuffer.from[Id](targetNodes.filter(n => !alreadyTriedNodes.contains(n)))
 
 
@@ -503,9 +504,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				if remainingTargetNodes.isEmpty then netSequencer.Keeper(previousResponses)
 				else {
-					val previousResponseAndNextNodeId: (previousResponse: Maybe[ConfigChangeResponse], maybeNextNodeId: Maybe[Id]) =
+					val previousResponseAndNextNodeId: (previousResponse: Maybe[ElectorateChangeResponse], maybeNextNodeId: Maybe[Id]) =
 						if previousResponses.isEmpty then {
-							// Start inquiring a random Node among the active ones in the activeConfigChange
+							// Start inquiring a random Node among the active ones in the activeElectorateChange
 							(Maybe.empty, Maybe(takeRandomNode().myId))
 						} else {
 							val previousResponse = previousResponses.last._2
@@ -533,7 +534,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
 						val inquire = node.sequencer.Capture_defer(() =>
-							node.clusterParticipant.delegate.requestConfigChange(configChangeRequest, includedParticipants, previousResponseAndNextNodeId.previousResponse)
+							node.clusterParticipant.delegate.requestElectorateChange(electorateChangeRequest, includedParticipants, previousResponseAndNextNodeId.previousResponse)
 						).onBehalfOf(netSequencer)
 						for {
 							response <- inquire
@@ -546,12 +547,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			loop(ListMap.empty, Nil)
 		}
 
-		/** Gets the [[Id]]s of the [[Node]]s included in the provided configuration mask. */
-		def nodesIncludedIn(configMask: ConfigMask): ListSet[Id] = {
+		/** Gets the [[Id]]s of the [[Node]]s included in the provided electorate mask. */
+		def nodesIncludedIn(electorateMask: ElectorateMask): ListSet[Id] = {
 			val includedNodes = ListSet.newBuilder[Id]
 			var nodeIndex = 0
 			while nodeIndex < clusterSize do {
-				if configMask(nodeIndex) then includedNodes.addOne(nodesIds(nodeIndex))
+				if electorateMask(nodeIndex) then includedNodes.addOne(nodesIds(nodeIndex))
 				nodeIndex += 1
 			}
 			includedNodes.result()
@@ -559,22 +560,22 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		//// Consensus services lifecycle management ////
 
-		/** Starts the participants in the Config-new-only set when the leading node active [[ConfigChange]] changes to a [[TransitionalConfigChange]].\
-		 * In a production environment the nodes wouldn't be started here but before calling [[ConsensusParticipantSdm.ClusterParticipant.Delegate.requestConfigChange]].
-		 * Called by the leading node when its [[Node.clusterParticipant.onActiveConfigChanged]] method is called.\ */
-		def onActiveConfigChanged(change: ConfigChange[Id], changeIndex: RecordIndex): Unit = {
+		/** Starts the participants in the Config-new-only set when the leading node active [[ElectorateChange]] changes to a [[JointElectorateChange]].\
+		 * In a production environment the nodes wouldn't be started here but before calling [[ConsensusParticipantSdm.ClusterParticipant.Delegate.requestElectorateChange]].
+		 * Called by the leading node when its [[Node.clusterParticipant.onActiveElectorateChanged]] method is called.\ */
+		def onActiveElectorateChanged(change: ElectorateChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.run {
-				if change.term > activeConfigChange.term || change.term == activeConfigChange.term && changeIndex > indexOfActiveConfigChange then {
-					scribe.trace(s"Net: onActiveConfigChanged($change, index=$changeIndex) was called") // when readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
-					activeConfigChange = change
-					indexOfActiveConfigChange = changeIndex
+				if change.term > activeElectorateChange.term || change.term == activeElectorateChange.term && changeIndex > indexOfActiveElectorateChange then {
+					scribe.trace(s"Net: onActiveElectorateChanged($change, index=$changeIndex) was called") // when readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
+					activeElectorateChange = change
+					indexOfActiveElectorateChange = changeIndex
 					change match {
-						case tcc: TransitionalConfigChange[Id] =>
+						case tcc: JointElectorateChange[Id] =>
 							for nodeIndex <- 0 until clusterSize do {
 								val node = this.getNode(nodeIndex)
 								if tcc.newParticipants.contains(node.myId) && !tcc.oldParticipants.contains(node.myId) then {
-									val participantsInTheTcc = ListSet.newBuilder.addAll(tcc.oldParticipants).addAll(tcc.newParticipants).result()
-									node.startIfNotRunning(changeIndex, participantsInTheTcc).triggerAndForget(false)
+									val participantsInTheJec = ListSet.newBuilder.addAll(tcc.oldParticipants).addAll(tcc.newParticipants).result()
+									node.startIfNotRunning(changeIndex, participantsInTheJec).triggerAndForget(false)
 								}
 							}
 						case _ => // Do nothing.
@@ -583,24 +584,24 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 		}
 
-		/** Starts again a [[Node]] that was just [[QUIESCED]] due to a previous [[ConfigChange]], if the active [[ConfigChange]] includes it again.\
+		/** Starts again a [[Node]] that was just [[QUIESCED]] due to a previous [[ElectorateChange]], if the active [[ElectorateChange]] includes it again.\
 		 * Called by the [[QUIESCED]] [[Node]] when its [[Node.clusterParticipant.onQuiesced]] method is called. */
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
-				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveConfigChange=$indexOfActiveConfigChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
-				if activeConfigChange.isActive(node.myId) then {
-					val participantsInActiveConfigChange = ListSet.newBuilder.addAll(activeConfigChange.oldParticipants).addAll(activeConfigChange.newParticipants).result()
-					node.startIfNotRunning(indexOfActiveConfigChange, participantsInActiveConfigChange).triggerAndForget(false)
+				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveElectorateChange=$indexOfActiveElectorateChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
+				if activeElectorateChange.isActive(node.myId) then {
+					val participantsInActiveElectorateChange = ListSet.newBuilder.addAll(activeElectorateChange.oldParticipants).addAll(activeElectorateChange.newParticipants).result()
+					node.startIfNotRunning(indexOfActiveElectorateChange, participantsInActiveElectorateChange).triggerAndForget(false)
 				}
 			}
 		}
 
 		/**
-		 * Attempts to gracefully shut down the network by repeatedly requesting a configuration change to an empty set of participants.\
+		 * Attempts to gracefully shut down the network by repeatedly requesting a electorate change to an empty set of participants.\
 		 * In order to give the network time to process the request and handle any ongoing communication deterministically, it waits for the network to "settle" between failed attempts.\
 		 * The test considers the network settled when either a maximum number of messages have been dispatched (`maxTotalIncrements`) or `stimulusSettlingTime` has passed without any new messages being dispatched.\
 		 *
-		 * @param maxAttempts The maximum number of configuration change requests before failing the shutdown process.
+		 * @param maxAttempts The maximum number of electorate change requests before failing the shutdown process.
 		 * @param durationBetweenAttempts The duration to wait between attempts to shut down.
 		 * @return a [[netSequencer.Task]] yielding [[Maybe.empty]] on success, or a message detailing the failure if `maxAttempts` is reached.
 		 */
@@ -610,11 +611,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			def loop(failedAttempts: Int): netSequencer.Capture[Maybe[String]] = {
 				if failedAttempts == maxAttempts then netSequencer.Keeper(Maybe(s"Net: graceful shutdown failed after $maxAttempts attempts"))
 				else {
-					val configChangeRequestId = createNewConfigChangeRequestId()
+					val electorateChangeRequestId = createNewElectorateChangeRequestId()
 					for {
-						responses <- sendsConfigChangeRequests(nodesIds, configChangeRequestId, ListSet.empty)
+						responses <- sendsElectorateChangeRequests(nodesIds, electorateChangeRequestId, ListSet.empty)
 						maybeErrorMessage <- {
-							if responses.exists { response => response._2.isInstanceOf[TerminalConfigChangeResponse] }
+							if responses.exists { response => response._2.isInstanceOf[TerminalElectorateChangeResponse] }
 								|| responses.forall { response => response._2.isInstanceOf[STOPPED] }
 							then {
 								scribe.trace(s"Net: Graceful shutdown of the net completed with: ${responses.mkString("[", ", ", "]")}")
@@ -640,7 +641,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	 * @param net The network to use.
 	 * @param startWithHighestPriorityParticipant determines from with side of the known participants queue to start the attempts to send commands. */
 	private class Client[N <: Net](clientId: String, val net: N, startWithHighestPriorityParticipant: Boolean) {
-		private var knownParticipants: ListSet[Id] = net.nodesIncludedIn(net.initialConfigMask)
+		private var knownParticipants: ListSet[Id] = net.nodesIncludedIn(net.initialElectorateMask)
 		private var targetParticipant: Node = net.getNode(if startWithHighestPriorityParticipant then knownParticipants.head else knownParticipants.last)
 		private val alreadyTriedParticipants: mutable.Set[Id] = mutable.Set.empty
 
@@ -779,11 +780,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates the [[ConsensusParticipant]] service instance of this [[Node]]. */
-		def startIfNotRunning(indexOfTheIncludingConfigChange: RecordIndex, participantsInTheIncludingConfigChange: ListSet[ParticipantId]): sequencer.Capture[Unit] = {
+		def startIfNotRunning(indexOfTheIncludingElectorateChange: RecordIndex, participantsInTheIncludingElectorateChange: ListSet[ParticipantId]): sequencer.Capture[Unit] = {
 			sequencer.Capture_apply { () =>
 				if isDown || participant.getRoleOrdinal == QUIESCED then {
-					scribe.info(s"node-$myId: about to create the consensus participant service due to the configuration change at $indexOfTheIncludingConfigChange")
-					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingConfigChange, participantsInTheIncludingConfigChange, List(initialNotificationListener, notificationScribe))
+					scribe.info(s"node-$myId: about to create the consensus participant service due to the electorate change at $indexOfTheIncludingElectorateChange")
+					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingElectorateChange, participantsInTheIncludingElectorateChange, List(initialNotificationListener, notificationScribe))
 				} else scribe.info(s"node-$myId: service creation skipped because it is already running with role ${participant.getRoleOrdinal}.")
 			}
 		}
@@ -867,10 +868,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				this.delegate = null
 			}
 
-			override def onActiveConfigChanged(change: ConfigChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
+			override def onActiveElectorateChanged(change: ElectorateChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"cluster-$boundParticipantId: onConfigurationChanged($change, index=$changeIndex, ${RoleOrdinal_nameOf(roleOrdinal)}) called.")
-				if roleOrdinal == LEADER then net.onActiveConfigChanged(change, changeIndex)
+				scribe.info(s"cluster-$boundParticipantId: onElectorateChanged($change, index=$changeIndex, ${RoleOrdinal_nameOf(roleOrdinal)}) called.")
+				if roleOrdinal == LEADER then net.onActiveElectorateChanged(change, changeIndex)
 			}
 
 			extension (replierId: ParticipantId) {
@@ -906,13 +907,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def permitQuiescence(indexOfGrantedStableConfigChange: RecordIndex): sequencer.Capture[Unit] = {
+				override def permitQuiescence(indexOfGrantedSec: RecordIndex): sequencer.Capture[Unit] = {
 					sequencer.checkWithin()
 					boundParticipantId.rpc[Unit](
 						replierId,
-						s"PermitQuiesce($indexOfGrantedStableConfigChange)"
+						s"PermitQuiesce($indexOfGrantedSec)"
 					) { replier =>
-						replier.sequencer.Keeper(replier.clusterParticipant.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedStableConfigChange))
+						replier.sequencer.Keeper(replier.clusterParticipant.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedSec))
 					}.onBehalfOf(sequencer)
 				}
 
@@ -1092,14 +1093,14 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		object notificationScribe extends NotificationListener {
-			override def onStarting(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = {
+			override def onStarting(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is starting ${if indexOfTheIncludingConfigChange == 0 then "as seed" else s"to join due to a transitional-configuration-change at $indexOfTheIncludingConfigChange"}.")
+				scribe.info(s"scribe-$myId: is starting ${if indexOfTheIncludingElectorateChange == 0 then "as seed" else s"to join due to a joint-configuration-change at $indexOfTheIncludingElectorateChange"}.")
 			}
 
-			override def onStarted(previous: RoleOrdinal, term: Term, initialConfigChange: ConfigChange[ParticipantId], isSeed: Boolean): Unit = {
+			override def onStarted(previous: RoleOrdinal, term: Term, initialElectorateChange: ElectorateChange[ParticipantId], isSeed: Boolean): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: completed the start-up with: previousRole=$previous, term=$term, initialConfigChange=$initialConfigChange, isSeed=$isSeed")
+				scribe.info(s"scribe-$myId: completed the start-up with: previousRole=$previous, term=$term, initialElectorateChange=$initialElectorateChange, isSeed=$isSeed")
 			}
 
 			override def onBecameQuiesced(previous: RoleOrdinal, term: Term, motive: Try[String]): Unit = {
@@ -1107,9 +1108,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became quiesced from ${RoleOrdinal_nameOf(previous)} during term $term because $motive.")
 			}
 
-			override def onJoining(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = {
+			override def onJoining(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is catching-up to join due to a transitional-configuration-change at $indexOfTheIncludingConfigChange.")
+				scribe.info(s"scribe-$myId: is catching-up to join due to a joint-electorate-change at $indexOfTheIncludingElectorateChange.")
 			}
 
 			override def onBecameIsolated(previous: RoleOrdinal, term: Term): Unit = {
@@ -1154,9 +1155,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: the command at index $appliedCommandIndex and term $appliedCommandTerm was applied to the state machine.")
 			}
 
-			override def onActiveConfigChanged(currentRole: RoleOrdinal, currentTerm: Term, configChangeIndex: RecordIndex, configChange: ConfigChange[ParticipantId]): Unit = {
+			override def onActiveElectorateChanged(currentRole: RoleOrdinal, currentTerm: Term, electorateChangeIndex: RecordIndex, electorateChange: ElectorateChange[ParticipantId]): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: the active configuration has changed: currentBehavior=$currentRole, currentTerm=$currentTerm, changeIndex=$configChangeIndex, configChange=$configChange")
+				scribe.info(s"scribe-$myId: the active electorate has changed: currentBehavior=$currentRole, currentTerm=$currentTerm, changeIndex=$electorateChangeIndex, electorateChange=$electorateChange")
 			}
 		}
 	}
@@ -1187,7 +1188,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		logRetentionAfterSnapshot: Int
 	)(notificationListenerBuilder: (node: Node) => node.NotificationListener): Unit = {
 
-		val initialParticipants = net.nodesIncludedIn(net.initialConfigMask)
+		val initialParticipants = net.nodesIncludedIn(net.initialElectorateMask)
 		for id <- net.nodesIds do {
 			val node = Node(
 				id,
@@ -1225,7 +1226,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	 * @param retirementDriveRetryPeriod the retry period for retirement driving.
 	 * @param unreachableFollowersRetryPeriod the retry period when followers are unreachable.
 	 * @param quiescenceAuthorizationRetryPeriod the retry period for quiescence authorization requests.
-	 * @param configChangeRetryPeriod the retry period for configuration changes during shutdown.
+	 * @param electorateChangeRetryPeriod the retry period for electorate changes during shutdown.
 	 * @param MAX_RECURSION_DEPTH maximum call depth when recursively applying committed commands or processing learners.
 	 * @param logCompactionThreshold maximum number of log entries to retain before triggering compaction.
 	 * @param maxInFlightAppendsPerPeer maximum number of in-flight append-records calls per peer.
@@ -1239,7 +1240,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		retirementDriveRetryPeriod: MilliDuration = 10,
 		unreachableFollowersRetryPeriod: MilliDuration = 10,
 		quiescenceAuthorizationRetryPeriod: MilliDuration = 10,
-		configChangeRetryPeriod: MilliDuration = 100,
+		electorateChangeRetryPeriod: MilliDuration = 100,
 		MAX_RECURSION_DEPTH: Int = 1,
 		logCompactionThreshold: Int = 5,
 		maxInFlightAppendsPerPeer: Int = 1,
@@ -1248,7 +1249,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		val promise = Promise[Unit]()
 		val clusterSize = net.clusterSize
 		val netRandomnessSeed = net.randomnessSeed
-		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialConfigMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed, remembersLastAppliedCommandIndex=$remembersLastAppliedCommandIndex, maxRecursionDepth=$MAX_RECURSION_DEPTH, logCompactionThreshold=$logCompactionThreshold, maxInFlightAppendsPerPeer=$maxInFlightAppendsPerPeer, logRetentionAfterSnapshot=$logRetentionAfterSnapshot\n($numberOfCommandsToSend, $clusterSize, $startWithHighestPriorityParticipant, ${netRandomnessSeed}L, $remembersLastAppliedCommandIndex, $MAX_RECURSION_DEPTH, $logCompactionThreshold, $maxInFlightAppendsPerPeer, $logRetentionAfterSnapshot),")
+		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${net.initialElectorateMask.mkString("[", ", ", "]")}, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, netRandomnessSeed=$netRandomnessSeed, remembersLastAppliedCommandIndex=$remembersLastAppliedCommandIndex, maxRecursionDepth=$MAX_RECURSION_DEPTH, logCompactionThreshold=$logCompactionThreshold, maxInFlightAppendsPerPeer=$maxInFlightAppendsPerPeer, logRetentionAfterSnapshot=$logRetentionAfterSnapshot\n($numberOfCommandsToSend, $clusterSize, $startWithHighestPriorityParticipant, ${netRandomnessSeed}L, $remembersLastAppliedCommandIndex, $MAX_RECURSION_DEPTH, $logCompactionThreshold, $maxInFlightAppendsPerPeer, $logRetentionAfterSnapshot),")
 		val weakReferencesHolder = mutable.Buffer.empty[AnyRef]
 		val leaderNodeByTerm: mutable.SortedMap[Term, Node] = mutable.SortedMap.empty
 		val committedRecordsByNodeIndex: Array[mutable.Buffer[Record | None.type]] = Array.fill(clusterSize)(mutable.Buffer.empty)
@@ -1329,7 +1330,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 			new node.DefaultNotificationListener() {
-				override def onStarting(previous: RoleOrdinal, indexOfTheIncludingConfigChange: RecordIndex): Unit = {
+				override def onStarting(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
 					if !node.remembersLastAppliedCommandIndex then {
 						committedRecordsByNodeIndex(net.indexOf(node.myId)).clear()
 						appliedCommandsByNodeIndex(net.indexOf(node.myId)).clear()
@@ -1473,8 +1474,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		logRetentionAfterSnapshot
 	)
 
-	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds, but *without* injecting configuration changes.
-	test("All invariants must comply - without configuration changes noise".ignore) {
+	// A property-based test that runs many simulations with varying cluster sizes, starting participants, and random seeds, but *without* injecting electorate changes.
+	test("All invariants must comply - without electorate changes noise".ignore) {
 		inline val numberOfCommandsToSend = 10
 		PropF.forAllNoShrinkF(
 			Gen.choose(2, 7),
@@ -1482,7 +1483,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			Gen.long,
 			genNodeConfig
 		) { (clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, nodeConfig) =>
-			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, configChangeBeforeRequestDelivered_probability = 0, configChangeBeforeResponseDelivered_probability = 0, configChangeAfterResponseDelivered_probability = 0)
+			val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10, electorateChangeBeforeRequestDelivered_probability = 0, electorateChangeBeforeResponseDelivered_probability = 0, electorateChangeAfterResponseDelivered_probability = 0)
 			testAllInvariants(
 				net,
 				startWithHighestPriorityParticipant,
@@ -1492,7 +1493,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				retirementDriveRetryPeriod = clusterSize * 10,
 				unreachableFollowersRetryPeriod = clusterSize * 10,
 				quiescenceAuthorizationRetryPeriod = clusterSize * 10,
-				configChangeRetryPeriod = clusterSize * 100,
+				electorateChangeRetryPeriod = clusterSize * 100,
 				MAX_RECURSION_DEPTH = nodeConfig.maxRecursionDepth,
 				logCompactionThreshold = nodeConfig.logCompactionThreshold,
 				maxInFlightAppendsPerPeer = nodeConfig.maxInFlightAppendsPerPeer,
@@ -1514,6 +1515,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			logRetentionAfterSnapshot: Int
 		)
 		val failingCases = Seq[FailingCase](
+			(30, 6, true, -6953101425081795759L, false, 0, 5, 1, 0),
 			(30, 4, true, 6565188240402498618L, true, 0, 3, 9, 0),
 			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0),
 			(30, 6, false, 5418681597785684599L, false, 1, 5, 9, 3),
@@ -1553,12 +1555,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			(30, 2, true, 5082886513912816935L, false, 1, 5, 1, 0), // hanged up without any error.
 			(30, 15, false, 107166222495627916L, false, 1, 5, 1, 0),
 			(30, 3, false, -4120685655909330148L, false, 1, 5, 1, 0),
-			(30, 6, false, 4457054910789412562L, false, 1, 5, 1, 0), // Retiring finalTerm greater than termAtExcludingConfigChange.
+			(30, 6, false, 4457054910789412562L, false, 1, 5, 1, 0), // Retiring finalTerm greater than termAtExcludingElectorateChange.
 			(30, 6, true, 1187713772695268880L, false, 1, 5, 1, 0),
 			(30, 15, true, -7036178255522478916L, false, 1, 5, 1, 0), // Does not converge
-			(30, 4, false, -1201266674536539693L, false, 1, 5, 1, 0), // MatchError thrown at StableConfigChange.isCoupleOf
+			(30, 4, false, -1201266674536539693L, false, 1, 5, 1, 0), // MatchError thrown at SoleElectorateChange.isCoupleOf
 			(30, 7, false, -6232654863579614157L, false, 1, 5, 1, 0), // Net: graceful shutdown failed after 20 attempts
-			(30, 3, true, -2370286264465510604L, false, 1, 5, 1, 0), // PanicException thrown in replicateTccAndThenStartSecondPhase
+			(30, 3, true, -2370286264465510604L, false, 1, 5, 1, 0), // PanicException thrown in replicateJecAndThenStartSecondPhase
 			(30, 2, true, 1380848690399351272L, false, 1, 5, 1, 0), // The node p-1 applied the command TestClientCommand(19,A) at index 22, which is different from the command TestClientCommand(18,A) applied at the same index in node p-0.
 			(30, 3, false, -2547866549608645507L, false, 1, 5, 1, 0), // PanicException
 			(30, 3, true, -7417113718760886059L, false, 1, 5, 1, 0), // "Should never happen" assertion triggered
@@ -1582,7 +1584,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					retirementDriveRetryPeriod = clusterSize * 10,
 					unreachableFollowersRetryPeriod = clusterSize * 10,
 					quiescenceAuthorizationRetryPeriod = clusterSize * 10,
-					configChangeRetryPeriod = clusterSize * 100,
+					electorateChangeRetryPeriod = clusterSize * 100,
 					MAX_RECURSION_DEPTH = maxRecursionDepth,
 					logCompactionThreshold = logCompactionThreshold,
 					maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
@@ -1596,7 +1598,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
-			(30, 4, true, 6565188240402498618L, true, 0, 3, 9, 0)
+			(30, 6, true, -6953101425081795759L, false, 0, 5, 1, 0)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		testAllInvariants(
 			net,
@@ -1607,7 +1609,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			retirementDriveRetryPeriod = clusterSize * 10,
 			unreachableFollowersRetryPeriod = clusterSize * 10,
 			quiescenceAuthorizationRetryPeriod = clusterSize * 10,
-			configChangeRetryPeriod = clusterSize * 100,
+			electorateChangeRetryPeriod = clusterSize * 100,
 			MAX_RECURSION_DEPTH = maxRecursionDepth,
 			logCompactionThreshold = logCompactionThreshold,
 			maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
@@ -1637,7 +1639,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				retirementDriveRetryPeriod = clusterSize * 10,
 				unreachableFollowersRetryPeriod = clusterSize * 10,
 				quiescenceAuthorizationRetryPeriod = clusterSize * 10,
-				configChangeRetryPeriod = clusterSize * 100,
+				electorateChangeRetryPeriod = clusterSize * 100,
 				MAX_RECURSION_DEPTH = nodeConfig.maxRecursionDepth,
 				logCompactionThreshold = nodeConfig.logCompactionThreshold,
 				maxInFlightAppendsPerPeer = nodeConfig.maxInFlightAppendsPerPeer,

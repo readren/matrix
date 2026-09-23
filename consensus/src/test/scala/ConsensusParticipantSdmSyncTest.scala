@@ -1,6 +1,7 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 
 import munit.ScalaCheckSuite
 import org.scalacheck.Gen
@@ -61,7 +62,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 
 	override def scalaCheckTestParameters: Parameters = super.scalaCheckTestParameters.withMinSuccessfulTests(50)
 
-	/** Randomizable configuration parameters for a participant node. */
+	/** Randomizable electorate parameters for a participant node. */
 	private case class NodeConfig(
 		remembersLastAppliedCommandIndex: Boolean,
 		maxRecursionDepth: Int,
@@ -87,7 +88,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 	/** Drives a discrete-event simulation of the consensus cluster using [[ConsensusEnvironment]].
 	 *
 	 * Interleaves node execution, pseudorandom packet delivery and drops, virtual time advancement,
-	 * client command submission and retries, and optional configuration noise.
+	 * client command submission and retries, and optional electorate noise.
 	 */
 	private def runSimulation(
 		clusterSize: Int,
@@ -97,7 +98,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		numberOfCommandsToSend: Int = 20,
 		requestFailurePercentage: Int = 10,
 		responseFailurePercentage: Int = 10,
-		configChangeProbability: Float = 0.0f,
+		electorateChangeProbability: Float = 0.0f,
 		maxRetries: Int = 25,
 		remembersLastAppliedCommandIndex: Boolean = false,
 		logCompactionThreshold: Int = 5,
@@ -133,8 +134,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				case ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit) =>
 					val recordsStr = batch.mkString("[", ", ", "]")
 					s"InstallSnapshot(inquirerTerm:$inquirerTerm, snapshot:$snapshot, records:$recordsStr, leaderCommit:$leaderCommit, termAtLeaderCommit:$termAtLeaderCommit)"
-				case ConsensusRpc.PermitQuiescence(indexOfGrantedStableConfigChange) =>
-					s"PermitQuiescence(indexOfGrantedStableConfigChange=$indexOfGrantedStableConfigChange)"
+				case ConsensusRpc.PermitQuiescence(indexOfGrantedSec) =>
+					s"PermitQuiescence(indexOfGrantedSec=$indexOfGrantedSec)"
 			}
 
 			override def onRpcEnqueued(req: RequestPacket, travelingCount: Int): Unit = {
@@ -174,7 +175,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		var currentAttemptFlag: CommandAttemptFlag = FIRST_ATTEMPT
 		var commandRetries = 0
 
-		var activeConfigChangeHandle: Option[ConfigChangeHandle] = None
+		var activeElectorateChangeHandle: Option[ElectorateChangeHandle] = None
 
 		val maxTotalSteps = 60000
 		var totalSteps = 0
@@ -260,15 +261,15 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			// 3. Optional configuration change noise
-			if configChangeProbability > 0.0f then {
-				if activeConfigChangeHandle.isEmpty then {
-					if random.nextFloat() < configChangeProbability then {
+			// 3. Optional electorate change noise
+			if electorateChangeProbability > 0.0f then {
+				if activeElectorateChangeHandle.isEmpty then {
+					if random.nextFloat() < electorateChangeProbability then {
 						val newMask = Array.fill(clusterSize)(random.nextBoolean())
 						if !newMask.contains(true) then newMask(random.nextInt(clusterSize)) = true
 						val desiredParticipants = (0 until clusterSize).filter(newMask).map(i => NodeId(s"p-$i")).toSet
 						if desiredParticipants != currentActiveParticipants then {
-							// Start nodes BEFORE requesting configuration change
+							// Start nodes BEFORE requesting electorate change
 							for id <- desiredParticipants do {
 								val n = env.node(id)
 								if n.isDown then env.startNode(id)
@@ -276,25 +277,25 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 							env.runAllNodesUntilIdle()
 
 							val targetNode = env.leaderByTermMap.values.lastOption.getOrElse(currentTargetParticipant)
-							val ccHandle = env.submitConfigChange(targetNode, desiredParticipants)
-							activeConfigChangeHandle = Some(ccHandle)
+							val ccHandle = env.submitElectorateChange(targetNode, desiredParticipants)
+							activeElectorateChangeHandle = Some(ccHandle)
 							env.runAllNodesUntilIdle()
 						}
 					}
 				} else {
-					val ccHandle = activeConfigChangeHandle.get
-					env.configChangeStatus(ccHandle.requestId) match {
-						case ConfigChangeStatus.Completed(res) =>
-							activeConfigChangeHandle = None
+					val ccHandle = activeElectorateChangeHandle.get
+					env.electorateChangeStatus(ccHandle.requestId) match {
+						case ElectorateChangeStatus.Completed(res) =>
+							activeElectorateChangeHandle = None
 							res match {
 								case _: (SUCCESSFULLY_CHANGED | ALREADY_CHANGED) =>
 									currentActiveParticipants = ccHandle.desiredParticipants
 									knownParticipants ++= currentActiveParticipants
 								case _ => ()
 							}
-						case ConfigChangeStatus.Failed(_) =>
-							activeConfigChangeHandle = None
-						case ConfigChangeStatus.InFlight =>
+						case ElectorateChangeStatus.Failed(_) =>
+							activeElectorateChangeHandle = None
+						case ElectorateChangeStatus.InFlight =>
 						// In-flight
 					}
 				}
@@ -325,7 +326,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			throw new AssertionError(s"Simulation reached step limit of $maxTotalSteps. Commands sent: ${currentCommandSerial - 1}/$numberOfCommandsToSend")
 		}
 
-		// 6. Graceful shutdown: request configuration change to empty set
+		// 6. Graceful shutdown: request electorate change to empty set
 		var shutdownAttempts = 0
 		val maxShutdownAttempts = 15
 		var shutdownCompleted = false
@@ -333,12 +334,12 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		while !shutdownCompleted && shutdownAttempts < maxShutdownAttempts do {
 			shutdownAttempts += 1
 			val activeLeader = env.leaderByTermMap.values.lastOption.getOrElse(currentTargetParticipant)
-			val shutdownHandle = env.submitConfigChange(activeLeader, Set.empty[NodeId])
+			val shutdownHandle = env.submitElectorateChange(activeLeader, Set.empty[NodeId])
 			env.runAllNodesUntilIdle()
 
 			var innerSteps = 0
 			val maxInnerSteps = 500
-			while innerSteps < maxInnerSteps && env.configChangeStatus(shutdownHandle.requestId) == ConfigChangeStatus.InFlight do {
+			while innerSteps < maxInnerSteps && env.electorateChangeStatus(shutdownHandle.requestId) == ElectorateChangeStatus.InFlight do {
 				innerSteps += 1
 				val packets = env.pendingPackets
 				if packets.nonEmpty then {
@@ -355,10 +356,10 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			env.configChangeStatus(shutdownHandle.requestId) match {
-				case ConfigChangeStatus.Completed(res) =>
+			env.electorateChangeStatus(shutdownHandle.requestId) match {
+				case ElectorateChangeStatus.Completed(res) =>
 					res match {
-						case _: TerminalConfigChangeResponse => shutdownCompleted = true
+						case _: TerminalElectorateChangeResponse => shutdownCompleted = true
 						case _ => ()
 					}
 				case _ => ()
@@ -388,7 +389,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			numberOfCommandsToSend = 10,
 			requestFailurePercentage = 0,
 			responseFailurePercentage = 0,
-			configChangeProbability = 0.0f
+			electorateChangeProbability = 0.0f
 		)
 	}
 
@@ -402,11 +403,11 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			numberOfCommandsToSend = 10,
 			requestFailurePercentage = 10,
 			responseFailurePercentage = 10,
-			configChangeProbability = 0.0f
+			electorateChangeProbability = 0.0f
 		)
 	}
 
-	property("All invariants must comply - without configuration changes noise") {
+	property("All invariants must comply - without electorate changes noise") {
 		Prop.forAll(
 			Gen.choose(2, 5),
 			Gen.oneOf(true, false),
@@ -422,7 +423,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				numberOfCommandsToSend = 10,
 				requestFailurePercentage = 10,
 				responseFailurePercentage = 10,
-				configChangeProbability = 0.0f,
+				electorateChangeProbability = 0.0f,
 				maxRetries = 25,
 				remembersLastAppliedCommandIndex = nodeConfig.remembersLastAppliedCommandIndex,
 				logCompactionThreshold = nodeConfig.logCompactionThreshold,
@@ -433,7 +434,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		}
 	}
 
-	property("All invariants must comply - with configuration changes noise".ignore) {
+	property("All invariants must comply - with electorate changes noise".ignore) {
 		Prop.forAll(
 			Gen.choose(3, 5),
 			Gen.oneOf(true, false),
@@ -449,7 +450,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				numberOfCommandsToSend = 10,
 				requestFailurePercentage = 10,
 				responseFailurePercentage = 10,
-				configChangeProbability = 0.03f,
+				electorateChangeProbability = 0.03f,
 				maxRetries = 25,
 				remembersLastAppliedCommandIndex = nodeConfig.remembersLastAppliedCommandIndex,
 				logCompactionThreshold = nodeConfig.logCompactionThreshold,
@@ -489,7 +490,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				numberOfCommandsToSend = commands,
 				requestFailurePercentage = 10,
 				responseFailurePercentage = 10,
-				configChangeProbability = 0.0f,
+				electorateChangeProbability = 0.0f,
 				remembersLastAppliedCommandIndex = remembersIndex,
 				logCompactionThreshold = compaction,
 				maxInFlightAppendsPerPeer = maxInFlight,

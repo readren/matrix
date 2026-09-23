@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-22T03:30:00Z"
+timestamp: "2026-09-23T17:45:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -168,10 +168,14 @@ To ensure the log storage layer (`Workspace`) remains a pure, "dumb" I/O abstrac
 1. **`Workspace` (Storage SPI):** A synchronous, in-memory facade provided by the host environment (or tests) to store and truncate the log buffer and snapshots. It provides only primitive operations like `truncateSuffix`, `truncatePrefix`,
    and `appendRecord`, and is completely isolated from Raft invariants.
 2. **`Accessible` (Consensus Driver):** An internal, consensus-aware wrapper around `Workspace` used by the active Raft roles (`Leader`, `Follower`, etc.). It enforces Raft's Log Matching invariant (handling conflict resolution and
-   truncation during appends), tracks `ConfigChange` offsets across the log and snapshots, and manages log scanning and caching.
+   truncation during appends), tracks `ElectorateChange` offsets across the log and snapshots, and manages log scanning and caching.
 
-By pushing Raft invariants up into the `Accessible` layer, the `Workspace` interface is radically simplified. Custom storage implementers no longer need to write complex array-copy conflict resolution or scan backwards for configuration
+By pushing Raft invariants up into the `Accessible` layer, the `Workspace` interface is radically simplified. Custom storage implementers no longer need to write complex array-copy conflict resolution or scan backwards for electorate
 changes during truncations.
+
+### Delegation of Client Command Deduplication to the State Machine
+
+The consensus engine treats client commands as opaque payloads, strictly limiting its responsibility to durable ordering, quorum replication, and commit index advancement. Per-client deduplication, freshness ordering, monotonic request tracking, and retry filtering are decoupled from the consensus log and delegated to the application-level state machine. This architectural boundary is strictly necessitated by log compaction: once committed log entries are compacted and truncated past snapshot boundaries, the consensus log buffer no longer retains historical client entries to evaluate client-specific sequence freshness or detect replayed commands. Because client session state and sequence watermarks are maintained within the application state machine, deduplication state is naturally captured across snapshots and transferred during snapshot installation without coupling storage SPI (`Workspace`) to application identity schemas.
 
 ---
 
@@ -191,7 +195,7 @@ changes during truncations.
 
 When cluster membership changes, nodes removed from the active cluster topology must be safely transitioned from active consensus participation to complete network quiescence without violating linearizability or causing election deadlocks.
 
-### I. Participant Role Lifecycle & Reconfiguration Overview
+### I. Participant Role Lifecycle & Electorate Transition Overview
 
 A participant node in the consensus engine moves through distinct operational roles during its lifecycle:
 
@@ -201,7 +205,7 @@ A participant node in the consensus engine moves through distinct operational ro
          v
 [ Candidate / Follower / Leader ]  <-- Active Cluster Member
          |
-         | (Excluded by Stable Configuration Change)
+         | (Excluded by Sole Electorate Change)
          v
     [ Retiring ]                   <-- Catching up log entries up to Excluding Index
          |
@@ -211,35 +215,35 @@ A participant node in the consensus engine moves through distinct operational ro
 ```
 
 - **Active Roles (Leader, Follower, Candidate)**: Process client commands, participate in leader elections, and replicate log entries.
-- **Retiring Role**: Entered when a stable configuration change excludes the participant from the cluster. The participant stops proposing client commands and cannot win elections for subsequent terms. It remains active solely to catch up
-  its local log to the excluding configuration entry.
+- **Retiring Role**: Entered when a sole electorate change excludes the participant from the cluster. The participant stops proposing client commands and cannot win elections for subsequent terms. It remains active solely to catch up
+  its local log to the excluding electorate entry.
 - **Quiesced Role**: Terminal resting state where the participant halts all background network traffic, timers, and RPC handling.
 
 ---
 
 ### II. Retirement Replication Driver Architecture
 
-When a configuration transition excludes one or more participants (moving from a transitional configuration to a stable configuration), the leader initiates targeted replication processes (pipelines) to push records to the excluded
-participants until they reach the retirement boundary (the StableConfigChange that excluded them).
+When an electorate transition excludes one or more participants (moving from a joint electorate to a sole electorate), the leader initiates targeted replication processes (pipelines) to push records to the excluded
+participants until they reach the retirement boundary (the SoleElectorateChange that excluded them).
 
 - **Leader Push over Follower Pull**: The cluster leader actively drives replication to non-active participants. This eliminates the need for a pull-based `RetirementDriver` on the follower. Because the new leader relies on the cluster
   transport layer (via `ClusterParticipant.getOtherProbableParticipants`) to discover all live nodes, it can spin up pipelines for any non-active nodes (including those excluded by past leaders). Consequently, an abdicating leader can
   safely tear down its own pipelines, knowing the new leader will pick up the slack.
-- **Strict Upper Boundary (TargetIndexBound)**: The pipeline restricts the logs sent to the participant strictly up to the log index of the excluding configuration change (`sccIndex`).
-- **LeaderCommit Clamping & Ghost Records**: When sending `AppendRecords`, the `leaderCommit` sent to the excluded participant MUST NEVER exceed the `sccIndex`. If the retiring participant has unverified, trailing "ghost" records in its log
-  (e.g., from a past term where it was active), an empty `AppendRecords` (bounded by `sccIndex`) will not truncate them. If the leader sent a `leaderCommit > sccIndex`, the participant would execute
+- **Strict Upper Boundary (TargetIndexBound)**: The pipeline restricts the logs sent to the participant strictly up to the log index of the excluding electorate change (`secIndex`).
+- **LeaderCommit Clamping & Ghost Records**: When sending `AppendRecords`, the `leaderCommit` sent to the excluded participant MUST NEVER exceed the `secIndex`. If the retiring participant has unverified, trailing "ghost" records in its log
+  (e.g., from a past term where it was active), an empty `AppendRecords` (bounded by `secIndex`) will not truncate them. If the leader sent a `leaderCommit > secIndex`, the participant would execute
   `commitIndex = min(leaderCommit, indexOfLastNewEntry)` and falsely commit its ghost records, corrupting its state machine. Therefore, `requestLeaderCommit` is tightly clamped.
-- **Snapshot Fallback (Wiping Ghost Records)**: If the leader's log has been compacted past the `sccIndex`, it cannot send a `requestLeaderCommit <= sccIndex` (as `getRecordTermAt` would throw an `IndexOutOfBoundsException`). Instead, the
+- **Snapshot Fallback (Wiping Ghost Records)**: If the leader's log has been compacted past the `secIndex`, it cannot send a `requestLeaderCommit <= secIndex` (as `getRecordTermAt` would throw an `IndexOutOfBoundsException`). Instead, the
   pipeline falls back to sending an `InstallSnapshot`. This safely resolves the dilemma: because the snapshot fully replaces the follower's log, all unverified trailing ghost records are wiped out. The follower safely adopts the verified
-  state (which includes its own exclusion) and its `commitIndex` safely advances past `sccIndex` without risking corruption.
-- **Stateless Retiring Role**: The follower only transitions to the `Retiring` role *after* it has successfully committed the excluding configuration change. Because it has already committed its own exclusion, it has no need to process
-  further records. Thus, the `Retiring` role is appropriately stateless and rejects all incoming `AppendRecords` or `InstallSnapshot` requests (unless they contain a new configuration that re-includes it). This rejection signals the
+  state (which includes its own exclusion) and its `commitIndex` safely advances past `secIndex` without risking corruption.
+- **Stateless Retiring Role**: The follower only transitions to the `Retiring` role *after* it has successfully committed the excluding electorate change. Because it has already committed its own exclusion, it has no need to process
+  further records. Thus, the `Retiring` role is appropriately stateless and rejects all incoming `AppendRecords` or `InstallSnapshot` requests (unless they contain a new electorate change that re-includes it). This rejection signals the
   leader's pipeline to terminate.
 - **Non-Fatal Pipeline Aborts (`GracefullyReleased`)**: Background pipelines rely on `CausalFence` operations (like `causalAnchor()`). These operations can fail non-fatally with a `GracefullyReleased` exception if the role loses
   statefulness (e.g., the leader demotes). When this happens, the capture fails gracefully, and the replication pipeline silently and safely halts, recognizing that the leader role is shutting down.
 - **Driver Lifecycle & Registry Cleanup**:
     - The leader maintains an active tracking registry of all running retirement drivers (`retiringLearnersById`).
-    - The pipeline is terminated and the participant is removed from the registry once it acknowledges it has committed the `sccIndex` (e.g., by responding with an `AppendResult_Rejected` citing the `RETIRING` role).
+    - The pipeline is terminated and the participant is removed from the registry once it acknowledges it has committed the `secIndex` (e.g., by responding with an `AppendResult_Rejected` citing the `RETIRING` role).
 
 ---
 
@@ -248,26 +252,26 @@ participants until they reach the retirement boundary (the StableConfigChange th
 Quiescence authorization ensures that a retiring participant does not shut down prematurely before its peers have recognized its exclusion and authorized its departure.
 
 - **Quiescence Authorization Flow**:
-    1. Upon committing an excluding configuration change, the leader broadcasts quiescence authorization permissions (`PermitQuiesce`) to all excluded participants.
-    2. Retiring participants acknowledge the permission and record the authorized configuration change index.
+    1. Upon committing an excluding electorate change, the leader broadcasts quiescence authorization permissions (`PermitQuiesce`) to all excluded participants.
+    2. Retiring participants acknowledge the permission and record the authorized electorate change index.
     3. If initial permission requests fail due to transient network drops, the leader retries permission delivery up to a configured retry limit before clearing remaining unacknowledged permissions.
 
 - **Convergence Preconditions for Quiescence**:
   A participant in the `Retiring` role can transition to `Quiesced` if and only if four independent conditions converge:
     1. **Role Eligibility**: The participant's current role is `Retiring`.
-    2. **Local Driver Clearance**: The participant's local retirement drivers tracking registry is empty. If the participant acted as leader during the configuration transition, all retirement drivers it initiated to catch up excluded
+    2. **Local Driver Clearance**: The participant's local retirement drivers tracking registry is empty. If the participant acted as leader during the electorate transition, all retirement drivers it initiated to catch up excluded
        followers must have completed or aborted and unregistered from its local registry.
     3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster.
-    4. **Index Verification**: The authorized configuration change index is greater than or equal to the participant's excluding configuration index.
+    4. **Index Verification**: The authorized electorate change index is greater than or equal to the participant's excluding electorate index.
 
 ---
 
 ### IV. Retiring Participant Election StateInfo Invariant
 
-- **Excluding-Config Index Bounding in StateInfo**: To prevent election deadlock during cluster reconfiguration, a participant in the retiring state must report the term and index of the excluding configuration change as its committed state
+- **Excluding-Electorate Index Bounding in StateInfo**: To prevent election deadlock during cluster electorate transitions, a participant in the retiring state must report the term and index of the excluding electorate change as its committed state
   information (`StateInfo`), even if its local log contains committed records at higher indices.
 - **Election Deadlock Prevention**: Reporting post-exclusion log indices during election coordination would allow an excluded node with higher log indices to block active cluster members from achieving a decisive election outcome. Bounding
-  the exposed state to the excluding configuration change ensures active participants can elect a valid leader without being blocked by retiring nodes.
+  the exposed state to the excluding electorate change ensures active participants can elect a valid leader without being blocked by retiring nodes.
 
 ## Per-Peer In-Flight Append Backpressure & Domain Result ADT
 
@@ -294,18 +298,18 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Uncommitted Entry Barrier**: A leader must never apply a command record to its state machine, respond success to a client, or trigger log compaction based solely on peer RPC transport success.
 - **Raft §5.4.2 Transitive Commitment Constraint**: Log entries from previous terms cannot be committed directly by majority acknowledgment alone. They can only be committed indirectly by committing a log entry from the leader's current
   term.
-- **Upfront Current-Term Entry Insertion for Prior-Term Records**: Under Raft §5.4.2, a leader cannot advance its commit index directly on an uncommitted entry appended in a previous term. If an uncommitted entry (such as a recovered stable
-  configuration change) has a term strictly lower than the leader's active term and no subsequent entry in the active term exists in the log, the leader must append a current-term no-op transition entry upfront before awaiting commitment.
+- **Upfront Current-Term Entry Insertion for Prior-Term Records**: Under Raft §5.4.2, a leader cannot advance its commit index directly on an uncommitted entry appended in a previous term. If an uncommitted entry (such as a recovered sole
+  electorate change) has a term strictly lower than the leader's active term and no subsequent entry in the active term exists in the log, the leader must append a current-term no-op transition entry upfront before awaiting commitment.
   Awaiting commitment directly on a previous-term entry without a current-term entry in the log deadlocks, as commitment verification rules permanently refuse to advance the commit index.
-- **In-Flight Reconfiguration Pipeline Serializability**: Upon assuming leadership with an uncommitted configuration change in the persistent log, the replication pipeline driving that configuration change to commitment must be linked to
-  the leader's in-flight configuration change completion handle. Subsequent configuration change requests must serialize behind this recovery pipeline. Permitting subsequent configuration changes to execute before the recovered
-  configuration change reaches the commit index causes false transitional-phase rejections, as the cluster configuration remains derived from the uncommitted transitional state.
+- **In-Flight Electorate Transition Pipeline Serializability**: Upon assuming leadership with an uncommitted electorate change in the persistent log, the replication pipeline driving that electorate change to commitment must be linked to
+  the leader's in-flight electorate change completion handle. Subsequent electorate change requests must serialize behind this recovery pipeline. Permitting subsequent electorate changes to execute before the recovered
+  electorate change reaches the commit index causes false transitional-phase rejections, as the cluster electorate remains derived from the uncommitted joint state.
 - **Commit Watermark Barrier Invariant**: Awaiting record commitment functions strictly as a monotonic watermark barrier, never an RPC-style request-reply operation. The barrier never resolves with an uncommitted or failure status while the
   leader remains in office. When the barrier resolves for an active leader, the target record index is mathematically guaranteed to be committed. In the event of quorum loss or network partition, the barrier remains suspended indefinitely
   until quorum is restored or the leader is deposed and exits office, eliminating phantom retry loops in post-barrier continuations.
-- **Peer vs. Retiree Replication Pipeline Disjunction**: An active peer participating in the current cluster configuration cannot simultaneously be tracked as a retiring participant. When the active configuration changes to include a
+- **Peer vs. Retiree Replication Pipeline Disjunction**: An active peer participating in the current cluster electorate cannot simultaneously be tracked as a retiring participant. When the active electorate changes to include a
   participant, any pending retirement pipeline and quiescence authorization for that participant must be cancelled and removed. Furthermore, if an active peer responds with a role of `RETIRING` (because it has not yet received the
-  configuration change that includes it), the leader must treat the rejection as needing earlier records rather than abandoning replication. The leader must rewind replication to include the configuration entry that brings the follower out
+  electorate change that includes it), the leader must treat the rejection as needing earlier records rather than abandoning replication. The leader must rewind replication to include the electorate change entry that brings the follower out
   of retirement, preventing deadlock.
 
 ### II. Universal Log Fusion & Obsolete Suffix Truncation Invariants
@@ -351,25 +355,25 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 ---
 
-## 8. Ghost Leader Reconfiguration & Learner Convergence Dynamics
+## 8. Ghost Leader Electorate Transition & Learner Convergence Dynamics
 
-### I. Ghost Leader Reconfiguration Invariant
+### I. Ghost Leader Electorate Transition Invariant
 
-- **Ghost Leader Definition**: When a leader commits a stable configuration change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
-  commit the excluding configuration change, but cannot initiate or lead subsequent configuration transitions.
-- **Electorate Validation Scope**: A ghost leader evaluates its retirement condition (verifying that all included learners have committed the excluding configuration change) strictly against the current active configuration's electorate.
-  Historical tracking capacities or learners excluded by prior configurations must not influence this eligibility check, preventing stale tracking data from stalling the leader's retirement.
-- **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new configuration change from which it is also excluded:
-    - If all active learners in the current configuration have committed the excluding configuration change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
-    - If one or more active learners have not yet committed the excluding configuration change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
-      to be deposed (`WAIT_GHOST_LEADER_IS_DEPOTED`), rather than synchronously re-triggering replication loops.
+- **Ghost Leader Definition**: When a leader commits a sole electorate change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
+  commit the excluding electorate change, but cannot initiate or lead subsequent electorate transitions.
+- **Electorate Validation Scope**: A ghost leader evaluates its retirement condition (verifying that all included learners have committed the excluding electorate change) strictly against the current active electorate.
+  Historical tracking capacities or learners excluded by prior electorates must not influence this eligibility check, preventing stale tracking data from stalling the leader's retirement.
+- **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new electorate change from which it is also excluded:
+    - If all active learners in the current electorate have committed the excluding electorate change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
+    - If one or more active learners have not yet committed the excluding electorate change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
+      to be demoted (`WAIT_GHOST_LEADER_IS_DEMOTED`), rather than synchronously re-triggering replication loops.
 
 ### II. Asynchronous Learner Convergence vs. Quorum Progress Decoupling
 
 - **Quorum vs. Universal Convergence Decoupling**: Replication waves complete successfully as soon as a majority quorum of active peers acknowledges append RPCs. Conversely, leader retirement transitions require universal (100%)
   acknowledgment across all active learners.
 - **Asynchronous Retry Decoupling**: When a replication wave completes via majority quorum while lagging or unreachable learners remain pending, retries targeting unreachable learners must be scheduled asynchronously on dedicated timers.
-  Ghost leaders must never execute re-entrant, synchronous replication loops during configuration change request handling.
+  Ghost leaders must never execute re-entrant, synchronous replication loops during electorate change request handling.
 - **Commit Watermark Broadcast Invariant**: When the leader's commit index advances upon receiving an append acknowledgment from any peer, replication must be triggered across all active and retiring peer pipelines. In a heartbeat-free lazy
   consensus architecture, idle peer pipelines (whose logs are caught up but whose knowledge of the commit index is stale) only learn of newly committed records when the leader drives replication. Failure to broadcast commit index
   advancements leaves idle followers unaware of commitments, preventing excluded ghost leaders from observing universal learner acknowledgment and retiring.
@@ -383,12 +387,12 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 Unlike monolithic consensus systems with background heartbeat timeouts, leader elections are executed on-demand in coordinated phases:
 
 1. **State Discovery Phase (`HowAreYou` / Pre-Vote)**:
-    - An uncoordinated participant (`Isolated`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active configuration.
+    - An uncoordinated participant (`Isolated`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active electorate.
     - This phase is term-neutral and acts as a reactive Pre-Vote: querying nodes do not advance their terms, ensuring active leaders are never disrupted by exploratory queries from partitioned or restarting nodes.
     - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, log tail metadata, and current ballot.
 
 2. **Deterministic Candidate Ranking (`decideMyVote`)**:
-    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonConfig, participantId)`.
+    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonSet, participantId)`.
     - **Precedence Order & Safety Invariants**:
         - `currentTerm`: Higher terms strictly dominate lower terms.
         - `isLeading` over Log Completeness: An active leader (`ER_LEADING`) within the same term takes precedence over other participants regardless of log tail comparisons. Assuming term invariants hold, this avoids unnecessary leadership
@@ -397,7 +401,7 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
           (`ER_RETIREE`) or joining (`ER_JOINER`) participants. If a non-candidate peer holds newer committed entries, the comparison prioritizes that peer's state, preventing the candidate from voting for itself or achieving nomination
           until it absorbs those committed records.
         - `isCandidate` over Non-Candidate: Among participants with equal terms and identical log completeness, active candidates take precedence over passive participants (followers, retirees, joiners).
-        - `isInCommonConfig`: Participants belonging to the common configuration set take precedence over non-common peers to preserve configuration stability during joint consensus.
+        - `isInCommonSet`: Participants belonging to the common electorate set take precedence over non-common peers to preserve electorate stability during joint consensus.
         - `participantId`: Deterministic tie-breaker ensuring that all participants with identical peer views select the exact same candidate.
 
 3. **Candidate Elevation & Preemptive Term Bumping**:
@@ -416,9 +420,9 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
       unconditionally rejected with `StaleTerm`.
 
 5. **Quorum & Role Inauguration**:
-    - **Stable Configuration Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active configuration participants.
-    - **Transitional Configuration Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old configuration set (`Cold`) and the new configuration set (`Cnew`).
-   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active configuration. Because the term and self-vote were committed to persistent
+    - **Sole Electorate Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active electorate participants.
+    - **Joint Electorate Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old electorate set ($E_{\text{old}}$) and the new electorate set ($E_{\text{new}}$).
+   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active electorate. Because the term and self-vote were committed to persistent
      storage prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
 
 ### II. Ballot Mechanics & Single-Vote-Per-Term Invariant
@@ -452,16 +456,16 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
     - An active participant safely advances its local `commitIndex` out-of-band to a peer's `peerCommitIndex` without leader intervention if and only if:
       $$\text{firstEmptyRecordIndex} > \text{peerCommitIndex} \quad \text{and} \quad \text{getRecordTermAt} (\text{peerCommitIndex}) == \text{peerStateInfo.termAtCommitIndex}$$
     - Matching the term at `peerCommitIndex` provides mathematical proof that all entries up to `peerCommitIndex` in the local log are identical to the committed entries on the peer.
-- **Post-Absorption Dynamic Reconfiguration**:
-    - Once `commitIndex` is advanced, the node triggers local application of newly committed commands and configuration entries.
-    - When the absorbed commit index covers the `StableConfigChange` that finalized a retiree's exclusion, the candidate updates its active configuration, removes the retired peer from consideration, and becomes eligible to secure majority
+- **Post-Absorption Dynamic Electorate Transition**:
+    - Once `commitIndex` is advanced, the node triggers local application of newly committed commands and electorate entries.
+    - When the absorbed commit index covers the `SoleElectorateChange` that finalized a retiree's exclusion, the candidate updates its active electorate, removes the retired peer from consideration, and becomes eligible to secure majority
       quorum and inaugurate leadership in the subsequent election round.
 
 ### V. Early-Terminating Quorum Accumulation & Strict Phase Isolation
 
-- **Reactive Incremental Evaluation**: Rather than awaiting all in-flight peer responses across the entire configuration, election phases evaluate decisive quorum conditions reactively upon each individual reply. In a stable configuration,
+- **Reactive Incremental Evaluation**: Rather than awaiting all in-flight peer responses across the entire electorate, election phases evaluate decisive quorum conditions reactively upon each individual reply. In a sole electorate,
   solicitations achieve decisive resolution early as soon as a strict majority ($> N / 2$) of affirmative responses are collected, or as soon as accumulated rejections and failures prove that obtaining a majority is mathematically
-  impossible ($N - \text{failures} \le N / 2$). In transitional configurations ($C_{\text{old}} \to C_{\text{new}}$), independent majorities in both the old and new participant sets are strictly required; accumulation short-circuits to
+  impossible ($N - \text{failures} \le N / 2$). In joint electorates ($E_{\text{old}} \to E_{\text{new}}$), independent majorities in both the old and new participant sets are strictly required; accumulation short-circuits to
   success when both subsets reach majority, or short-circuits to failure immediately if failures in either subset preclude reaching a majority.
 - **Immediate Higher Term and Active Leader Short-Circuiting**: In both Phase 1 discovery and Phase 2 voting, receiving an RPC response from a peer carrying a term higher than the local term ($T_{\text{peer}} > T_{\text{local}}$)
   immediately short-circuits the accumulator with a stale outcome, aborting election progression without awaiting pending peer replies. In Phase 1 discovery, observing an active leader ($T_{\text{peer}} == T_{\text{local}}$ with rank
@@ -478,16 +482,16 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 
 ---
 
-## 10. Configuration Change Response & Ballot Propagation Invariants
+## 10. Electorate Change Response & Ballot Propagation Invariants
 
-- **Terminal vs. Non-Terminal Response Partitioning**: Configuration change responses are strictly partitioned into terminal and non-terminal variants:
-    - **Terminal Responses**: Represent final consensus outcomes (completed or already matching configuration changes) that definitively satisfy the requester and terminate retry loops. Terminal responses do not carry election ballot
+- **Terminal vs. Non-Terminal Response Partitioning**: Electorate change responses are strictly partitioned into terminal and non-terminal variants:
+    - **Terminal Responses**: Represent final consensus outcomes (completed or already matching electorate changes) that definitively satisfy the requester and terminate retry loops. Terminal responses do not carry election ballot
       metadata.
     - **Non-Terminal Responses**: Represent intermediate rejections, redirections, or lost tracking states. Non-terminal responses carry the highest observed election ballot to propagate election round counters across sequential node
       interactions during client discovery.
 - **Ballot Propagation Independence**: The receipt of an observed ballot via prior responses allows subsequent nodes in a discovery loop to fast-forward local election ballots and purge obsolete peer cache entries without triggering
   unprovoked ballot increments.
-- **Reconfiguration Quiescence Decoupling**: Successful replication and commitment of a stable configuration change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
+- **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of a sole electorate change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
   returned upon majority consensus commitment without requiring post-commit causal anchoring against persistent state.
 
 ## 11. Decoupled Mutation Contract & Causal State Synchronization
@@ -504,7 +508,7 @@ Crucially, this guarantee is strictly bounded by the **Temporal Window of Causal
 
 - The causal guarantee holds only during the synchronous execution of a consumer synchronously subscribed to the returned `Capture`.
 - Once execution yields, crosses an asynchronous completion (such as `waitRecordBecomesCommitted`), or defers via `Capture_defer`, the captured `PrimaryState` reference is obsolete and outside the causal window.
-- Any subsequent derivation of configuration, role synchronization, or invariant verification that inspects `PrimaryState` after an asynchronous boundary or deferred dispatch MUST acquire a fresh anchor via
+- Any subsequent derivation of electorate, role synchronization, or invariant verification that inspects `PrimaryState` after an asynchronous boundary or deferred dispatch MUST acquire a fresh anchor via
   `primaryStateFence.causalAnchor()` and perform derivations strictly within that anchor's synchronous continuation.
 
 ### The Decoupled Mutation Contract (An Asymmetric Performance Decision)
@@ -513,7 +517,7 @@ While `CausalFence` enforces the sequential timeline, the consensus algorithm sp
 and state event observers).
 
 This contract strictly mandates that observers and continuation callbacks MUST NOT synchronously mutate the protected `PrimaryState` (`CausalFence`) within their notification context. Any consequential state mutation or side-effect
-resulting from a notification (such as appending records, transitioning configuration phases, or initiating log compaction) must be decoupled from the notification stack—either by self-deferring via `sequencer.Capture_defer` or dispatching
+resulting from a notification (such as appending records, transitioning electorate phases, or initiating log compaction) must be decoupled from the notification stack—either by self-deferring via `sequencer.Capture_defer` or dispatching
 via `sequencer.run`.
 
 #### 1. Rationale: The Hot-Path Performance Asymmetry
@@ -525,7 +529,7 @@ The Decoupled Mutation Contract is not an accidental restriction; it is an inten
   mutate the fence, `recalculateCommitIndex` can notify awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline scheduling, and dispatch latency, allowing the happy path to execute with
   absolute minimum overhead.
 - **Asymmetric Caller Burden**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as the fallback
-  branches of command replication (appending no-op records), configuration change completions (advancing from transitional to stable configurations), and sequential configuration change chaining—must explicitly wrap their continuations in
+  branches of command replication (appending no-op records), electorate transition completions (advancing from joint to sole electorates), and sequential electorate transition chaining—must explicitly wrap their continuations in
   `Capture_defer`.
 - **Role Exit Decoupling & Re-Entrancy Prevention**: During role transitions (such as leader abdication), in-flight watermark awaiters must be resolved in a decoupled manner (e.g., via `sequencer.run`). Because observers react to abdication
   by delegating vacated in-flight commands to the incoming role—which synchronously triggers role evaluations and state fence mutations—resolving awaiters synchronously inside `handleExit` creates re-entrant state mutations on the caller's
@@ -545,7 +549,7 @@ A naive alternative to the contract would be to permit observers to mutate the s
 Another tempting design is dynamic fallback detection: having `recalculateCommitIndex` notify synchronously by default, but dynamically check if the fence was modified
 (`!primaryStateFence.committedState.is(primaryState0) || !primaryStateFence.isEmpty`), re-anchoring remaining awaiters only when a mutation occurs. This alternative was formally rejected due to two fatal concurrency hazards:
 
-- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., a configuration change and subsequent client commands), and an early awaiter mutates the fence,
+- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., an electorate change and subsequent client commands), and an early awaiter mutates the fence,
   dynamically re-anchoring subsequent awaiters via `seizeWith(causalAnchor())` defers them to future sequencer turns. Consequently, awaiters that achieved consensus within the exact same batch are arbitrarily split across different
   execution frames, violating linear dispatch expectations.
 - **Stack Re-Entrancy and State Invalidation**: Allowing an observer to mutate the fence synchronously executes arbitrary state mutation logic while `recalculateCommitIndex` is actively running on the call stack. The observer's callback
@@ -560,10 +564,10 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
 
 ## 12. Diagnostic Inspection & Causally Consistent Observation
 
-- **Quiescent Diagnostic State Boundary**: Diagnostic observation of internal participant and role state (such as peer learner replication progress and configuration tracking) must not bypass single-threaded sequencer confinement or observe
+- **Quiescent Diagnostic State Boundary**: Diagnostic observation of internal participant and role state (such as peer learner replication progress and electorate tracking) must not bypass single-threaded sequencer confinement or observe
   partially applied causal mutations.
 - **Inter-Step Temporal Consistency**: In discrete-event simulation, test harnesses, and external diagnostics, inspecting the active role's diagnostic snapshot is causally consistent at step boundaries (whenever a discrete sequencer step
-  completes or when the runnable queue is empty). At these boundaries, all synchronous causal chain derivations (including active configuration changes and peer replication metrics) are guaranteed to be in identical lockstep.
+  completes or when the runnable queue is empty). At these boundaries, all synchronous causal chain derivations (including active electorate changes and peer replication metrics) are guaranteed to be in identical lockstep.
 
 ## 13. Host Bridge RPC Completion & Transport Termination Invariants
 
@@ -571,7 +575,7 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
   `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying
   strictly on the host layer to bound request lifecycles.
 - **Aggregation vs. Pipelined Quorum Resilience**: While pipelined log replication makes forward progress upon reaching quorum without waiting for lagging peers, discovery and election phases aggregate responses across candidate peers
-  (e.g., collecting state reports across the full configuration). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling
+  (e.g., collecting state reports across the full electorate). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling
   the single-threaded participant actor.
 - **Simulation Harness Equivalence**: In discrete-event simulation and test environments, dropping an in-flight network packet must resolve the sender's pending completion observer with a transport failure to emulate transport timeouts or
   connection termination. Silent removal of packets without failure resolution creates an artificial permanent deadlock that violates the reactive completion contract.

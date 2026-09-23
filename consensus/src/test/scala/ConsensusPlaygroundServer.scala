@@ -3,6 +3,7 @@ package readren.consensus
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import readren.common.Maybe
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 
 import java.io.{ByteArrayOutputStream, IOException, InputStream, ObjectOutputStream, OutputStream}
 import java.net.InetSocketAddress
@@ -78,7 +79,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	// =========================================================================
 
 	private def setupPresetFigure7(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = JointElectorateChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		// Leader p-0
@@ -147,7 +148,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	}
 
 	private def setupPresetFigure8(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = JointElectorateChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		val m0 = e.node(0).storage.savedMemory
@@ -190,7 +191,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	}
 
 	private def setupPresetFigure13(e: ConsensusEnvironment): Unit = {
-		val initConfig = TransitionalConfigChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
+		val initConfig = JointElectorateChange[NodeId](1.asInstanceOf[Term], "cfg-0", Set.empty, e.defaultInitialParticipants)
 		def cmd(t: Int, s: Int) = CommandRecord(t.asInstanceOf[Term], TestClientCommand(s, "c-1"))
 
 		val smBytes = new ByteArrayOutputStream()
@@ -311,8 +312,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	private def serializeRecord(r: Record, index: RecordIndex, leaderDiagOpt: Option[LeaderRoleDiagnostic[NodeId]], nodeId: NodeId): String = {
 		val kind = r match {
 			case _: CommandRecord[?] => "Cmd"
-			case _: TransitionalConfigChange[?] => "TCC"
-			case _: StableConfigChange[?] => "SCC"
+			case _: JointElectorateChange[?] => "JEC"
+			case _: SoleElectorateChange[?] => "SEC"
 			case _: LeaderTransition => "LT"
 		}
 		val summary = r match {
@@ -320,11 +321,11 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 				case tc: TestClientCommand => s"#${tc.serial} from ${tc.clientId}"
 				case other => s"$other"
 			}
-			case tcc: TransitionalConfigChange[?] =>
+			case tcc: JointElectorateChange[?] =>
 				val oldStr = tcc.oldParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				val newStr = tcc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				s"{$oldStr} -> {$newStr}"
-			case scc: StableConfigChange[?] =>
+			case scc: SoleElectorateChange[?] =>
 				val newStr = scc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				s"{$newStr}"
 			case lt: LeaderTransition => s"term=${lt.term}"
@@ -333,8 +334,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		sb.append(s"""{"index":$index,"term":${r.term},"kind":"$kind","summary":"${escapeJson(summary)}"""")
 		leaderDiagOpt match {
 			case Some(ld) =>
-				ld.activeConfigChange match {
-					case tcc: TransitionalConfigChange[?] =>
+				ld.activeElectorateChange match {
+					case tcc: JointElectorateChange[?] =>
 						val oldPeers = tcc.oldParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val newPeers = tcc.newParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val appendedOld = ld.peerProgress.count(p => oldPeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
@@ -343,7 +344,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 						val committedNew = ld.peerProgress.count(p => newPeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
 						sb.append(s""","peersAppended":"(${appendedOld}/${oldPeers.size}, ${appendedNew}/${newPeers.size})"""")
 						sb.append(s""","peersCommitted":"(${committedOld}/${oldPeers.size}, ${committedNew}/${newPeers.size})"""")
-					case scc: StableConfigChange[?] =>
+					case scc: SoleElectorateChange[?] =>
 						val remotePeers = scc.newParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val appended = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val committed = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
@@ -392,19 +393,19 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		val kind = rec match {
 			case _: CommandRecord[?] => "Cmd"
 			case _: LeaderTransition => "LT"
-			case _: TransitionalConfigChange[?] => "TCC"
-			case _: StableConfigChange[?] => "SCC"
+			case _: JointElectorateChange[?] => "JEC"
+			case _: SoleElectorateChange[?] => "SEC"
 		}
 		val summary = rec match {
 			case cmd: CommandRecord[?] => cmd.command match {
 				case tc: TestClientCommand => s"#${tc.serial} from ${tc.clientId}"
 				case other => s"$other"
 			}
-			case tcc: TransitionalConfigChange[?] =>
+			case tcc: JointElectorateChange[?] =>
 				val oldStr = tcc.oldParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				val newStr = tcc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				s"{$oldStr} -> {$newStr}"
-			case scc: StableConfigChange[?] =>
+			case scc: SoleElectorateChange[?] =>
 				val newStr = scc.newParticipants.toSeq.map(_.toString).sorted.mkString(", ")
 				s"{$newStr}"
 			case lt: LeaderTransition => s"term=${lt.term}"
@@ -417,7 +418,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		case r: ConsensusRpc.ChooseALeader => s"chooseALeader(inquirerId=${r.inquirerId}, term=${r.inquirerInfo.currentTerm})"
 		case r: ConsensusRpc.AppendRecords => s"appendRecords(term=${r.inquirerTerm}, prevIdx=${r.prevLogIndex}, commit=${r.leaderCommit})"
 		case r: ConsensusRpc.InstallSnapshot => s"installSnapshot(term=${r.inquirerTerm}, lastIncludedIdx=${r.snapshot.lastIncludedRecordIndex})"
-		case r: ConsensusRpc.PermitQuiescence => s"permitQuiescence(configIdx=${r.indexOfGrantedStableConfigChange})"
+		case r: ConsensusRpc.PermitQuiescence => s"permitQuiescence(electorateIdx=${r.indexOfGrantedSec})"
 	}
 
 	private def packetSummary(p: Packet): String = p match {
@@ -888,11 +889,11 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 							val client = params.getOrElse("client", "1")
 							env.submitClientCommand(target, client)
 
-						case "submitConfigChange" =>
+						case "submitElectorateChange" =>
 							val target = params.getOrElse("targetNode", "0")
 							val desiredStr = params.getOrElse("desired", "")
 							val desired = desiredStr.split(",").map(_.trim).filter(_.nonEmpty).toSet
-							env.submitConfigChange(target, desired.asInstanceOf[Set[NodeRef]])
+							env.submitElectorateChange(target, desired.asInstanceOf[Set[NodeRef]])
 
 						case "completeStorageSave" =>
 							val node = params("node")

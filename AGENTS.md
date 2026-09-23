@@ -29,7 +29,8 @@ These constraints are absolute. No amount of contextual reasoning justifies viol
 3. **When in doubt, ask.** If the user's intent is ambiguous — whether they want analysis or action — ask before acting.
 4. **Never suggest, prompt, or ask the user to compile, run tests, or execute commands.** Do not follow generic validation templates that prompt for execution. Wait for the user to explicitly initiate execution or request it.
 5. **Never execute mutating git commands.** You may only use `git` for read-only operations like `git diff` or `git log`. Never run `git checkout`, `git reset`, `git commit`, `git add`, `git restore`, or `git apply` under any circumstances.
-
+6. **No manual line breaks in prose or commit messages**: Never insert hard line breaks (`\n`) within paragraphs, markdown documents, bullet items, or commit messages. Every paragraph, list item, or commit body entry must be emitted as a single continuous line, allowing the viewing container to soft-wrap. Use hard line breaks ONLY to separate distinct paragraphs, list items, or code blocks.
+ 
 ## Epistemic Humility & Diagnostics
 
 - **Never state diagnostic hypotheses as absolute facts or proven truths** before concrete empirical log evidence confirms them.

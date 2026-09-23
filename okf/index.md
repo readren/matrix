@@ -26,6 +26,7 @@ timestamp: "2026-07-09T14:30:00Z"
 
 - [CausalFence and the Decoupled Mutation Contract](adr-causal-fence-state-synchronization.md)
 
+- [Component Definition Module (CDM) Pattern for Service Decomposition](adr-component-definition-module-pattern.md)
 - [Design of Scheduling and Timing Extensions](adr-scheduling-subscription-design.md)
 - [Design Discussion Transcript: Lazy Multi-Raft](transcript-lazy-multi-raft-design.md)
 - [Simplify Sequencer Error Handling](adr-simplify-error-handling.md)

@@ -2,6 +2,7 @@ package readren.consensus
 
 import munit.FunSuite
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 
 class ConsensusEnvironmentUndoTest extends FunSuite {
 

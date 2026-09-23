@@ -3,6 +3,7 @@ package readren.consensus
 import munit.FunSuite
 import readren.common.Maybe
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.protocol.*
 
 class RaftPaperExamplesTest extends FunSuite {
 
@@ -21,7 +22,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// p-6 (scenario f): has entries 1-3 (term 1), entries 4-6 (term 2), entries 7-8 (term 3)
 		val env = new ConsensusEnvironment(clusterSize = 7, logCompactionThreshold = 100)
 
-		val initConfig = TransitionalConfigChange[NodeId](
+		val initConfig = JointElectorateChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -151,7 +152,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		// 5 nodes: p-0 to p-4 (corresponding to S1 to S5 in Raft paper Figure 8)
 		val env = new ConsensusEnvironment(clusterSize = 5)
 
-		val initConfig = TransitionalConfigChange[NodeId](
+		val initConfig = JointElectorateChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -159,7 +160,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		)
 
 		// Set up state at Phase (c):
-		// - Entry 1 (term 1) is committed initial config
+		// - Entry 1 (term 1) is committed initial electorate
 		// - Entry 2 was created by p-0 (S1) in term 2, and replicated to p-1 (S2)
 		// - p-4 (S5) has an uncommitted entry at index 2 from term 3
 		// - p-0 (S1) starts election from term 3, bumping its term to 4 upon becoming leader
@@ -243,7 +244,7 @@ class RaftPaperExamplesTest extends FunSuite {
 		assert(env.node(0).machine.highestAppliedCommandIndex >= 2)
 	}
 
-	test("Figure 10: Joint consensus configuration transition with joint quorum") {
+	test("Figure 10: Joint consensus electorate transition with joint quorum") {
 		// Cluster starts with Cold = {p-0, p-1, p-2}
 		val env = new ConsensusEnvironment(clusterSize = 4)
 		env.startNode(0)
@@ -273,36 +274,36 @@ class RaftPaperExamplesTest extends FunSuite {
 		// =========================================================================
 
 		// Request membership transition from Cold {p-0, p-1, p-2} to Cnew {p-1, p-2, p-3}
-		val ccHandle = env.submitConfigChange(targetNode = 0, desiredParticipants = Set(1, 2, 3))
+		val ccHandle = env.submitElectorateChange(targetNode = 0, desiredParticipants = Set(1, 2, 3))
 		env.runAllNodesUntilIdle()
 
 		// Drive the 2-phase joint consensus transition:
-		// Phase 1: TransitionalConfigChange (Cold,new) replicated and committed across joint quorum
-		// Phase 2: StableConfigChange (Cnew) replicated and committed
-		while env.configChangeStatus(ccHandle.requestId) == ConfigChangeStatus.InFlight && env.pendingPackets.nonEmpty do {
+		// Phase 1: JointElectorateChange (Cold,new) replicated and committed across joint quorum
+		// Phase 2: SoleElectorateChange (Cnew) replicated and committed
+		while env.electorateChangeStatus(ccHandle.requestId) == ElectorateChangeStatus.InFlight && env.pendingPackets.nonEmpty do {
 			env.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
-		// The configuration change completed successfully
-		env.configChangeStatus(ccHandle.requestId) match {
-			case ConfigChangeStatus.Completed(resp) =>
+		// The electorate change completed successfully
+		env.electorateChangeStatus(ccHandle.requestId) match {
+			case ElectorateChangeStatus.Completed(resp) =>
 				assert(resp.isInstanceOf[SUCCESSFULLY_CHANGED])
 			case other =>
 				fail(s"Expected SUCCESSFULLY_CHANGED, but got $other")
 		}
 
-		// The new configuration excludes p-0, which gracefully authorizes quiescence
+		// The new electorate excludes p-0, which gracefully authorizes quiescence
 		val p0Log = env.node(0).storage.savedMemory
-		assert(p0Log.logBuffer.exists(_.isInstanceOf[TransitionalConfigChange[?]]))
-		assert(p0Log.logBuffer.exists(_.isInstanceOf[StableConfigChange[?]]))
+		assert(p0Log.logBuffer.exists(_.isInstanceOf[JointElectorateChange[?]]))
+		assert(p0Log.logBuffer.exists(_.isInstanceOf[SoleElectorateChange[?]]))
 	}
 
 	test("Figure 13: InstallSnapshot catch-up for lagging follower past compaction boundary") {
 		// 3 nodes: p-0, p-1, p-2
 		val env = new ConsensusEnvironment(clusterSize = 3)
 
-		val initConfig = TransitionalConfigChange[NodeId](
+		val initConfig = JointElectorateChange[NodeId](
 			1.asInstanceOf[Term],
 			"cfg-0",
 			Set.empty,
@@ -323,8 +324,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		val snapshot = new SnapshotData[NodeId](
 			lastIncludedRecordIndex = 5,
 			lastIncludedRecordTerm = 1.asInstanceOf[Term],
-			latestConfigChange = initConfig,
-			latestConfigChangeIndex = 1,
+			latestElectorateChange = initConfig,
+			latestElectorateChangeIndex = 1,
 			stateMachineSnapshot = snapshotData
 		)
 		leaderMem.maybeLatestSnapshot = Maybe(snapshot)

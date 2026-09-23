@@ -3,8 +3,20 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-22T03:30:00Z"
+timestamp: "2026-09-23T17:45:00Z"
 ---
+
+## [2026-09-23T17:45:00Z]
+
+- Documented Delegation of Client Command Deduplication to the State Machine in Section 4 of `okf/lazy-multi-raft-consensus.md`, formalizing that the consensus engine treats client commands as opaque payloads, delegating per-client deduplication, freshness ordering, and retry filtering to the application-level state machine to maintain storage SPI simplicity and compatibility with log compaction snapshot boundaries.
+
+## [2026-09-22T22:50:00Z]
+
+- Updated `okf/adr-component-definition-module-pattern.md` with Section 6 (Horizontal CDM Composition via Self-Types) and Section 7 (Decoupling State Mutators from Coordination Lifecycles), formalizing the self-type mixin convention between interdependent CDMs (`ConsensusPrimaryStateCdm` and `ConsensusElectorateCdm`), complete isolation of state persistors from coordinator actor lifecycles, and explicit watermark parameterization.
+
+## [2026-09-22T06:10:00Z]
+
+- Documented the Component Definition Module (CDM) Pattern for Service Decomposition in `okf/adr-component-definition-module-pattern.md`, specifying the architectural conventions for decomposing complex Service Definition Modules (SDMs) while preserving path-dependent type unity and eliminating generic type parameter bloat.
 
 ## [2026-09-22T03:30:00Z]
 
@@ -449,3 +461,12 @@ timestamp: "2026-09-22T03:30:00Z"
 - Documented that leader abdication must resolve in-flight commit watermark awaiters in a decoupled manner (e.g. via `sequencer.run`) to prevent vacated client command handoffs from re-entrantly executing role transitions and mutating the
   primary state fence inside inbound RPC turns (such as `onAppendRecords`).
 - Documented that sequential configuration change chaining must explicitly self-defer via `Capture_defer` before executing the synchronous prologue of chained requests.
+
+## [2026-09-22T21:05:00Z]
+
+- Aligned consensus domain model terminology across `okf/adr-component-definition-module-pattern.md`, `okf/lazy-multi-raft-consensus.md`, and `okf/adr-causal-fence-state-synchronization.md` to reflect the `Electorate` authority hierarchy:
+  - Transitioned membership authority naming from generic configuration to `Electorate`, distinguishing voting authorities from node/runtime configurations.
+  - Specified `SoleElectorate` (single stable majority) and `JointElectorate` (two-phase transition) models.
+  - Aligned change and log entry references to `ElectorateChange`, `SoleElectorateChange`, and `JointElectorateChange`.
+  - Updated participant enumeration terminology to `members` (`activeParticipants` / `members` / `peers`).
+  - Updated candidate ranking invariant references from `isInCommonConfig` to `isInCommonSet`.

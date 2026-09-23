@@ -3,7 +3,7 @@ type: "ADR"
 title: "CausalFence and the Decoupled Mutation Contract"
 description: "Architectural decision and specification for safe, non-blocking sequential state mutation using CausalFence."
 tags: [ "adr", "concurrency", "causalfence", "state-machine", "consensus" ]
-timestamp: "2026-09-17T21:05:00Z"
+timestamp: "2026-09-22T21:05:00Z"
 ---
 
 # ADR: CausalFence and the Decoupled Mutation Contract
@@ -41,7 +41,7 @@ fulfillment and state event observers).
 To prevent stalling the timeline and avoid poisoning nested execution contexts, state mutations and their resulting side-effects must be strictly separated.
 
 - **Synchronous Updates Only:** All writes to the protected state (e.g., updating the term, appending records, truncating the log) must occur strictly within the synchronous updater function passed to `advance`.
-- **Decoupled Side-Effects:** Consequential side-effects (e.g., initiating log compaction, triggering replication pipelines, appending no-op records, or starting second-phase configuration changes) MUST NOT be executed synchronously inside
+- **Decoupled Side-Effects:** Consequential side-effects (e.g., initiating log compaction, triggering replication pipelines, appending no-op records, or starting second-phase electorate transitions) MUST NOT be executed synchronously inside
   the updater or synchronously by an observer. They must be decoupled, chained onto the returned `Capture`, deferred via `sequencer.Capture_defer`, or dispatched via `sequencer.run`.
 
 #### Architectural Rationale: The Hot-Path Performance Asymmetry
@@ -52,7 +52,7 @@ This contract is an intentional, asymmetric performance optimization:
   are resolved. Applying committed records to the state machine does not mutate the `PrimaryState` or touch the `CausalFence`. Because the contract guarantees that awaiters do not mutate the fence, `recalculateCommitIndex` can notify
   awaiters synchronously on the current thread stack. This eliminates task-queue allocations, trampoline hops, and dispatch latency, allowing the happy path to execute with absolute minimum overhead.
 - **Asymmetric Burden on Mutating Callers**: In exchange for zero-overhead execution on the dominant hot path, callers that execute state-mutating logic bear the architectural burden of explicit self-deferral. Seldom-traveled paths—such as
-  fallback branches of command replication (appending no-op records), configuration change completions (transitioning from transitional to stable configurations), and sequential configuration change chaining—must explicitly wrap their
+  fallback branches of command replication (appending no-op records), electorate transition completions (transitioning from joint to sole electorates), and sequential electorate transition chaining—must explicitly wrap their
   continuations in `Capture_defer`.
 - **Role Exit Decoupling & Re-Entrancy Prevention**: During role transitions (e.g., leader abdication), in-flight watermark awaiters must be resolved in a decoupled manner (e.g., via `sequencer.run`). Because observers react to abdication
   by delegating vacated commands to the incoming role—which synchronously triggers role evaluations and state fence mutations—resolving awaiters synchronously inside `handleExit` creates re-entrant state mutations on the caller's call stack
@@ -72,7 +72,7 @@ A naive alternative to the contract would be to permit observers to mutate the s
 Another tempting alternative is dynamic fallback detection: having `recalculateCommitIndex` notify synchronously by default, but dynamically check if the fence was modified
 (`!primaryStateFence.committedState.is(primaryState0) || !primaryStateFence.isEmpty`), re-anchoring remaining awaiters only when a mutation occurs. This alternative was formally rejected due to two fatal concurrency hazards:
 
-- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., a configuration change and subsequent client commands), and an early awaiter mutates the fence,
+- **Intra-Batch Turn Splitting (Execution Reordering)**: If a commit index advancement satisfies multiple awaiters simultaneously (e.g., an electorate change and subsequent client commands), and an early awaiter mutates the fence,
   dynamically re-anchoring subsequent awaiters via `seizeWith(causalAnchor())` defers them to future sequencer turns. Consequently, awaiters that achieved consensus within the exact same batch are arbitrarily split across different
   execution frames, violating linear dispatch expectations.
 - **Stack Re-Entrancy and State Invalidation**: Allowing an observer to mutate the fence synchronously executes arbitrary state mutation logic while `recalculateCommitIndex` is actively running on the call stack. The observer's callback
