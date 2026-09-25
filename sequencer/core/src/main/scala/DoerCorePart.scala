@@ -1220,6 +1220,10 @@ trait DoerCorePart { thisDoer: Doer & DoerTaskOpsPart =>
 	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
 	@threadUnsafe lazy final val Capture_false: Keeper[Boolean] = Keeper(false)
 
+	/** An already completed [[Capture]] that yields [[Maybe.empty]].
+	 * CAUTION: This @threadUnsafe lazy val does not guarantee a unique instance under concurrent access. Its use is only safe for logic that depends on the value's data, not its object identity (eq/ne). */
+	@threadUnsafe lazy final val Capture_empty: Keeper[Maybe[Any]] = Keeper(Maybe.empty)
+
 	inline def Capture_ready[A](a: A): Keeper[A] = new Keeper(a)
 
 	def Capture_from[A](mono: Mono[A]): Capture[A] = {

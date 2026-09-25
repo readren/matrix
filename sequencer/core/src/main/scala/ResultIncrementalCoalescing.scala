@@ -43,7 +43,7 @@ final class ResultIncrementalCoalescing[R, D <: Doer](val doer: D) {
 	 * Placing `arbitrator` in the constructor would require artificially packaging that context into a state type `S` and threading it through, adding indirection without semantic gain.
 	 * The per-call design also keeps the arbitration logic co-located with the contention site, where all relevant context is in scope and immediately visible to the reader.
 	 */
-	def contend(arbitrator: Maybe[doer.Capture[R]] => doer.Capture[R], isWithinDoSerEx: Boolean = doer.isInSequence): doer.Capture[R] = {
+	def contend(arbitrator: (maybeIncumbent: Maybe[doer.Capture[R]]) => doer.Capture[R], isWithinDoSerEx: Boolean = doer.isInSequence): doer.Capture[R] = {
 		if isWithinDoSerEx then {
 
 			def supersedeWith(chosenWinner: doer.Capture[R], finalResult: doer.Captor[R]): Unit = {

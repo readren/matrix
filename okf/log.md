@@ -3,10 +3,43 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-23T20:45:00Z"
+timestamp: "2026-09-25T18:15:00Z"
 ---
 
-## [2026-09-23T20:45:00Z]
+## [2026-09-25T18:15:00Z]
+
+- Articulated the old-set candidate precedence invariant ($C_{\text{old}}$ over $C_{\text{new}} \setminus C_{\text{old}}$) during joint consensus transitions in `okf/lazy-multi-raft-consensus.md`, formalizing how prioritizing old
+  configuration members prevents split-vote election deadlocks when uncommitted transitional entries create asymmetric active electorates between lagging nodes operating under $C_{\text{old}}$ and updated nodes operating
+  under $C_{\text{old,new}}$.
+
+## [2026-09-24T14:45:00Z]
+
+- Streamlined discovery and reconciliation data pipelines by replacing intermediate hash map caches with direct positional propagation of peer inquiry replies (`IArray[Try[StateInfo]]`) across state reconciliation, commit index absorption,
+  and candidate vote decision; formalized structural binding of the inquiry-active electorate (`electorateAtRequest`) via lexical propagation in `start` and universal reconciliation guards rather than carrier payload replication, while
+  preserving modular `electorate` domain signatures for vote evaluation.
+
+## [2026-09-24T06:25:00Z]
+
+- Purged remaining ballot vestiges across consensus protocol models and role transitions: eliminated `INTERNAL_VACATE_HANDOFF` and `isInternalVacateHandoff` from `CommandAttemptFlag`, realigning vacated command delegation directly to
+  `LEADERSHIP_VACATED`; renamed `StateInfo.tiesWith` to `matchesValues` and removed unused `isTyingWith`, formalizing state comparison as an allocation-avoidance cache comparator rather than an election-round tie-breaker; and removed
+  diagnostic tracking scaffolding (`borrame`) from `CandidateDecider`.
+
+## [2026-09-24T02:30:00Z]
+
+- Refined Section 10 (Electorate Change Protocol & Response Semantics) in `okf/lazy-multi-raft-consensus.md`, articulating client-facing terminality contracts, leader redirection semantics, and commit decoupling, while eliminating
+  language-level Scala implementation mechanics in accordance with OKF persistent-only principles.
+
+## [2026-09-24T01:35:00Z]
+
+- Updated Section 10 (Electorate Change Response Architecture) in `okf/lazy-multi-raft-consensus.md`, formalizing the refactoring of `ElectorateChangeResponse` into a Scala 3 parameterized ADT
+  `enum ElectorateChangeResponse(val isTerminal: Boolean)`, eliminating legacy trait hierarchies and runtime type inspection, establishing zero-allocation static singletons for parameterless outcomes, and strictly encapsulating redirection
+  target identifiers within `AskTheLeader`.
+
+## [2026-09-23T22:45:00Z]
+
+- Updated Section 9 (On-Demand Election Protocol, Single-Vote-Per-Term Invariant & Promotion Dynamics) and Section 10 (Electorate Change Response Partitioning) in `okf/lazy-multi-raft-consensus.md`, formalizing the purge of the vestigial
+  intra-term `Ballot` mechanism across all consensus protocol data models, electorate quorum accumulators, participant state machine transitions, and non-terminal electorate change responses, realigning election safety strictly with
+  canonical Raft monotonic term bumping and single-vote-per-term invariants.
 
 - Updated Section III (Quiescence Protocol & Convergence Preconditions) in `okf/lazy-multi-raft-consensus.md`, formalizing that quiescence authorization tracking and retry wake-up scheduling are strictly encapsulated within the `Leader` role lifecycle alongside retirement log replication pipelines, eliminating cross-role tracking state leaks and simplifying quiescence convergence preconditions.
 

@@ -18,14 +18,6 @@ inline def PRE_INIT: Term = 0
 
 extension (term: Term) def incremented: Term = term + 1
 
-opaque final type Ballot = Byte
-
-inline def INITIAL_BALLOT: Ballot = 0
-
-extension (ballot: Ballot) {
-	inline def bumped: Ballot = (ballot + 1).toByte
-	inline infix def laterThan(other: Ballot): Boolean = ballot - other > 0
-}
 
 final type ElectorateChangeRequestId = String
 
@@ -73,8 +65,6 @@ final val ER_CANDIDATE: ElectionRank = ISOLATED
 /** The [[ElectionRank]] of the leading roles, which are eligible and fully participate in elections, but should be chosen as leader by all voters provided the [[Term]] it exposes is the highest observed by the voter. */
 final val ER_LEADING: ElectionRank = LEADER
 
-opaque final type ElectionRanksSet = Int
-
 inline def ElectionRank_from(ordinal: RoleOrdinal): ElectionRank = (ordinal & 0xFC).toByte
 
 def ElectionRank_nameOf(rank: ElectionRank): String = {
@@ -87,64 +77,36 @@ def ElectionRank_nameOf(rank: ElectionRank): String = {
 	}
 }
 
-trait ElectorateChangeResponse
+/** Outcome of an electorate change request.
+ * Parameterless cases are compiled as static singleton values, eliminating allocation overhead across consensus transitions.
+ * @param isTerminal true if the response represents a terminal outcome (completed or already matching) that satisfies the requester; false otherwise. */
+enum ElectorateChangeResponse(val isTerminal: Boolean) {
+	/** The requested electorate change was successfully replicated to a majority (not necessarily committed). Only participants with the [[LEADER]] role answer this. */
+	case SuccessfullyChanged extends ElectorateChangeResponse(true)
 
-/** Marker trait for terminal electorate change outcomes (completed or already matching). */
-trait TerminalElectorateChangeResponse extends ElectorateChangeResponse
+	/** The participant is leading and already has the requested electorate committed. */
+	case AlreadyChanged extends ElectorateChangeResponse(true)
 
-/** Marker trait for non-terminal electorate change outcomes (such as redirections, rejections, or lost tracking) that participate in election ballot propagation.
- * Propagating [[latestBallotSeen]] via prior answers allows subsequent nodes in a discovery loop to fast-forward their local ballot and clear obsolete peer caches without unprovoked ballot increments or issuing RPCs with stale ballot rounds. */
-trait NonTerminalElectorateChangeResponse extends ElectorateChangeResponse {
-	val latestBallotSeen: Ballot
-}
+	/** The participant is leading but excluded (leading as a ghost). A ghost leader cannot initiate configuration changes. */
+	case WaitGhostLeaderIsDemoted extends ElectorateChangeResponse(false)
 
-/** The requested electorate change was successfully replicated to a majority (not necessarily committed). Only participants with the [[LEADER]] role answer this. */
-class SUCCESSFULLY_CHANGED extends TerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[SUCCESSFULLY_CHANGED](this)
-}
+	/** The participant is a follower, suggesting redirection to the leader it follows. */
+	case AskTheLeader(leaderId: AnyRef) extends ElectorateChangeResponse(false)
 
-/** The participant is leading and already has the requested electorate committed. */
-class ALREADY_CHANGED extends TerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[ALREADY_CHANGED](this)
-}
+	/** The participant is catching up because it is joining. */
+	case CatchingUp extends ElectorateChangeResponse(false)
 
-/** The participant is leading but excluded (leading as a ghost). A ghost leader cannot initiate configuration changes. */
-class WAIT_GHOST_LEADER_IS_DEMOTED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[WAIT_GHOST_LEADER_IS_DEMOTED](this)
-}
+	case RequestTrackingLostAfterFirstPhaseStarted extends ElectorateChangeResponse(false)
 
-/** The participant is a follower, suggesting redirection to the leader it follows. */
-class ASK_THE_LEADER(val leaderId: AnyRef, val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[ASK_THE_LEADER](this)
-}
+	case RequestTrackingLostAfterFirstPhaseCommitted extends ElectorateChangeResponse(false)
 
-/** The participant is catching up because it is joining. */
-class CATCHING_UP(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[CATCHING_UP](this)
-}
+	case RequestTrackingLostAfterSecondPhaseStarted extends ElectorateChangeResponse(false)
 
-class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED](this)
-}
+	case Excluded extends ElectorateChangeResponse(false)
 
-class REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITTED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITTED](this)
-}
+	case Secluded extends ElectorateChangeResponse(false)
 
-class REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED](this)
-}
-
-class EXCLUDED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[EXCLUDED](this)
-}
-
-class SECLUDED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[SECLUDED](this)
-}
-
-class STOPPED(val latestBallotSeen: Ballot) extends NonTerminalElectorateChangeResponse {
-	override def toString: String = deriveToString[STOPPED](this)
+	case Stopped extends ElectorateChangeResponse(false)
 }
 
 /** Informs a participant receiving a command about the outcome of the client's previous attempt to send that command to the consensus group. */
@@ -154,14 +116,11 @@ inline def FIRST_ATTEMPT: CommandAttemptFlag = 0
 inline def REDIRECTED: CommandAttemptFlag = 0x01
 inline def FALLBACK: CommandAttemptFlag = 0x02
 inline def LEADERSHIP_VACATED: CommandAttemptFlag = 0x06
-inline def INTERNAL_VACATE_HANDOFF: CommandAttemptFlag = 0x16
 
 extension (flag: CommandAttemptFlag) {
 	inline def |(other: CommandAttemptFlag): CommandAttemptFlag = (flag | other).toByte
 	inline def isFallback: Boolean = (flag & FALLBACK) != 0
 	inline def isLeaderVacated: Boolean = (flag & LEADERSHIP_VACATED) == LEADERSHIP_VACATED
-	inline def isInternalVacateHandoff: Boolean = (flag & INTERNAL_VACATE_HANDOFF) == INTERNAL_VACATE_HANDOFF
-	inline def withInternalBitsCleared: CommandAttemptFlag = (flag & 0x0f).toByte
 }
 
 final val assertionsEnabled: Boolean = classOf[StateInfo].desiredAssertionStatus()
@@ -173,12 +132,12 @@ final val assertionsEnabled: Boolean = classOf[StateInfo].desiredAssertionStatus
  * @param reachableCommonCount The number of reachable and viable participants in the common set.
  * @param reachableTargetCount The number of reachable and viable participants in the target set.
  * @param votedRank The [[ElectionRank]] of the voted candidate.
- * @param ballot The election round to which this vote belongs.
  */
-final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCommonCount: Int, reachableTargetCount: Int, votedRank: ElectionRank, ballot: Ballot) {
+final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCommonCount: Int, reachableTargetCount: Int, votedRank: ElectionRank) {
 	inline def isBlank: Boolean = reachableCommonCount == 0 && reachableTargetCount == 0
 	inline def isNonBlank: Boolean = !isBlank
-	override def toString: String = s"Vote(term=$term, votedId=$votedId, reachableCommon=$reachableCommonCount, reachableTarget=$reachableTargetCount, rank=${ElectionRank_nameOf(votedRank)}, ballot=$ballot)"
+
+	override def toString: String = s"Vote(term=$term, votedId=$votedId, reachableCommon=$reachableCommonCount, reachableTarget=$reachableTargetCount, rank=${ElectionRank_nameOf(votedRank)})"
 }
 
 /** The result of an append operation. */
@@ -204,15 +163,11 @@ val failedAppendResultBuilder: Throwable => Maybe[AppendResult_Failed] = e => Ma
 /**
  * Information that a participant exposes about itself for the purpose of leader election.
  */
-final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex, ballot: Ballot) {
+final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex) {
 	if assertionsEnabled then assert(currentTerm >= termAtCommitIndex)
 
-	inline def isTyingWith(other: StateInfo): Boolean = {
-		tiesWith(other.currentTerm, other.rank, other.termAtCommitIndex, other.commitIndex, other.lastRecordTerm, other.lastRecordIndex)
-	}
-
-	inline def tiesWith(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex): Boolean = {
-		this.lastRecordTerm == lastRecordTerm && this.lastRecordIndex == lastRecordIndex && this.commitIndex == commitIndex && this.rank == rank && this.currentTerm == currentTerm && this.termAtCommitIndex == termAtCommitIndex
+	inline def matchesValues(currentTerm: Term, rank: ElectionRank, termAtCommitIndex: Term, commitIndex: RecordIndex, lastRecordTerm: Term, lastRecordIndex: RecordIndex): Boolean = {
+		this.lastRecordIndex == lastRecordIndex && this.commitIndex == commitIndex && this.rank == rank && this.currentTerm == currentTerm && this.lastRecordTerm == lastRecordTerm && this.termAtCommitIndex == termAtCommitIndex
 	}
 
 	def compareCompleteness(other: StateInfo): Int = {
@@ -223,7 +178,7 @@ final case class StateInfo(currentTerm: Term, rank: ElectionRank, termAtCommitIn
 		else 0
 	}
 
-	override def toString: String = s"StateInfo(@$currentTerm, ${ElectionRank_nameOf(rank)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex, ballot=$ballot)"
+	override def toString: String = s"StateInfo(@$currentTerm, ${ElectionRank_nameOf(rank)}, termAtCommitIndex=$termAtCommitIndex, commitIndex=$commitIndex)"
 }
 
 sealed trait RoleDiagnostic {
@@ -271,8 +226,8 @@ class DiscoveryQuorumOutcome_MajorityImpossible private[consensus]() extends Dis
 }
 object DiscoveryQuorumOutcome_MajorityImpossible extends DiscoveryQuorumOutcome_MajorityImpossible
 
-final class DiscoveryQuorumOutcome_Stale(val higherTerm: Term, val higherBallot: Ballot) extends DiscoveryQuorumOutcome {
-	override def toString: String = s"Stale($higherTerm, $higherBallot)"
+final class DiscoveryQuorumOutcome_Stale(val higherTerm: Term) extends DiscoveryQuorumOutcome {
+	override def toString: String = s"Stale($higherTerm)"
 }
 
 final class DiscoveryQuorumOutcome_ActiveLeaderDetected[Id <: AnyRef](val leaderId: Id, val leaderTerm: Term) extends DiscoveryQuorumOutcome {
@@ -282,9 +237,7 @@ final class DiscoveryQuorumOutcome_ActiveLeaderDetected[Id <: AnyRef](val leader
 final class DiscoveryQuorumResult[Id <: AnyRef](
 	val outcome: DiscoveryQuorumOutcome,
 	val highestTermSeen: Term,
-	val highestBallotSeen: Ballot,
-	val replies: IArray[Try[StateInfo]],
-	val onUnsubscribeRemaining: () => Unit
+	val replies: IArray[Try[StateInfo]]
 )
 
 val DiscoveryEarlyExitCancellation: Try[Nothing] = Failure(new java.util.concurrent.CancellationException("Early termination: discovery quorum already resolved"))
@@ -303,14 +256,13 @@ class VotingQuorumOutcome_Lost private[consensus]() extends VotingQuorumOutcome 
 }
 object VotingQuorumOutcome_Lost extends VotingQuorumOutcome_Lost
 
-final class VotingQuorumOutcome_Stale(val higherTerm: Term, val higherBallot: Ballot) extends VotingQuorumOutcome {
-	override def toString: String = s"Stale($higherTerm, $higherBallot)"
+final class VotingQuorumOutcome_Stale(val higherTerm: Term) extends VotingQuorumOutcome {
+	override def toString: String = s"Stale($higherTerm)"
 }
 
 final class VotingQuorumResult[Id <: AnyRef](
 	val outcome: VotingQuorumOutcome,
 	val highestTermSeen: Term,
-	val highestBallotSeen: Ballot,
 	val replies: IArray[Try[Vote[Id]]]
 )
 

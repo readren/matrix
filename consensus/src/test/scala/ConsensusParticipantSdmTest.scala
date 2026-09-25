@@ -504,37 +504,36 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 				if remainingTargetNodes.isEmpty then netSequencer.Keeper(previousResponses)
 				else {
-					val previousResponseAndNextNodeId: (previousResponse: Maybe[ElectorateChangeResponse], maybeNextNodeId: Maybe[Id]) =
+					val maybeNextNodeId: Maybe[Id] =
 						if previousResponses.isEmpty then {
 							// Start inquiring a random Node among the active ones in the activeElectorateChange
-							(Maybe.empty, Maybe(takeRandomNode().myId))
+							Maybe(takeRandomNode().myId)
 						} else {
 							val previousResponse = previousResponses.last._2
-							val maybeNextNodeId: Maybe[Id] = previousResponse match {
-								case pr: (SUCCESSFULLY_CHANGED | ALREADY_CHANGED) =>
+							previousResponse match {
+								case ElectorateChangeResponse.SuccessfullyChanged | ElectorateChangeResponse.AlreadyChanged =>
 									Maybe.empty
-								case pr: WAIT_GHOST_LEADER_IS_DEMOTED =>
+								case ElectorateChangeResponse.WaitGhostLeaderIsDemoted =>
 									Maybe.empty
-								case pr: ASK_THE_LEADER =>
-									val leaderIndex = remainingTargetNodes.indexOf(pr.leaderId)
+								case ElectorateChangeResponse.AskTheLeader(leaderId) =>
+									val leaderIndex = remainingTargetNodes.indexOf(leaderId)
 									if leaderIndex >= 0 then {
-										val leaderId = remainingTargetNodes.remove(leaderIndex)
-										Maybe(leaderId)
+										val chosenLeaderId = remainingTargetNodes.remove(leaderIndex)
+										Maybe(chosenLeaderId)
 									} else Maybe(takeRandomNode().myId)
 
-								case pr: (CATCHING_UP | EXCLUDED | SECLUDED | STOPPED) =>
+								case ElectorateChangeResponse.CatchingUp | ElectorateChangeResponse.Excluded | ElectorateChangeResponse.Secluded | ElectorateChangeResponse.Stopped =>
 									Maybe(takeRandomNode().myId)
-								case pr: (REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED | REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITTED | REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED) =>
+								case ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted | ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseCommitted | ElectorateChangeResponse.RequestTrackingLostAfterSecondPhaseStarted =>
 									Maybe.empty
 							}
-							(Maybe(previousResponse), maybeNextNodeId)
 					}
-					previousResponseAndNextNodeId.maybeNextNodeId.fold {
+					maybeNextNodeId.fold {
 						netSequencer.Keeper(previousResponses)
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
 						val inquire = node.sequencer.Capture_defer(() =>
-							node.clusterParticipant.delegate.requestElectorateChange(electorateChangeRequest, includedParticipants, previousResponseAndNextNodeId.previousResponse)
+							node.clusterParticipant.delegate.requestElectorateChange(electorateChangeRequest, includedParticipants)
 						).onBehalfOf(netSequencer)
 						for {
 							response <- inquire
@@ -615,8 +614,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					for {
 						responses <- sendsElectorateChangeRequests(nodesIds, electorateChangeRequestId, ListSet.empty)
 						maybeErrorMessage <- {
-							if responses.exists { response => response._2.isInstanceOf[TerminalElectorateChangeResponse] }
-								|| responses.forall { response => response._2.isInstanceOf[STOPPED] }
+							if responses.exists { response => response._2.isTerminal }
+								|| responses.forall { response => response._2 == ElectorateChangeResponse.Stopped }
 							then {
 								scribe.trace(s"Net: Graceful shutdown of the net completed with: ${responses.mkString("[", ", ", "]")}")
 								netSequencer.Keeper(Maybe.empty)
@@ -681,7 +680,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
 					targetParticipant = net.getNode(leaderId)
 					// if despite the attempt flag sent to the participant was FALLBACK (which instructs to update the role before responding) it responds with a redirection to an already tried participant, add it to the already tried ones.
-					if attemptFlag == FALLBACK && alreadyTriedParticipants.contains(leaderId) then alreadyTriedParticipants.addOne(targetParticipant.myId)
+					if attemptFlag.isFallback && alreadyTriedParticipants.contains(leaderId) then alreadyTriedParticipants.addOne(targetParticipant.myId)
 					sendCommand(commandPayload, REDIRECTED)
 				case receiverNode.Unable(nextAttemptFlag, otherParticipants) =>
 					knownParticipants = otherParticipants + receiverNode.myId
@@ -1515,6 +1514,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			logRetentionAfterSnapshot: Int
 		)
 		val failingCases = Seq[FailingCase](
+			(30, 1, true, 8391463564457489113L, false, 9, 3, 9, 3),
 			(30, 6, true, -6953101425081795759L, false, 0, 5, 1, 0),
 			(30, 4, true, 6565188240402498618L, true, 0, 3, 9, 0),
 			(30, 3, true, 1494279300139860962L, false, 0, 5, 9, 0),
@@ -1598,7 +1598,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 	// A specific test run with a fixed random seed and configuration to debug or analyze particular scenarios.
 	test("All invariants special case") {
 		val (numberOfCommandsToSend, clusterSize, startWithHighestPriorityParticipant, netRandomnessSeed, remembersLastAppliedCommandIndex, maxRecursionDepth, logCompactionThreshold, maxInFlightAppendsPerPeer, logRetentionAfterSnapshot) =
-			(30, 6, true, -6953101425081795759L, false, 0, 5, 1, 0)
+			(30, 1, true, 8391463564457489113L, false, 9, 3, 9, 3)
 		val net = new Net(clusterSize, randomnessSeed = netRandomnessSeed, requestFailurePercentage = 10, responseFailurePercentage = 10)
 		testAllInvariants(
 			net,

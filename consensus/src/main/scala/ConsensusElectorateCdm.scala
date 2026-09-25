@@ -8,7 +8,6 @@ import readren.sequencer.Doer
 import java.util
 import java.util.Comparator
 import scala.collection.immutable.{ArraySeq, ListSet}
-import scala.collection.mutable.ArrayBuffer
 import scala.math.Ordering.Implicits.infixOrderingOps
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
@@ -84,12 +83,8 @@ trait ConsensusElectorateCdm { thisModule =>
 		/** The identifiers of the stable participants. Equivalent to [[backingElectorateChange.newParticipants]]. */
 		val stableParticipants: Set[ParticipantId]
 
-		inline def isInNew(participantId: ParticipantId): Boolean = stableParticipants.contains(participantId)
-
 		/** The set of participants to include in [[Unable]] responses. */
 		def otherProbableParticipants: ListSet[ParticipantId]
-
-		def reachedAll(vote: Vote[ParticipantId]): Boolean
 
 		def reachedAMajority(vote: Vote[ParticipantId]): Boolean
 
@@ -113,10 +108,10 @@ trait ConsensusElectorateCdm { thisModule =>
 		/** Determines the best leader candidate based on the [[StateInfo]] of all participants, including itself.
 		 * This method only queries and does not mutate local state.
 		 *
-		 * @param peersStateInfos the answers to the status inquiries done to the other participants, stored as a parallel array with index correspondence [[peers]].
+		 * @param peersReplies the answers to the status inquiries done to the other participants, stored as a parallel array with index correspondence [[peers]].
 		 * @return a [[Maybe]] containing the [[Vote]] with the chosen leader for the current term, or empty if no candidate has an adequately complete log.
 		 * @see [[CandidateDecider]] for the candidate ranking hierarchy. */
-		def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]]
+		def decideMyVote(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[Vote[ParticipantId]]
 
 		/** @return the index of the provided [[ParticipantId]] in the [[peers]]' [[IndexedSeq]] or a negative number if not present.
 		 * @param peerId the id of the peer to find. */
@@ -156,10 +151,6 @@ trait ConsensusElectorateCdm { thisModule =>
 				.result()
 		}
 
-		override def reachedAll(vote: Vote[ParticipantId]): Boolean = {
-			vote.reachableCommonCount == members.length
-		}
-
 		override def reachedAMajority(vote: Vote[ParticipantId]): Boolean = {
 			vote.reachableCommonCount > halfTheNumberOfParticipants || members.length == 0
 		}
@@ -180,33 +171,21 @@ trait ConsensusElectorateCdm { thisModule =>
 			n
 		}
 
-		override def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+		override def decideMyVote(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
 			Trace.step(() => s"${this.toString}.decideMyVote") {
-				var participantsCount = 0
-
-				var contender_id = boundParticipantId
-				var contender_stateInfo = myStateInfo
-				val decider = new CandidateDecider(contender_id, contender_stateInfo, true)
-				var contender_index = peers.length
-				while contender_index >= 0 do {
-					if contender_stateInfo.rank != ER_NONE then participantsCount += 1
-
-					var goNext = true
-					contender_index -= 1
-					// navigate to the next successfully replied StateInfo and contend it.
-					while contender_index >= 0 && goNext do {
-						peersStateInfos(contender_index) match {
-							case null =>
-								contender_index -= 1
-							case peerStateInfo: StateInfo =>
-								contender_id = peers(contender_index)
-								contender_stateInfo = peerStateInfo
-								decider.contend(contender_id, contender_stateInfo, true)
-								goNext = false
-						}
+				var participantsCount = if myStateInfo.rank != ER_NONE then 1 else 0
+				val decider = new CandidateDecider(boundParticipantId, myStateInfo, true)
+				var contenderIndex = peers.length
+				while contenderIndex > 0 do {
+					contenderIndex -= 1
+					peersReplies(contenderIndex) match {
+						case Success(contenderStateInfo) =>
+							if contenderStateInfo.rank != ER_NONE then participantsCount += 1
+							decider.contend(peers(contenderIndex), contenderStateInfo, true)
+						case _ => // do nothing	
 					}
 				}
-				decider.castVote(participantsCount, 0, myStateInfo.ballot)
+				decider.castVote(participantsCount, 0)
 			}
 		}
 
@@ -235,7 +214,6 @@ trait ConsensusElectorateCdm { thisModule =>
 
 			val captor = new sequencer.Captor[DiscoveryQuorumResult[ParticipantId]]()
 			var highestTermSeen: Term = myStateInfo.currentTerm
-			var highestBallotSeen: Ballot = myStateInfo.ballot
 			var successfulCount: Int = if isBoundIncluded then 1 else 0
 			var unresolvedCount: Int = numberOfPeers
 
@@ -245,9 +223,7 @@ trait ConsensusElectorateCdm { thisModule =>
 					captor.captureSync(DiscoveryQuorumResult(
 						DiscoveryQuorumOutcome_MajorityReached,
 						highestTermSeen,
-						highestBallotSeen,
-						IArray.unsafeFromArray(replies),
-						() => unsubscribeRemaining()
+						IArray.unsafeFromArray(replies)
 					))
 					true
 				} else if successfulCount + unresolvedCount <= halfTheNumberOfParticipants then {
@@ -255,9 +231,7 @@ trait ConsensusElectorateCdm { thisModule =>
 					captor.captureSync(DiscoveryQuorumResult(
 						DiscoveryQuorumOutcome_MajorityImpossible,
 						highestTermSeen,
-						highestBallotSeen,
-						IArray.unsafeFromArray(replies),
-						() => unsubscribeRemaining()
+						IArray.unsafeFromArray(replies)
 					))
 					true
 				} else false
@@ -277,25 +251,20 @@ trait ConsensusElectorateCdm { thisModule =>
 							unresolvedCount -= 1
 
 							if info.currentTerm > highestTermSeen then highestTermSeen = info.currentTerm
-							if info.ballot laterThan highestBallotSeen then highestBallotSeen = info.ballot
 
-							if info.currentTerm > myStateInfo.currentTerm || (info.ballot laterThan myStateInfo.ballot) then {
+							if info.currentTerm > myStateInfo.currentTerm then {
 								unsubscribeRemaining()
 								captor.captureSync(DiscoveryQuorumResult(
-									DiscoveryQuorumOutcome_Stale(highestTermSeen, highestBallotSeen),
+									DiscoveryQuorumOutcome_Stale(highestTermSeen),
 									highestTermSeen,
-									highestBallotSeen,
-									IArray.unsafeFromArray(replies),
-									() => unsubscribeRemaining()
+									IArray.unsafeFromArray(replies)
 								))
 							} else if info.rank == ER_LEADING && info.currentTerm == myStateInfo.currentTerm then {
 								unsubscribeRemaining()
 								captor.captureSync(DiscoveryQuorumResult(
 									DiscoveryQuorumOutcome_ActiveLeaderDetected(peerId, info.currentTerm),
 									highestTermSeen,
-									highestBallotSeen,
-									IArray.unsafeFromArray(replies),
-									() => unsubscribeRemaining()
+									IArray.unsafeFromArray(replies)
 								))
 							} else {
 								successfulCount += 1
@@ -344,7 +313,6 @@ trait ConsensusElectorateCdm { thisModule =>
 
 			val captor = new sequencer.Captor[VotingQuorumResult[ParticipantId]]()
 			var highestTermSeen: Term = myStateInfo.currentTerm
-			var highestBallotSeen: Ballot = myStateInfo.ballot
 			var matchingVotesCount: Int = if isBoundIncluded && myVote.isNonBlank then 1 else 0
 			var joiningCount: Int = 0
 			var unresolvedCount: Int = numberOfPeers
@@ -352,11 +320,11 @@ trait ConsensusElectorateCdm { thisModule =>
 			inline def checkTermination(): Boolean = {
 				if matchingVotesCount + joiningCount > halfTheNumberOfParticipants then {
 					unsubscribeRemaining()
-					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Won, highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Won, highestTermSeen, IArray.unsafeFromArray(replies)))
 					true
 				} else if matchingVotesCount + joiningCount + unresolvedCount <= halfTheNumberOfParticipants then {
 					unsubscribeRemaining()
-					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Lost, highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Lost, highestTermSeen, IArray.unsafeFromArray(replies)))
 					true
 				} else false
 			}
@@ -372,11 +340,10 @@ trait ConsensusElectorateCdm { thisModule =>
 							replies(ventureIndex) = Success(vote)
 							unresolvedCount -= 1
 							if vote.term > highestTermSeen then highestTermSeen = vote.term
-							if vote.ballot laterThan highestBallotSeen then highestBallotSeen = vote.ballot
 
-							if vote.term > myStateInfo.currentTerm || (vote.ballot laterThan myStateInfo.ballot) then {
+							if vote.term > myStateInfo.currentTerm then {
 								unsubscribeRemaining()
-								captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Stale(highestTermSeen, highestBallotSeen), highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+								captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Stale(highestTermSeen), highestTermSeen, IArray.unsafeFromArray(replies)))
 							} else {
 								if vote.votedId == myVote.votedId && vote.isNonBlank then matchingVotesCount += 1
 								else if vote.votedRank == ER_JOINER then joiningCount += 1
@@ -434,10 +401,6 @@ trait ConsensusElectorateCdm { thisModule =>
 				.result()
 		}
 
-		override def reachedAll(vote: Vote[ParticipantId]): Boolean = {
-			vote.reachableCommonCount == oldParticipants.size && vote.reachableTargetCount == newParticipants.size
-		}
-
 		override def reachedAMajority(vote: Vote[ParticipantId]): Boolean = {
 			(vote.reachableCommonCount > halfOfOldParticipants || oldParticipants.isEmpty)
 				&& (vote.reachableTargetCount > halfOfNewParticipants || newParticipants.isEmpty)
@@ -477,38 +440,33 @@ trait ConsensusElectorateCdm { thisModule =>
 			from
 		}
 
-		override def decideMyVote(myStateInfo: StateInfo, peersStateInfos: IArray[StateInfo | Null])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+		override def decideMyVote(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
 			Trace.step(() => s"${this.toString}.decideMyVote") {
 				var oldParticipantsCount = 0
 				var newParticipantsCount = 0
 
-				var contender_id = boundParticipantId
-				var contender_stateInfo = myStateInfo
-				var contender_isInOldSet = oldParticipants.contains(boundParticipantId)
-				val decider = new CandidateDecider(contender_id, contender_stateInfo, contender_isInOldSet)
-				var contender_index = peers.length
-				while contender_index >= 0 do {
-					if contender_isInOldSet && contender_stateInfo.rank != ER_NONE then oldParticipantsCount += 1
-					if contender_stateInfo.rank != ER_NONE && newParticipants.contains(contender_id) then newParticipantsCount += 1
+				// Membership in oldParticipants (Cold) takes priority over new-only participants (Cnew \ Cold) in CandidateDecider to prevent split-vote deadlocks when uncommitted JointElectorateChange entries create divergent active electorates across peers.
+				inline def treatParticipant(contenderId: ParticipantId, contenderStateInfo: StateInfo): Boolean = {
+					val isInOldSet = oldParticipants.contains(contenderId)
+					if contenderStateInfo.rank != ER_NONE then {
+						if isInOldSet then oldParticipantsCount += 1
+						if newParticipants.contains(contenderId) then newParticipantsCount += 1
+					}
+					isInOldSet
+				}
 
-					var goNext = true
-					contender_index -= 1
-					// navigate to the next successfully replied StateInfo and contend it.
-					while contender_index >= 0 && goNext do {
-						peersStateInfos(contender_index) match {
-							case null =>
-								contender_index -= 1
-
-							case peerStateInfo: StateInfo =>
-								contender_id = peers(contender_index)
-								contender_stateInfo = peerStateInfo
-								contender_isInOldSet = oldParticipants.contains(contender_id)
-								decider.contend(contender_id, contender_stateInfo, contender_isInOldSet)
-								goNext = false
-						}
+				val decider = new CandidateDecider(boundParticipantId, myStateInfo, treatParticipant(boundParticipantId, myStateInfo))
+				var contenderIndex = peers.length
+				while contenderIndex > 0 do {
+					contenderIndex -= 1
+					peersReplies(contenderIndex) match {
+						case Success(contenderStateInfo) =>
+							val contenderId = peers(contenderIndex)
+							decider.contend(contenderId, contenderStateInfo, treatParticipant(contenderId, contenderStateInfo))
+						case _ =>
 					}
 				}
-				decider.castVote(oldParticipantsCount, newParticipantsCount, myStateInfo.ballot)
+				decider.castVote(oldParticipantsCount, newParticipantsCount)
 			}
 		}
 
@@ -540,7 +498,6 @@ trait ConsensusElectorateCdm { thisModule =>
 
 			val captor = new sequencer.Captor[DiscoveryQuorumResult[ParticipantId]]()
 			var highestTermSeen: Term = myStateInfo.currentTerm
-			var highestBallotSeen: Ballot = myStateInfo.ballot
 			var oldSuccessful: Int = if oldParticipants.contains(boundParticipantId) then 1 else 0
 			var newSuccessful: Int = if newParticipants.contains(boundParticipantId) then 1 else 0
 
@@ -552,9 +509,7 @@ trait ConsensusElectorateCdm { thisModule =>
 					captor.captureSync(DiscoveryQuorumResult(
 						DiscoveryQuorumOutcome_MajorityReached,
 						highestTermSeen,
-						highestBallotSeen,
-						IArray.unsafeFromArray(replies),
-						() => unsubscribeRemaining()
+						IArray.unsafeFromArray(replies)
 					))
 					true
 				} else {
@@ -565,9 +520,7 @@ trait ConsensusElectorateCdm { thisModule =>
 						captor.captureSync(DiscoveryQuorumResult(
 							DiscoveryQuorumOutcome_MajorityImpossible,
 							highestTermSeen,
-							highestBallotSeen,
-							IArray.unsafeFromArray(replies),
-							() => unsubscribeRemaining()
+							IArray.unsafeFromArray(replies)
 						))
 						true
 					} else false
@@ -589,25 +542,20 @@ trait ConsensusElectorateCdm { thisModule =>
 							if newParticipants.contains(peerId) then unresolvedNew -= 1
 
 							if info.currentTerm > highestTermSeen then highestTermSeen = info.currentTerm
-							if info.ballot laterThan highestBallotSeen then highestBallotSeen = info.ballot
 
-							if info.currentTerm > myStateInfo.currentTerm || (info.ballot laterThan myStateInfo.ballot) then {
+							if info.currentTerm > myStateInfo.currentTerm then {
 								unsubscribeRemaining()
 								captor.captureSync(DiscoveryQuorumResult(
-									DiscoveryQuorumOutcome_Stale(highestTermSeen, highestBallotSeen),
+									DiscoveryQuorumOutcome_Stale(highestTermSeen),
 									highestTermSeen,
-									highestBallotSeen,
-									IArray.unsafeFromArray(replies),
-									() => unsubscribeRemaining()
+									IArray.unsafeFromArray(replies)
 								))
 							} else if info.rank == ER_LEADING && info.currentTerm == myStateInfo.currentTerm then {
 								unsubscribeRemaining()
 								captor.captureSync(DiscoveryQuorumResult(
 									DiscoveryQuorumOutcome_ActiveLeaderDetected(peerId, info.currentTerm),
 									highestTermSeen,
-									highestBallotSeen,
-									IArray.unsafeFromArray(replies),
-									() => unsubscribeRemaining()
+									IArray.unsafeFromArray(replies)
 								))
 							} else {
 								if oldParticipants.contains(peerId) then oldSuccessful += 1
@@ -661,7 +609,6 @@ trait ConsensusElectorateCdm { thisModule =>
 
 			val captor = new sequencer.Captor[VotingQuorumResult[ParticipantId]]()
 			var highestTermSeen: Term = myStateInfo.currentTerm
-			var highestBallotSeen: Ballot = myStateInfo.ballot
 			var oldMatching: Int = if myVote.isNonBlank && oldParticipants.contains(boundParticipantId) then 1 else 0
 			var newMatching: Int = if myVote.isNonBlank && newParticipants.contains(boundParticipantId) then 1 else 0
 			var oldRetiring: Int = if myVote.votedRank == ER_RETIREE && oldParticipants.contains(boundParticipantId) then 1 else 0
@@ -672,14 +619,14 @@ trait ConsensusElectorateCdm { thisModule =>
 				val newWon = newParticipants.isEmpty || (newMatching + newJoining > halfOfNewParticipants)
 				if oldWon && newWon then {
 					unsubscribeRemaining()
-					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Won, highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+					captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Won, highestTermSeen, IArray.unsafeFromArray(replies)))
 					true
 				} else {
 					val oldLost = oldParticipants.nonEmpty && (oldMatching + oldRetiring + unresolvedOld <= halfOfOldParticipants)
 					val newLost = newParticipants.nonEmpty && (newMatching + newJoining + unresolvedNew <= halfOfNewParticipants)
 					if oldLost || newLost then {
 						unsubscribeRemaining()
-						captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Lost, highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+						captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Lost, highestTermSeen, IArray.unsafeFromArray(replies)))
 						true
 					} else false
 				}
@@ -700,11 +647,10 @@ trait ConsensusElectorateCdm { thisModule =>
 							if newParticipants.contains(peerId) then unresolvedNew -= 1
 
 							if vote.term > highestTermSeen then highestTermSeen = vote.term
-							if vote.ballot laterThan highestBallotSeen then highestBallotSeen = vote.ballot
 
-							if vote.term > myStateInfo.currentTerm || (vote.ballot laterThan myStateInfo.ballot) then {
+							if vote.term > myStateInfo.currentTerm then {
 								unsubscribeRemaining()
-								captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Stale(highestTermSeen, highestBallotSeen), highestTermSeen, highestBallotSeen, IArray.unsafeFromArray(replies)))
+								captor.captureSync(VotingQuorumResult(VotingQuorumOutcome_Stale(highestTermSeen), highestTermSeen, IArray.unsafeFromArray(replies)))
 							} else {
 								if vote.votedId == myVote.votedId && vote.isNonBlank then {
 									if oldParticipants.contains(peerId) then oldMatching += 1
@@ -759,30 +705,28 @@ trait ConsensusElectorateCdm { thisModule =>
 	 *  2. '''Incumbent Leadership''' ([[StateInfo.rank]] == `ER_LEADING`): An active leader of the current term takes precedence over non-leaders to preserve leadership stability.
 	 *  3. '''Log Completeness''' ([[StateInfo.compareCompleteness]]): Compares `lastRecordTerm`, then `lastRecordIndex`. Crucially, log completeness takes strict priority over all non-leading ranks (`ER_CANDIDATE`, `ER_FOLLOWER`, `ER_RETIREE`, `ER_JOINER`). This guarantees that a retiring or joining node holding a more complete log beats an `ER_CANDIDATE`, forcing active nodes to vote for it and safely absorb its committed log entries.
 	 *  4. '''Candidate Preference''' ([[StateInfo.rank]] == `ER_CANDIDATE`): When log completeness is identical, active candidates take precedence over passive followers or retirees to avoid vote fragmentation.
-	 *  5. '''Electorate Membership''' (`isInCommonConfig`): Favors nodes belonging to both the old and new configuration sets during joint consensus transitions.
+	 *  5. '''Old Configuration Membership''' (`isInOldSet`): Favors nodes belonging to the old configuration set (`Cold`) over new-only nodes (`Cnew \ Cold`) during joint consensus transitions. This is an essential liveness invariant: when a [[JointElectorateChange]] record has been appended but is not yet committed, lagging nodes operating under [[SoleElectorate]] (`Cold`) only discover and vote for peers in `Cold`. If joint nodes chose a new-only peer, votes would deterministically split between `Cold` and `Cnew \ Cold`, deadlocking election quorums because uncommitted joint entries cannot be absorbed out-of-band via commit index absorption.
 	 *  6. '''Deterministic Tie-Breaking''' (`participantId`): Total order on identifiers (`incumbentId < otherId`) ensures all participants observing an identical candidate subset converge on the exact same candidate.
 	 *
 	 * @param voterId the [[ParticipantId]] of the evaluating voter.
 	 * @param voterStateInfo the [[StateInfo]] of the evaluating voter.
-	 * @param voterIsInCommonSet whether the voter belongs to the common participant set in joint consensus. */
-	private final class CandidateDecider(voterId: ParticipantId, voterStateInfo: StateInfo, voterIsInCommonSet: Boolean) {
+	 * @param voterIsInOldSet whether the voter belongs to the old participant set (`Cold`) in joint consensus. */
+	private final class CandidateDecider(voterId: ParticipantId, voterStateInfo: StateInfo, voterIsInOldSet: Boolean) {
 		private var chosenId = voterId
 		private var chosenInfo = voterStateInfo
-		private var chosenIsInCommonSet = voterIsInCommonSet
+		private var chosenIsInOldSet = voterIsInOldSet
 		private var mostCompleteInfo = voterStateInfo
-		private val borrame: ArrayBuffer[(ParticipantId, StateInfo, Boolean)] = ArrayBuffer((voterId, voterStateInfo, voterIsInCommonSet)) //TODO delete line
 
 		/** Evaluates a candidate against the currently chosen candidate according to the evaluation hierarchy.
 		 *
 		 * @param otherId the [[ParticipantId]] of the contender.
 		 * @param otherInfo the [[StateInfo]] of the contender.
-		 * @param otherIsInCommonConfig whether the contender belongs to both old and new participant sets in joint consensus.
+		 * @param otherIsInOldSet whether the contender belongs to the old participant set (`Cold`) in joint consensus.
 		 * @see [[CandidateDecider]] for the 6-point evaluation ranking hierarchy. */
-		def contend(otherId: ParticipantId, otherInfo: StateInfo, otherIsInCommonConfig: Boolean): Unit = {
+		def contend(otherId: ParticipantId, otherInfo: StateInfo, otherIsInOldSet: Boolean): Unit = {
 			val incumbentId = chosenId
 			val incumbentInfo = chosenInfo
-			val incumbentIsInCommonConfig = chosenIsInCommonSet
-			borrame.addOne((otherId, otherInfo, otherIsInCommonConfig)) //TODO delete line
+			val incumbentIsInOldSet = chosenIsInOldSet
 
 			val theOtherWins =
 				if incumbentInfo.currentTerm > otherInfo.currentTerm then false
@@ -795,15 +739,15 @@ trait ConsensusElectorateCdm { thisModule =>
 					else if completenessComparison < 0 then true
 					else if incumbentInfo.rank == ER_CANDIDATE && otherInfo.rank != ER_CANDIDATE then false
 					else if incumbentInfo.rank != ER_CANDIDATE && otherInfo.rank == ER_CANDIDATE then true
-					else if incumbentIsInCommonConfig && !otherIsInCommonConfig then false
-					else if !incumbentIsInCommonConfig && otherIsInCommonConfig then true
+					else if incumbentIsInOldSet && !otherIsInOldSet then false
+					else if !incumbentIsInOldSet && otherIsInOldSet then true
 					else if incumbentId < otherId then false
 					else true
 				}
 			if theOtherWins then {
 				chosenId = otherId
 				chosenInfo = otherInfo
-				chosenIsInCommonSet = otherIsInCommonConfig
+				chosenIsInOldSet = otherIsInOldSet
 			}
 			if otherInfo.compareCompleteness(mostCompleteInfo) > 0 then mostCompleteInfo = otherInfo
 		}
@@ -812,14 +756,13 @@ trait ConsensusElectorateCdm { thisModule =>
 		 *
 		 * @param reachableCommonParticipants count of reachable participants in the common/old set.
 		 * @param reachableTargetParticipants count of reachable participants in the target/new set.
-		 * @param ballot ballot identifier for this election attempt.
 		 * @return a [[Maybe]] containing the cast [[Vote]], or [[Maybe.empty]] if the chosen candidate lacks sufficient completeness. */
-		def castVote(reachableCommonParticipants: Int, reachableTargetParticipants: Int, ballot: Ballot)(using Trace.Context): Maybe[Vote[ParticipantId]] = {
+		def castVote(reachableCommonParticipants: Int, reachableTargetParticipants: Int)(using Trace.Context): Maybe[Vote[ParticipantId]] = {
 			val ci = chosenInfo
 			val castedVote =
-				if ci.compareCompleteness(mostCompleteInfo) >= 0 then Maybe(Vote(voterStateInfo.currentTerm, chosenId, reachableCommonParticipants, reachableTargetParticipants, ci.rank, ballot))
+				if ci.compareCompleteness(mostCompleteInfo) >= 0 then Maybe(Vote(voterStateInfo.currentTerm, chosenId, reachableCommonParticipants, reachableTargetParticipants, ci.rank))
 				else Maybe.empty
-			Trace.debug(s"castedVote=$castedVote, contestants=$borrame") //TODO delete line
+			Trace.debug(s"castedVote=$castedVote")
 			castedVote
 		}
 	}

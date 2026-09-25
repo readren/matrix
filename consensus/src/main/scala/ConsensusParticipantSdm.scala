@@ -293,20 +293,19 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * To improve availability during planned cluster-membership transitions, the manager of the planed change should do the following:
 			 *		1 call this method on every consensus-participant service to ensure the leader gets noticed, // TODO this is awkward. Make the electorate-change request be propagated to the leader when received by non-leaders.
 			 *		2 wait until either:
-			 *			- the returned [[sequencer.Capture]] yields either [[SUCCESSFULLY_CHANGED]] or [[ALREADY_CHANGED]] for any of the consensus-participants,
+			 *			- the returned [[sequencer.Capture]] yields either [[ElectorateChangeResponse.SuccessfullyChanged]] or [[ElectorateChangeResponse.AlreadyChanged]] for any of the consensus-participants,
 			 *			- or the [[onActiveElectorateChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
 			 *
 			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onActiveElectorateChanged]] method of each of the [[ClusterParticipant]] instances bound to the involved [[ConsensusParticipant]] services.
 			 * @param desiredParticipantsSet the identifiers of the participants that are going to seek consensus from now on.
-			 * @param priorAnswer should contain the response to the last request done by the inquirer to this or any other participant, if any.
 			 * @return a [[sequencer.Capture]] that yields:
-			 *         [[SUCCESSFULLY_CHANGED]] if the requested change was successfully completed.
-			 *         [[ALREADY_CHANGED]] if the requested change is already done or in progress.
-			 *         [[ASK_THE_LEADER]] if none of the previous bullet is true and the [[ConsensusParticipant]] is a [[FOLLOWER]].
-			 *         [[STOPPED]] if the participant is not able to become neither the [[LEADER]] nor a [[FOLLOWER]]
+			 *         [[ElectorateChangeResponse.SuccessfullyChanged]] if the requested change was successfully completed.
+			 *         [[ElectorateChangeResponse.AlreadyChanged]] if the requested change is already done or in progress.
+			 *         [[ElectorateChangeResponse.AskTheLeader]] if none of the previous bullet is true and the [[ConsensusParticipant]] is a [[FOLLOWER]].
+			 *         [[ElectorateChangeResponse.Stopped]] if the participant is not able to become neither the [[LEADER]] nor a [[FOLLOWER]]
 			 *         - currently the leader or a follower that already has the desired participants set as the current or scheduled one;
 			 *         - currently the leader and was able to replicate the corresponding [[JointElectorateChange]] to a majority according to that same [[JointElectorateChange]] rules. */
-			def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse]): sequencer.Capture[ElectorateChangeResponse]
+			def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId]): sequencer.Capture[ElectorateChangeResponse]
 		}
 
 		/**
@@ -563,23 +562,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		/** Memory where the [[Role.onQuiescencePermitted]] method stores the [[RecordIndex]] of the last [[SoleElectorateChange]] for which quiescence was authorized. */
 		private var indexOfSecForWhichQuiescenceWasPermitted: RecordIndex = 0
 
-		/** The current election round.
-		 * Should be bumped whenever the part of the state of this participant that is exposed in questions to other participants (term and commitIndex as of this writing) changes.
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.Capture]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
-		private var currentBallot: Ballot = INITIAL_BALLOT
-
 		/** Stores the last [[StateInfo]] instance returned by [[Role.syncLocalStateInfo]]
 		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.Capture]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on. */
-		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(PRE_INIT, ER_NONE, PRE_INIT, 0, PRE_INIT, 0, INITIAL_BALLOT)
+		private var stateInfoExposedInLastInteraction: StateInfo = StateInfo(PRE_INIT, ER_NONE, PRE_INIT, 0, PRE_INIT, 0)
 
-		/** Memorizes the [[StateInfo]] of the other participants seen during the [[currentBallot]].
-		 * The [[StateInfo.ballot]] field of contained instances should match the [[currentBallot]].
-		 * When a [[StateInfo]] with a newer ballot is seen, this map is cleared before adding it.
-		 * DO NOT FORGET TO call the appropriate method (like [[Role.syncLocalStateInfo]] or [[updateSeenStateInfo]]) to update this variable before reading it.
-		 * CAUTION: This variable depends on the [[PrimaryState]] (as well as external states); mutations to the [[PrimaryState]] modify its value. To ensure deterministic causal ordering relative to these mutations, a [[StatefulRole]] must only access this variable within consumers synchronously subscribed to the [[sequencer.Capture]] returned by [[sequencer.CausalFence.causalAnchor]] or [[sequencer.CausalFence.advance]]-like methods on the [[StatefulRole.primaryStateFence]]. This ensures the variable is read in synchronization with the specific PrimaryState mutation it depends on.
-		 * @note uses a java map to improve efficiency. // TODO consider using an array instead. But only if complexity isn't increased to much. The inefficiencies due to being a map only apply during role updates.
-		 * TODO make values be [[Captor]]s of [[StateInfo]] so that received questions that include a [[StateInfo]] fulfill the howAreYou questions done by this participant. */
-		private val memorizedPeersInfos: java.util.Map[ParticipantId, StateInfo] = new java.util.HashMap()
 
 		/** CAUTION: [[PrimaryState]] mutations depend on the value of this variable. Therefore, this variable value must be in sync with the [[PrimaryState]] by means of the [[StatefulRole.primaryStateFence]] game changing invariant. */
 		private var decoupledCommandsApplierCompletion: sequencer.Capture[Unit] = sequencer.Capture_unit
@@ -602,7 +588,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					checkWithin()
 					currentRole.onCommandFromClient(command, attemptFlag).recover { e =>
 						if !e.isInstanceOf[GracefullyReleased] then scribe.error(s"$boundParticipantId: Unexpected error processing client command: $command", e)
-						val nextAttemptFlag = if attemptFlag == REDIRECTED then LEADERSHIP_VACATED else attemptFlag.withInternalBitsCleared
+						val nextAttemptFlag = if attemptFlag == REDIRECTED then LEADERSHIP_VACATED else attemptFlag
 						Maybe(Unable(nextAttemptFlag, cluster.getOtherProbableParticipants))
 					}
 				}
@@ -623,7 +609,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					currentRole.onChooseALeader(inquirerId, inquirerInfo).recover {
 						case _: GracefullyReleased =>
 							val info = currentRole.syncStatelessStateInfo()
-							Maybe(currentRole.blankVote(info.currentTerm, info.ballot))
+							Maybe(currentRole.blankVote(info.currentTerm))
 						case _ => Maybe.empty
 					}
 				}
@@ -646,11 +632,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 
-			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse]): sequencer.Capture[ElectorateChangeResponse] = {
+			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId]): sequencer.Capture[ElectorateChangeResponse] = {
 				Trace.init(() => s"$boundParticipantId: requestElectorateChange-$requestId") {
 					checkWithin()
-					currentRole.requestElectorateChange(requestId, desiredParticipants, priorAnswer).recover {
-						case _: GracefullyReleased => Maybe(new STOPPED(currentRole.syncStatelessStateInfo().ballot))
+					currentRole.requestElectorateChange(requestId, desiredParticipants).recover {
+						case _: GracefullyReleased => Maybe(ElectorateChangeResponse.Stopped)
 						case _ => Maybe.empty
 					}
 				}
@@ -716,34 +702,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			currentRole
 		}
 
-		/** Starts a new ballot by incrementing the [[currentBallot]] and clearing the [[memorizedPeersInfos]]. */
-		private inline def startNewBallot(): Unit = {
-			currentBallot = currentBallot.bumped
-			memorizedPeersInfos.clear()
-		}
-
-		/** Updates the [[currentBallot]] and clears the [[memorizedPeersInfos]] if it is lower than the `seenBallot`.
-		 * @return true if the [[currentBallot]] was updated. */
-		private def updateBallotIfLowerThan(myStateInfo: StateInfo, seenBallot: Ballot): Boolean = {
-			if seenBallot laterThan myStateInfo.ballot then {
-				currentBallot = seenBallot
-				memorizedPeersInfos.clear()
-				true
-			} else false
-		}
-
-		/** Updates the [[currentBallot]] and the [[memorizedPeersInfos]] based on the bound participant's current [[StateInfo]] (which must be provided) and a seen [[StateInfo]] of another participant.
-		 * Assumes that [[StateInfo.ballot]] behaves as a primary key among all the instances of [[StateInfo]] created by the same participant.
-		 * @return true if either the [[currentBallot]] or the [[memorizedPeersInfos]] are updated. */
-		private def updateSeenStateInfo(myCurrentStateInfo: StateInfo, seenParticipantId: ParticipantId, seenStateInfo: StateInfo): Boolean = {
-			if updateBallotIfLowerThan(myCurrentStateInfo, seenStateInfo.ballot)
-				|| (seenStateInfo.ballot == myCurrentStateInfo.ballot && !memorizedPeersInfos.containsKey(seenParticipantId))
-			then {
-				memorizedPeersInfos.put(seenParticipantId, seenStateInfo)
-				true
-			} else false
-		}
-
 		//// ROLE ////
 
 		/**
@@ -767,7 +725,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term)(using Trace.Context): sequencer.Capture[AppendResult]
 
-			def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse]
+			def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse]
 
 			/** The ordinal corresponding to this [[Role]] */
 			val ordinal: RoleOrdinal
@@ -775,9 +733,9 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			def diagnosticInfo: RoleDiagnostic = GenericRoleDiagnostic(ordinal)
 
-			final def blankVote(term: Term, ballot: Ballot): Vote[ParticipantId] = Vote(term, boundParticipantId, 0, 0, thisRole.rank, ballot)
+			final def blankVote(term: Term): Vote[ParticipantId] = Vote(term, boundParticipantId, 0, 0, thisRole.rank)
 
-			final def yieldsBlankVote(term: Term, ballot: Ballot): sequencer.Capture[Vote[ParticipantId]] = sequencer.Keeper(blankVote(term, ballot))
+			final def yieldsBlankVote(term: Term): sequencer.Capture[Vote[ParticipantId]] = sequencer.Keeper(blankVote(term))
 
 			/** Called by [[become]] after the previous [[Role]]'s [[Role.handleExit]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
 			 * This method is suitable to enqueue primary state updates that must happen before any updates enqueued after [[become]] returns. */
@@ -791,7 +749,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			def getCommittedTerm: Term = PRE_INIT
 
-			/** Synchronizes and returns the current [[StateInfo]], bumping [[currentBallot]] and clearing memorized peer info if any state component changed since the last interaction.
+			/** Synchronizes and returns the current [[StateInfo]], refreshing state info if any state component changed since the last interaction.
 			 * @param maybePrimaryState the current causally anchored [[PrimaryState]], which must be defined for [[StatefulRole]]s and empty for stateless roles. */
 			def syncLocalStateInfo(maybePrimaryState: Maybe[PrimaryState])(using Trace.Context): StateInfo
 
@@ -801,26 +759,20 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			/** Convenience method for stateless callers or fallback paths where no [[PrimaryState]] is held. */
 			inline final def syncStatelessStateInfo()(using Trace.Context): StateInfo = syncLocalStateInfo(Maybe.empty)
 
-			final def updateLocalStateInfo(maybePrimaryState: Maybe[PrimaryState], seenParticipantId: ParticipantId, seenStateInfo: StateInfo)(using Trace.Context): StateInfo = {
-				var updatedStateInfo = syncLocalStateInfo(maybePrimaryState)
-				if updateSeenStateInfo(updatedStateInfo, seenParticipantId, seenStateInfo) then updatedStateInfo = syncLocalStateInfo(maybePrimaryState)
-				updatedStateInfo
-			}
 
-			/** Returns a [[StateInfo]] that indicates disability to participate; and, if the returned value differs from [[stateInfoExposedInLastInteraction]], bumps the [[currentBallot]] and clears the [[memorizedPeersInfos]]. */
+			/** Returns a [[StateInfo]] that indicates disability to participate. */
 			protected final def buildIneligibleInfo(term: Term): StateInfo = {
 				val rememberedInfo = stateInfoExposedInLastInteraction
-				val newInfo =
-					if rememberedInfo.tiesWith(term, thisRole.rank, PRE_INIT, 0, PRE_INIT, 0) then {
-						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(term, thisRole.rank, PRE_INIT, 0, PRE_INIT, 0, currentBallot)
-					} else {
-						currentBallot = currentBallot.bumped
-						memorizedPeersInfos.clear()
-						StateInfo(term, thisRole.rank, PRE_INIT, 0, PRE_INIT, 0, currentBallot)
-					}
-				stateInfoExposedInLastInteraction = newInfo
-				newInfo
+				val rank = thisRole.rank
+				if rememberedInfo.matchesValues(term, rank, PRE_INIT, 0, PRE_INIT, 0) then rememberedInfo
+				else {
+					val newInfo = StateInfo(term, rank, PRE_INIT, 0, PRE_INIT, 0)
+					stateInfoExposedInLastInteraction = newInfo
+					newInfo
+				}
 			}
+
+			def isGhost: Boolean = false
 
 			/** Must be called before transitioning to [[Retiring]] to handle the special case when the active [[Electorate]] in an empty [[SoleElectorate]].\
 			 * The [[Leader]] role should start the process that authorizes others to transition to the terminal [[QUIESCED]] state.\
@@ -861,94 +813,53 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			override final def getCommittedTerm: Term = primaryStateFence.committedState.map(_.currentTerm).getOrElse(PRE_INIT)
 
-			/** Returns a [[StateInfo]] that reflects the provided [[PrimaryState]], the [[commitIndex]], the [[rank]], and the [[currentBallot]] of the bound participant; and, if the returned value differs from the one returned in the previous call (stored in [[stateInfoExposedInLastInteraction]]), bumps the [[currentBallot]] and clears the [[memorizedPeersInfos]]. */
+			/** Returns a [[StateInfo]] that reflects the provided [[PrimaryState]], the [[commitIndex]], and the [[rank]] of the bound participant. */
 			override final def syncLocalStateInfo(maybePrimaryState: Maybe[PrimaryState])(using Trace.Context): StateInfo = Trace.step("syncLocalStateInfo") {
 				assert(maybePrimaryState.isDefined, s"StatefulRole (${RoleOrdinal_nameOf(ordinal)}) requires a defined PrimaryState")
 				val primaryState = maybePrimaryState.get
-				val rememberedInfo = stateInfoExposedInLastInteraction
 				val termAtCommitIndex = primaryState.getRecordTermAt(commitIndex)
 				val lastRecordIndex = primaryState.firstEmptyRecordIndex - 1
 				val lastRecordTerm = primaryState.getRecordTermAt(lastRecordIndex)
-				val newInfo =
-					if rememberedInfo.tiesWith(primaryState.currentTerm, thisStatefulRole.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex) then {
-						if rememberedInfo.ballot == currentBallot then rememberedInfo else StateInfo(primaryState.currentTerm, thisStatefulRole.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex, currentBallot)
-					} else {
-						currentBallot = currentBallot.bumped
-						memorizedPeersInfos.clear()
-						StateInfo(primaryState.currentTerm, thisStatefulRole.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex, currentBallot)
-					}
-				stateInfoExposedInLastInteraction = newInfo
-				if assertionsEnabled then assert(newInfo.rank != ER_NONE)
-				newInfo
+
+				val rememberedInfo = stateInfoExposedInLastInteraction
+				if rememberedInfo.matchesValues(primaryState.currentTerm, thisStatefulRole.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex) then rememberedInfo
+				else {
+					val newInfo = StateInfo(primaryState.currentTerm, thisStatefulRole.rank, termAtCommitIndex, commitIndex, lastRecordTerm, lastRecordIndex)
+					assert(newInfo.rank != ER_NONE)
+					stateInfoExposedInLastInteraction = newInfo
+					newInfo
+				}
 			}
 
 			protected sealed trait DiscoveryReconciliation
 
-			protected case class DiscoveryReconciledReady(primaryState: PrimaryState, electorate: Electorate, stateInfo: StateInfo) extends DiscoveryReconciliation
+			protected class DiscoveryReconciledReady(
+				val primaryState: PrimaryState,
+				val stateInfo: StateInfo,
+				val peersReplies: IArray[Try[StateInfo]]
+			) extends DiscoveryReconciliation
 
-			protected case class DiscoveryReconciledRestart(primaryState: PrimaryState, reason: String) extends DiscoveryReconciliation
+			protected class DiscoveryReconciledRestart(val primaryState: PrimaryState, val reason: String) extends DiscoveryReconciliation
 
-			protected case object DiscoveryReconciledRoleChanged extends DiscoveryReconciliation
+			protected object DiscoveryReconciledRoleChanged extends DiscoveryReconciliation
 
-			/** Phase 1 Discovery Query: Inquires all peers in the provided [[Electorate]] how they are ([[ClusterParticipant.howAreYou]]) and accumulates their replies into a [[DiscoveryQuorumResult]].\
-			 * Pure query: performs zero mutations on [[PrimaryState]], [[commitIndex]], [[memorizedPeersInfos]], or [[currentBallot]]. */
-			protected final def discoverPeersState(electorate: Electorate, stateInfo: StateInfo)(using Trace.Context): sequencer.Capture[DiscoveryQuorumResult[ParticipantId]] = {
-				val inquiries = askHowOtherParticipantsAre(electorate.peers, stateInfo, memorizedPeersInfos)
-				electorate.accumulateDiscoveryQuorum(stateInfo, inquiries)
-			}
-
-			/** Phase 1 State Reconciliation Command: Ingests the discovery result by updating the term (if a higher term was seen), ingesting peer state info, advancing the commit index (if absorptive), and checking for electorate shifts. */
-			protected final def reconcileDiscoveredState(electorateAtRequest: Electorate, discoveryResult: DiscoveryQuorumResult[ParticipantId])(using Trace.Context): sequencer.Capture[DiscoveryReconciliation] = {
-				Trace.trace(s"Discovery replies=${discoveryResult.replies.zip(electorateAtRequest.peers).mkString("[", ", ", "]")}, latestTermSeen=${discoveryResult.highestTermSeen}, outcome=${discoveryResult.outcome}")
-				for primaryState1 <- updateTermIfLessThan(discoveryResult.highestTermSeen) yield {
-					if currentRole ne thisStatefulRole then DiscoveryReconciledRoleChanged
-					else {
-						var stateInfo1 = currentRole.syncStatefulStateInfo(primaryState1)
-						discoveryResult.outcome match {
-							case _: DiscoveryQuorumOutcome_MajorityReached =>
-								electorateAtRequest.peers.foreachWithIndex { (peerId, peerIndex) =>
-									discoveryResult.replies(peerIndex) match {
-										case Success(peerInfo) =>
-											if updateSeenStateInfo(stateInfo1, peerId, peerInfo) then stateInfo1 = currentRole.syncStatefulStateInfo(primaryState1)
-										case _ => ()
-									}
-								}
-								if absorbHigherCommitIndexFromPeers(primaryState1, stateInfo1) then DiscoveryReconciledRestart(primaryState1, "commit index absorbed from peer")
-								else {
-									val electorate1 = deriveElectorateFrom(primaryState1)
-									if electorate1 ne electorateAtRequest then DiscoveryReconciledRestart(primaryState1, s"electorate change (${electorateAtRequest.changeIndex}->${electorate1.changeIndex})")
-									else DiscoveryReconciledReady(primaryState1, electorate1, stateInfo1)
-								}
-
-							case stale: DiscoveryQuorumOutcome_Stale =>
-								updateBallotIfLowerThan(stateInfo1, stale.higherBallot)
-								val electorate1 = deriveElectorateFrom(primaryState1)
-								DiscoveryReconciledReady(primaryState1, electorate1, currentRole.syncStatefulStateInfo(primaryState1))
-
-							case _ =>
-								val electorate1 = deriveElectorateFrom(primaryState1)
-								DiscoveryReconciledReady(primaryState1, electorate1, stateInfo1)
-						}
-					}
-				}
-			}
-
-			/** Phase 1 Vote Decision Query: Pure synchronous calculation that evaluates our vote from the reconciled state and discovery outcome. */
+			/** Candidate Vote Decision Query: Pure synchronous calculation that determines the local vote from the reconciled state, discovery outcome, and discovered peer states. */
 			def decideMyVote(
 				primaryState: PrimaryState,
 				electorate: Electorate,
 				stateInfo: StateInfo,
-				outcome: DiscoveryQuorumOutcome
+				outcome: DiscoveryQuorumOutcome,
+				peersReplies: IArray[Try[StateInfo]]
 			)(using Trace.Context): Vote[ParticipantId] = {
 				outcome match {
 					case _: DiscoveryQuorumOutcome_MajorityReached =>
-						if electorate.isBoundIncluded || (currentRole.isInstanceOf[Leader] && currentRole.asInstanceOf[Leader].isGhost) then {
-							electorate.decideMyVote(stateInfo, memorizedPeersInfosToArray(electorate))
-								.fold(blankVote(primaryState.currentTerm, stateInfo.ballot))(identity)
-						} else blankVote(primaryState.currentTerm, stateInfo.ballot)
+						if electorate.isBoundIncluded || currentRole.isGhost then {
+							electorate.decideMyVote(stateInfo, peersReplies)
+								.fold(blankVote(primaryState.currentTerm))(identity)
+						} else blankVote(primaryState.currentTerm)
 
 					case _: DiscoveryQuorumOutcome_MajorityImpossible | _: DiscoveryQuorumOutcome_Stale =>
-						blankVote(primaryState.currentTerm, stateInfo.ballot)
+						blankVote(primaryState.currentTerm)
 
 					case activeLeader: DiscoveryQuorumOutcome_ActiveLeaderDetected[ParticipantId] @unchecked =>
 						Vote(
@@ -956,38 +867,35 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 							activeLeader.leaderId,
 							reachableCommonCount = 1,
 							reachableTargetCount = 1,
-							votedRank = ER_LEADING,
-							ballot = stateInfo.ballot
+							votedRank = ER_LEADING
 						)
 				}
 			}
 
-			/** Advances the local [[commitIndex]] as far as the peers, provided the [[Term]] of the local [[Record]] at the peer's [[StateInfo.commitIndex]] matches the peer's [[StateInfo.termAtCommitIndex]].\
+			/** Advances the local [[commitIndex]] as far as the peer, provided the [[Term]] of the local [[Record]] at the peer's [[StateInfo.commitIndex]] matches the peer's [[StateInfo.termAtCommitIndex]].\
 			 * This advancement safety is guaranteed by Raft's Log Matching Property.
 			 * @param primaryState the current [[PrimaryState]]
-			 * @param stateInfo the current [[StateInfo]]. Not referenced in the body but present as parameter to require [[memorizedPeersInfos]] be up-to-date. */
-			protected final def absorbHigherCommitIndexFromPeers(primaryState: PrimaryState, stateInfo: StateInfo)(using Trace.Context): Boolean = {
-				if memorizedPeersInfos.isEmpty then false
-				else {
-					val firstEmptyRecordIndex = primaryState.firstEmptyRecordIndex
-					var currentCommitIndex = commitIndex
-					var absorbed = false
-					val iterator = memorizedPeersInfos.values.iterator()
-					while iterator.hasNext do {
-						val peerStateInfo = iterator.next()
-						val peerCommitIndex = peerStateInfo.commitIndex
-						// Using Raft's Log Matching Property, we can safely advance our commitIndex if a peer has a higher commitIndex and our logs match up to that index.
-						if firstEmptyRecordIndex > peerCommitIndex
-							&& peerCommitIndex > currentCommitIndex
-							&& primaryState.getRecordTermAt(peerCommitIndex) == peerStateInfo.termAtCommitIndex
-						then {
-							commitIndex = peerCommitIndex
-							notifyListeners(_.onCommitIndexChanged(currentCommitIndex, peerCommitIndex, currentRole.ordinal, primaryState.currentTerm))
-							currentCommitIndex = peerCommitIndex
-							absorbed = true
-						}
-					}
-					absorbed
+			 * @param peerStateInfo the peer's [[StateInfo]] */
+			protected final def absorbHigherCommitIndex(primaryState: PrimaryState, peerStateInfo: StateInfo)(using Trace.Context): Boolean = {
+				val firstEmptyRecordIndex = primaryState.firstEmptyRecordIndex
+				val currentCommitIndex = commitIndex
+				val peerCommitIndex = peerStateInfo.commitIndex
+				// Using Raft's Log Matching Property, we can safely advance our commitIndex if a peer has a higher commitIndex and our logs match up to that index.
+				if firstEmptyRecordIndex > peerCommitIndex
+					&& peerCommitIndex > currentCommitIndex
+					&& primaryState.getRecordTermAt(peerCommitIndex) == peerStateInfo.termAtCommitIndex
+				then {
+					commitIndex = peerCommitIndex
+					notifyListeners(_.onCommitIndexChanged(currentCommitIndex, peerCommitIndex, currentRole.ordinal, primaryState.currentTerm))
+					true
+				} else false
+			}
+
+			/** Advances the local [[commitIndex]] as far as any of the provided peers, provided the local log matches their commit index. */
+			protected final def absorbHigherCommitIndexFromPeers(primaryState: PrimaryState, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Boolean = {
+				peersReplies.foldLeftWithIndex(false) { (absorbed, reply, peerIndex) =>
+					if reply.isSuccess then absorbHigherCommitIndex(primaryState, reply.get) || absorbed
+					else absorbed
 				}
 			}
 
@@ -996,7 +904,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm) // Note that this may change the role.
 					response <- {
 						if currentRole ne this then currentRole.onHowAreYou(inquirerId, inquirerInfo)
-						else sequencer.Keeper(updateLocalStateInfo(Maybe(primaryState1), inquirerId, inquirerInfo))
+						else sequencer.Keeper(syncStatefulStateInfo(primaryState1))
 					}
 				} yield response
 			}
@@ -1009,24 +917,24 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					myVote <- {
 						if currentRole ne this then currentRole.onChooseALeader(inquirerId, inquirerInfo)
 						else {
-							var currentStateInfo = updateLocalStateInfo(Maybe(primaryState1), inquirerId, inquirerInfo)
-							if absorbHigherCommitIndexFromPeers(primaryState1, currentStateInfo) then currentStateInfo = syncStatefulStateInfo(primaryState1)
+							var currentStateInfo = syncStatefulStateInfo(primaryState1)
+							if absorbHigherCommitIndex(primaryState1, inquirerInfo) then currentStateInfo = syncStatefulStateInfo(primaryState1)
 							val electorate1 = deriveElectorateFrom(primaryState1)
 							if !electorate1.isBoundIncluded || inquirerInfo.currentTerm < primaryState1.currentTerm then {
-								yieldsBlankVote(primaryState1.currentTerm, currentStateInfo.ballot)
+								yieldsBlankVote(primaryState1.currentTerm)
 							} else {
 								val isLogUpToDate = inquirerInfo.compareCompleteness(currentStateInfo) >= 0
 								if !isLogUpToDate then {
-									yieldsBlankVote(primaryState1.currentTerm, currentStateInfo.ballot)
+									yieldsBlankVote(primaryState1.currentTerm)
 								} else {
 									for {
 										primaryState2 <- primaryStateFence.causalAnchor()
 										vFinal <- {
 											if currentRole ne this then currentRole.onChooseALeader(inquirerId, inquirerInfo)
 											else if primaryState2.votedFor.isDefined && !primaryState2.votedFor.contains(inquirerId) then {
-												currentRole.yieldsBlankVote(primaryState2.currentTerm, currentStateInfo.ballot)
+												currentRole.yieldsBlankVote(primaryState2.currentTerm)
 											} else if primaryState2.votedFor.contains(inquirerId) then {
-												val grantedVote = Vote(primaryState2.currentTerm, inquirerId, 1, 0, inquirerInfo.rank, currentStateInfo.ballot)
+												val grantedVote = Vote(primaryState2.currentTerm, inquirerId, 1, 0, inquirerInfo.rank)
 												sequencer.Keeper(grantedVote)
 											} else {
 												primaryStateFence.advanceIf { ps =>
@@ -1035,8 +943,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 													} else Maybe.empty
 												}.map { psSaved =>
 													if psSaved.votedFor.contains(inquirerId) then {
-														Vote(psSaved.currentTerm, inquirerId, 1, 0, inquirerInfo.rank, currentStateInfo.ballot)
-													} else currentRole.blankVote(psSaved.currentTerm, currentStateInfo.ballot)
+														Vote(psSaved.currentTerm, inquirerId, 1, 0, inquirerInfo.rank)
+													} else currentRole.blankVote(psSaved.currentTerm)
 												}
 											}
 										}
@@ -1360,23 +1268,17 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			/** @inheritdoc
 			 * Wait in line for the [[PrimaryState]] and then delegate the request to the concrete stateful role. */
-			override final def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
-				Trace.trace(s"Handling change to $desiredParticipants, priorAnswer=$priorAnswer.")
+			override final def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
+				Trace.trace(s"Handling change to $desiredParticipants.")
 				for {
 					primaryState <- primaryStateFence.causalAnchor()
 					response <- {
-						// If a prior answer is provided, update the ballot and memorizedPeersInfos
-						val ballotWasUpdated = priorAnswer.fold(false) {
-							case nonTerminal: NonTerminalElectorateChangeResponse =>
-								updateBallotIfLowerThan(currentRole.syncStatefulStateInfo(primaryState), nonTerminal.latestBallotSeen)
-							case _: TerminalElectorateChangeResponse => false
-						}
-						// Delegate the request to the concrete stateful role.
+						// Delegate the request to the concrete role.
 						currentRole match {
 							case stateful: StatefulRole =>
-								stateful.requestElectorateChange(primaryState, requestId, desiredParticipants, ballotWasUpdated)
+								stateful.requestElectorateChange(primaryState, requestId, desiredParticipants)
 							case stateless =>
-								stateless.requestElectorateChange(requestId, desiredParticipants, priorAnswer)
+								stateless.requestElectorateChange(requestId, desiredParticipants)
 						}
 					}
 				} yield {
@@ -1385,7 +1287,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				}
 			}
 
-			def requestElectorateChange(primaryState: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.Capture[ElectorateChangeResponse]
+			def requestElectorateChange(primaryState: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Context): sequencer.Capture[ElectorateChangeResponse]
 
 			//// Role updaters
 
@@ -1421,65 +1323,33 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					inline def haveToAbort: Boolean = (currentRole ne this) || incumbentUpdateRoleSerial != serial
 
 					/** Role decision logic when my vote is for a peer and got the [[StateInfo]] of a majority. */
-					def whenVotingAnother(currentState: PrimaryState, vote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						if vote.votedRank == ER_LEADING then {
-							become(Follower(currentState.currentTerm, vote.votedId, primaryStateFence))
-							sequencer.Capture_unit
-						}
-						// If the voted participant isn't retiring, become Isolated.
-						else if vote.votedRank != ER_RETIREE then {
-							become(Isolated(primaryStateFence))
-							sequencer.Capture_unit
-						}
-						// If the voted participant is Retiring, then:
-						else {
-							val votedStateInfo = memorizedPeersInfos.get(vote.votedId)
-							// If a retiree wins the election, active candidates would get stuck indefinitely, as the retiree will never become Leader to advance their commitIndex via AppendEntries.
-							// To unstick the cluster, we attempt to safely absorb the retiree's commitIndex out-of-band using Raft's Log Matching Property: "If two entries in different logs have the same index and term, the logs are identical in all preceding entries."
-							// By verifying our local log has the exact same term at the retiree's commitIndex, we mathematically prove our log holds all the entries the retiree knew to be committed, making it unequivocally safe to advance our own commitIndex.
-							if currentState.firstEmptyRecordIndex > votedStateInfo.commitIndex
-								&& currentState.getRecordTermAt(votedStateInfo.commitIndex) == votedStateInfo.termAtCommitIndex
-								&& votedStateInfo.commitIndex > commitIndex
-							then {
-								commitIndex = votedStateInfo.commitIndex
-								updateRole(currentState)
-							} else {
-								become(Isolated(primaryStateFence))
-								sequencer.Capture_unit
-							}
-						}
+					def whenVotingAnother(primaryState2: PrimaryState, vote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
+						if vote.votedRank == ER_LEADING then become(Follower(primaryState2.currentTerm, vote.votedId, primaryStateFence))
+						else become(Isolated(primaryStateFence))
+						sequencer.Capture_unit
 					}
 
 					/** Continue the role update process assuming my vote is non-blank. */
-					def updateRoleKnowingMyNonBlankVote(currentState2: PrimaryState, electorate2: Electorate, myVote2: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						if assertionsEnabled then assert(myVote2.term == currentState2.currentTerm)
+					def updateRoleKnowingMyNonBlankVote(primaryState2: PrimaryState, electorateAtRequest: Electorate, myVote2: Vote[ParticipantId]): sequencer.Capture[Unit] = {
+						if assertionsEnabled then assert(myVote2.term == primaryState2.currentTerm)
 
 						// If excluded and not leading as ghost, then retire immediately.
-						if !electorate2.isBoundIncluded && !this.isInstanceOf[Leader] then {
-							this.authorizeQuiescenceIfVanished(electorate2.asInstanceOf[SoleElectorate]) // The downcast is safe because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole electorates.
-							become(Retiring(currentState2.currentTerm, electorate2.term, electorate2.changeIndex, electorate2.members))
+						if !electorateAtRequest.isBoundIncluded && !this.isInstanceOf[Leader] then {
+							this.authorizeQuiescenceIfVanished(electorateAtRequest.asInstanceOf[SoleElectorate]) // The downcast is safe because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole electorates.
+							become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
 							sequencer.Capture_unit
 						}
 						// If my vote is for an active leader, become/remain follower immediately without requiring a full discovery quorum.
-						else if myVote2.votedRank == ER_LEADING then whenVotingAnother(currentState2, myVote2)
+						else if myVote2.votedRank == ER_LEADING then whenVotingAnother(primaryState2, myVote2)
 						// else, if got the StateInfo of a majority of the active participants, then:
-						else if electorate2.reachedAMajority(myVote2) then {
+						else if electorateAtRequest.reachedAMajority(myVote2) then {
 							// If my vote is for other participant, become follower or isolated depending on the other is leading or not.
-							if myVote2.votedId != boundParticipantId then whenVotingAnother(currentState2, myVote2)
+							if myVote2.votedId != boundParticipantId then whenVotingAnother(primaryState2, myVote2)
 							// If my vote is for myself and I am leading, abort the role update.
 							else if this.ordinal == LEADER then sequencer.Capture_unit
 							// If the vote is for myself and I am not leading, decide based on everyone’s votes.
 							else {
-								val highestTermSeen = {
-									val iterator = memorizedPeersInfos.values.iterator()
-									var maxT = currentState2.currentTerm
-									while iterator.hasNext do {
-										val t = iterator.next().currentTerm
-										if t > maxT then maxT = t
-									}
-									maxT
-								}
-								val targetTerm = highestTermSeen.incremented
+								val targetTerm = primaryState2.currentTerm.incremented
 								for {
 									primaryStateBumped <- primaryStateFence.advanceIf { (ps0: PrimaryState) =>
 										if currentRole ne thisStatefulRole then Maybe.empty
@@ -1489,11 +1359,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 										if (currentRole ne thisStatefulRole) || primaryStateBumped.currentTerm < targetTerm then sequencer.Capture_unit
 										else {
 											val myStateInfoAtChooseALeaderRequest = syncStatefulStateInfo(primaryStateBumped)
-											val inquires = for replierId <- electorate2.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
+											val inquires = for replierId <- electorateAtRequest.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
 											for {
-												quorumResult <- electorate2.accumulateVotingQuorum(myVote2, myStateInfoAtChooseALeaderRequest, inquires)
+												quorumResult <- electorateAtRequest.accumulateVotingQuorum(myVote2, myStateInfoAtChooseALeaderRequest, inquires)
 												primaryState3 <- {
-													Trace.trace(s"Replied votes=${quorumResult.replies.zip(electorate2.peers).mkString("[", ", ", "]")}, latestTermSeen=${quorumResult.highestTermSeen}, myVote=$myVote2, outcome=${quorumResult.outcome}")
+													Trace.trace(s"Replied votes=${quorumResult.replies.zip(electorateAtRequest.peers).mkString("[", ", ", "]")}, latestTermSeen=${quorumResult.highestTermSeen}, myVote=$myVote2, outcome=${quorumResult.outcome}")
 													updateTermIfLessThan(quorumResult.highestTermSeen) // Note that this may change the role.
 												}
 												_ <- {
@@ -1504,26 +1374,18 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 															assert(this.ordinal != LEADER) // because while leading the term should never change.
 															sequencer.Capture_unit
 														} else {
-															val myStateInfo3 = syncStatefulStateInfo(primaryState3)
-															val aHigherBallotHaveBeenSeenInVotes = updateBallotIfLowerThan(myStateInfo3, quorumResult.highestBallotSeen)
-															if aHigherBallotHaveBeenSeenInVotes || myStateInfo3.ballot != myStateInfoAtChooseALeaderRequest.ballot then {
-																// TODO consider the inclusion of the StateInfo in Vote in order to keep the StateInfo instances with the highest ballot seen. This would save howAreYou calls to participants for which the StateInfo in the Vote already corresponds to the new ballot. Note that this safe would occur only when restarting the role update due to a higher ballot seen in votes.
-																Trace.trace(s"Restarting due to ${if aHigherBallotHaveBeenSeenInVotes then "a higher ballot seen in votes" else "to a ballot bump"}.")
-																updateRole(primaryState3)
-															} else {
-																quorumResult.outcome match {
-																	case _: VotingQuorumOutcome_Won =>
-																		if assertionsEnabled then assert(myVote2.votedId == boundParticipantId)
-																		val electorate3 = deriveElectorateFrom(primaryState3)
-																		become(Leader(primaryState3.currentTerm, primaryState3, electorate3, primaryStateFence))
-																		sequencer.Capture_unit
-																	case _: VotingQuorumOutcome_Lost =>
-																		become(Isolated(primaryStateFence))
-																		sequencer.Capture_unit
-																	case stale: VotingQuorumOutcome_Stale =>
-																		Trace.trace(s"Restarting due to stale voting quorum outcome (${stale.higherTerm}, ${stale.higherBallot}).")
-																		updateRole(primaryState3)
-																}
+															quorumResult.outcome match {
+																case _: VotingQuorumOutcome_Won =>
+																	if assertionsEnabled then assert(myVote2.votedId == boundParticipantId)
+																	val electorate3 = deriveElectorateFrom(primaryState3)
+																	become(Leader(primaryState3.currentTerm, primaryState3, electorate3, primaryStateFence))
+																	sequencer.Capture_unit
+																case _: VotingQuorumOutcome_Lost =>
+																	become(Isolated(primaryStateFence))
+																	sequencer.Capture_unit
+																case stale: VotingQuorumOutcome_Stale =>
+																	Trace.trace(s"Restarting due to stale voting quorum outcome (${stale.higherTerm}).")
+																	updateRole(primaryState3)
 															}
 														}
 													}
@@ -1542,37 +1404,42 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 
 					/** Continue the role update process by treating blank vote cases. */
-					def updateRoleKnowingMyVote(primaryState2: PrimaryState, myVote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						val electorate2 = deriveElectorateFrom(primaryState2)
-
+					def updateRoleKnowingMyVote(primaryState2: PrimaryState, electorateAtRequest: Electorate, myVote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
 						// If my vote is blank, then:
 						if myVote.isBlank then {
 							// if we are included, then:
-							if electorate2.isBoundIncluded then {
-								// Advance our commitIndex by absorbing it from a more complete peer and, if successful, restart the role update. This is necessary again here to handle the situation when a concurrent RPC (such as onHowAreYou or onChooseALeader from another peer) updates memorizedPeersInfos with a higher commit index after reconcileDiscoveredState has returned but before primaryState2 is causally anchored.
-								if absorbHigherCommitIndexFromPeers(primaryState2, syncStatefulStateInfo(primaryState2)) then updateRole(primaryState2)
-								// else become Isolated.
-								else {
-									become(Isolated(primaryStateFence))
-									sequencer.Capture_unit
-								}
+							if electorateAtRequest.isBoundIncluded then {
+								become(Isolated(primaryStateFence))
+								sequencer.Capture_unit
 							}
 							// if we are not included, the become Retiring.
 							else {
-								if assertionsEnabled then assert(electorate2.isInstanceOf[SoleElectorate]) // because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole ones.
-								become(Retiring(primaryState2.currentTerm, electorate2.term, electorate2.changeIndex, electorate2.members))
+								if assertionsEnabled then assert(electorateAtRequest.isInstanceOf[SoleElectorate]) // because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole ones.
+								become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
 								sequencer.Capture_unit
 							}
 						}
-						// if my vote is non-blank...
-						else {
-							val stateInfo2 = syncStatefulStateInfo(primaryState2)
-							// ... and no StateInfo has changed, continue the role update knowing the vote is non-blank.
-							if stateInfo2.ballot == myVote.ballot then updateRoleKnowingMyNonBlankVote(primaryState2, electorate2, myVote)
-							// else start the role process again (superseding this execution).
+						// if my vote is non-blank, continue the role update knowing the vote is non-blank.
+						else updateRoleKnowingMyNonBlankVote(primaryState2, electorateAtRequest, myVote)
+					}
+
+					/** State Discovery Query: Inquires all peers in the provided [[Electorate]] how they are ([[ClusterParticipant.howAreYou]]) and accumulates their replies into a [[DiscoveryQuorumResult]].\
+					 * Pure query: performs zero mutations on [[PrimaryState]] or [[commitIndex]]. */
+					inline def discoverPeersState(electorate: Electorate, stateInfo: StateInfo)(using Trace.Context): sequencer.Capture[DiscoveryQuorumResult[ParticipantId]] = {
+						val inquiries = askHowOtherParticipantsAre(electorate.peers, stateInfo)
+						electorate.accumulateDiscoveryQuorum(stateInfo, inquiries)
+					}
+
+					/** State Reconciliation Command: Ingests the discovery result by updating the term (if a higher term was seen), advancing the commit index (if absorptive), and checking for electorate shifts. */
+					inline def reconcileDiscoveredState(electorateAtRequest: Electorate, discoveryResult: DiscoveryQuorumResult[ParticipantId])(using Trace.Context): sequencer.Capture[DiscoveryReconciliation] = {
+						Trace.trace(s"Discovery replies=${discoveryResult.replies.zip(electorateAtRequest.peers).mkString("[", ", ", "]")}, latestTermSeen=${discoveryResult.highestTermSeen}, outcome=${discoveryResult.outcome}")
+						for primaryState1 <- updateTermIfLessThan(discoveryResult.highestTermSeen) yield {
+							if currentRole ne thisStatefulRole then DiscoveryReconciledRoleChanged
+							else if absorbHigherCommitIndexFromPeers(primaryState1, discoveryResult.replies) then DiscoveryReconciledRestart(primaryState1, "commit index absorbed from peer")
 							else {
-								Trace.trace(s"Restarting due to a ballot bump: currentBallot=${stateInfo2.ballot}, myVote.ballot=${myVote.ballot}")
-								updateRole(primaryState2)
+								val electorate1 = deriveElectorateFrom(primaryState1)
+								if electorate1 ne electorateAtRequest then DiscoveryReconciledRestart(primaryState1, s"electorate change (${electorateAtRequest.changeIndex}->${electorate1.changeIndex})")
+								else DiscoveryReconciledReady(primaryState1, currentRole.syncStatefulStateInfo(primaryState1), discoveryResult.replies)
 							}
 						}
 					}
@@ -1580,40 +1447,33 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					/** Starts a role update process by running state discovery, reconciliation, and local vote decision. */
 					def start(primaryState1: PrimaryState): sequencer.Capture[Unit] = {
 						incumbentUpdateRoleSerial = serial
-						memorizedPeersInfos.clear()
-						if currentRole ne this then sequencer.Capture_unit
+						if currentRole ne thisStatefulRole then sequencer.Capture_unit
 						else {
-							val electorate1 = deriveElectorateFrom(primaryState1)
+							val electorateAtRequest = deriveElectorateFrom(primaryState1)
 							// If excluded and not leading as ghost, then retire immediately.
-							if !electorate1.isBoundIncluded && !this.isInstanceOf[Leader] then {
-								this.authorizeQuiescenceIfVanished(electorate1.asInstanceOf[SoleElectorate])
-								become(Retiring(primaryState1.currentTerm, electorate1.term, electorate1.changeIndex, electorate1.members))
+							if !electorateAtRequest.isBoundIncluded && !thisStatefulRole.isGhost then {
+								thisStatefulRole.authorizeQuiescenceIfVanished(electorateAtRequest.asInstanceOf[SoleElectorate])
+								become(Retiring(primaryState1.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
 								sequencer.Capture_unit
 							} else {
 								val stateInfo1 = syncStatefulStateInfo(primaryState1)
 								for {
-									discoveryResult <- discoverPeersState(electorate1, stateInfo1)
+									discoveryResult <- discoverPeersState(electorateAtRequest, stateInfo1)
 									_ <- {
 										if haveToAbort then sequencer.Capture_unit
 										else for {
-											reconciliation <- reconcileDiscoveredState(electorate1, discoveryResult)
+											reconciliation <- reconcileDiscoveredState(electorateAtRequest, discoveryResult)
 											_ <- {
 												if haveToAbort then sequencer.Capture_unit
 												else reconciliation match {
 													case DiscoveryReconciledRoleChanged => sequencer.Capture_unit
-													case DiscoveryReconciledRestart(ps, reason) =>
-														Trace.trace(s"Restarting updateRole due to reconciliation: $reason")
-														updateRole(ps)
+													case restart: DiscoveryReconciledRestart =>
+														Trace.trace(s"Restarting updateRole due to reconciliation: ${restart.reason}")
+														updateRole(restart.primaryState)
 
-													case DiscoveryReconciledReady(ps, cfg, si) =>
-														val myVote = decideMyVote(ps, cfg, si, discoveryResult.outcome)
-														for {
-															primaryState2 <- primaryStateFence.causalAnchor()
-															_ <- {
-																if haveToAbort then sequencer.Capture_unit
-																else updateRoleKnowingMyVote(primaryState2, myVote)
-															}
-														} yield ()
+													case ready: DiscoveryReconciledReady =>
+														val myVote = decideMyVote(ready.primaryState, electorateAtRequest, ready.stateInfo, discoveryResult.outcome, ready.peersReplies)
+														updateRoleKnowingMyVote(ready.primaryState, electorateAtRequest, myVote)
 												}
 											}
 										} yield ()
@@ -1624,7 +1484,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 
 					// Coalesce the result of concurrent calls either, superseding ongoing executions started with obsolete StateInfo, or merging to the execution started with the same StateInfo.
-					val updateCovenant = updateRoleCoalescing.contend(true) {
+					val resultCapture = updateRoleCoalescing.contend(true) {
 						maybePreviousUpdateRoleExecution =>
 							val myCurrentStateInfo = syncStatefulStateInfo(primaryState0)
 							maybePreviousUpdateRoleExecution.fold {
@@ -1635,15 +1495,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								if myCurrentStateInfo == myStateInfoAtLastUpdateRoleStart then {
 									Trace.trace(s"Merging with incumbent execution. StateInfo=$myCurrentStateInfo")
 									previousUpdateRoleExecution
-								}
-								else {
+								} else {
 									Trace.trace(s"Superseding incumbent execution due to StateInfo change: old:$myStateInfoAtLastUpdateRoleStart, new=$myCurrentStateInfo")
 									myStateInfoAtLastUpdateRoleStart = myCurrentStateInfo
 									start(primaryState0)
 								}
 							}
 					}
-					updateCovenant.andThen(
+					resultCapture.andThen(
 						_ => Trace.trace(s"Execution #$serial ended"),
 						{
 							case _: GracefullyReleased => Trace.trace(s"Execution #$serial canceled because the workspace was gracefully released.")
@@ -1657,14 +1516,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * @return a [[sequencer.Capture]] returned by [[Role.onCommandFromClient]] applied to the updated [[Role]] */
 			final def updateRoleAndThenCallsOnCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Context): sequencer.Capture[ResponseToClient] = {
 				Trace.step("updateRoleAndThenCallsOnCommandFromClient") {
-					Trace.trace(s"Current role=${RoleOrdinal_nameOf(ordinal)}, attemptFlag=$attemptFlag, memorizedInfos=$memorizedPeersInfos.")
-					if !attemptFlag.isInternalVacateHandoff && attemptFlag != FIRST_ATTEMPT then startNewBallot() // TODO this ballot bump may cause unnecessary "determineVote" restarts that may never converge when many clients call concurrently. The ballot should be bumped only if it is equal to the ballot used by the previous participant. So, the ballot should be included in the data propagated through the client to the next participant.
+					Trace.trace(s"Current role=${RoleOrdinal_nameOf(ordinal)}, attemptFlag=$attemptFlag.")
 					for {
 						_ <- updateRole()
 						result <- {
 							if currentRole.ordinal >= FOLLOWER then currentRole.onCommandFromClient(command, FIRST_ATTEMPT)
 							else {
-								val nextAttemptFlag = if attemptFlag == REDIRECTED then LEADERSHIP_VACATED else attemptFlag.withInternalBitsCleared
+								val nextAttemptFlag = if attemptFlag == REDIRECTED then LEADERSHIP_VACATED else attemptFlag
 								currentRole match {
 									case stateful: StatefulRole =>
 										for primaryState <- stateful.primaryStateFence.causalAnchor() yield Unable(nextAttemptFlag, deriveElectorateFrom(primaryState).otherProbableParticipants)
@@ -1743,9 +1601,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 
-			final private def memorizedPeersInfosToArray(currentElectorate: Electorate): IArray[StateInfo] = {
-				currentElectorate.peers.mapWithIndex { (peerId, _) => memorizedPeersInfos.get(peerId) }
-			}
 
 			/** Called by [[updateTermIfLessThan]] and [[onInstallSnapshot]] when the [[PrimaryState.currentTerm]] is updated because a higher term was observed.\
 			 * The implementation should not mutate the [[PrimaryState]]
@@ -1782,12 +1637,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			}
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[StateInfo] = {
-				sequencer.Keeper(updateLocalStateInfo(Maybe.empty, inquirerId, inquirerInfo))
+				sequencer.Keeper(syncStatelessStateInfo())
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
-				val myStateInfo = updateLocalStateInfo(Maybe.empty, inquirerId, inquirerInfo)
-				yieldsBlankVote(PRE_INIT, myStateInfo.ballot)
+				yieldsBlankVote(PRE_INIT)
 			}
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term)(using Trace.Context): sequencer.Capture[AppendResult] = {
@@ -1802,18 +1656,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * This implementation responds with a rejection that propagates the received `attemptFlag` or-ing the [[FALLBACK]] bit to alert the participant with which the client would try next.
 			 * Why the [[FALLBACK]] bit? Because the behavior of a [[Quiesced]] and a non-existent participant should be similar, given [[Quiesced]] is just a transient state before becoming inexistent. */
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Trace.Context): sequencer.Capture[ResponseToClient] = {
-				sequencer.Keeper(Unable(attemptFlag.withInternalBitsCleared | FALLBACK, cluster.getOtherProbableParticipants))
+				sequencer.Keeper(Unable(attemptFlag | FALLBACK, cluster.getOtherProbableParticipants))
 			}
 
-			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
-				var myCurrentStateInfo = syncStatelessStateInfo()
-				// If a prior answer is provided, update the current ballot and memorizedPeersInfos
-				priorAnswer.foreach {
-					case nonTerminal: NonTerminalElectorateChangeResponse =>
-						if updateBallotIfLowerThan(myCurrentStateInfo, nonTerminal.latestBallotSeen) then myCurrentStateInfo = syncStatelessStateInfo()
-					case _: TerminalElectorateChangeResponse =>
-				}
-				sequencer.Keeper(new STOPPED(myCurrentStateInfo.ballot))
+			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
+				sequencer.Keeper(ElectorateChangeResponse.Stopped)
 			}
 		}
 
@@ -1847,40 +1694,29 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 
 			override def syncLocalStateInfo(maybePrimaryState: Maybe[PrimaryState])(using Context): StateInfo = {
-				if stateInfoExposedInLastInteraction.tiesWith(termAtExcludingElectorateIndex, rank, termAtExcludingElectorateIndex, excludingElectorateIndex, termAtExcludingElectorateIndex, excludingElectorateIndex) then {
-					if stateInfoExposedInLastInteraction.ballot != currentBallot then stateInfoExposedInLastInteraction = StateInfo(termAtExcludingElectorateIndex, rank, termAtExcludingElectorateIndex, excludingElectorateIndex, termAtExcludingElectorateIndex, excludingElectorateIndex, currentBallot)
-				} else {
-					currentBallot = currentBallot.bumped
-					stateInfoExposedInLastInteraction = StateInfo(termAtExcludingElectorateIndex, rank, termAtExcludingElectorateIndex, excludingElectorateIndex, termAtExcludingElectorateIndex, excludingElectorateIndex, currentBallot)
+				if !stateInfoExposedInLastInteraction.matchesValues(termAtExcludingElectorateIndex, rank, termAtExcludingElectorateIndex, excludingElectorateIndex, termAtExcludingElectorateIndex, excludingElectorateIndex) then {
+					stateInfoExposedInLastInteraction = StateInfo(termAtExcludingElectorateIndex, rank, termAtExcludingElectorateIndex, excludingElectorateIndex, termAtExcludingElectorateIndex, excludingElectorateIndex)
 				}
 				stateInfoExposedInLastInteraction
 			}
 
 			override def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[StateInfo] = {
-				sequencer.Keeper(updateLocalStateInfo(Maybe.empty, inquirerId, inquirerInfo))
+				sequencer.Keeper(syncStatelessStateInfo())
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
-				val myStateInfo = updateLocalStateInfo(Maybe.empty, inquirerId, inquirerInfo)
-				yieldsBlankVote(termAtExcludingElectorateIndex, myStateInfo.ballot)
+				yieldsBlankVote(termAtExcludingElectorateIndex)
 			}
 
-			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
-				var myCurrentStateInfo = syncStatelessStateInfo()
-				// If a prior answer is provided, update the current ballot and memorizedPeersInfos
-				priorAnswer.foreach {
-					case nonTerminal: NonTerminalElectorateChangeResponse =>
-						if updateBallotIfLowerThan(myCurrentStateInfo, nonTerminal.latestBallotSeen) then myCurrentStateInfo = syncStatelessStateInfo()
-					case _: TerminalElectorateChangeResponse =>
-				}
-				sequencer.Keeper(new EXCLUDED(myCurrentStateInfo.ballot))
+			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
+				sequencer.Keeper(ElectorateChangeResponse.Excluded)
 			}
 
 			/** @inheritdoc
 			 * This implementation responds with a rejection that propagates the received `attemptFlag`. */
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Trace.Context): sequencer.Capture[ResponseToClient] = {
 				sequencer.Keeper(Unable(
-					attemptFlag.withInternalBitsCleared,
+					attemptFlag,
 					ListSet.newBuilder[ParticipantId].addAll(excludingElectorate).addAll(cluster.getOtherProbableParticipants).result()
 				))
 			}
@@ -2062,10 +1898,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield rtc
 			}
 
-			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId], priorAnswer: Maybe[ElectorateChangeResponse])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
+			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
 				for {
 					_ <- startingCompletedCovenant
-					response <- currentRole.requestElectorateChange(requestId, desiredParticipantsSet, priorAnswer)
+					response <- currentRole.requestElectorateChange(requestId, desiredParticipantsSet)
 				} yield response
 			}
 		}
@@ -2088,8 +1924,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				notifyListeners(_.onJoining(previous.ordinal, indexOfTheIncludingElectorateChange))
 			}
 
-			override def decideMyVote(primaryState: PrimaryState, electorate: Electorate, stateInfo: StateInfo, outcome: DiscoveryQuorumOutcome)(using Trace.Context): Vote[ParticipantId] = {
-				blankVote(primaryState.currentTerm, stateInfo.ballot)
+			override def decideMyVote(primaryState: PrimaryState, electorate: Electorate, stateInfo: StateInfo, outcome: DiscoveryQuorumOutcome, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Vote[ParticipantId] = {
+				blankVote(primaryState.currentTerm)
 			}
 
 			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
@@ -2097,7 +1933,9 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					primaryState <- primaryStateFence.causalAnchor()
 					response <- {
 						if currentRole ne thisJoining then currentRole.onChooseALeader(inquirerId, inquirerInfo)
-						else yieldsBlankVote(primaryState.currentTerm, updateLocalStateInfo(Maybe(primaryState), inquirerId, inquirerInfo).ballot)
+						else {
+							yieldsBlankVote(primaryState.currentTerm)
+						}
 					}
 				} yield response
 			}
@@ -2105,11 +1943,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			/** @inheritdoc
 			 * This implementation responds with a rejection that propagates the received `attemptFlag`. */
 			override def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag)(using Trace.Context): sequencer.Capture[ResponseToClient] = {
-				sequencer.Keeper(Unable(attemptFlag.withInternalBitsCleared, participantsInTheIncludingElectorateChange))
+				sequencer.Keeper(Unable(attemptFlag, participantsInTheIncludingElectorateChange))
 			}
 
-			override def requestElectorateChange(primaryState: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
-				sequencer.Keeper(new CATCHING_UP(syncStatefulStateInfo(primaryState).ballot))
+			override def requestElectorateChange(primaryState: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
+				sequencer.Keeper(ElectorateChangeResponse.CatchingUp)
 			}
 		}
 
@@ -2153,14 +1991,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield response
 			}
 
-			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.Capture[ElectorateChangeResponse] = {
+			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Context): sequencer.Capture[ElectorateChangeResponse] = {
 				Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due toan electorate change request. ")
 				for {
 					_ <- updateRole(primaryState0) // TODO consider making updateRole return the current primary state, so that the causalAnchor method call is not needed here (and other places also).
 					primaryState <- primaryStateFence.causalAnchor()
 					response <- {
-						if currentRole ne thisIsolated then currentRole.requestElectorateChange(requestId, desiredParticipants, Maybe.empty)
-						else sequencer.Keeper(new SECLUDED(syncStatefulStateInfo(primaryState).ballot))
+						if currentRole ne thisIsolated then currentRole.requestElectorateChange(requestId, desiredParticipants)
+						else sequencer.Keeper(ElectorateChangeResponse.Secluded)
 					}
 				} yield response
 			}
@@ -2245,14 +2083,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield response
 			}
 
-			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.Capture[ElectorateChangeResponse] = {
+			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Context): sequencer.Capture[ElectorateChangeResponse] = {
 				Trace.trace(s"Updating role from ${RoleOrdinal_nameOf(currentRole.ordinal)} due toan electorate change request.")
 				for {
 					_ <- updateRole(primaryState0)
 					primaryState1 <- primaryStateFence.causalAnchor()
 					response <- {
-						if currentRole ne thisFollower then currentRole.requestElectorateChange(requestId, desiredParticipants, Maybe.empty)
-						else sequencer.Keeper(new ASK_THE_LEADER(followeeId, syncStatefulStateInfo(primaryState1).ballot))
+						if currentRole ne thisFollower then currentRole.requestElectorateChange(requestId, desiredParticipants)
+						else sequencer.Keeper(ElectorateChangeResponse.AskTheLeader(followeeId))
 					}
 				} yield response
 			}
@@ -2321,7 +2159,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			private val recordBecomesCommittedCaptors: mutable.ArrayBuffer[RecordBecomesCommittedCaptor] = mutable.ArrayBuffer.empty
 
-			private var pendingElectorateChangesCompletion: sequencer.Capture[ElectorateChangeResponse] = sequencer.Keeper(new SUCCESSFULLY_CHANGED)
+			private var pendingElectorateChangesCompletion: sequencer.Capture[ElectorateChangeResponse] = sequencer.Keeper(ElectorateChangeResponse.SuccessfullyChanged)
 
 			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
 				Trace.step("Leader.onEnter") {
@@ -2349,8 +2187,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								pendingElectorateChangesCompletion = for {
 									isSecReplicated <- replicateSec(initialPrimaryState, indexOfLatestElectorateChange)
 									response <- {
-										if isSecReplicated then sequencer.Keeper[ElectorateChangeResponse](new SUCCESSFULLY_CHANGED)
-										else for primaryState1 <- primaryStateFence.causalAnchor() yield new REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(currentRole.syncLocalStateInfo(Maybe(primaryState1)).ballot)
+										if isSecReplicated then sequencer.Keeper[ElectorateChangeResponse](ElectorateChangeResponse.SuccessfullyChanged)
+										else sequencer.Keeper[ElectorateChangeResponse](ElectorateChangeResponse.RequestTrackingLostAfterSecondPhaseStarted)
 									}
 								} yield response
 							}
@@ -2372,7 +2210,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				recordBecomesCommittedCaptors.clear()
 				super.handleExit()
 
-				// Decoupled Mutation Contract / Re-Entrance Prevention: Observers of `recordBecomesCommittedCaptors` (primarily `handleCommandReplication`) react to abdication (`currentRole ne thisLeader`) by immediately delegating vacated in-flight commands to `currentRole.onCommandFromClient(..., INTERNAL_VACATE_HANDOFF)`. If awaiters were seized synchronously here, that delegation would execute re-entrance inside `handleExit`, triggering `updateRole` and mutating the primary state fence while the outer caller (e.g., `onAppendRecords`) is still suspended on the call stack. Deferring seizure to `sequencer.run` ensures the outer role transition and RPC turn complete atomically before vacated commands are handled.
+				// Decoupled Mutation Contract / Re-Entrance Prevention: Observers of `recordBecomesCommittedCaptors` (primarily `handleCommandReplication`) react to abdication (`currentRole ne thisLeader`) by immediately delegating vacated in-flight commands to `currentRole.onCommandFromClient(..., LEADERSHIP_VACATED)`. If awaiters were seized synchronously here, that delegation would execute re-entrance inside `handleExit`, triggering `updateRole` and mutating the primary state fence while the outer caller (e.g., `onAppendRecords`) is still suspended on the call stack. Deferring seizure to `sequencer.run` ensures the outer role transition and RPC turn complete atomically before vacated commands are handled.
 				val dummyPrimaryState = sequencer.Capture_ready(initialPrimaryState) // Any PrimaryState instance is valid because continuations discard the payload when `currentRole ne thisLeader`.
 				if awaitersToSeize.nonEmpty then {
 					sequencer.run {
@@ -2381,7 +2219,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				}
 			}
 
-			def isGhost: Boolean = indexOfElectorateChangeThatExcludedThisParticipant > 0
+			override final def isGhost: Boolean = indexOfElectorateChangeThatExcludedThisParticipant > 0
 
 			/** @inheritdoc
 			 *  This implementation does two different things:
@@ -2532,20 +2370,15 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				for {
 					isSecReplicatedToMajority <- appendALocalSecAndReplicateIt(tcc, tccIndex)
 					response <- {
-						if isSecReplicatedToMajority then sequencer.Keeper(new SUCCESSFULLY_CHANGED)
-						else {
-							(for primaryState1 <- primaryStateFence.causalAnchor() yield {
-								new REQUEST_TRACKING_LOST_AFTER_SECOND_PHASE_STARTED(currentRole.syncLocalStateInfo(Maybe(primaryState1)).ballot)
-							}): sequencer.Capture[ElectorateChangeResponse]
-						}
+						if isSecReplicatedToMajority then sequencer.Keeper[ElectorateChangeResponse](ElectorateChangeResponse.SuccessfullyChanged)
+						else sequencer.Keeper[ElectorateChangeResponse](ElectorateChangeResponse.RequestTrackingLostAfterSecondPhaseStarted)
 					}
 				} yield response
 			}
 
 			private def replicateJecAndThenContinueWithSecondPhase(primaryState1: PrimaryState, tcc: JointElectorateChange[ParticipantId], tccIndex: RecordIndex)(using Context): sequencer.Capture[ElectorateChangeResponse] = Trace.step(() => s"replicateJecAndThenContinueWithSecondPhase(tccIndex=$tccIndex)") {
 				if currentRole ne thisLeader then {
-					val ballot = currentRole.syncLocalStateInfo(Maybe(primaryState1)).ballot
-					sequencer.Keeper(new REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(ballot))
+					sequencer.Keeper[ElectorateChangeResponse](ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted)
 				} else {
 					if assertionsEnabled then assert(primaryState1.currentTerm == leadedTerm)
 					for {
@@ -2559,8 +2392,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								primaryState3 <- primaryStateFence.causalAnchor()
 								result <- {
 									if currentRole ne thisLeader then {
-										val ballot1 = currentRole.syncLocalStateInfo(Maybe(primaryState3)).ballot
-										sequencer.Keeper(if commitIndex >= tccIndex then new REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_COMMITTED(ballot1) else new REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(ballot1))
+										sequencer.Keeper[ElectorateChangeResponse](if commitIndex >= tccIndex then ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseCommitted else ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted)
 									} else {
 										assert(primaryState3.currentTerm == leadedTerm && commitIndex >= tccIndex)
 										continueWithSecondPhase(tcc, tccIndex)
@@ -2574,13 +2406,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			/** Handles electorate-change request for [[Leader]]
 			 * Attempts a [[Electorate]] change, starting with the first phase and, if successful, continuing with the second. */
-			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId], ballotWasUpdated: Boolean)(using Context): sequencer.Capture[ElectorateChangeResponse] = {
+			override def requestElectorateChange(primaryState0: PrimaryState, requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId])(using Context): sequencer.Capture[ElectorateChangeResponse] = {
 				Trace.trace(s"${if pendingElectorateChangesCompletion.isPending then "Enqueuing" else "Handling"} the electorate change request $requestId as leader")
 				pendingElectorateChangesCompletion =
 					for {
 						_ <- pendingElectorateChangesCompletion
 						response <- sequencer.Capture_defer { () => // Design Tradeoff (Decoupled Mutation Contract): This manual deferral is the cost of the design decision that updateCommitIndex to run synchronously to avoid allocations and deferral overhead on the happy path without re-entrance bugs. Given the enclosed code mutates primaryStateFence, execution is explicitly deferred.
-							if currentRole ne thisLeader then currentRole.requestElectorateChange(requestId, desiredParticipants, Maybe.empty)
+							if currentRole ne thisLeader then currentRole.requestElectorateChange(requestId, desiredParticipants)
 							else for {
 								primaryState1 <- primaryStateFence.causalAnchor()
 								response <- {
@@ -2589,7 +2421,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 									Trace.trace(s"StateInfo=$myStateInfo1")
 									electorate1 match {
 										case sec1: SoleElectorate =>
-											if desiredParticipants == sec1.stableParticipants then sequencer.Keeper(new ALREADY_CHANGED)
+											if desiredParticipants == sec1.stableParticipants then sequencer.Keeper(ElectorateChangeResponse.AlreadyChanged)
 											// Do not start an electorate transition if excluded from both, the current, and the new electorate.
 											else if !sec1.isBoundIncluded && !desiredParticipants.contains(boundParticipantId) then {
 												// Also, become retiring immediately if all followers have committed the excluding electorate change. The intention of this is to minimize the time that a participant is kept leading after it was excluded.
@@ -2597,10 +2429,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 													assert(indexOfElectorateChangeThatExcludedThisParticipant == sec1.changeIndex)
 													authorizeQuiescenceIfVanished(sec1)
 													become(Retiring(primaryState1.currentTerm, sec1.term, sec1.changeIndex, sec1.members))
-														.requestElectorateChange(requestId, desiredParticipants, Maybe.empty)
+														.requestElectorateChange(requestId, desiredParticipants)
 												}
 												// If leading as a ghost and some learner hasn't committed the excluding electorate change, answer informing the situation.
-												else sequencer.Keeper(new WAIT_GHOST_LEADER_IS_DEMOTED(myStateInfo1.ballot))
+												else sequencer.Keeper(ElectorateChangeResponse.WaitGhostLeaderIsDemoted)
 											} else {
 												// start the first phase of the electorate change
 												val tcc = new JointElectorateChange[ParticipantId](primaryState1.currentTerm, requestId, sec1.stableParticipants, desiredParticipants)
@@ -2622,7 +2454,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 										case jec1: JointElectorate =>
 											// We re-evaluate state after waiting, so it must be stable unless there's a logic bug.
 											// But if somehow we are here, we must not infinite loop. We'll return an error.
-											sequencer.Keeper(new REQUEST_TRACKING_LOST_AFTER_FIRST_PHASE_STARTED(myStateInfo1.ballot))
+											sequencer.Keeper(ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted)
 									}
 								}
 							} yield response
@@ -2733,7 +2565,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			private def handleCommandReplication(primaryState1: PrimaryState, clientCommand: ClientCommand, commandRecordIndex: RecordIndex)(using Trace.Context): sequencer.Capture[ResponseToClient] = {
 				// The role may have changed due to a failure while storing the primary state. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
-				if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+				if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
 				else {
 					assert(primaryStateFence.committedState.is(primaryState1)) // Fails if the primaryStateFence was touched after yielding the PrimaryState instance received as parameter.
 					assert(primaryState1.currentTerm == leadedTerm) // Assumes that the demotion due to higher term seen is always applied synchronously within a section causally ordered by the primaryStateFence. See the CausalFence's game changing invariant.
@@ -2745,18 +2577,18 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 						}
 						response <- {
 							// The role may have changed while attempting the replication. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
-							if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+							if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
 							else {
 								assert(commitIndex >= commandRecordIndex)
 								for {
 									_ <- decoupledCommandsApplierCompletion // Waits the committed-commands-applier to complete any work left by a previous role.
 									response <- {
 										// It is not necessary to have an updated primary state here because committed records are never mutated, and we are not mutating the primary state here. We only need to know if we are still leading.
-										if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+										if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
 										else for {
 											_ <- applyCommittedCommands(primaryState2, commandRecordIndex - 1, 0)
 											response <- {
-												if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, INTERNAL_VACATE_HANDOFF)
+												if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
 												else for smr <- machine.applyClientCommand(commandRecordIndex, clientCommand) yield {
 													highestAppliedCommandIndex = commandRecordIndex
 													if commandRecordIndex - logBufferOffset1 > logCompactionThreshold then startLogCompaction()
@@ -3141,11 +2973,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		/** Defined to prevent the compiler from generating a synthetic companion. */
 		private inline def LearnerProgress(firstEmptyRecordIndex: RecordIndex): LearnerProgress = new LearnerProgress(firstEmptyRecordIndex)
 
-		/**
-		 * Tracks the progress of replication to a specific learner peer within the continuous stream pipeline.
-		 *
-		 * @param firstEmptyRecordIndex the initial log index from which the leader will begin replicating.
-		 */
+		/** Tracks the progress of replication to a specific learner peer within the continuous stream pipeline.
+		 * @param firstEmptyRecordIndex the initial log index from which the leader will begin replicating. */
 		private final class LearnerProgress(firstEmptyRecordIndex: RecordIndex) extends PeerProgressView {
 			/** The index of the next record to send to the peer assuming the in-flight appends will fail.
 			 * This is the index of the highest record for which an append result hasn't been received, successful or not.\
@@ -3185,21 +3014,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 		//// MISCELLANEOUS
 
-		/**
-		 * Asks the [[Electorate.peers]] how they are ([[ClusterParticipant.howAreYou]]) in a coalesced manner: If an equivalent question is in flight, reuses the same pending [[sequencer.Capture]] of the in-flight question; otherwise, a new request is done.
-		 * Supports the forcing of answers.
-		 *
+		/** Asks the [[Electorate.peers]] how they are ([[ClusterParticipant.howAreYou]]) in a coalesced manner: If an equivalent question is in flight, reuses the same pending [[sequencer.Capture]] of the in-flight question; otherwise, a new request is done.
 		 * @param participantsIds the [[ParticipantId]]s of the target participants.
 		 * @param stateInfo the [[StateInfo]] to put in the inquires.
-		 * @param forcedAnswerByParticipantId the forced answers indexed by [[ParticipantId]].
-		 * @return An [[IndexedSeq]] containing a [[sequencer.Capture]] for each [[ParticipantId]] in the provided array. Each [[sequencer.Capture]] element is the one returned by [[ClusterParticipant.howAreYou]] applied to the corresponding [[ParticipantId]] in the provided array, except the corresponding to the provided `idOfExcludedParticipant`, which yield the provided [[StateInfo]].
-		 */
-		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], stateInfo: StateInfo, forcedAnswerByParticipantId: java.util.Map[ParticipantId, StateInfo]): IArray[sequencer.Capture[StateInfo]] = {
+		 * @return An [[IndexedSeq]] containing a [[sequencer.Capture]] for each [[ParticipantId]] in the provided array. Each [[sequencer.Capture]] element is the one returned by [[ClusterParticipant.howAreYou]] applied to the corresponding [[ParticipantId]] in the provided array. */
+		private def askHowOtherParticipantsAre(participantsIds: IArray[ParticipantId], stateInfo: StateInfo): IArray[sequencer.Capture[StateInfo]] = {
 			participantsIds.mapWithIndex { (participantId, _) =>
-				forcedAnswerByParticipantId.get(participantId) match {
-					case null => coalescedHowAreYou.getOrStart((participantId, stateInfo), true)
-					case forcedAnswer: StateInfo => sequencer.Capture_ready(forcedAnswer)
-				}
+				coalescedHowAreYou.getOrStart((participantId, stateInfo), true)
 			}
 		}
 

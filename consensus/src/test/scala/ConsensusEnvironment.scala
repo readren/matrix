@@ -1338,8 +1338,7 @@ class ConsensusEnvironment(
 	// Electorate Change Injections
 	def submitElectorateChange(
 		targetNode: NodeRef,
-		desiredParticipants: Set[? <: NodeRef],
-		priorAnswer: Maybe[ElectorateChangeResponse] = Maybe.empty
+		desiredParticipants: Set[? <: NodeRef]
 	): ElectorateChangeHandle = {
 		val targetId = targetNode.asNodeId
 		val desiredIds: Set[NodeId] = desiredParticipants.map(_.asNodeId)
@@ -1353,7 +1352,7 @@ class ConsensusEnvironment(
 				if n.isDown || n.participant == null then {
 					electorateChangeStatuses(reqId) = ElectorateChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
 				} else {
-					val capture = n.clusterParticipant.delegate.requestElectorateChange(reqId, desiredIds, priorAnswer)
+					val capture = n.clusterParticipant.delegate.requestElectorateChange(reqId, desiredIds)
 					capture.triggerSyncCallbacks(
 						res => {
 							electorateChangeStatuses(reqId) = ElectorateChangeStatus.Completed(res)

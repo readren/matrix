@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-23T20:45:00Z"
+timestamp: "2026-09-25T18:15:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -379,7 +379,7 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 ---
 
-## 9. On-Demand Election Protocol, Ballot Invariants & Promotion Dynamics
+## 9. On-Demand Election Protocol, Single-Vote-Per-Term Invariant & Promotion Dynamics
 
 ### I. Multi-Phase Reactive Election Architecture
 
@@ -388,51 +388,53 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 1. **State Discovery Phase (`HowAreYou` / Pre-Vote)**:
     - An uncoordinated participant (`Isolated`) encountering client commands or leadership loss broadcasts state discovery queries (`HowAreYou`) to all reachable peers in the active electorate.
     - This phase is term-neutral and acts as a reactive Pre-Vote: querying nodes do not advance their terms, ensuring active leaders are never disrupted by exploratory queries from partitioned or restarting nodes.
-    - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, log tail metadata, and current ballot.
+   - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, and log tail metadata.
 
 2. **Deterministic Candidate Ranking (`decideMyVote`)**:
     - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonSet, participantId)`.
     - **Precedence Order & Safety Invariants**:
         - `currentTerm`: Higher terms strictly dominate lower terms.
-        - `isLeading` over Log Completeness: An active leader (`ER_LEADING`) within the same term takes precedence over other participants regardless of log tail comparisons. Assuming term invariants hold, this avoids unnecessary leadership
-          churn, abdications, and re-elections during exploratory discovery.
-        - Log Completeness over `isCandidate`: Log completeness (`lastRecordTerm`, then `lastRecordIndex`) strictly dominates candidate status (`ER_CANDIDATE`). Lagging candidates cannot bypass more complete logs held by retiring
-          (`ER_RETIREE`) or joining (`ER_JOINER`) participants. If a non-candidate peer holds newer committed entries, the comparison prioritizes that peer's state, preventing the candidate from voting for itself or achieving nomination
-          until it absorbs those committed records.
+      - `isLeading` over Log Completeness: An active leader (`ER_LEADING`) within the same term takes precedence over other participants regardless of log tail comparisons. Assuming term invariants hold, this avoids unnecessary leadership
+        churn, abdications, and re-elections during exploratory discovery.
+      - Log Completeness over `isCandidate`: Log completeness (`lastRecordTerm`, then `lastRecordIndex`) strictly dominates candidate status (`ER_CANDIDATE`). Lagging candidates cannot bypass more complete logs held by retiring
+        (`ER_RETIREE`) or joining (`ER_JOINER`) participants. If a non-candidate peer holds newer committed entries, the comparison prioritizes that peer's state, preventing the candidate from voting for itself or achieving nomination until
+        it absorbs those committed records.
         - `isCandidate` over Non-Candidate: Among participants with equal terms and identical log completeness, active candidates take precedence over passive participants (followers, retirees, joiners).
-        - `isInCommonSet`: Participants belonging to the common electorate set take precedence over non-common peers to preserve electorate stability during joint consensus.
+        - Old Configuration Precedence over New-Only Configuration: Among contenders with identical log completeness and candidate status during joint consensus transitions, participants belonging to the old configuration set
+          ($C_{\text{old}}$) take precedence over new-only participants ($C_{\text{new}} \setminus C_{\text{old}}$). This invariant guarantees election convergence when an uncommitted joint configuration entry creates asymmetric active
+          electorates across the cluster: lagging participants still operating under $C_{\text{old}}$ cannot discover or vote for new-only peers, while uncommitted configuration records cannot be absorbed out-of-band via Log Matching
+          without an active leader replicating them.
         - `participantId`: Deterministic tie-breaker ensuring that all participants with identical peer views select the exact same candidate.
 
 3. **Candidate Elevation & Preemptive Term Bumping**:
     - When a participant deterministically selects itself and has observed responses from a majority of active participants, it initiates Phase 2.
-    - Before issuing vote solicitations, the candidate advances its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$, records its vote for itself, and persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ in stable
-      storage via the primary state causal fence.
+   - Before issuing vote solicitations, the candidate advances its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$, records its vote for itself, and persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ in stable
+     storage via the primary state causal fence.
 
 4. **Voting Phase (`ChooseALeader`) & Voter Epoch Fencing**:
     - The candidate solicits explicit votes via `ChooseALeader` carrying $T_{\text{target}}$ and its updated `StateInfo`.
     - Responding peers observing $T_{\text{target}} > T_{\text{local}}$ atomically advance their local term to $T_{\text{target}}$ and clear prior votes in persistent storage before evaluating the vote.
-    - Peers evaluate the solicitation against log completeness and single-vote-per-term constraints. If the candidate's log is up-to-date and the voter has not voted for another candidate in $T_{\text{target}}$, the voter persists
-      `votedFor = candidateId` and returns an explicit `Vote` at $T_{\text{target}}$.
-    - **Local Voter Evaluation Boundary**: Voters evaluate vote solicitations strictly against local log completeness and the single-vote-per-term invariant without dispatching discovery queries (`HowAreYou`) to third-party peers. This
-      prevents $O (N^2)$ query cascades and ensures that an unreachable or partitioned minority cannot deadlock majority quorum formation.
-    - **Epoch Fencing Effect**: Advancing and persisting $T_{\text{target}}$ permanently fences the voter against all prior terms ($\le T_{\text{target}} - 1$). Any delayed append requests from an old deposed leader at prior terms are
-      unconditionally rejected with `StaleTerm`.
+   - Peers evaluate the solicitation against log completeness and single-vote-per-term constraints. If the candidate's log is up-to-date and the voter has not voted for another candidate in $T_{\text{target}}$, the voter persists
+     `votedFor = candidateId` and returns an explicit `Vote` at $T_{\text{target}}$.
+   - **Local Voter Evaluation Boundary**: Voters evaluate vote solicitations strictly against local log completeness and the single-vote-per-term invariant without dispatching discovery queries (`HowAreYou`) to third-party peers. This
+     prevents $O (N^2)$ query cascades and ensures that an unreachable or partitioned minority cannot deadlock majority quorum formation.
+   - **Epoch Fencing Effect**: Advancing and persisting $T_{\text{target}}$ permanently fences the voter against all prior terms ($\le T_{\text{target}} - 1$). Any delayed append requests from an old deposed leader at prior terms are
+     unconditionally rejected with `StaleTerm`.
 
 5. **Quorum & Role Inauguration**:
     - **Sole Electorate Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active electorate participants.
     - **Joint Electorate Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old electorate set ($E_{\text{old}}$) and the new electorate set ($E_{\text{new}}$).
-   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active electorate. Because the term and self-vote were committed to persistent
-     storage prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to retry with an advanced ballot.
+   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active electorate. Because the term and self-vote were committed to persistent storage
+     prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to await subsequent triggers or client commands.
 
-### II. Ballot Mechanics & Single-Vote-Per-Term Invariant
+### II. Canonical Raft Term Invariants & Single-Vote-Per-Term Dynamics
 
-- **Ballot Monotonicity**: Every participant maintains a local monotonic ballot counter (`currentBallot`). The ballot counter distinguishes distinct election rounds within the participant's lifecycle.
-- **Ballot Invalidation on Disruption**: The ballot counter is bumped whenever an election round fails to establish a leader, whenever higher ballots are observed in peer RPC responses, or when client retries incite new election rounds.
-  Advancing the ballot immediately purges all cached peer state information.
-- **One Vote per Ballot & Term Invariant**: A participant may cast at most one vote per ballot round and at most one vote per term. When a vote is granted, the candidate's identity is recorded in persistent storage (`Workspace.votedFor`)
-  alongside the term. Advancing to a higher term resets the recorded vote.
+- **Monotonic Term Progression**: Every participant maintains a durable monotonic term counter (`currentTerm`). Monotonic term bumping guarantees that distinct election epochs are strictly partitioned across time.
+- **Preemptive Candidate Advancement**: A candidate bumping its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$ persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ atomically before soliciting votes.
+- **One Vote per Term Invariant**: A participant may cast at most one vote per term. When a vote is granted, the candidate's identity is recorded in persistent storage (`Workspace.votedFor`) alongside the term. Advancing to a higher term
+  clears the recorded vote.
 - **Split-Brain Prevention**: Because voters persist their term and granted vote before responding to `ChooseALeader`, intersecting majorities across terms are prevented from acknowledging divergent logs, strictly preserving Raft's Leader
-  Completeness and State Machine Safety.
+  Completeness and State Machine Safety without requiring secondary ballot counters.
 
 ### III. Direct Leadership Inauguration & In-Flight Cleanup Invariants
 
@@ -457,15 +459,15 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
     - Matching the term at `peerCommitIndex` provides mathematical proof that all entries up to `peerCommitIndex` in the local log are identical to the committed entries on the peer.
 - **Post-Absorption Dynamic Electorate Transition**:
     - Once `commitIndex` is advanced, the node triggers local application of newly committed commands and electorate entries.
-    - When the absorbed commit index covers the `SoleElectorateChange` that finalized a retiree's exclusion, the candidate updates its active electorate, removes the retired peer from consideration, and becomes eligible to secure majority
-      quorum and inaugurate leadership in the subsequent election round.
+  - When the absorbed commit index covers the `SoleElectorateChange` that finalized a retiree's exclusion, the candidate updates its active electorate, removes the retired peer from consideration, and becomes eligible to secure majority
+    quorum and inaugurate leadership in the subsequent election round.
 
 ### V. Early-Terminating Quorum Accumulation & Strict Phase Isolation
 
 - **Reactive Incremental Evaluation**: Rather than awaiting all in-flight peer responses across the entire electorate, election phases evaluate decisive quorum conditions reactively upon each individual reply. In a sole electorate,
   solicitations achieve decisive resolution early as soon as a strict majority ($> N / 2$) of affirmative responses are collected, or as soon as accumulated rejections and failures prove that obtaining a majority is mathematically
-  impossible ($N - \text{failures} \le N / 2$). In joint electorates ($E_{\text{old}} \to E_{\text{new}}$), independent majorities in both the old and new participant sets are strictly required; accumulation short-circuits to
-  success when both subsets reach majority, or short-circuits to failure immediately if failures in either subset preclude reaching a majority.
+  impossible ($N - \text{failures} \le N / 2$). In joint electorates ($E_{\text{old}} \to E_{\text{new}}$), independent majorities in both the old and new participant sets are strictly required; accumulation short-circuits to success when
+  both subsets reach majority, or short-circuits to failure immediately if failures in either subset preclude reaching a majority.
 - **Immediate Higher Term and Active Leader Short-Circuiting**: In both Phase 1 discovery and Phase 2 voting, receiving an RPC response from a peer carrying a term higher than the local term ($T_{\text{peer}} > T_{\text{local}}$)
   immediately short-circuits the accumulator with a stale outcome, aborting election progression without awaiting pending peer replies. In Phase 1 discovery, observing an active leader ($T_{\text{peer}} == T_{\text{local}}$ with rank
   `ER_LEADING`) immediately terminates state discovery and transitions the participant to `Follower` under that leader.
@@ -481,17 +483,16 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 
 ---
 
-## 10. Electorate Change Response & Ballot Propagation Invariants
+## 10. Electorate Change Protocol & Response Semantics
 
-- **Terminal vs. Non-Terminal Response Partitioning**: Electorate change responses are strictly partitioned into terminal and non-terminal variants:
-    - **Terminal Responses**: Represent final consensus outcomes (completed or already matching electorate changes) that definitively satisfy the requester and terminate retry loops. Terminal responses do not carry election ballot
-      metadata.
-    - **Non-Terminal Responses**: Represent intermediate rejections, redirections, or lost tracking states. Non-terminal responses carry the highest observed election ballot to propagate election round counters across sequential node
-      interactions during client discovery.
-- **Ballot Propagation Independence**: The receipt of an observed ballot via prior responses allows subsequent nodes in a discovery loop to fast-forward local election ballots and purge obsolete peer cache entries without triggering
-  unprovoked ballot increments.
-- **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of a sole electorate change that excludes the current leader drives participant retirement and persistent workspace release. The terminal response is
-  returned upon majority consensus commitment without requiring post-commit causal anchoring against persistent state.
+- **Client Interaction & Terminality Classification**: Electorate change requests adhere to a strict interaction contract partitioned by terminality:
+    - **Terminal Responses**: `SuccessfullyChanged` and `AlreadyChanged` represent definitive consensus outcomes (a newly committed or already matching configuration) that definitively satisfy the requester and terminate client retry loops.
+    - **Non-Terminal Responses**: Represent transient rejections, redirections, or interrupted request tracking (`WaitGhostLeaderIsDemoted`, `AskTheLeader`, `CatchingUp`, `Excluded`, `Secluded`, `Stopped`, and lost tracking outcomes).
+      Non-terminal responses instruct the client coordinator on how and where to retry without implying request failure.
+- **Leader Redirection Semantics**: When an electorate change request is submitted to a non-leader or demoted leader, the response provides an explicit redirection (`AskTheLeader`) identifying the current perceived leader. This allows
+  clients to retarget the active consensus leader directly rather than initiating blind cluster discovery.
+- **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of an electorate change across a majority quorum immediately yields a terminal response to the client. Terminality is strictly decoupled from the
+  subsequent, asynchronous retirement and quiescence of excluded participants; the coordinator is unblocked the moment the configuration is durably committed in the Raft log.
 
 ## 11. Decoupled Mutation Contract & Causal State Synchronization
 

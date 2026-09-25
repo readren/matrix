@@ -288,9 +288,9 @@ class RaftPaperExamplesTest extends FunSuite {
 		// The electorate change completed successfully
 		env.electorateChangeStatus(ccHandle.requestId) match {
 			case ElectorateChangeStatus.Completed(resp) =>
-				assert(resp.isInstanceOf[SUCCESSFULLY_CHANGED])
+				assert(resp == ElectorateChangeResponse.SuccessfullyChanged)
 			case other =>
-				fail(s"Expected SUCCESSFULLY_CHANGED, but got $other")
+				fail(s"Expected SuccessfullyChanged, but got $other")
 		}
 
 		// The new electorate excludes p-0, which gracefully authorizes quiescence

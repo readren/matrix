@@ -211,7 +211,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 						activeCommandHandle = None
 						currentTargetParticipant = leaderId
 						knownParticipants.add(leaderId)
-						if currentAttemptFlag == FALLBACK && triedParticipantsForCommand.contains(leaderId) then {
+						if currentAttemptFlag.isFallback && triedParticipantsForCommand.contains(leaderId) then {
 							triedParticipantsForCommand.add(leaderId)
 						}
 						currentAttemptFlag = REDIRECTED
@@ -288,7 +288,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 						case ElectorateChangeStatus.Completed(res) =>
 							activeElectorateChangeHandle = None
 							res match {
-								case _: (SUCCESSFULLY_CHANGED | ALREADY_CHANGED) =>
+								case ElectorateChangeResponse.SuccessfullyChanged | ElectorateChangeResponse.AlreadyChanged =>
 									currentActiveParticipants = ccHandle.desiredParticipants
 									knownParticipants ++= currentActiveParticipants
 								case _ => ()
@@ -358,10 +358,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 
 			env.electorateChangeStatus(shutdownHandle.requestId) match {
 				case ElectorateChangeStatus.Completed(res) =>
-					res match {
-						case _: TerminalElectorateChangeResponse => shutdownCompleted = true
-						case _ => ()
-					}
+					if res.isTerminal then shutdownCompleted = true
 				case _ => ()
 			}
 
