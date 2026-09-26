@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-25T18:15:00Z"
+timestamp: "2026-09-25T22:45:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -391,7 +391,7 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
    - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, and log tail metadata.
 
 2. **Deterministic Candidate Ranking (`decideMyVote`)**:
-    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, isInCommonSet, participantId)`.
+    - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, membershipTier, participantId)`.
     - **Precedence Order & Safety Invariants**:
         - `currentTerm`: Higher terms strictly dominate lower terms.
       - `isLeading` over Log Completeness: An active leader (`ER_LEADING`) within the same term takes precedence over other participants regardless of log tail comparisons. Assuming term invariants hold, this avoids unnecessary leadership
@@ -400,10 +400,23 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
         (`ER_RETIREE`) or joining (`ER_JOINER`) participants. If a non-candidate peer holds newer committed entries, the comparison prioritizes that peer's state, preventing the candidate from voting for itself or achieving nomination until
         it absorbs those committed records.
         - `isCandidate` over Non-Candidate: Among participants with equal terms and identical log completeness, active candidates take precedence over passive participants (followers, retirees, joiners).
-        - Old Configuration Precedence over New-Only Configuration: Among contenders with identical log completeness and candidate status during joint consensus transitions, participants belonging to the old configuration set
-          ($C_{\text{old}}$) take precedence over new-only participants ($C_{\text{new}} \setminus C_{\text{old}}$). This invariant guarantees election convergence when an uncommitted joint configuration entry creates asymmetric active
-          electorates across the cluster: lagging participants still operating under $C_{\text{old}}$ cannot discover or vote for new-only peers, while uncommitted configuration records cannot be absorbed out-of-band via Log Matching
-          without an active leader replicating them.
+      - 3-Tier Electorate Membership Hierarchy (Surviving > Retiring > Joining): Among contenders with identical log completeness and candidate status during joint consensus transitions, candidates are ranked according to a deterministic
+        3-tier membership hierarchy: Surviving ($C_{\text{old}} \cap C_{\text{new}}$, Tier 2) > Retiring ($C_{\text{old}} \setminus C_{\text{new}}$, Tier 1) > Joining / New-Only ($C_{\text{new}} \setminus C_{\text{old}}$, Tier 0). This
+        ranking satisfies three fundamental invariants:
+          - Election Liveness Invariant (Old-Set Precedence: Tiers 2 and 1 over Tier 0): In Raft and Matrix consensus, nodes transition to joint consensus immediately upon appending a transitional joint configuration record
+            (`JointElectorateChange`), prior to commitment. If a leader crashes while this joint record is uncommitted, lagging nodes operating under the prior stable configuration ($SoleElectorate (C_{\text{old}})$) discover and vote
+            exclusively for peers within $C_{\text{old}}$. If nodes operating under joint consensus were to elect a new-only peer ($C_{\text{new}} \setminus C_{\text{old}}$), votes would deterministically split: $C_{\text{old}}$ nodes would
+            vote for an old node, while joint nodes would vote for the new-only node. Because the joint configuration entry is uncommitted, it cannot be committed out-of-band via log matching; only a newly elected leader can replicate
+            uncommitted records via append RPCs. Because joint consensus requires independent majorities in both $C_{\text{old}}$ and $C_{\text{new}}$, a split vote permanently deadlocks election quorums. Prioritizing candidates belonging
+            to $C_{\text{old}}$ (Tiers 2 and 1) strictly over new-only candidates (Tier 0) guarantees election convergence and eliminates livelock.
+          - Ghost Leader Elimination Invariant (Surviving Precedence: Tier 2 over Tier 1): When both a surviving node ($C_{\text{old}} \cap C_{\text{new}}$) and a retiring node ($C_{\text{old}} \setminus C_{\text{new}}$) hold the
+            uncommitted joint entry with identical log completeness and candidate rank, treating them symmetrically causes tie-breaking to arbitrate by identifier. If the retiring node has a lower identifier, it wins the election, commits
+            the joint configuration, and appends the subsequent stable configuration ($SoleElectorateChange (C_{\text{new}})$) from which it is excluded. Upon committing this sole configuration, the retiring leader transitions to a Ghost
+            Leader and must step down, triggering a secondary leader election. Prioritizing surviving nodes ($C_{\text{old}} \cap C_{\text{new}}$, Tier 2) over retiring nodes ($C_{\text{old}} \setminus C_{\text{new}}$, Tier 1) eliminates
+            this redundant handover, establishing stable leadership in a single election round.
+          - Disjoint Cluster Migration Invariant ($C_{\text{old}} \cap C_{\text{new}} = \emptyset$): In complete cluster migrations where Tier 2 is empty, the hierarchy degrades gracefully to Tier 1
+            ($C_{\text{old}} \setminus C_{\text{new}}$) over Tier 0 ($C_{\text{new}} \setminus C_{\text{old}}$). An old node is elected, commits the new configuration, and executes a planned handover to $C_{\text{new}}$, preserving liveness
+            even with zero surviving nodes.
         - `participantId`: Deterministic tie-breaker ensuring that all participants with identical peer views select the exact same candidate.
 
 3. **Candidate Elevation & Preemptive Term Bumping**:

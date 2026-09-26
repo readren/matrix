@@ -174,14 +174,14 @@ trait ConsensusElectorateCdm { thisModule =>
 		override def decideMyVote(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[Vote[ParticipantId]] = {
 			Trace.step(() => s"${this.toString}.decideMyVote") {
 				var participantsCount = if myStateInfo.rank != ER_NONE then 1 else 0
-				val decider = new CandidateDecider(boundParticipantId, myStateInfo, true)
+				val decider = new CandidateDecider(boundParticipantId, myStateInfo, MEMBERSHIP_NEW)
 				var contenderIndex = peers.length
 				while contenderIndex > 0 do {
 					contenderIndex -= 1
 					peersReplies(contenderIndex) match {
 						case Success(contenderStateInfo) =>
 							if contenderStateInfo.rank != ER_NONE then participantsCount += 1
-							decider.contend(peers(contenderIndex), contenderStateInfo, true)
+							decider.contend(peers(contenderIndex), contenderStateInfo, MEMBERSHIP_NEW)
 						case _ => // do nothing	
 					}
 				}
@@ -445,14 +445,15 @@ trait ConsensusElectorateCdm { thisModule =>
 				var oldParticipantsCount = 0
 				var newParticipantsCount = 0
 
-				// Membership in oldParticipants (Cold) takes priority over new-only participants (Cnew \ Cold) in CandidateDecider to prevent split-vote deadlocks when uncommitted JointElectorateChange entries create divergent active electorates across peers.
-				inline def treatParticipant(contenderId: ParticipantId, contenderStateInfo: StateInfo): Boolean = {
+				// Constructs the membership bitmask indicating whether the contender belongs to oldParticipants, newParticipants, or both.
+				inline def treatParticipant(contenderId: ParticipantId, contenderStateInfo: StateInfo): MembershipMask = {
 					val isInOldSet = oldParticipants.contains(contenderId)
+					val isInNewSet = newParticipants.contains(contenderId)
 					if contenderStateInfo.rank != ER_NONE then {
 						if isInOldSet then oldParticipantsCount += 1
-						if newParticipants.contains(contenderId) then newParticipantsCount += 1
+						if isInNewSet then newParticipantsCount += 1
 					}
-					isInOldSet
+					(if isInOldSet then MEMBERSHIP_OLD else 0) | (if isInNewSet then MEMBERSHIP_NEW else 0)
 				}
 
 				val decider = new CandidateDecider(boundParticipantId, myStateInfo, treatParticipant(boundParticipantId, myStateInfo))
@@ -696,7 +697,15 @@ trait ConsensusElectorateCdm { thisModule =>
 	}
 
 
-	//// UTILITIES USED BY ELECTORATE ////
+	//// Candidate decider ////
+
+	/** Bitmask indicating membership in the active consensus configurations (`Cold` and `Cnew`). */
+	type MembershipMask = Int
+
+	/** Contender belongs to the new configuration set (`Cnew`). */
+	final inline val MEMBERSHIP_NEW: 1 = 1
+	/** Contender belongs to the old configuration set (`Cold`). */
+	final inline val MEMBERSHIP_OLD: 2 = 2
 
 	/** Evaluates and ranks candidate peers against local state to determine the best candidate to vote for.
 	 *
@@ -705,51 +714,51 @@ trait ConsensusElectorateCdm { thisModule =>
 	 *  2. '''Incumbent Leadership''' ([[StateInfo.rank]] == `ER_LEADING`): An active leader of the current term takes precedence over non-leaders to preserve leadership stability.
 	 *  3. '''Log Completeness''' ([[StateInfo.compareCompleteness]]): Compares `lastRecordTerm`, then `lastRecordIndex`. Crucially, log completeness takes strict priority over all non-leading ranks (`ER_CANDIDATE`, `ER_FOLLOWER`, `ER_RETIREE`, `ER_JOINER`). This guarantees that a retiring or joining node holding a more complete log beats an `ER_CANDIDATE`, forcing active nodes to vote for it and safely absorb its committed log entries.
 	 *  4. '''Candidate Preference''' ([[StateInfo.rank]] == `ER_CANDIDATE`): When log completeness is identical, active candidates take precedence over passive followers or retirees to avoid vote fragmentation.
-	 *  5. '''Old Configuration Membership''' (`isInOldSet`): Favors nodes belonging to the old configuration set (`Cold`) over new-only nodes (`Cnew \ Cold`) during joint consensus transitions. This is an essential liveness invariant: when a [[JointElectorateChange]] record has been appended but is not yet committed, lagging nodes operating under [[SoleElectorate]] (`Cold`) only discover and vote for peers in `Cold`. If joint nodes chose a new-only peer, votes would deterministically split between `Cold` and `Cnew \ Cold`, deadlocking election quorums because uncommitted joint entries cannot be absorbed out-of-band via commit index absorption.
+	 *  5. '''Candidate Membership Tier''' (`membershipMask`): Bitmask encoding membership in target/new (`bit 0 = Cnew`, weight 1) and common/old (`bit 1 = Cold`, weight 2), establishing the 3-tier precedence: Surviving (`3`, `Cold ∩ Cnew`) > Retiring (`2`, `Cold \ Cnew`) > Joining (`1`, `Cnew \ Cold`) > Non-member (`0`). Old-set precedence (`Cold` over `Cnew \ Cold`) enforces election liveness when an uncommitted transitional entry creates divergent active electorates across peers, while surviving precedence (`Cold ∩ Cnew` over `Cold \ Cnew`) eliminates ghost leader churn and redundant handovers upon committing the sole configuration.
 	 *  6. '''Deterministic Tie-Breaking''' (`participantId`): Total order on identifiers (`incumbentId < otherId`) ensures all participants observing an identical candidate subset converge on the exact same candidate.
 	 *
 	 * @param voterId the [[ParticipantId]] of the evaluating voter.
 	 * @param voterStateInfo the [[StateInfo]] of the evaluating voter.
-	 * @param voterIsInOldSet whether the voter belongs to the old participant set (`Cold`) in joint consensus. */
-	private final class CandidateDecider(voterId: ParticipantId, voterStateInfo: StateInfo, voterIsInOldSet: Boolean) {
+	 * @param voterMembershipMask bitmask indicating voter membership in new (bit 0) and old (bit 1) participant sets. */
+	private final class CandidateDecider(voterId: ParticipantId, voterStateInfo: StateInfo, voterMembershipMask: MembershipMask) {
 		private var chosenId = voterId
 		private var chosenInfo = voterStateInfo
-		private var chosenIsInOldSet = voterIsInOldSet
+		private var chosenMembershipMask: MembershipMask = voterMembershipMask
 		private var mostCompleteInfo = voterStateInfo
 
 		/** Evaluates a candidate against the currently chosen candidate according to the evaluation hierarchy.
 		 *
-		 * @param otherId the [[ParticipantId]] of the contender.
-		 * @param otherInfo the [[StateInfo]] of the contender.
-		 * @param otherIsInOldSet whether the contender belongs to the old participant set (`Cold`) in joint consensus.
+		 * @param contenderId the [[ParticipantId]] of the contender.
+		 * @param contenderInfo the [[StateInfo]] of the contender.
+		 * @param contenderMembershipMask bitmask indicating contender membership in new (bit 0) and old (bit 1) participant sets.
 		 * @see [[CandidateDecider]] for the 6-point evaluation ranking hierarchy. */
-		def contend(otherId: ParticipantId, otherInfo: StateInfo, otherIsInOldSet: Boolean): Unit = {
+		def contend(contenderId: ParticipantId, contenderInfo: StateInfo, contenderMembershipMask: MembershipMask): Unit = {
 			val incumbentId = chosenId
 			val incumbentInfo = chosenInfo
-			val incumbentIsInOldSet = chosenIsInOldSet
+			val incumbentMembershipMask = chosenMembershipMask
 
 			val theOtherWins =
-				if incumbentInfo.currentTerm > otherInfo.currentTerm then false
-				else if incumbentInfo.currentTerm < otherInfo.currentTerm then true
-				else if incumbentInfo.rank == ER_LEADING && otherInfo.rank != ER_LEADING then false
-				else if incumbentInfo.rank != ER_LEADING && otherInfo.rank == ER_LEADING then true
+				if incumbentInfo.currentTerm > contenderInfo.currentTerm then false
+				else if incumbentInfo.currentTerm < contenderInfo.currentTerm then true
+				else if incumbentInfo.rank == ER_LEADING && contenderInfo.rank != ER_LEADING then false
+				else if incumbentInfo.rank != ER_LEADING && contenderInfo.rank == ER_LEADING then true
 				else {
-					val completenessComparison = incumbentInfo.compareCompleteness(otherInfo)
+					val completenessComparison = incumbentInfo.compareCompleteness(contenderInfo)
 					if completenessComparison > 0 then false
 					else if completenessComparison < 0 then true
-					else if incumbentInfo.rank == ER_CANDIDATE && otherInfo.rank != ER_CANDIDATE then false
-					else if incumbentInfo.rank != ER_CANDIDATE && otherInfo.rank == ER_CANDIDATE then true
-					else if incumbentIsInOldSet && !otherIsInOldSet then false
-					else if !incumbentIsInOldSet && otherIsInOldSet then true
-					else if incumbentId < otherId then false
+					else if incumbentInfo.rank == ER_CANDIDATE && contenderInfo.rank != ER_CANDIDATE then false
+					else if incumbentInfo.rank != ER_CANDIDATE && contenderInfo.rank == ER_CANDIDATE then true
+					else if incumbentMembershipMask > contenderMembershipMask then false
+					else if incumbentMembershipMask < contenderMembershipMask then true
+					else if incumbentId < contenderId then false
 					else true
 				}
 			if theOtherWins then {
-				chosenId = otherId
-				chosenInfo = otherInfo
-				chosenIsInOldSet = otherIsInOldSet
+				chosenId = contenderId
+				chosenInfo = contenderInfo
+				chosenMembershipMask = contenderMembershipMask
 			}
-			if otherInfo.compareCompleteness(mostCompleteInfo) > 0 then mostCompleteInfo = otherInfo
+			if contenderInfo.compareCompleteness(mostCompleteInfo) > 0 then mostCompleteInfo = contenderInfo
 		}
 
 		/** Casts the vote for the best candidate if that candidate's log is at least as complete as the most complete log observed.

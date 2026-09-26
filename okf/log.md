@@ -3,8 +3,13 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-25T18:15:00Z"
+timestamp: "2026-09-25T22:45:00Z"
 ---
+
+## [2026-09-25T22:45:00Z]
+
+- Formalized the 3-tier candidate membership hierarchy (Surviving > Retiring > Joining) during joint consensus transitions in `okf/lazy-multi-raft-consensus.md`, articulating the mathematical proofs for election liveness (old-set precedence
+  over new-only to prevent split-vote livelock) and ghost leader elimination (surviving precedence over retiring to avoid redundant handovers), and specifying fallback ordering for disjoint cluster migrations.
 
 ## [2026-09-25T18:15:00Z]
 
