@@ -58,8 +58,8 @@ object ConsensusRpc {
 		type Response = StateInfo
 	}
 
-	final case class ChooseALeader(inquirerId: NodeId, inquirerInfo: StateInfo) extends ConsensusRpc {
-		type Response = Vote[NodeId]
+	final case class RequestBallot(inquirerId: NodeId, inquirerInfo: StateInfo) extends ConsensusRpc {
+		type Response = Ballot
 	}
 
 	final case class AppendRecords(
@@ -499,16 +499,16 @@ class EnvironmentNode(
 				captor
 			}
 
-			override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Vote[ParticipantId]] = {
+			override def requestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot] = {
 				sequencer.checkWithin()
-				val captor = sequencer.Captor[Vote[ParticipantId]]()
+				val captor = sequencer.Captor[Ballot]()
 				val req = RequestPacket(
 					id = env.nextPacketId(),
 					source = myId,
 					destination = destinationId,
 					departureTime = env.currentVirtualTime,
-					rpc = ConsensusRpc.ChooseALeader(inquirerId, inquirerInfo),
-					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[Vote[ParticipantId]])))
+					rpc = ConsensusRpc.RequestBallot(inquirerId, inquirerInfo),
+					completeCaller = res => stepDoer.executeSequentially(() => res.fold(e => captor.trapSync(e), v => captor.captureSync(v.asInstanceOf[Ballot])))
 				)
 				env.enqueuePacket(req)
 				captor
@@ -1178,8 +1178,8 @@ class ConsensusEnvironment(
 						req.rpc match {
 							case ConsensusRpc.HowAreYou(inquirerInfo) =>
 								destNode.clusterParticipant.delegate.onHowAreYou(req.source, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
-							case ConsensusRpc.ChooseALeader(inquirerId, inquirerInfo) =>
-								destNode.clusterParticipant.delegate.onChooseALeader(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
+							case ConsensusRpc.RequestBallot(inquirerId, inquirerInfo) =>
+								destNode.clusterParticipant.delegate.onRequestBallot(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.AppendRecords(inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit) =>
 								destNode.clusterParticipant.delegate.onAppendRecords(req.source, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit) =>

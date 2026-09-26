@@ -3,8 +3,15 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-25T22:45:00Z"
+timestamp: "2026-09-26T23:35:00Z"
 ---
+
+## [2026-09-26T23:35:00Z]
+
+- Decoupled the election protocol domain in Section 9 (On-Demand Election Protocol, Single-Vote-Per-Term Invariant & Promotion Dynamics) and Section 13 (Host Bridge RPC Completion & Transport Termination Invariants) of
+  `okf/lazy-multi-raft-consensus.md`: formalized the boundary separation between Phase 1 local candidate nomination (`CandidateNomination`) and Phase 2 remote ballot solicitation (`RequestBallot` yielding `Ballot`), documented the
+  elimination of artificial candidate ID wrapping on neutral quorum ballots, established that responding voters report their own role rank for neutral quorum buffering rather than candidate identities, and updated outbound host bridge RPC
+  inventories to reflect `RequestBallot`.
 
 ## [2026-09-25T22:45:00Z]
 

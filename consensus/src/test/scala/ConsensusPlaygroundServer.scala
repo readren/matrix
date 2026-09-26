@@ -367,7 +367,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 	private def rpcKind(rpc: ConsensusRpc): String = rpc match {
 		case _: ConsensusRpc.HowAreYou => "HAY"
-		case _: ConsensusRpc.ChooseALeader => "CAL"
+		case _: ConsensusRpc.RequestBallot => "RQB"
 		case _: ConsensusRpc.AppendRecords => "APR"
 		case _: ConsensusRpc.InstallSnapshot => "SNP"
 		case _: ConsensusRpc.PermitQuiescence => "QUI"
@@ -415,7 +415,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 	private def rpcSummary(rpc: ConsensusRpc): String = rpc match {
 		case r: ConsensusRpc.HowAreYou => s"howAreYou(${r.inquirerInfo})"
-		case r: ConsensusRpc.ChooseALeader => s"chooseALeader(inquirerId=${r.inquirerId}, term=${r.inquirerInfo.currentTerm})"
+		case r: ConsensusRpc.RequestBallot => s"requestBallot(inquirerId=${r.inquirerId}, term=${r.inquirerInfo.currentTerm})"
 		case r: ConsensusRpc.AppendRecords => s"appendRecords(term=${r.inquirerTerm}, prevIdx=${r.prevLogIndex}, commit=${r.leaderCommit})"
 		case r: ConsensusRpc.InstallSnapshot => s"installSnapshot(term=${r.inquirerTerm}, lastIncludedIdx=${r.snapshot.lastIncludedRecordIndex})"
 		case r: ConsensusRpc.PermitQuiescence => s"permitQuiescence(electorateIdx=${r.indexOfGrantedSec})"

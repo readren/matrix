@@ -126,8 +126,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			private def formatRpc(rpc: ConsensusRpc): String = rpc match {
 				case ConsensusRpc.HowAreYou(inquirerInfo) =>
 					s"HowAreYou(inquirerInfo=$inquirerInfo)"
-				case ConsensusRpc.ChooseALeader(inquirerId, inquirerInfo) =>
-					s"ChooseALeader(inquirerId=$inquirerId, inquirerInfo=$inquirerInfo)"
+				case ConsensusRpc.RequestBallot(inquirerId, inquirerInfo) =>
+					s"RequestBallot(inquirerId=$inquirerId, inquirerInfo=$inquirerInfo)"
 				case ConsensusRpc.AppendRecords(inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit) =>
 					val recordsStr = batch.mkString("[", ", ", "]")
 					s"AppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm:$prevLogTerm, records:$recordsStr, leaderCommit:$leaderCommit, termAtLeaderCommit:$termAtLeaderCommit)"

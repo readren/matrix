@@ -37,7 +37,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		// Deliver responses back to p-0
 		env.deliverAllTo(0)
 
-		// p-0 processes responses and initiates election (ChooseALeader)
+		// p-0 processes responses and initiates election (RequestBallot)
 		env.stepNode(0)
 		env.stepNode(0)
 
@@ -246,7 +246,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		while env.pendingPacketsBetween(2, 1).nonEmpty do env.deliverNext(2, 1)
 		env.runNodeUntilIdle(1)
 
-		// 4. p-1 launches Phase 2 (ChooseALeader)
+		// 4. p-1 launches Phase 2 (RequestBallot)
 		while env.pendingPacketsBetween(1, 0).nonEmpty do env.dropNext(1, 0)
 		while env.pendingPacketsBetween(1, 2).nonEmpty do env.deliverNext(1, 2)
 		env.stepNode(2)
@@ -311,11 +311,11 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
-		// ChooseALeader triggered for peers p-1 and p-2
-		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(calRequests.size, 2)
+		// RequestBallot triggered for peers p-1 and p-2
+		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(ballotRequests.size, 2)
 
-		// Deliver chooseALeader only to p-1, leaving p-2 in flight
+		// Deliver RequestBallot only to p-1, leaving p-2 in flight
 		env.deliverNext(0, 1)
 		env.stepNode(1)
 
@@ -330,10 +330,10 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.runNodeUntilIdle(0)
 		assertEquals(env.nodeRole(0), "LEADER")
 
-		// p-2's chooseALeader request is still in flight, never needed
-		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(remainingCal.size, 1)
-		assertEquals(remainingCal.head.destination, NodeId("p-2"))
+		// p-2's RequestBallot request is still in flight, never needed
+		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(remainingBallot.size, 1)
+		assertEquals(remainingBallot.head.destination, NodeId("p-2"))
 	}
 
 	test("voting quorum: early impossible loss demotes candidate to isolated without waiting for remaining peers") {
@@ -354,9 +354,9 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.deliverNext(2, 0)
 		env.runNodeUntilIdle(0)
 
-		// ChooseALeader triggered for all 4 peers
-		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(calRequests.size, 4)
+		// RequestBallot triggered for all 4 peers
+		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(ballotRequests.size, 4)
 
 		// Drop/fail 3 of them (p-1, p-2, p-3). Remaining possible votes = 1 (self) + 1 (p-4) = 2 <= 5/2
 		env.dropNext(0, 1)
@@ -367,10 +367,10 @@ class ConsensusEnvironmentTest extends FunSuite {
 		// p-0 immediately demotes to ISOLATED due to mathematical impossibility, without waiting for p-4
 		assertEquals(env.nodeRole(0), "ISOLATED")
 
-		// p-4's CAL packet is still pending in channel, never delivered
-		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(remainingCal.size, 1)
-		assertEquals(remainingCal.head.destination, NodeId("p-4"))
+		// p-4's RequestBallot packet is still pending in channel, never delivered
+		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(remainingBallot.size, 1)
+		assertEquals(remainingBallot.head.destination, NodeId("p-4"))
 	}
 
 	test("voting quorum: higher term from peer aborts election immediately") {
@@ -387,8 +387,8 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
-		// ChooseALeader triggered
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 2)
+		// RequestBallot triggered
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
 
 		// Advance p-1's term via an AppendRecords RPC from a higher term (term 5)
 		env.node(1).stepDoer.executeSequentially(() => {
@@ -396,7 +396,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		})
 		env.stepNode(1)
 
-		// Deliver chooseALeader to p-1 only
+		// Deliver RequestBallot to p-1 only
 		env.deliverNext(0, 1)
 		env.stepNode(1)
 		env.deliverNext(1, 0)
@@ -406,10 +406,10 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assertEquals(env.node(0).storage.savedMemory.currentTerm, 5.asInstanceOf[Term])
 		assert(env.nodeRole(0) != "LEADER")
 
-		// p-2's CAL request is still pending
-		val remainingCal = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(remainingCal.size, 1)
-		assertEquals(remainingCal.head.destination, NodeId("p-2"))
+		// p-2's RequestBallot request is still pending
+		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(remainingBallot.size, 1)
+		assertEquals(remainingBallot.head.destination, NodeId("p-2"))
 	}
 
 	test("voting quorum: early termination unsubscribes remaining queries and ignores late arrivals") {
@@ -426,8 +426,8 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
-		// ChooseALeader triggered
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 2)
+		// RequestBallot triggered
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
 
 		// Win early with p-1's vote
 		env.deliverNext(0, 1)
@@ -469,9 +469,9 @@ class ConsensusEnvironmentTest extends FunSuite {
 		// p-0 receives p-1's state info: reaches discovery majority (2/3) without waiting for p-2
 		env.runNodeUntilIdle(0)
 
-		// Phase 2 (CAL) is launched for both peers
-		val calRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader])
-		assertEquals(calRequests.size, 2)
+		// Phase 2 (RequestBallot) is launched for both peers
+		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		assertEquals(ballotRequests.size, 2)
 
 		// p-2's HAY request is still pending in flight
 		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
@@ -525,7 +525,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.runNodeUntilIdle(0)
 		assertEquals(env.node(0).storage.savedMemory.currentTerm, 5.asInstanceOf[Term])
 		assert(env.nodeRole(0) != "LEADER")
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.ChooseALeader]), 0)
+		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 0)
 
 		// p-2's HAY query is still pending
 		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])

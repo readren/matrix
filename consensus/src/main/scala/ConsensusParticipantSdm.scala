@@ -166,7 +166,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 	 * - Providing the initial cluster membership via [[getInitialParticipants]], which must return the same set across all participants listed.
 	 * - Acting as the source of truth for cluster membership and determining when an electorate change should be triggered. This includes reacting to node join/leave events, quorum loss, scaling decisions, or health-based adjustments.
 	 * - Initiating electorate transitions by calling [[Delegate.requestElectorateChange]] when a change is required.
-	 * - Routing inter-participant RPCs (e.g., [[howAreYou]], [[chooseALeader]], [[appendRecords]]) to the appropriate [[Delegate]] methods.
+	 * - Routing inter-participant RPCs (e.g., [[howAreYou]], [[requestBallot]], [[appendRecords]]) to the appropriate [[Delegate]] methods.
 	 * - Delivering client commands and consensus messages to the bound [[ConsensusParticipant]] via the last [[Delegate]] set with [[setBound]] by the [[ConsensusParticipant]].
 	 * - Scheduling deferred wake-ups when requested by the [[ConsensusParticipant]] via [[requestWakeUp]], and invoking the provided callback within the [[sequencer]] after an appropriate host-determined delay.
 	 * - Ensuring all invocations occur within the [[sequencer]] thread.
@@ -250,14 +250,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 */
 			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[StateInfo]
 
-			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[chooseALeader]] on the [[ParticipantId]] of the owner of this [[Delegate]]
+			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[requestBallot]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
 			 * Must be called within the [[sequencer]].
-			 * @param inquirerId The id of the participant that called [[chooseALeader]].
+			 * @param inquirerId The id of the participant that called [[requestBallot]].
 			 * @param inquirerInfo Information about the state of the participant that called.
-			 * @return A [[sequencer.Capture]] that yields a [[Vote]] indicating the candidate chosen by the listening participant for the specified term.
+			 * @return A [[sequencer.Capture]] that yields a [[Ballot]] indicating whether the vote was granted to the inquiring candidate.
 			 */
-			def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Vote[ParticipantId]]
+			def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot]
 
 			/** **Inbound bridge**: This method is invoked by this [[ClusterParticipant]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
 			 *
@@ -328,14 +328,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			def howAreYou(inquirerInfo: StateInfo): sequencer.Capture[StateInfo]
 
 			/**
-			 * Request the destination participant to choose a leader.
-			 * The implementation should make, somehow, the destination participant's [[Delegate.onChooseALeader]] to be called, and return what it returns.
+			 * Solicits a ballot from the destination participant.
+			 * The implementation should make, somehow, the destination participant's [[Delegate.onRequestBallot]] to be called, and return what it returns.
 			 * Called within the [[sequencer]] thread.
 			 * @param inquirerId The id of the participant that is asking.
 			 * @param inquirerInfo Information about the state of the participant that is asking.
-			 * @return A [[sequencer.Capture]] that yields a [[Vote]] indicating the candidate chosen by the destination participant.
+			 * @return A [[sequencer.Capture]] that yields a [[Ballot]] indicating whether the vote was granted by the destination participant.
 			 */
-			def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Vote[ParticipantId]]
+			def requestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot]
 
 			/**
 			 * Request the destination participant to append records.
@@ -603,13 +603,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Vote[ParticipantId]] =
-				Trace.init(() => s"$boundParticipantId: onChooseALeader") {
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot] =
+				Trace.init(() => s"$boundParticipantId: onRequestBallot") {
 					checkWithin()
-					currentRole.onChooseALeader(inquirerId, inquirerInfo).recover {
+					currentRole.onRequestBallot(inquirerId, inquirerInfo).recover {
 						case _: GracefullyReleased =>
 							val info = currentRole.syncStatelessStateInfo()
-							Maybe(currentRole.blankVote(info.currentTerm))
+							Maybe(currentRole.blankBallot(info.currentTerm))
 						case _ => Maybe.empty
 					}
 				}
@@ -719,7 +719,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[StateInfo]
 
-			def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]]
+			def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot]
 
 			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term)(using Trace.Context): sequencer.Capture[AppendResult]
 
@@ -733,9 +733,9 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			def diagnosticInfo: RoleDiagnostic = GenericRoleDiagnostic(ordinal)
 
-			final def blankVote(term: Term): Vote[ParticipantId] = Vote(term, boundParticipantId, 0, 0, thisRole.rank)
+			final def blankBallot(term: Term): Ballot = Ballot(term, granted = false, thisRole.rank)
 
-			final def yieldsBlankVote(term: Term): sequencer.Capture[Vote[ParticipantId]] = sequencer.Keeper(blankVote(term))
+			final def yieldsBlankBallot(term: Term): sequencer.Capture[Ballot] = sequencer.Keeper(blankBallot(term))
 
 			/** Called by [[become]] after the previous [[Role]]'s [[Role.handleExit]] method has returned, and the [[currentRole]] variable set to this [[Role]] instance.
 			 * This method is suitable to enqueue primary state updates that must happen before any updates enqueued after [[become]] returns. */
@@ -843,32 +843,29 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			protected object DiscoveryReconciledRoleChanged extends DiscoveryReconciliation
 
-			/** Candidate Vote Decision Query: Pure synchronous calculation that determines the local vote from the reconciled state, discovery outcome, and discovered peer states. */
-			def decideMyVote(
+			/** Candidate Nomination Decision Query: Pure synchronous calculation that determines the local candidate nomination from the reconciled state, discovery outcome, and discovered peer states. */
+			def decideMyNomination(
 				primaryState: PrimaryState,
 				electorate: Electorate,
 				stateInfo: StateInfo,
 				outcome: DiscoveryQuorumOutcome,
 				peersReplies: IArray[Try[StateInfo]]
-			)(using Trace.Context): Vote[ParticipantId] = {
+			)(using Trace.Context): Maybe[CandidateNomination[ParticipantId]] = {
 				outcome match {
 					case _: DiscoveryQuorumOutcome_MajorityReached =>
 						if electorate.isBoundIncluded || currentRole.isGhost then {
-							electorate.decideMyVote(stateInfo, peersReplies)
-								.fold(blankVote(primaryState.currentTerm))(identity)
-						} else blankVote(primaryState.currentTerm)
+							electorate.decideMyNomination(stateInfo, peersReplies)
+						} else Maybe.empty
 
 					case _: DiscoveryQuorumOutcome_MajorityImpossible | _: DiscoveryQuorumOutcome_Stale =>
-						blankVote(primaryState.currentTerm)
+						Maybe.empty
 
 					case activeLeader: DiscoveryQuorumOutcome_ActiveLeaderDetected[ParticipantId] @unchecked =>
-						Vote(
+						Maybe(CandidateNomination(
 							primaryState.currentTerm,
 							activeLeader.leaderId,
-							reachableCommonCount = 1,
-							reachableTargetCount = 1,
-							votedRank = ER_LEADING
-						)
+							candidateRank = ER_LEADING
+						))
 				}
 			}
 
@@ -909,33 +906,33 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield response
 			}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot] = {
 				val term0Ref = new TermRef(0)
 				for {
 					// if the term is stale, update it persistently before interacting with other participants so that they see this participant with its updated and persisted state.
 					primaryState1 <- updateTermIfLessThan(inquirerInfo.currentTerm, term0Ref) // Note that this may change the role.
-					myVote <- {
-						if currentRole ne this then currentRole.onChooseALeader(inquirerId, inquirerInfo)
+					myBallot <- {
+						if currentRole ne this then currentRole.onRequestBallot(inquirerId, inquirerInfo)
 						else {
 							var currentStateInfo = syncStatefulStateInfo(primaryState1)
 							if absorbHigherCommitIndex(primaryState1, inquirerInfo) then currentStateInfo = syncStatefulStateInfo(primaryState1)
 							val electorate1 = deriveElectorateFrom(primaryState1)
 							if !electorate1.isBoundIncluded || inquirerInfo.currentTerm < primaryState1.currentTerm then {
-								yieldsBlankVote(primaryState1.currentTerm)
+								yieldsBlankBallot(primaryState1.currentTerm)
 							} else {
 								val isLogUpToDate = inquirerInfo.compareCompleteness(currentStateInfo) >= 0
 								if !isLogUpToDate then {
-									yieldsBlankVote(primaryState1.currentTerm)
+									yieldsBlankBallot(primaryState1.currentTerm)
 								} else {
 									for {
 										primaryState2 <- primaryStateFence.causalAnchor()
 										vFinal <- {
-											if currentRole ne this then currentRole.onChooseALeader(inquirerId, inquirerInfo)
+											if currentRole ne this then currentRole.onRequestBallot(inquirerId, inquirerInfo)
 											else if primaryState2.votedFor.isDefined && !primaryState2.votedFor.contains(inquirerId) then {
-												currentRole.yieldsBlankVote(primaryState2.currentTerm)
+												currentRole.yieldsBlankBallot(primaryState2.currentTerm)
 											} else if primaryState2.votedFor.contains(inquirerId) then {
-												val grantedVote = Vote(primaryState2.currentTerm, inquirerId, 1, 0, inquirerInfo.rank)
-												sequencer.Keeper(grantedVote)
+												val grantedBallot = Ballot(primaryState2.currentTerm, granted = true, thisStatefulRole.rank)
+												sequencer.Keeper(grantedBallot)
 											} else {
 												primaryStateFence.advanceIf { ps =>
 													if currentRole.isInstanceOf[StatefulRole] && ps.currentTerm == inquirerInfo.currentTerm && (ps.votedFor.isEmpty || ps.votedFor.contains(inquirerId)) then {
@@ -943,8 +940,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 													} else Maybe.empty
 												}.map { psSaved =>
 													if psSaved.votedFor.contains(inquirerId) then {
-														Vote(psSaved.currentTerm, inquirerId, 1, 0, inquirerInfo.rank)
-													} else currentRole.blankVote(psSaved.currentTerm)
+														Ballot(psSaved.currentTerm, granted = true, thisStatefulRole.rank)
+													} else currentRole.blankBallot(psSaved.currentTerm)
 												}
 											}
 										}
@@ -953,7 +950,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 							}
 						}
 					}
-				} yield myVote
+				} yield myBallot
 			}
 
 			/**
@@ -1291,7 +1288,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			//// Role updaters
 
-			/** Starts a process that updates the [[currentRole]] and [[PrimaryState.currentTerm]] based on the [[StateInfo]]s returned by calling [[ClusterParticipant.howAreYou]] on the other participants and, if necessary, also based on the [[Vote]]s returned by calling [[ClusterParticipant.chooseALeader]] on them.
+			/** Starts a process that updates the [[currentRole]] and [[PrimaryState.currentTerm]] based on the [[StateInfo]]s returned by calling [[ClusterParticipant.howAreYou]] on the other participants and, if necessary, also based on the [[Ballot]]s returned by calling [[ClusterParticipant.requestBallot]] on them.
 			 * This process always ends immediately after a call to [[become]] returns. So, its [[Role]] outcome can be seen in the [[currentRole]] derived state variable.
 			 * The [[currentRole]] is updated only if the desired one if not equivalent to the [[currentRole]]. If updated, any other in-flight [[updateRole]] process is canceled and immediately completed.
 			 * Concurrent executions of this method return the same result. */
@@ -1322,32 +1319,41 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					/** Checks if this specific execution of `updateRole` has become obsolete and must be aborted. This condition is met if the participant has transitioned to a different role or if a newer concurrent execution of `updateRole` has started. */
 					inline def haveToAbort: Boolean = (currentRole ne this) || incumbentUpdateRoleSerial != serial
 
-					/** Role decision logic when my vote is for a peer and got the [[StateInfo]] of a majority. */
-					def whenVotingAnother(primaryState2: PrimaryState, vote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						if vote.votedRank == ER_LEADING then become(Follower(primaryState2.currentTerm, vote.votedId, primaryStateFence))
+					/** Role decision logic when my candidate nomination is for a peer. */
+					def whenNominatingAnother(primaryState2: PrimaryState, nomination: CandidateNomination[ParticipantId]): sequencer.Capture[Unit] = {
+						if nomination.candidateRank == ER_LEADING then become(Follower(primaryState2.currentTerm, nomination.candidateId, primaryStateFence))
 						else become(Isolated(primaryStateFence))
 						sequencer.Capture_unit
 					}
 
-					/** Continue the role update process assuming my vote is non-blank. */
-					def updateRoleKnowingMyNonBlankVote(primaryState2: PrimaryState, electorateAtRequest: Electorate, myVote2: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						if assertionsEnabled then assert(myVote2.term == primaryState2.currentTerm)
+					/** Continue the role update process based on the candidate nomination decision. */
+					def updateRoleKnowingMyNomination(primaryState2: PrimaryState, electorateAtRequest: Electorate, myNomination: Maybe[CandidateNomination[ParticipantId]]): sequencer.Capture[Unit] = {
+						myNomination.fold {
+							// If no candidate was nominated (blank), then:
+							if electorateAtRequest.isBoundIncluded then {
+								become(Isolated(primaryStateFence))
+								sequencer.Capture_unit
+							} else {
+								if assertionsEnabled then assert(electorateAtRequest.isInstanceOf[SoleElectorate]) // because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole ones.
+								become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
+								sequencer.Capture_unit
+							}
+						} { nomination =>
+							if assertionsEnabled then assert(nomination.term == primaryState2.currentTerm)
 
-						// If excluded and not leading as ghost, then retire immediately.
-						if !electorateAtRequest.isBoundIncluded && !this.isInstanceOf[Leader] then {
-							this.authorizeQuiescenceIfVanished(electorateAtRequest.asInstanceOf[SoleElectorate]) // The downcast is safe because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole electorates.
-							become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
-							sequencer.Capture_unit
-						}
-						// If my vote is for an active leader, become/remain follower immediately without requiring a full discovery quorum.
-						else if myVote2.votedRank == ER_LEADING then whenVotingAnother(primaryState2, myVote2)
-						// else, if got the StateInfo of a majority of the active participants, then:
-						else if electorateAtRequest.reachedAMajority(myVote2) then {
-							// If my vote is for other participant, become follower or isolated depending on the other is leading or not.
-							if myVote2.votedId != boundParticipantId then whenVotingAnother(primaryState2, myVote2)
-							// If my vote is for myself and I am leading, abort the role update.
+							// If excluded and not leading as ghost, then retire immediately.
+							if !electorateAtRequest.isBoundIncluded && !this.isInstanceOf[Leader] then {
+								this.authorizeQuiescenceIfVanished(electorateAtRequest.asInstanceOf[SoleElectorate]) // The downcast is safe because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole electorates.
+								become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
+								sequencer.Capture_unit
+							}
+							// If nominated candidate is an active leader, become/remain follower immediately without requiring a full discovery quorum.
+							else if nomination.candidateRank == ER_LEADING then whenNominatingAnother(primaryState2, nomination)
+							// If nominated candidate is other participant, become follower or isolated depending on whether the other is leading or not.
+							else if nomination.candidateId != boundParticipantId then whenNominatingAnother(primaryState2, nomination)
+							// If nomination is for myself and I am leading, abort the role update.
 							else if this.ordinal == LEADER then sequencer.Capture_unit
-							// If the vote is for myself and I am not leading, decide based on everyone’s votes.
+							// If nomination is for myself and I am not leading, solicit ballots from all peers.
 							else {
 								val targetTerm = primaryState2.currentTerm.incremented
 								for {
@@ -1358,12 +1364,12 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 									_ <- {
 										if (currentRole ne thisStatefulRole) || primaryStateBumped.currentTerm < targetTerm then sequencer.Capture_unit
 										else {
-											val myStateInfoAtChooseALeaderRequest = syncStatefulStateInfo(primaryStateBumped)
-											val inquires = for replierId <- electorateAtRequest.peers yield replierId.chooseALeader(boundParticipantId, myStateInfoAtChooseALeaderRequest)
+											val myStateInfoAtRequestBallot = syncStatefulStateInfo(primaryStateBumped)
+											val inquires = for replierId <- electorateAtRequest.peers yield replierId.requestBallot(boundParticipantId, myStateInfoAtRequestBallot)
 											for {
-												quorumResult <- electorateAtRequest.accumulateVotingQuorum(myVote2, myStateInfoAtChooseALeaderRequest, inquires)
+												quorumResult <- electorateAtRequest.accumulateVotingQuorum(myStateInfoAtRequestBallot, inquires)
 												primaryState3 <- {
-													Trace.trace(s"Replied votes=${quorumResult.replies.zip(electorateAtRequest.peers).mkString("[", ", ", "]")}, latestTermSeen=${quorumResult.highestTermSeen}, myVote=$myVote2, outcome=${quorumResult.outcome}")
+													Trace.trace(s"Replied ballots=${quorumResult.replies.zip(electorateAtRequest.peers).mkString("[", ", ", "]")}, latestTermSeen=${quorumResult.highestTermSeen}, outcome=${quorumResult.outcome}")
 													updateTermIfLessThan(quorumResult.highestTermSeen) // Note that this may change the role.
 												}
 												_ <- {
@@ -1376,7 +1382,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 														} else {
 															quorumResult.outcome match {
 																case _: VotingQuorumOutcome_Won =>
-																	if assertionsEnabled then assert(myVote2.votedId == boundParticipantId)
+																	if assertionsEnabled then assert(nomination.candidateId == boundParticipantId)
 																	val electorate3 = deriveElectorateFrom(primaryState3)
 																	become(Leader(primaryState3.currentTerm, primaryState3, electorate3, primaryStateFence))
 																	sequencer.Capture_unit
@@ -1396,31 +1402,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								} yield ()
 							}
 						}
-						// else (if the successful answers to the howAreYou RPC are not a majority)
-						else {
-							become(Isolated(primaryStateFence))
-							sequencer.Capture_unit
-						}
-					}
-
-					/** Continue the role update process by treating blank vote cases. */
-					def updateRoleKnowingMyVote(primaryState2: PrimaryState, electorateAtRequest: Electorate, myVote: Vote[ParticipantId]): sequencer.Capture[Unit] = {
-						// If my vote is blank, then:
-						if myVote.isBlank then {
-							// if we are included, then:
-							if electorateAtRequest.isBoundIncluded then {
-								become(Isolated(primaryStateFence))
-								sequencer.Capture_unit
-							}
-							// if we are not included, the become Retiring.
-							else {
-								if assertionsEnabled then assert(electorateAtRequest.isInstanceOf[SoleElectorate]) // because exclusion is checked every record and joint electorates are never more restrictive than the contiguous sole ones.
-								become(Retiring(primaryState2.currentTerm, electorateAtRequest.term, electorateAtRequest.changeIndex, electorateAtRequest.members))
-								sequencer.Capture_unit
-							}
-						}
-						// if my vote is non-blank, continue the role update knowing the vote is non-blank.
-						else updateRoleKnowingMyNonBlankVote(primaryState2, electorateAtRequest, myVote)
 					}
 
 					/** State Discovery Query: Inquires all peers in the provided [[Electorate]] how they are ([[ClusterParticipant.howAreYou]]) and accumulates their replies into a [[DiscoveryQuorumResult]].\
@@ -1472,8 +1453,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 														updateRole(restart.primaryState)
 
 													case ready: DiscoveryReconciledReady =>
-														val myVote = decideMyVote(ready.primaryState, electorateAtRequest, ready.stateInfo, discoveryResult.outcome, ready.peersReplies)
-														updateRoleKnowingMyVote(ready.primaryState, electorateAtRequest, myVote)
+														val myNomination = decideMyNomination(ready.primaryState, electorateAtRequest, ready.stateInfo, discoveryResult.outcome, ready.peersReplies)
+														updateRoleKnowingMyNomination(ready.primaryState, electorateAtRequest, myNomination)
 												}
 											}
 										} yield ()
@@ -1640,8 +1621,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				sequencer.Keeper(syncStatelessStateInfo())
 			}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
-				yieldsBlankVote(PRE_INIT)
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot] = {
+				yieldsBlankBallot(PRE_INIT)
 			}
 
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term)(using Trace.Context): sequencer.Capture[AppendResult] = {
@@ -1704,8 +1685,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				sequencer.Keeper(syncStatelessStateInfo())
 			}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
-				yieldsBlankVote(termAtExcludingElectorateIndex)
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot] = {
+				yieldsBlankBallot(termAtExcludingElectorateIndex)
 			}
 
 			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId])(using Trace.Context): sequencer.Capture[ElectorateChangeResponse] = {
@@ -1870,10 +1851,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield response
 			}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot] = {
 				for {
 					_ <- startingCompletedCovenant
-					response <- currentRole.onChooseALeader(inquirerId, inquirerInfo)
+					response <- currentRole.onRequestBallot(inquirerId, inquirerInfo)
 				} yield response
 			}
 
@@ -1924,17 +1905,17 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				notifyListeners(_.onJoining(previous.ordinal, indexOfTheIncludingElectorateChange))
 			}
 
-			override def decideMyVote(primaryState: PrimaryState, electorate: Electorate, stateInfo: StateInfo, outcome: DiscoveryQuorumOutcome, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Vote[ParticipantId] = {
-				blankVote(primaryState.currentTerm)
+			override def decideMyNomination(primaryState: PrimaryState, electorate: Electorate, stateInfo: StateInfo, outcome: DiscoveryQuorumOutcome, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[CandidateNomination[ParticipantId]] = {
+				Maybe.empty
 			}
 
-			override def onChooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Vote[ParticipantId]] = {
+			override def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo)(using Trace.Context): sequencer.Capture[Ballot] = {
 				for {
 					primaryState <- primaryStateFence.causalAnchor()
 					response <- {
-						if currentRole ne thisJoining then currentRole.onChooseALeader(inquirerId, inquirerInfo)
+						if currentRole ne thisJoining then currentRole.onRequestBallot(inquirerId, inquirerInfo)
 						else {
-							yieldsBlankVote(primaryState.currentTerm)
+							yieldsBlankBallot(primaryState.currentTerm)
 						}
 					}
 				} yield response
@@ -1964,7 +1945,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		 * Behavior when the participant has the [[ISOLATED]] role. Taken when reachability to a majority of the participants was not achieved or after the [[STARTING]] role has completed.
 		 * The participant transitions to this state after [[Starting]] or when reachability to other participants drops below [[smallestMajority]].
 		 * This state is abandoned when a majority of the participants are reachable.
-		 * [[Vote]]s cast by participants in this state are ignored.
+		 * [[Ballot]]s cast by participants in this state are ignored.
 		 */
 		private class Isolated(psf: CausalFence[PrimaryState, sequencer.type]) extends StatefulRole(psf) { thisIsolated =>
 			override val ordinal: RoleOrdinal = ISOLATED

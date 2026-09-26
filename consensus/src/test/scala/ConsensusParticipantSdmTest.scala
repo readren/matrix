@@ -886,13 +886,13 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					}.onBehalfOf(sequencer)
 				}
 
-				override def chooseALeader(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Vote[ParticipantId]] = {
+				override def requestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot] = {
 					sequencer.checkWithin()
-					boundParticipantId.rpc[Vote[ParticipantId]](
+					boundParticipantId.rpc[Ballot](
 						replierId,
-						s"ChooseALeader(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
+						s"RequestBallot(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
 					) { replier =>
-						replier.clusterParticipant.delegate.onChooseALeader(inquirerId, inquirerInfo)
+						replier.clusterParticipant.delegate.onRequestBallot(inquirerId, inquirerInfo)
 					}.onBehalfOf(sequencer)
 				}
 

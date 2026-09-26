@@ -125,19 +125,20 @@ extension (flag: CommandAttemptFlag) {
 
 final val assertionsEnabled: Boolean = classOf[StateInfo].desiredAssertionStatus()
 
-/**
- * A vote for a leader.
- * @param term The term for which the vote is cast.
- * @param votedId The id of the voted candidate.
- * @param reachableCommonCount The number of reachable and viable participants in the common set.
- * @param reachableTargetCount The number of reachable and viable participants in the target set.
- * @param votedRank The [[ElectionRank]] of the voted candidate.
- */
-final case class Vote[Id <: AnyRef](term: Term, votedId: Id, reachableCommonCount: Int, reachableTargetCount: Int, votedRank: ElectionRank) {
-	inline def isBlank: Boolean = reachableCommonCount == 0 && reachableTargetCount == 0
-	inline def isNonBlank: Boolean = !isBlank
+/** A response to a leader election vote request (RequestBallot RPC).
+ * @param term The responder's current [[Term]].
+ * @param granted True if the vote was granted to the inquiring candidate; false if declined.
+ * @param voterRank The [[ElectionRank]] of the responding voter. */
+final case class Ballot(term: Term, granted: Boolean, voterRank: ElectionRank) {
+	override def toString: String = s"Ballot(term=$term, granted=$granted, voterRank=${ElectionRank_nameOf(voterRank)})"
+}
 
-	override def toString: String = s"Vote(term=$term, votedId=$votedId, reachableCommon=$reachableCommonCount, reachableTarget=$reachableTargetCount, rank=${ElectionRank_nameOf(votedRank)})"
+/** The local candidate nomination determined by an [[Electorate]] during Phase 1 Pre-Vote discovery.
+ * @param term The [[Term]] at which the nomination was made.Ð
+ * @param candidateId The nominated candidate participant identifier.
+ * @param candidateRank The [[ElectionRank]] of the nominated candidate. */
+final case class CandidateNomination[Id <: AnyRef](term: Term, candidateId: Id, candidateRank: ElectionRank) {
+	override def toString: String = s"CandidateNomination(term=$term, candidateId=$candidateId, candidateRank=${ElectionRank_nameOf(candidateRank)})"
 }
 
 /** The result of an append operation. */
@@ -260,10 +261,10 @@ final class VotingQuorumOutcome_Stale(val higherTerm: Term) extends VotingQuorum
 	override def toString: String = s"Stale($higherTerm)"
 }
 
-final class VotingQuorumResult[Id <: AnyRef](
+final class VotingQuorumResult(
 	val outcome: VotingQuorumOutcome,
 	val highestTermSeen: Term,
-	val replies: IArray[Try[Vote[Id]]]
+	val replies: IArray[Try[Ballot]]
 )
 
 val VotingEarlyExitCancellation: Try[Nothing] = Failure(new java.util.concurrent.CancellationException("Early termination: voting quorum already resolved"))

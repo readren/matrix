@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-25T22:45:00Z"
+timestamp: "2026-09-26T23:35:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -390,7 +390,7 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
     - This phase is term-neutral and acts as a reactive Pre-Vote: querying nodes do not advance their terms, ensuring active leaders are never disrupted by exploratory queries from partitioned or restarting nodes.
    - Responding peers expose a snapshot of their local consensus state (`StateInfo`), containing their current term, election rank, commit index, and log tail metadata.
 
-2. **Deterministic Candidate Ranking (`decideMyVote`)**:
+2. **Deterministic Candidate Nomination (`decideMyNomination`)**:
     - Each participant evaluates contenders using a deterministic, total-order comparison function over `(currentTerm, isLeading, lastRecordTerm, lastRecordIndex, isCandidate, membershipTier, participantId)`.
     - **Precedence Order & Safety Invariants**:
         - `currentTerm`: Higher terms strictly dominate lower terms.
@@ -424,21 +424,23 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
    - Before issuing vote solicitations, the candidate advances its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$, records its vote for itself, and persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ in stable
      storage via the primary state causal fence.
 
-4. **Voting Phase (`ChooseALeader`) & Voter Epoch Fencing**:
-    - The candidate solicits explicit votes via `ChooseALeader` carrying $T_{\text{target}}$ and its updated `StateInfo`.
-    - Responding peers observing $T_{\text{target}} > T_{\text{local}}$ atomically advance their local term to $T_{\text{target}}$ and clear prior votes in persistent storage before evaluating the vote.
-   - Peers evaluate the solicitation against log completeness and single-vote-per-term constraints. If the candidate's log is up-to-date and the voter has not voted for another candidate in $T_{\text{target}}$, the voter persists
-     `votedFor = candidateId` and returns an explicit `Vote` at $T_{\text{target}}$.
-   - **Local Voter Evaluation Boundary**: Voters evaluate vote solicitations strictly against local log completeness and the single-vote-per-term invariant without dispatching discovery queries (`HowAreYou`) to third-party peers. This
-     prevents $O (N^2)$ query cascades and ensures that an unreachable or partitioned minority cannot deadlock majority quorum formation.
-   - **Epoch Fencing Effect**: Advancing and persisting $T_{\text{target}}$ permanently fences the voter against all prior terms ($\le T_{\text{target}} - 1$). Any delayed append requests from an old deposed leader at prior terms are
-     unconditionally rejected with `StaleTerm`.
+4. **Voting Phase (`RequestBallot`) & Voter Epoch Fencing**:
+    - The candidate solicits explicit ballots via `RequestBallot` carrying $T_{\text{target}}$ and its updated `StateInfo`.
+    - Responding peers observing $T_{\text{target}} > T_{\text{local}}$ atomically advance their local term to $T_{\text{target}}$ and clear prior votes in persistent storage before evaluating the solicitation.
+    - Peers evaluate the solicitation against log completeness and single-vote-per-term constraints. If the candidate's log is up-to-date and the voter has not voted for another candidate in $T_{\text{target}}$, the voter persists
+      `votedFor = candidateId` and returns an affirmative `Ballot(term = targetTerm, granted = true, voterRank)` exposing its own role rank. If the vote is denied or the voter is ineligible, it returns a non-granted
+      `Ballot(term, granted = false, voterRank)`.
+    - **Local Voter Evaluation Boundary**: Voters evaluate vote solicitations strictly against local log completeness and the single-vote-per-term invariant without dispatching discovery queries (`HowAreYou`) to third-party peers. This
+      prevents $O (N^2)$ query cascades and ensures that an unreachable or partitioned minority cannot deadlock majority quorum formation.
+    - **Epoch Fencing Effect**: Advancing and persisting $T_{\text{target}}$ permanently fences the voter against all prior terms ($\le T_{\text{target}} - 1$). Any delayed append requests from an old deposed leader at prior terms are
+      unconditionally rejected with `StaleTerm`.
 
 5. **Quorum & Role Inauguration**:
-    - **Sole Electorate Quorum**: A candidate must receive votes for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active electorate participants.
-    - **Joint Electorate Quorum (Joint Consensus)**: A candidate must receive a strict majority in **both** the old electorate set ($E_{\text{old}}$) and the new electorate set ($E_{\text{new}}$).
-   - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active electorate. Because the term and self-vote were committed to persistent storage
-     prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to await subsequent triggers or client commands.
+    - **Sole Electorate Quorum**: Evaluated by aggregating returned `Ballot`s. The accumulator seeds its matching count with the candidate's own granted vote, counting affirmative `Ballot(granted = true)` responses across the electorate
+      without requiring candidate ID comparison. A candidate must receive affirmative ballots for $T_{\text{target}}$ from a strict majority (`> N / 2`) of active electorate participants.
+    - **Joint Electorate Quorum (Joint Consensus)**: A candidate must receive a strict majority of affirmative ballots in **both** the old electorate set ($E_{\text{old}}$) and the new electorate set ($E_{\text{new}}$).
+    - If the candidate obtains the required quorum, it transitions directly into `Leader(term = targetTerm)` using the freshly anchored primary state and active electorate. Because the term and self-vote were committed to persistent storage
+      prior to vote collection, no intermediate promoting role or post-election persistence barrier is required. If quorum is not attained, the participant transitions to `Isolated` to await subsequent triggers or client commands.
 
 ### II. Canonical Raft Term Invariants & Single-Vote-Per-Term Dynamics
 
@@ -446,7 +448,7 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Preemptive Candidate Advancement**: A candidate bumping its term to $T_{\text{target}} = \max (T_{\text{observed}}) + 1$ persists $(T_{\text{target}}, \text{votedFor} = \text{self})$ atomically before soliciting votes.
 - **One Vote per Term Invariant**: A participant may cast at most one vote per term. When a vote is granted, the candidate's identity is recorded in persistent storage (`Workspace.votedFor`) alongside the term. Advancing to a higher term
   clears the recorded vote.
-- **Split-Brain Prevention**: Because voters persist their term and granted vote before responding to `ChooseALeader`, intersecting majorities across terms are prevented from acknowledging divergent logs, strictly preserving Raft's Leader
+- **Split-Brain Prevention**: Because voters persist their term and granted vote before responding to `RequestBallot`, intersecting majorities across terms are prevented from acknowledging divergent logs, strictly preserving Raft's Leader
   Completeness and State Machine Safety without requiring secondary ballot counters.
 
 ### III. Direct Leadership Inauguration & In-Flight Cleanup Invariants
@@ -467,8 +469,8 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Out-of-Band Advancement via Raft's Log Matching Property**:
     - To break election deadlocks without requiring heartbeats or active leaders, active participants evaluate out-of-band commit index absorption (`absorbHigherCommitIndexFromPeers`).
     - By Raft's Log Matching Property: *If two entries in different logs have the same index and term, the logs are identical in all preceding entries.*
-    - An active participant safely advances its local `commitIndex` out-of-band to a peer's `peerCommitIndex` without leader intervention if and only if:
-      $$\text{firstEmptyRecordIndex} > \text{peerCommitIndex} \quad \text{and} \quad \text{getRecordTermAt} (\text{peerCommitIndex}) == \text{peerStateInfo.termAtCommitIndex}$$
+  - An active participant safely advances its local `commitIndex` out-of-band to a peer's `peerCommitIndex` without leader intervention if and only
+    if: $$\text{firstEmptyRecordIndex} > \text{peerCommitIndex} \quad \text{and} \quad \text{getRecordTermAt} (\text{peerCommitIndex}) == \text{peerStateInfo.termAtCommitIndex}$$
     - Matching the term at `peerCommitIndex` provides mathematical proof that all entries up to `peerCommitIndex` in the local log are identical to the committed entries on the peer.
 - **Post-Absorption Dynamic Electorate Transition**:
     - Once `commitIndex` is advanced, the node triggers local application of newly committed commands and electorate entries.
@@ -490,9 +492,9 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
   with cancellation failures to release memory without triggering error recovery routines.
 - **Command-Query Separation in State Discovery**: State discovery evaluation operates strictly as a side-effect-free query that collects peer metadata without mutating local log state, commit indices, or terms. Upon discovery completion, a
   dedicated reconciliation command phase ingests peer replies, updates observed terms, absorbs eligible commit indices via Log Matching, and adjusts peer caches. Once state is reconciled, a synchronous query evaluates candidate completeness
-  to compute the electoral vote. When an active leader of the current term is observed during early-terminating discovery, the evaluation returns an electoral vote cast for that leader rather than executing a role mutation directly or
-  returning an abstaining blank vote. The subsequent command phase executes the role transition to follower unconditionally upon evaluating an active leader vote, bypassing numerical discovery quorum requirements because the existence of an
-  active leader in the current term constitutes decisive mathematical proof of quorum validity.
+  to compute the candidate nomination (`CandidateNomination`). When an active leader of the current term is observed during early-terminating discovery, the evaluation returns a nomination pointing to that leader rather than executing a
+  role mutation directly or returning an empty nomination. The subsequent command phase executes the role transition to follower unconditionally upon evaluating an active leader nomination, bypassing numerical discovery quorum requirements
+  because the existence of an active leader in the current term constitutes decisive mathematical proof of quorum validity.
 
 ---
 
@@ -500,8 +502,8 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 
 - **Client Interaction & Terminality Classification**: Electorate change requests adhere to a strict interaction contract partitioned by terminality:
     - **Terminal Responses**: `SuccessfullyChanged` and `AlreadyChanged` represent definitive consensus outcomes (a newly committed or already matching configuration) that definitively satisfy the requester and terminate client retry loops.
-    - **Non-Terminal Responses**: Represent transient rejections, redirections, or interrupted request tracking (`WaitGhostLeaderIsDemoted`, `AskTheLeader`, `CatchingUp`, `Excluded`, `Secluded`, `Stopped`, and lost tracking outcomes).
-      Non-terminal responses instruct the client coordinator on how and where to retry without implying request failure.
+  - **Non-Terminal Responses**: Represent transient rejections, redirections, or interrupted request tracking (`WaitGhostLeaderIsDemoted`, `AskTheLeader`, `CatchingUp`, `Excluded`, `Secluded`, `Stopped`, and lost tracking outcomes).
+    Non-terminal responses instruct the client coordinator on how and where to retry without implying request failure.
 - **Leader Redirection Semantics**: When an electorate change request is submitted to a non-leader or demoted leader, the response provides an explicit redirection (`AskTheLeader`) identifying the current perceived leader. This allows
   clients to retarget the active consensus leader directly rather than initiating blind cluster discovery.
 - **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of an electorate change across a majority quorum immediately yields a terminal response to the client. Terminality is strictly decoupled from the
@@ -521,8 +523,8 @@ Crucially, this guarantee is strictly bounded by the **Temporal Window of Causal
 
 - The causal guarantee holds only during the synchronous execution of a consumer synchronously subscribed to the returned `Capture`.
 - Once execution yields, crosses an asynchronous completion (such as `waitRecordBecomesCommitted`), or defers via `Capture_defer`, the captured `PrimaryState` reference is obsolete and outside the causal window.
-- Any subsequent derivation of electorate, role synchronization, or invariant verification that inspects `PrimaryState` after an asynchronous boundary or deferred dispatch MUST acquire a fresh anchor via
-  `primaryStateFence.causalAnchor()` and perform derivations strictly within that anchor's synchronous continuation.
+- Any subsequent derivation of electorate, role synchronization, or invariant verification that inspects `PrimaryState` after an asynchronous boundary or deferred dispatch MUST acquire a fresh anchor via `primaryStateFence.causalAnchor()`
+  and perform derivations strictly within that anchor's synchronous continuation.
 
 ### The Decoupled Mutation Contract (An Asymmetric Performance Decision)
 
@@ -530,8 +532,8 @@ While `CausalFence` enforces the sequential timeline, the consensus algorithm sp
 and state event observers).
 
 This contract strictly mandates that observers and continuation callbacks MUST NOT synchronously mutate the protected `PrimaryState` (`CausalFence`) within their notification context. Any consequential state mutation or side-effect
-resulting from a notification (such as appending records, transitioning electorate phases, or initiating log compaction) must be decoupled from the notification stack—either by self-deferring via `sequencer.Capture_defer` or dispatching
-via `sequencer.run`.
+resulting from a notification (such as appending records, transitioning electorate phases, or initiating log compaction) must be decoupled from the notification stack—either by self-deferring via `sequencer.Capture_defer` or dispatching via
+`sequencer.run`.
 
 #### 1. Rationale: The Hot-Path Performance Asymmetry
 
@@ -570,8 +572,7 @@ Another tempting design is dynamic fallback detection: having `recalculateCommit
 
 #### 4. The Resulting Purity Invariant
 
-By enforcing the Decoupled Mutation Contract, `recalculateCommitIndex` maintains the strict assertion:
-`assert(primaryStateFence.committedState.is(primaryState0))`
+By enforcing the Decoupled Mutation Contract, `recalculateCommitIndex` maintains the strict assertion: `assert(primaryStateFence.committedState.is(primaryState0))`
 This mathematical invariant proves that commit index calculation and notification is strictly pure with respect to the causal state. It guarantees that a valid `PrimaryState` reference remains pristine and temporally safe from the beginning
 of the notification loop to the end, eliminating re-entrancy bugs, stale-state references, and batch turn-splitting.
 
@@ -584,12 +585,12 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
 
 ## 13. Host Bridge RPC Completion & Transport Termination Invariants
 
-- **Asynchronous Completion Guarantee**: The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `chooseALeader`,
+- **Asynchronous Completion Guarantee**: The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `requestBallot`,
   `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying
   strictly on the host layer to bound request lifecycles.
 - **Aggregation vs. Pipelined Quorum Resilience**: While pipelined log replication makes forward progress upon reaching quorum without waiting for lagging peers, discovery and election phases aggregate responses across candidate peers
-  (e.g., collecting state reports across the full electorate). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling
-  the single-threaded participant actor.
+  (e.g., collecting state reports across the full electorate). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling the
+  single-threaded participant actor.
 - **Simulation Harness Equivalence**: In discrete-event simulation and test environments, dropping an in-flight network packet must resolve the sender's pending completion observer with a transport failure to emulate transport timeouts or
   connection termination. Silent removal of packets without failure resolution creates an artificial permanent deadlock that violates the reactive completion contract.
 - **Uniform Transport Failure Handling**: The consensus protocol is fail-silent and retry-driven with respect to transport errors. All network-level failures are handled uniformly regardless of the underlying exception class; specific
