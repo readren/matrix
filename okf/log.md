@@ -3,8 +3,117 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-09-26T23:35:00Z"
+timestamp: "2026-10-19T16:15:00Z"
 ---
+
+## [2026-10-19T16:15:00Z]
+
+- Updated Section 10 and Section 14 of `okf/lazy-multi-raft-consensus.md` to purge vestigial node-level administrative resurrection target specifications (superseded by terminal quiescence irreversibility) and formalize external
+  control-plane tracking of the presumed active electorate under epistemic uncertainty.
+
+## [2026-10-19T14:51:00Z]
+
+- Updated Section 10 and Section 12 of `okf/lazy-multi-raft-consensus.md` to formalize coordinator in-flight synchronization when receiving `AnotherChangeInProgress` matching the coordinator's desired target configuration, and to specify
+  the three-tier architectural boundary separating physical environment controls, external client/control-plane gateways, and quarantined omniscient invariant oracles.
+
+## [2026-10-16T17:21:00Z]
+
+- Documented the Rejection of Concurrent Configuration Changes and Administrative Target Preservation during Configuration Inactivity invariants in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that the leader rejects
+  concurrent configuration proposals with `AnotherChangeInProgress` containing active request identification and routing hints rather than queueing proposals to prevent stale execution against quiesced nodes, and establishing that
+  administrative coordinators must maintain active configuration participants as administrative targets during idle periods to prevent cluster starvation.
+
+## [2026-10-14T21:10:00Z]
+
+- Documented the Retiring Participant Re-inclusion Invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that retiring participants evaluate re-inclusion against all subsequent configuration changes (whether
+  transitional joint configurations or stable configurations delivered via log records or state machine snapshots) whose index exceeds the exclusion index, transitioning immediately to `STARTING` to resume active cluster participation.
+
+## [2026-10-14T17:10:00Z]
+
+- Documented the Transitional Joint Consensus Quorum-Buffering for Re-included Retirees invariant and Stateful Role Immediate Retirement on Exclusion Invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that retiring
+  participants belonging to the target configuration ($C_{\text{new}} \setminus C_{\text{old}}$) buffer $C_{\text{new}}$'s quorum threshold alongside joining participants, preserving quorum evaluation liveness for $C_{\text{new}}$ during
+  re-admission of previously excluded nodes, and establishing that stateful participants whose commit watermarks advance past an excluding configuration change must immediately transition to `RETIRING` to truthfully report retiree rank
+  across all subsequent protocol interactions.
+
+## [2026-10-13T17:57:00Z]
+
+- Documented the Leader Redirection Advisory Invariant (`AskTheLeader` Non-Membership) and Terminal Quiescence Irreversibility Invariant in Section 14 of `okf/lazy-multi-raft-consensus.md`, formalizing that `AskTheLeader` redirections
+  convey advisory peer-routing hints rather than active electorate membership, preventing contamination of administrative target pools with excluded ghost leaders, and establishing that host supervisors must enforce terminal finality upon
+  quiescence to uphold the one-time quiescence authorization contract.
+
+## [2026-10-12T13:28:00Z]
+
+- Documented the Obsolete Leader Immediate Abdication and Electorate Isolation Invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that a leader receiving higher-term replication payloads must immediately abdicate
+  prior to commit watermark advancement and configuration derivation to dismantle leadership replication pipelines before log truncation, preserve truthful lifecycle notification ordering, and isolate electorate derivation from obsolete
+  leader state.
+
+## [2026-10-09T22:00:00Z]
+
+- Documented Strongly-Typed Participant Identifiers and Candidate Routing Hints invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that electorate change responses are parameterized by the participant identifier type
+  (`ElectorateChangeResponse[+P]`) to provide compile-time type safety for leader redirections (`AskTheLeader(leaderId: P)`), that candidate routing suggestions (`suggestedPeers: Set[? <: P]`) are derived strictly from authoritative
+  consensus state (via `deriveElectorateFrom`, followed leader references, or committed excluding membership in `Excluded`) on an advisory, best-effort basis, that callers must fall back to broader discovery if suggested peers fail
+  (especially in partitioned states like `Secluded`), that roles lacking consensus knowledge return an empty set to signal lack of better knowledge and eliminate circular echoing of host transport discovery, and that terminal outcomes
+  (`SuccessfullyChanged` and `AlreadyChanged`) remain static allocation-free singletons extending `ElectorateChangeResponse[Nothing]`.
+
+## [2026-10-06T14:48:00Z]
+
+- Documented the Joint Consensus Retirement Recognition for Excluded Followers invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that the leader must recognize `RETIRING` role responses from old-only peers excluded
+  during transitional joint consensus as terminal retirement synchronization (`AO_IS_RETIRING`), decommissioning further append dispatches and evaluating commit advancement via `respondedAsRetiring` to finalize the stable configuration
+  without triggering infinite replication loops against retired nodes.
+
+## [2026-10-05T22:20:00Z]
+
+- Documented the Client Eviction on Excluded Response and Active-Pool Target Prioritization during Administrative Coordination invariants in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that client-side coordination must
+  immediately evict participants returning `Excluded` from active target pools and prioritize known active voting members over retiring or historical nodes during candidate selection and round-robin target rotation.
+
+## [2026-10-05T20:38:00Z]
+
+- Documented the Quiescence Permission Deduplication Across Successive Transitions invariant in Section 7.I of `okf/lazy-multi-raft-consensus.md`, formalizing that participants that have acknowledged quiescence authorization from the active
+  leader are omitted from subsequent quiescence authorization broadcasts within that leadership tenure to eliminate redundant RPC retry loops targeting already-quiesced nodes, and establishing that re-inclusion in a succeeding active
+  electorate clears acknowledged quiescence state.
+
+## [2026-10-02T19:26:00Z]
+
+- Updated Section 6.III (Quiescence Protocol & Convergence Preconditions) and Section 8.I (Ghost Leader Electorate Transition Invariant) in `okf/lazy-multi-raft-consensus.md`, formalizing that ghost leaders remain in office until all
+  outbound quiescence permission authorizations are acknowledged or retries are exhausted before abdicating to `Retiring`, thereby enabling unconditional lifecycle cleanup in `Leader.handleExit` while preserving non-blocking election
+  progress in surviving configurations.
+
+## [2026-10-01T14:25:00Z]
+
+- Updated Section 6.III (Quiescence Protocol & Convergence Preconditions) and Section 7.I (Retiree Replication Invariant Under Quorum Authority) in `okf/lazy-multi-raft-consensus.md`, formalizing that retiring participants decommissioned
+  due to unreachable retry exhaustion during terminal empty-electorate cluster shutdown are omitted from quiescence authorization broadcasts, preventing futile authorization delivery to abandoned participants whose commit watermarks were
+  never advanced to the excluding configuration change.
+
+## [2026-09-30T20:53:00Z]
+
+- Documented the Retiree Replication Invariant Under Quorum Authority in Section 7.I of `okf/lazy-multi-raft-consensus.md`, establishing that active leaders and ghost leaders governing a non-empty active electorate must persistently
+  replicate log records to excluded participants without abandonment, strictly confining retry-exhaustion decommissioning to terminal empty-electorate cluster shutdown.
+- Documented the Independent Exclusion Commitment Invariant for Retiring Participants in Section 7.I of `okf/lazy-multi-raft-consensus.md`, formalizing that ghost leader step-down evaluations verify retiree commitment against each
+  participant's individual excluding configuration change index rather than the ghost leader's own exclusion index.
+
+## [2026-09-30T18:25:00Z]
+
+- Updated Section 6 (Participant Role Lifecycle, Unanchored Joining & Electorate Transition Overview) of `okf/lazy-multi-raft-consensus.md`: documented the unanchored learner joining architecture, formalizing that joining nodes initialize
+  configuration state purely from local storage without requiring external configuration index knowledge, operate as unanchored learners in the `Joining` role until fused log batches or snapshots introduce their inclusion, and transition
+  directly to `Follower`; updated Section 7.III (Log Compaction Boundaries) to document the Snapshot-Superseded Log Record Fusion Invariant, formalizing that log batches whose entries predate a verified local snapshot are evaluated as
+  consistent without requiring previous log index matching against compacted history.
+
+## [2026-09-30T03:55:00Z]
+
+- Documented the Active Electorate Replication Resilience over Quiescence invariant in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing that the leader must distinguish between retiring followers and active cluster peers when
+  processing `QUIESCED` append responses; active configuration peers (including newly introduced members in joint consensus) must not have their replication progress decommissioned, but must instead be treated as transiently unreachable
+  with rolled-back optimistic send indices and retry scheduling to prevent permanent joint consensus quorum deadlock when an active peer restarts.
+
+## [2026-09-29T18:25:00Z]
+
+- Documented the Ingress Gating Precondition for Graceful Decommissioning in Section 10 of `okf/lazy-multi-raft-consensus.md`, formalizing the architectural requirement that the host integration layer, ingress gateway, or
+  `ClusterParticipant` bridge must gate, reject, or drain inbound client command traffic prior to or concurrently with requesting an empty electorate change (`Set.empty`), establishing that retired and quiesced participants permanently
+  reject client commands with `Unable(FALLBACK)` and that a zero-voting-member cluster cannot commit entries.
+
+## [2026-09-28T20:12:00Z]
+
+- Updated Section 10 (Electorate Change Protocol & Response Semantics) in `okf/lazy-multi-raft-consensus.md`: formalized the invariant that commit watermark advancement and request completion must strictly precede ghost leader retirement
+  and quiescence authorization, preventing loss of request tracking during second-phase configuration change replication and ensuring uncommitted log entries are finalized prior to role exit; formalized the lower-bound monotonicity
+  invariant for committable record index searches across consensus configurations, preventing watermark regression.
 
 ## [2026-09-26T23:35:00Z]
 
@@ -523,3 +632,25 @@ timestamp: "2026-09-26T23:35:00Z"
   - Aligned change and log entry references to `ElectorateChange`, `SoleElectorateChange`, and `JointElectorateChange`.
   - Updated participant enumeration terminology to `members` (`activeParticipants` / `members` / `peers`).
   - Updated candidate ranking invariant references from `isInCommonConfig` to `isInCommonSet`.
+
+## [2026-10-07T21:38:00Z]
+
+- Added Section 14 (Node Lifecycle & Control Plane Target Synchronization Invariants) to `okf/lazy-multi-raft-consensus.md`.
+- Formalized that participant re-activation and initial provisioning are governed strictly by the cluster control plane target configuration rather than autonomous resurrection from uncommitted or historical peer proposal states.
+- Documented that `cluster.onQuiesced` represents terminal retirement of a consensus instance for its configuration epoch, releasing local resources until explicitly commanded to start by the host daemon.
+- Formalized rollback consistency: when an electorate change proposal aborts or fails to achieve committed quorum replication, administrative target membership restores to the surviving committed configuration.
+
+## [2026-10-08T23:45:00Z]
+
+- Expanded Section 14 (Node Lifecycle & Control Plane Target Synchronization Invariants) in `okf/lazy-multi-raft-consensus.md`.
+- Formalized quiescence finality: reaching `cluster.onQuiesced` constitutes authoritative proof from the consensus engine that node retirement is committed under an excluding configuration change.
+- Established declarative administrative target governance: target membership is derived strictly from intended configuration descriptors ($C_{desired}$ during in-flight transitions, falling back to active membership when idle), ensuring
+  retiring nodes are not marked as administrative targets for resurrection upon reaching quiescence.
+- Defined reconciliation requirements for indeterminate responses (`RequestTrackingLost...`): the control plane must reconcile unconfirmed configuration proposals with succeeding leaders to eliminate split-brain divergence between the log
+  and administrative target sets.
+
+## [2026-10-15T21:42:00Z]
+
+- Updated Section 6 (Participant Exclusion, Retirement Dynamics & Quiescence Protocol) of `okf/lazy-multi-raft-consensus.md` to specify the initial retirement driving invariant for newly crowned leaders.
+- Formalized that a newly crowned leader assumes office with an empty active retirement driver registry and must drive the retirement of all historical non-active nodes (`Universe \ Cnew`) upon committing its first sole electorate change,
+  preventing abandoned replication to prior retirees when coronation occurs during in-flight, uncommitted configuration transitions.

@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-09-26T23:35:00Z"
+timestamp: "2026-10-19T16:15:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -195,28 +195,30 @@ The consensus engine treats client commands as opaque payloads, strictly limitin
 
 When cluster membership changes, nodes removed from the active cluster topology must be safely transitioned from active consensus participation to complete network quiescence without violating linearizability or causing election deadlocks.
 
-### I. Participant Role Lifecycle & Electorate Transition Overview
+### I. Participant Role Lifecycle, Unanchored Joining & Electorate Transition Overview
 
 A participant node in the consensus engine moves through distinct operational roles during its lifecycle:
 
 ```
-[ Starting / Isolated ]
-         |
-         v
-[ Candidate / Follower / Leader ]  <-- Active Cluster Member
-         |
-         | (Excluded by Sole Electorate Change)
-         v
-    [ Retiring ]                   <-- Catching up log entries up to Excluding Index
-         |
-         | (Retirement Drivers Finish/Abort & Cluster Quiescence Authorized)
-         v
-    [ Quiesced ]                   <-- Zero Network / Background Load
+[ Starting ]
+     |
+     +---> (Included in storage config) ---> [ Isolated ] ---> [ Candidate / Follower / Leader ]
+     |                                                                      |
+     +---> (Unanchored / not in config) ---> [ Joining ]                  | (Excluded by Sole Electorate Change)
+                                                  |                         v
+                                                  | (Included via Append) [ Retiring ]
+                                                  v                         |
+                                             [ Follower ]                   v
+                                                                       [ Quiesced ] (Zero Network Load)
 ```
 
 - **Active Roles (Leader, Follower, Candidate)**: Process client commands, participate in leader elections, and replicate log entries.
-- **Retiring Role**: Entered when a sole electorate change excludes the participant from the cluster. The participant stops proposing client commands and cannot win elections for subsequent terms. It remains active solely to catch up
-  its local log to the excluding electorate entry.
+- **Starting Role**: Initializes consensus state from local storage without requiring external knowledge of configuration indices. If the node's identifier is included in its latest recovered configuration, it transitions to `Isolated`. If
+  unanchored (not included in local storage configuration), it transitions directly to `Joining`.
+- **Joining Role (Unanchored Learner)**: Operates as a passive, non-voting learner awaiting log replication. It does not solicit votes or participate in leader elections. Upon receiving replicated log records or a snapshot containing the
+  electorate change that includes it, the joiner fuses the records into its local log, evaluates inclusion, and transitions directly to `Follower`.
+- **Retiring Role**: Entered when a sole electorate change excludes the participant from the cluster. The participant stops proposing client commands and cannot win elections for subsequent terms. It remains active solely to catch up its
+  local log to the excluding electorate entry.
 - **Quiesced Role**: Terminal resting state where the participant halts all background network traffic, timers, and RPC handling.
 
 ---
@@ -229,6 +231,11 @@ participants until they reach the retirement boundary (the SoleElectorateChange 
 - **Leader Push over Follower Pull**: The cluster leader actively drives replication to non-active participants. This eliminates the need for a pull-based `RetirementDriver` on the follower. Because the new leader relies on the cluster
   transport layer (via `ClusterParticipant.getOtherProbableParticipants`) to discover all live nodes, it can spin up pipelines for any non-active nodes (including those excluded by past leaders). Consequently, an abdicating leader can
   safely tear down its own pipelines, knowing the new leader will pick up the slack.
+- **Initial Retirement Driving on Takeover**: When a newly crowned leader takes over, its registry of active retirement drivers is initially empty. If the leader takes over under an already-committed configuration, it immediately initiates
+  replication pipelines for all historical non-active nodes (`Universe \ Cnew`). If the leader assumes office during an uncommitted configuration transition (an uncommitted joint or sole electorate change), it must defer initializing
+  retirement pipelines until that transition's sole electorate change is committed; upon that commitment, it must drive the retirement of all historical non-active nodes (`Universe \ Cnew`), rather than treating itself as an incumbent
+  leader that only drives newly excluded peers (`Cold \ Cnew`). Subsequent configuration transitions occurring continuously within that leader's tenure only need to initiate pipelines for newly excluded peers (`Cold \ Cnew`), as earlier
+  unquiesced retirees remain tracked in its registry.
 - **Strict Upper Boundary (TargetIndexBound)**: The pipeline restricts the logs sent to the participant strictly up to the log index of the excluding electorate change (`secIndex`).
 - **LeaderCommit Clamping & Ghost Records**: When sending `AppendRecords`, the `leaderCommit` sent to the excluded participant MUST NEVER exceed the `secIndex`. If the retiring participant has unverified, trailing "ghost" records in its log
   (e.g., from a past term where it was active), an empty `AppendRecords` (bounded by `secIndex`) will not truncate them. If the leader sent a `leaderCommit > secIndex`, the participant would execute
@@ -252,14 +259,16 @@ participants until they reach the retirement boundary (the SoleElectorateChange 
 Quiescence authorization ensures that a retiring participant does not shut down prematurely before its peers have recognized its exclusion and authorized its departure.
 
 - **Quiescence Authorization Flow**:
-    1. Upon committing an excluding electorate change, the leader broadcasts quiescence authorization permissions (`PermitQuiesce`) to all excluded participants.
+    1. Upon committing an excluding electorate change, the leader broadcasts quiescence authorization permissions (`PermitQuiesce`) to all excluded participants that have not been decommissioned due to unreachable retry exhaustion.
     2. Retiring participants acknowledge the permission and record the authorized electorate change index.
     3. If initial permission requests fail due to transient network drops, the leader retries permission delivery up to a configured retry limit before clearing remaining unacknowledged permissions.
 
 - **Convergence Preconditions for Quiescence**:
   A participant in the `Retiring` role can transition to `Quiesced` if and only if the following conditions converge:
     1. **Role Eligibility**: The participant's current role is `Retiring`.
-    2. **Outbound Pipeline & Authorization Encapsulation**: Active retirement log replication pipelines and outbound quiescence authorization tracking are strictly encapsulated within the `Leader` role lifecycle; any such pipelines or retry wake-up tokens terminate and unregister upon leaving `Leader` (or complete prior to self-granting permission in the case of a vanishing ghost leader), ensuring retiring participants are stateless and never harbor active or leaked drivers or unacknowledged permission tracking.
+  2. **Outbound Pipeline & Authorization Encapsulation**: Active retirement log replication pipelines and outbound quiescence authorization tracking are strictly encapsulated within the `Leader` role lifecycle; because ghost leaders remain
+     in office until all outbound quiescence permissions are acknowledged or retry limits are exhausted, all pipelines, wake-up retry tokens, permission tracking maps, and acknowledgment subscriptions terminate unconditionally upon leaving
+     `Leader`, ensuring retiring participants are stateless and never harbor active or leaked drivers or unacknowledged permission tracking.
     3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster (received from an active leader, or self-authorized by a vanishing ghost leader once all peers have acknowledged or retries are exhausted).
     4. **Index Verification**: The authorized electorate change index is greater than or equal to the participant's excluding electorate index.
 
@@ -301,15 +310,24 @@ Quiescence authorization ensures that a retiring participant does not shut down 
   electorate change) has a term strictly lower than the leader's active term and no subsequent entry in the active term exists in the log, the leader must append a current-term no-op transition entry upfront before awaiting commitment.
   Awaiting commitment directly on a previous-term entry without a current-term entry in the log deadlocks, as commitment verification rules permanently refuse to advance the commit index.
 - **In-Flight Electorate Transition Pipeline Serializability**: Upon assuming leadership with an uncommitted electorate change in the persistent log, the replication pipeline driving that electorate change to commitment must be linked to
-  the leader's in-flight electorate change completion handle. Subsequent electorate change requests must serialize behind this recovery pipeline. Permitting subsequent electorate changes to execute before the recovered
-  electorate change reaches the commit index causes false transitional-phase rejections, as the cluster electorate remains derived from the uncommitted joint state.
+  the leader's in-flight electorate change completion handle. Subsequent electorate change requests must serialize behind this recovery pipeline. Permitting subsequent electorate changes to execute before the recovered electorate change
+  reaches the commit index causes false transitional-phase rejections, as the cluster electorate remains derived from the uncommitted joint state.
 - **Commit Watermark Barrier Invariant**: Awaiting record commitment functions strictly as a monotonic watermark barrier, never an RPC-style request-reply operation. The barrier never resolves with an uncommitted or failure status while the
   leader remains in office. When the barrier resolves for an active leader, the target record index is mathematically guaranteed to be committed. In the event of quorum loss or network partition, the barrier remains suspended indefinitely
   until quorum is restored or the leader is deposed and exits office, eliminating phantom retry loops in post-barrier continuations.
-- **Peer vs. Retiree Replication Pipeline Disjunction**: An active peer participating in the current cluster electorate cannot simultaneously be tracked as a retiring participant. When the active electorate changes to include a
-  participant, any pending retirement pipeline and quiescence authorization for that participant must be cancelled and removed. Furthermore, if an active peer responds with a role of `RETIRING` (because it has not yet received the
-  electorate change that includes it), the leader must treat the rejection as needing earlier records rather than abandoning replication. The leader must rewind replication to include the electorate change entry that brings the follower out
-  of retirement, preventing deadlock.
+- **Peer vs. Retiree Replication Pipeline Disjunction**: An active peer participating in the current cluster electorate cannot simultaneously be tracked as a retiring participant. When the active electorate changes to include a participant,
+  any pending retirement pipeline and quiescence authorization for that participant must be cancelled and removed. Furthermore, if an active peer responds with a role of `RETIRING` (because it has not yet received the electorate change that
+  includes it), the leader must treat the rejection as needing earlier records rather than abandoning replication. The leader must rewind replication to include the electorate change entry that brings the follower out of retirement,
+  preventing deadlock.
+- **Retiree Replication Invariant Under Quorum Authority**: Active leaders and ghost leaders governing a non-empty active electorate must persistently replicate log records to excluded participants without abandonment, as cluster liveness
+  is governed by the surviving voting configuration. Decommissioning unreachable retirees upon retry exhaustion is strictly confined to the terminal cluster shutdown state where the active electorate is empty and no successor leadership can
+  arise. Decommissioned retirees are omitted from subsequent quiescence authorization broadcasts, as their commit watermarks were never advanced to the excluding configuration change.
+- **Independent Exclusion Commitment Invariant for Retiring Participants**: When a ghost leader evaluates learner progress to determine eligibility for abdication, commitment of retiring learners must be verified against each participant's
+  individual excluding configuration change index rather than the ghost leader's own exclusion index, ensuring participants retired in prior configuration changes complete retirement without requiring log records from subsequent tenures.
+
+- **Quiescence Permission Deduplication Across Successive Transitions**: Participants that have acknowledged quiescence authorization from the active leader are omitted from subsequent quiescence authorization broadcasts within that
+  leadership tenure, preventing redundant RPC retry loops targeting already-quiesced nodes. If an excluded participant is subsequently re-included in a succeeding active electorate, its acknowledged quiescence state is cleared so that any
+  future exclusion generates a fresh authorization for the new configuration change.
 
 ### II. Universal Log Fusion & Obsolete Suffix Truncation Invariants
 
@@ -330,6 +348,8 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 - **Recovered Commit Floor Invariant**: Commands applied to the state machine or embedded in a persistent snapshot are mathematically guaranteed to have been committed by quorum. Upon startup or crash recovery, a participant must advance
   its volatile commit index to reflect the recovered applied command index and snapshot boundary, ensuring candidate state information accurately advertises the verified committed baseline during leader elections.
 - **State Machine Synchronization**: State machine application index and log compaction truncation point must never exceed the verified commit index.
+- **Snapshot-Superseded Log Record Fusion Invariant**: When a follower receives an AppendRecords RPC containing log records whose indices fall strictly below or at the follower's locally committed snapshot boundary, the batch is evaluated
+  as consistent without requiring previous log index matching against compacted history, because entries prior to a verified snapshot are mathematically guaranteed to have achieved quorum commitment.
 
 ### IV. Client Response Contract & Commit Watermark Invariant
 
@@ -358,14 +378,18 @@ Quiescence authorization ensures that a retiring participant does not shut down 
 
 ### I. Ghost Leader Electorate Transition Invariant
 
-- **Ghost Leader Definition**: When a leader commits a sole electorate change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to
-  commit the excluding electorate change, but cannot initiate or lead subsequent electorate transitions.
-- **Electorate Validation Scope**: A ghost leader evaluates its retirement condition (verifying that all included learners have committed the excluding electorate change) strictly against the current active electorate.
-  Historical tracking capacities or learners excluded by prior electorates must not influence this eligibility check, preventing stale tracking data from stalling the leader's retirement.
+- **Ghost Leader Definition**: When a leader commits a sole electorate change that excludes itself from the target electorate, it enters a transitional ghost leader state. The ghost leader remains responsible for driving followers to commit
+  the excluding electorate change, but cannot initiate or lead subsequent electorate transitions.
+- **Ghost Leader Abdication Convergence Preconditions**: A ghost leader relinquishes office to the `Retiring` role if and only if two conditions converge: (1) universal exclusion commitment—all active included learners and retiring learners
+  have committed their corresponding excluding configuration changes; and (2) complete quiescence permission acknowledgment—all outbound quiescence authorization permissions granted by this leader have been acknowledged by the recipients
+  (or permission retry limits have been exhausted and unacknowledged entries cleared). Surviving members in a non-empty sole electorate form election quorums independently without consulting the excluded ghost leader, guaranteeing that
+  prolonging ghost leadership until outbound quiescence permissions are acknowledged cannot deadlock succeeding elections.
+- **Electorate Validation Scope**: A ghost leader evaluates its universal commitment condition strictly against the current active electorate and active retiring learners. Historical tracking capacities or learners excluded by prior
+  electorates must not influence this eligibility check, preventing stale tracking data from stalling the leader's retirement.
 - **Exclusion Rejection Barrier**: If a ghost leader receives a request for a new electorate change from which it is also excluded:
-    - If all active learners in the current electorate have committed the excluding electorate change, the ghost leader transitions immediately to `Retiring` and reports its exclusion.
-    - If one or more active learners have not yet committed the excluding electorate change, the ghost leader cannot transition to `Retiring` and must reject the request with a status instructing the caller to wait for the ghost leader
-      to be demoted (`WAIT_GHOST_LEADER_IS_DEMOTED`), rather than synchronously re-triggering replication loops.
+    - If all abdication convergence preconditions are met, the ghost leader transitions immediately to `Retiring` and delegates request handling to the new role.
+    - If one or more active learners have not yet committed the excluding electorate change or quiescence permissions remain unacknowledged, the ghost leader cannot transition to `Retiring` and must reject the request with a status
+      instructing the caller to wait for the ghost leader to be demoted (`WAIT_GHOST_LEADER_IS_DEMOTED`), rather than synchronously re-triggering replication loops.
 
 ### II. Asynchronous Learner Convergence vs. Quorum Progress Decoupling
 
@@ -502,12 +526,68 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 
 - **Client Interaction & Terminality Classification**: Electorate change requests adhere to a strict interaction contract partitioned by terminality:
     - **Terminal Responses**: `SuccessfullyChanged` and `AlreadyChanged` represent definitive consensus outcomes (a newly committed or already matching configuration) that definitively satisfy the requester and terminate client retry loops.
-  - **Non-Terminal Responses**: Represent transient rejections, redirections, or interrupted request tracking (`WaitGhostLeaderIsDemoted`, `AskTheLeader`, `CatchingUp`, `Excluded`, `Secluded`, `Stopped`, and lost tracking outcomes).
-    Non-terminal responses instruct the client coordinator on how and where to retry without implying request failure.
+  - **Non-Terminal Responses**: Represent transient rejections, busy states, redirections, or interrupted request tracking (`WaitGhostLeaderIsDemoted`, `AnotherChangeInProgress`, `AskTheLeader`, `CatchingUp`, `Excluded`, `Secluded`,
+    `Stopped`, and lost tracking outcomes). Non-terminal responses instruct the client coordinator on how and where to retry without implying request failure.
+- **Rejection of Concurrent Configuration Changes & Coordinator Synchronization**: The leader enforces that at most one configuration transition is active at any time. When an electorate change request is submitted while another transition
+  is actively in progress (undergoing joint or sole consensus replication and commitment), the leader does not queue or chain the proposal behind the active transition. Instead, it rejects the request non-terminally with
+  `AnotherChangeInProgress`, communicating the identifier of the active request, its target configuration membership, and active peer routing hints. Rejecting concurrent proposals prevents unbounded proposal queueing on the leader, which
+  would otherwise execute stale reconfigurations against nodes that have already been excluded, decommissioned, and permanently shut down by intervening configuration changes. When an external coordinator receives `AnotherChangeInProgress`
+  whose reported in-progress target configuration matches the coordinator's own desired configuration, the coordinator must continue retrying and polling that transition until a terminal outcome (`SuccessfullyChanged` or `AlreadyChanged`)
+  is observed, thereby keeping coordinator in-flight tracking synchronized with the active cluster transition and preventing premature termination of tracking or candidate pool corruption.
 - **Leader Redirection Semantics**: When an electorate change request is submitted to a non-leader or demoted leader, the response provides an explicit redirection (`AskTheLeader`) identifying the current perceived leader. This allows
   clients to retarget the active consensus leader directly rather than initiating blind cluster discovery.
+- **Strongly-Typed Participant Identifiers and Candidate Routing Hints**: Electorate change response contracts are parameterized by the participant identifier type (`ElectorateChangeResponse[+P]`), ensuring compile-time type safety for
+  leader redirections (`AskTheLeader(leaderId: P)`) without runtime downcasting. Non-terminal rejection and redirection responses carry candidate routing suggestions (`suggestedPeers: Set[? <: P]`) populated strictly from consensus-derived
+  state (such as the actively followed leader, the active configuration peers derived from the anchored primary state via `deriveElectorateFrom`, or the committed excluding configuration members in `Excluded`). All candidate routing
+  suggestions are strictly advisory, point-in-time heuristics based on local, potentially historical state; in partitioned or isolated states (such as `Secluded`), the cluster may have reconfigured while the node was disconnected. Callers
+  must treat suggestions as best-effort leads and fall back to broader discovery mechanisms or target rotation pools if contacting the suggested peers fails. Roles lacking consensus-derived membership knowledge (such as `Stopped`,
+  `Quiesced`, or unanchored `CatchingUp`) return an empty set to signal the lack of better knowledge than the caller and avoid circular echoing of the host's own transport discovery view. Terminal responses (`SuccessfullyChanged` and
+  `AlreadyChanged`) remain static allocation-free singletons extending `ElectorateChangeResponse[Nothing]` with empty suggestions.
 - **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of an electorate change across a majority quorum immediately yields a terminal response to the client. Terminality is strictly decoupled from the
   subsequent, asynchronous retirement and quiescence of excluded participants; the coordinator is unblocked the moment the configuration is durably committed in the Raft log.
+- **Ghost Leader Quiescence & Commit Watermark Fulfillment Order**: When a leader is excluded by an active configuration change (operating as a ghost leader to conclude membership transitions) and all active and retiring participants have
+  committed that excluding configuration change, the leader must not relinquish office or initiate quiescence before advancing the commit watermark to include all eligible entries in its term and resolving completion handlers. Advancing the
+  commit watermark prior to role exit guarantees that in-flight client commands and the configuration change itself are durably committed and reported to callers while the leader remains authoritative, ensuring second-phase membership
+  replication concludes with a terminal confirmation rather than aborted request tracking, and that participant retirement and quiescence authorization proceed strictly after all log entries committable in that term are finalized.
+- **Commit Watermark Lower-Bound Monotonicity**: Commit watermark evaluation across both sole and joint consensus configurations is monotonically non-decreasing and bounded below by the existing commit index. When no uncommitted entries in
+  the current term have achieved majority replication, the evaluation unconditionally preserves the existing watermark, ensuring that commit indices never regress.
+- **Ingress Gating Precondition for Graceful Decommissioning**: When executing graceful cluster decommissioning by submitting an electorate change to the empty set (`Set.empty`), the host integration layer, ingress gateway, or
+  `ClusterParticipant` bridge is architecturally required to gate, reject, or drain inbound client command traffic prior to or concurrently with issuing the empty electorate change request. Once the empty configuration is committed to the
+  Raft log, all cluster participants transition to `RETIRING` and `QUIESCED` roles, in which inbound client commands are permanently rejected with `Unable(FALLBACK)` and cannot be committed due to the absence of voting members. Failing to
+  gate client traffic at the ingress tier results in persistent client-side retry exhaustion and spurious communication errors against a decommissioned cluster.
+- **Active Electorate Replication Resilience over Quiescence**: When an active voting member of the current electorate (including newly introduced participants in transitional joint consensus) returns a quiesced status in response to log
+  replication—such as when processing a delayed quiescence authorization from an earlier configuration change—the leader must strictly distinguish between retiring followers and active cluster peers. While retiring followers terminate
+  replication and decommission progress tracking upon reaching quiescence, active cluster peers must not be decommissioned. The leader treats quiescence from an active peer as transient unreachability: optimistic send indices are rolled
+  back to unacknowledged baselines to preserve uncommitted entries, and exponential backoff retry timers are scheduled to resume replication as soon as the participant re-initializes into a joining or follower role, preventing permanent
+  joint quorum stall.
+- **Client Eviction on Excluded Response**: An `Excluded` response explicitly informs the client coordinator that the targeted participant is no longer a voting member of the cluster configuration. Client-side request routing and target
+  rotation must immediately evict the excluded node from active target pools rather than treating the response as transient seclusion subject to retry backoffs.
+- **Active-Pool Target Prioritization during Administrative Coordination**: Client coordination of cluster administration operations (such as graceful shutdown or sequential membership changes) must prioritize known active voting
+  participants over historical or retiring nodes during candidate selection and round-robin target rotation. Routing administration requests against retiring nodes wastes retry budgets and triggers unnecessary backoff delays while active
+  nodes await election and replication.
+- **Joint Consensus Retirement Recognition for Excluded Followers**: During two-phase joint consensus ($C_{\text{old}, \text{new}}$), participants belonging solely to the prior configuration ($C_{\text{old}} \setminus C_{\text{new}}$) are
+  excluded from the target stable configuration ($C_{\text{new}}$). When an excluded follower commits the excluding sole configuration change and enters role `RETIRING`, its log is permanently bounded by its excluding configuration index.
+  The leader must recognize `RETIRING` responses from excluded peers as terminal retirement synchronization (`AO_IS_RETIRING`), decommissioning further replication to them and evaluating commit index advancement. Because `JointElectorate`
+  quorums recognize retirement responses from old-only peers (`respondedAsRetiring`) as satisfying old-configuration replication requirements, this enables the leader to satisfy old-configuration quorum requirements, commit current-term
+  anchor entries, and finalize the transition to the stable configuration.
+- **Obsolete Leader Immediate Abdication and Electorate Isolation Invariant**: When a leader receives a valid replication payload (such as log record append or snapshot installation) presenting a strictly higher term from a successor
+  leader, the node is definitively obsolete. The participant must immediately abdicate and decommission its leadership state prior to advancing commit watermarks or deriving the active configuration state. Because configuration derivation
+  updates active electorate state and triggers role-specific configuration hooks, retaining an obsolete leader instance during electorate derivation causes legacy replication pipelines and retirement drivers to execute against a truncated
+  or snapshot-replaced primary state log, attempting to inspect purged log indices. Immediate abdication guarantees that leadership replication mechanisms are synchronously dismantled, preserves truthful lifecycle notification ordering
+  (ensuring external observers receive leader exit and abdication notifications before configuration changes are broadcast), and enables clean subsequent resolution to a retiring role (if excluded by the new configuration), a follower role
+  (if following an active peer), or an isolated role.
+- **Transitional Joint Consensus Quorum-Buffering for Re-included Retirees**: During two-phase joint consensus ($C_{\text{old}, \text{new}}$), a newcomer belonging to the target configuration ($C_{\text{new}} \setminus C_{\text{old}}$) may
+  be a participant excluded by a prior committed configuration change that is currently in the `RETIRING` role awaiting quiescence authorization or catch-up. Because such participants have not yet received the transitional configuration
+  change, they cannot participate as active voters and cast blank ballots. Just as joining participants (`ER_JOINER`) buffer the quorum of $C_{\text{new}}$ while catching up, retiring participants belonging
+  to $C_{\text{new}} \setminus C_{\text{old}}$ (`ER_RETIREE`) contribute toward $C_{\text{new}}$'s quorum threshold. Recognizing both `ER_JOINER` and re-included `ER_RETIREE` as non-voting quorum buffers preserves quorum evaluation liveness
+  for $C_{\text{new}}$, allowing surviving members of $C_{\text{old}}$ to elect a leader that replicates the transitional configuration and returns the retiree to active participation.
+- **Stateful Role Immediate Retirement on Exclusion Invariant**: When a participant in a stateful role absorbs a higher commit index that advances the commit watermark past an excluding configuration change, the participant is excluded from
+  the active electorate. The node must immediately transition to the `RETIRING` role upon processing the interaction, ensuring subsequent ballots and state exchanges truthfully report the retiree rank during election and discovery
+  interactions.
+- **Retiring Participant Re-inclusion Invariant**: When a participant in the `RETIRING` role receives an authoritative replication payload (delivered via log record batches or state machine snapshots), it evaluates re-inclusion against any
+  configuration change whose log index exceeds its excluding configuration index. Because committed configurations are preserved as either transitional joint configuration records (`JointElectorateChange`) or stable configuration records
+  (`SoleElectorateChange`), any subsequent configuration change that includes the participant in its target membership ($C_{\text{new}}$) constitutes authoritative proof of re-inclusion. Upon observing such a configuration change in
+  uncompacted log entries or snapshot metadata, the participant immediately transitions from retirement to initialization (`STARTING`) to reload persistent state, synchronize with the active leader, and resume active cluster participation.
 
 ## 11. Decoupled Mutation Contract & Causal State Synchronization
 
@@ -582,6 +662,11 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
   partially applied causal mutations.
 - **Inter-Step Temporal Consistency**: In discrete-event simulation, test harnesses, and external diagnostics, inspecting the active role's diagnostic snapshot is causally consistent at step boundaries (whenever a discrete sequencer step
   completes or when the runnable queue is empty). At these boundaries, all synchronous causal chain derivations (including active electorate changes and peer replication metrics) are guaranteed to be in identical lockstep.
+- **Three-Tier Operational vs. Verification Oracle Boundary**: Discrete-event simulation and verification environments enforce a strict three-tier architectural boundary separating operational execution from privileged correctness
+  inspection: (1) the physical environment and network control tier governs message delivery, packet loss, virtual time advancement, asynchronous persistence completion, and node execution stepping; (2) the external client and control-plane
+  gateway tier mediates command submissions and configuration transitions strictly through client-visible protocol responses without inspecting internal node state; and (3) the omniscient invariant oracle tier is quarantined into a
+  dedicated verification component reserved exclusively for cross-node safety assertions (including Election Safety, Leader Completeness, Log Matching, Leader Append-Only, and State Machine Safety), ensuring that external coordination and
+  failover logic never rely on privileged internal state.
 
 ## 13. Host Bridge RPC Completion & Transport Termination Invariants
 
@@ -595,3 +680,21 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
   connection termination. Silent removal of packets without failure resolution creates an artificial permanent deadlock that violates the reactive completion contract.
 - **Uniform Transport Failure Handling**: The consensus protocol is fail-silent and retry-driven with respect to transport errors. All network-level failures are handled uniformly regardless of the underlying exception class; specific
   exception discrimination provides no algorithmic differentiation within the consensus engine.
+
+## 14. Node Lifecycle & Control Plane Synchronization Invariants
+
+- **Terminal Quiescence Irreversibility Invariant**: Quiescence is an irreversible terminal lifecycle state indicating that a retiring participant has satisfied its retirement obligations, committed its excluding configuration change, and
+  acknowledged explicit quiescence authorization from the cluster leader. Because the active leader clears quiescence authorization tracking once acknowledged, it will never reissue quiescence permission for that configuration change.
+  Resurrecting a quiesced participant under the prior configuration violates quiescence finality: upon receiving leader replication, the resurrected node adopts the excluding configuration and enters `Retiring`, but cannot re-obtain
+  quiescence authorization. Host environments and supervisors must enforce finality upon receiving a quiesced notification by permanently dismantling the participant instance rather than maintaining node-level administrative resurrection
+  targets.
+- **Presumed Active Electorate Tracking under Epistemic Uncertainty**: Because an external control plane or coordinator interacts with the cluster strictly through client-facing endpoints without omniscient access to internal node logs, its
+  view of cluster membership represents a presumed active electorate rather than proven internal state. The coordinator updates this presumed electorate strictly upon observing terminal configuration responses (`SuccessfullyChanged` or
+  `AlreadyChanged`) or authoritative exclusion rejections (`Excluded`), using it alongside the target configurations of in-flight proposals to prioritize routing candidates and evaluate fault-tolerance quorum budgets.
+- **Reconciliation of Indeterminate Configuration Responses**: When a leadership transition or network partition yields an indeterminate outcome for a proposed configuration change (e.g., loss of request tracking after an initial phase is
+  logged or committed), the control plane must not prematurely abandon the proposal or revert its presumed electorate tracking. It must reconcile the proposal state with the newly elected leader until obtaining a definitive terminal
+  response, preventing divergence between the consensus log and external control-plane tracking.
+- **Leader Redirection Advisory Invariant (`AskTheLeader` Non-Membership)**: Receiving an `AskTheLeader(leaderId)` redirection communicates purely advisory peer-routing state indicating the responder's known leader; it conveys no
+  authoritative statement regarding active voting electorate membership. Because a leader excluded by a committed configuration change continues to lead as a transitional ghost leader to drive configuration convergence, the designated
+  leader may itself be excluded from the active electorate. The external coordinator must never mutate its presumed active electorate based on `AskTheLeader`. Active electorate membership is updated strictly upon receiving definitive
+  terminal outcomes (`SuccessfullyChanged`, `AlreadyChanged`, or explicit membership derivation from committed configuration changes).

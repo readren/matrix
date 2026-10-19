@@ -2,6 +2,7 @@ package readren.consensus
 
 import munit.FunSuite
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.env.*
 import readren.consensus.protocol.*
 
 class ConsensusEnvironmentTest extends FunSuite {
@@ -11,7 +12,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.startAllNodes()
 
 		// Nodes are initially in isolated or starting state
-		assertEquals(env.pendingPackets.size, 0)
+		assertEquals(env.network.pendingPackets.size, 0)
 
 		// Client c-1 sends command to node p-0
 		val handle = env.submitClientCommand(targetNode = 0, client = 1)
@@ -19,64 +20,64 @@ class ConsensusEnvironmentTest extends FunSuite {
 
 		// Step p-0 to process the incoming client command: p-0 initiates leader discovery (HowAreYou to p-1, p-2)
 		env.stepNode(0)
-		val discoveryPackets = env.pendingPackets
+		val discoveryPackets = env.network.pendingPackets
 		assertEquals(discoveryPackets.size, 2)
 		assert(discoveryPackets.forall(_.source == NodeId("p-0")))
 
 		// Deliver discovery requests to peers
-		env.deliverNext(0, 1)
-		env.deliverNext(0, 2)
+		env.network.deliverNext(0, 1)
+		env.network.deliverNext(0, 2)
 
 		// Peers process HowAreYou RPCs and queue responses
 		env.stepNode(1)
 		env.stepNode(2)
 
-		val responsesToDiscovery = env.pendingPackets
+		val responsesToDiscovery = env.network.pendingPackets
 		assertEquals(responsesToDiscovery.size, 2)
 
 		// Deliver responses back to p-0
-		env.deliverAllTo(0)
+		env.network.deliverAllTo(0)
 
 		// p-0 processes responses and initiates election (RequestBallot)
 		env.stepNode(0)
 		env.stepNode(0)
 
-		val voteRequests = env.pendingPackets
+		val voteRequests = env.network.pendingPackets
 		assertEquals(voteRequests.size, 2)
 
 		// Deliver vote requests to peers
-		env.deliverNext(0, 1)
-		env.deliverNext(0, 2)
+		env.network.deliverNext(0, 1)
+		env.network.deliverNext(0, 2)
 
 		// Peers cast votes for p-0
 		env.stepNode(1)
 		env.stepNode(2)
 
 		// Deliver votes back to p-0
-		env.deliverAllTo(0)
+		env.network.deliverAllTo(0)
 
 		// p-0 processes votes, becomes leader, and appends the pending command
 		env.runNodeUntilIdle(0)
 		assertEquals(env.nodeRole(0), "LEADER")
 
 		// Leader p-0 sends AppendRecords to p-1 and p-2 (initial config wave + client command wave)
-		val appendPackets = env.pendingPackets
+		val appendPackets = env.network.pendingPackets
 		assertEquals(appendPackets.size, 4)
 
 		// Deliver AppendRecords to followers
-		env.deliverAllTo(1)
-		env.deliverAllTo(2)
+		env.network.deliverAllTo(1)
+		env.network.deliverAllTo(2)
 
 		// Followers process AppendRecords and save to storage
 		env.runNodeUntilIdle(1)
 		env.runNodeUntilIdle(2)
 
 		// Followers respond with append success
-		val appendReplies = env.pendingPackets
+		val appendReplies = env.network.pendingPackets
 		assertEquals(appendReplies.size, 4)
 
 		// Deliver replies back to leader p-0
-		env.deliverAllTo(0)
+		env.network.deliverAllTo(0)
 
 		// Leader processes quorum replication, commits, applies to state machine, and finishes client command
 		env.runNodeUntilIdle(0)
@@ -94,8 +95,8 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.runAllNodesUntilIdle()
 
 		// Deliver discovery and election
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -108,23 +109,23 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.runNodeUntilIdle(0)
 
 		// p-0 sent AppendRecords to p-1 and p-2
-		assertEquals(env.pendingPackets.size, 2)
-		env.deliverNext(0, 1)
-		env.deliverNext(0, 2)
+		assertEquals(env.network.pendingPackets.size, 2)
+		env.network.deliverNext(0, 1)
+		env.network.deliverNext(0, 2)
 
 		env.stepNode(1)
 		env.stepNode(2)
 
 		// Responses p-1 -> p-0 and p-2 -> p-0 are in flight
-		assertEquals(env.pendingPackets.size, 2)
+		assertEquals(env.network.pendingPackets.size, 2)
 
 		// DROP the response from p-1 to p-0
-		val dropped = env.dropNext(1, 0)
+		val dropped = env.network.dropNext(1, 0)
 		assert(dropped)
-		assertEquals(env.pendingPackets.size, 1)
+		assertEquals(env.network.pendingPackets.size, 1)
 
 		// Deliver the response from p-2 to p-0
-		env.deliverNext(2, 0)
+		env.network.deliverNext(2, 0)
 
 		// Leader p-0 processes p-2's ack: p-0 + p-2 form majority of 3
 		env.runNodeUntilIdle(0)
@@ -145,30 +146,30 @@ class ConsensusEnvironmentTest extends FunSuite {
 		val h1 = env.submitClientCommand(0, 1)
 
 		// Run through discovery & election
-		while env.pendingPersistenceOperations.isEmpty && (env.pendingPackets.nonEmpty || env.nodeRole(0) != "LEADER") do {
+		while env.storage.pendingPersistenceOperations.isEmpty && (env.network.pendingPackets.nonEmpty || env.nodeRole(0) != "LEADER") do {
 			env.runAllNodesUntilIdle()
-			env.deliverAll()
+			env.network.deliverAll()
 		}
 
 		// When p-0 becomes leader and attempts to save record at index 1 to storage, it exceeds threshold
 		env.runNodeUntilIdle(0)
 
-		val pendingOps = env.pendingPersistenceOperations
+		val pendingOps = env.storage.pendingPersistenceOperations
 		assertEquals(pendingOps.size, 1)
 		assertEquals(pendingOps.head.nodeId, NodeId("p-0"))
 
 		// Complete the pending persistence explicitly
-		val completed = env.completeNextStorageSave(0)
+		val completed = env.storage.completeNextStorageSave(0)
 		assert(completed)
-		assertEquals(env.pendingPersistenceOperations.size, 0)
+		assertEquals(env.storage.pendingPersistenceOperations.size, 0)
 
 		// Restore auto-persistence threshold so subsequent saves proceed
 		env.node(0).autoSucceedUntilRecordIndex = Long.MaxValue
 
 		// Now replication proceeds
 		env.runAllNodesUntilIdle()
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -179,27 +180,27 @@ class ConsensusEnvironmentTest extends FunSuite {
 
 	test("virtual clock and wake-up progression") {
 		val env = new ConsensusEnvironment(clusterSize = 3, ticksPerMilli = 10)
-		assertEquals(env.currentVirtualTime, 0)
+		assertEquals(env.clock.currentVirtualTime, 0)
 
 		var wakeUpFired = false
-		val token = env.registerWakeUp(env.node(0), WakeUpReason.UnreachableFollowersRetry, 0, () => {
+		val token = env.clock.registerWakeUp(env.node(0), WakeUpReason.UnreachableFollowersRetry, 0, () => {
 			wakeUpFired = true
 		})
 
 		// Wakeup scheduled at 10ms * (0 + 1) * 10 = 100 ticks
-		assertEquals(env.pendingWakeUps.size, 1)
-		assertEquals(env.pendingWakeUps.head.scheduledTime, 100)
+		assertEquals(env.clock.pendingWakeUps.size, 1)
+		assertEquals(env.clock.pendingWakeUps.head.scheduledTime, 100)
 
 		// Advance 50 ticks: not yet expired
-		val expired1 = env.advanceTime(50)
+		val expired1 = env.clock.advanceTime(50)
 		assertEquals(expired1.size, 0)
-		assertEquals(env.currentVirtualTime, 50)
+		assertEquals(env.clock.currentVirtualTime, 50)
 		assert(!wakeUpFired)
 
 		// Advance another 50 ticks: expires at 100
-		val expired2 = env.advanceTime(50)
+		val expired2 = env.clock.advanceTime(50)
 		assertEquals(expired2.size, 1)
-		assertEquals(env.currentVirtualTime, 100)
+		assertEquals(env.clock.currentVirtualTime, 100)
 
 		// Callback was enqueued to p-0's StepDoer
 		env.stepNode(0)
@@ -213,8 +214,8 @@ class ConsensusEnvironmentTest extends FunSuite {
 		// 1. Initial startup: elect p-0 as leader of term 1 and commit command h1
 		val h1 = env.submitClientCommand(targetNode = 0, client = 1)
 		env.runAllNodesUntilIdle()
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -227,37 +228,37 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.runNodeUntilIdle(0)
 
 		// p-0 appends command h2 at index 3 in term 1 and queues AppendRecords to p-1 and p-2
-		assert(env.pendingPacketsBetween(0, 1).nonEmpty)
-		assert(env.pendingPacketsBetween(0, 2).nonEmpty)
+		assert(env.network.pendingPacketsBetween(0, 1).nonEmpty)
+		assert(env.network.pendingPacketsBetween(0, 2).nonEmpty)
 
 		// Simulate packet loss / partition from p-0 to p-1
-		env.dropNext(0, 1)
+		env.network.dropNext(0, 1)
 
 		// 3. Client submits command h3 with FALLBACK to follower p-1, prompting election / role update
 		val h3 = env.submitClientCommand(targetNode = 1, client = 2, attemptFlag = FALLBACK)
 		env.stepNode(1)
 
 		// Drop discovery queries to p-0 (simulating partition from p-0)
-		while env.pendingPacketsBetween(1, 0).nonEmpty do env.dropNext(1, 0)
-		while env.pendingPacketsBetween(1, 2).nonEmpty do env.deliverNext(1, 2)
+		while env.network.pendingPacketsBetween(1, 0).nonEmpty do env.network.dropNext(1, 0)
+		while env.network.pendingPacketsBetween(1, 2).nonEmpty do env.network.deliverNext(1, 2)
 		env.stepNode(2)
 
-		while env.pendingPacketsBetween(2, 0).nonEmpty do env.dropNext(2, 0)
-		while env.pendingPacketsBetween(2, 1).nonEmpty do env.deliverNext(2, 1)
+		while env.network.pendingPacketsBetween(2, 0).nonEmpty do env.network.dropNext(2, 0)
+		while env.network.pendingPacketsBetween(2, 1).nonEmpty do env.network.deliverNext(2, 1)
 		env.runNodeUntilIdle(1)
 
 		// 4. p-1 launches Phase 2 (RequestBallot)
-		while env.pendingPacketsBetween(1, 0).nonEmpty do env.dropNext(1, 0)
-		while env.pendingPacketsBetween(1, 2).nonEmpty do env.deliverNext(1, 2)
+		while env.network.pendingPacketsBetween(1, 0).nonEmpty do env.network.dropNext(1, 0)
+		while env.network.pendingPacketsBetween(1, 2).nonEmpty do env.network.deliverNext(1, 2)
 		env.stepNode(2)
 
 		// p-2 sends discovery to p-0: drop it and step p-2 so it completes discovery and casts vote
-		while env.pendingPacketsBetween(2, 0).nonEmpty do env.dropNext(2, 0)
+		while env.network.pendingPacketsBetween(2, 0).nonEmpty do env.network.dropNext(2, 0)
 		env.runNodeUntilIdle(2)
-		while env.pendingPacketsBetween(2, 0).nonEmpty do env.dropNext(2, 0)
+		while env.network.pendingPacketsBetween(2, 0).nonEmpty do env.network.dropNext(2, 0)
 
 		// Deliver p-2's vote back to p-1
-		while env.pendingPacketsBetween(2, 1).nonEmpty do env.deliverNext(2, 1)
+		while env.network.pendingPacketsBetween(2, 1).nonEmpty do env.network.deliverNext(2, 1)
 		env.runNodeUntilIdle(1)
 
 		// p-1 receives p-2's vote and becomes leader of term 2
@@ -267,15 +268,15 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assertEquals(env.node(2).storage.savedMemory.getVotedFor, readren.common.Maybe(NodeId("p-1")))
 
 		// p-1 has queued AppendRecords for command h3 (term 2) to p-2. Hold it in flight!
-		assert(env.pendingPacketsBetween(1, 2).exists(_.rpc.isInstanceOf[ConsensusRpc.AppendRecords]))
+		assert(env.network.pendingPacketsBetween(1, 2).exists(_.rpc.isInstanceOf[ConsensusRpc.AppendRecords]))
 
 		// 5. Fatal race averted: deliver p-0's delayed AppendRecords (command h2, term 1) to p-2
 		// Because p-2 epoch-fenced term 1 when voting for p-1, p-2 rejects p-0's append at term 1!
-		env.deliverNext(0, 2)
+		env.network.deliverNext(0, 2)
 		env.runNodeUntilIdle(2)
 
 		// Deliver p-2's rejection back to p-0
-		env.deliverNext(2, 0)
+		env.network.deliverNext(2, 0)
 		env.runNodeUntilIdle(0)
 
 		// p-0 receives p-2's rejection: p-0 discovers term 2, steps down, and does NOT commit index 3
@@ -283,11 +284,11 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assertEquals(env.nodeRole(0), "ISOLATED")
 
 		// 6. Now deliver p-1's AppendRecords (command h3, term 2) to p-2
-		env.deliverNext(1, 2)
+		env.network.deliverNext(1, 2)
 		env.stepNode(2)
 
 		// Deliver p-2's acknowledgment back to p-1
-		env.deliverNext(2, 1)
+		env.network.deliverNext(2, 1)
 		env.runNodeUntilIdle(1)
 
 		// p-1 receives p-2's ack: p-1 + p-2 forms majority in term 2!
@@ -305,33 +306,33 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// Reach majority on discovery: deliver to p-1, drop to p-2
-		env.deliverNext(0, 1)
-		env.dropNext(0, 2)
+		env.network.deliverNext(0, 1)
+		env.network.dropNext(0, 2)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
 		// RequestBallot triggered for peers p-1 and p-2
-		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val ballotRequests = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(ballotRequests.size, 2)
 
 		// Deliver RequestBallot only to p-1, leaving p-2 in flight
-		env.deliverNext(0, 1)
+		env.network.deliverNext(0, 1)
 		env.stepNode(1)
 
 		// p-1 queries p-2 to determine best candidate; drop it so p-1 resolves with p-0 as winner
-		env.dropNext(1, 2)
+		env.network.dropNext(1, 2)
 		env.stepNode(1)
 
 		// Now p-1 sends its vote for p-0 back to p-0
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 
 		// p-0 processes p-1's vote: quorum won immediately (2/3) without waiting for p-2
 		env.runNodeUntilIdle(0)
 		assertEquals(env.nodeRole(0), "LEADER")
 
 		// p-2's RequestBallot request is still in flight, never needed
-		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val remainingBallot = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(remainingBallot.size, 1)
 		assertEquals(remainingBallot.head.destination, NodeId("p-2"))
 	}
@@ -344,31 +345,31 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// Reach majority on discovery: deliver to p-1, p-2; drop p-3, p-4
-		env.deliverNext(0, 1)
-		env.deliverNext(0, 2)
-		env.dropNext(0, 3)
-		env.dropNext(0, 4)
+		env.network.deliverNext(0, 1)
+		env.network.deliverNext(0, 2)
+		env.network.dropNext(0, 3)
+		env.network.dropNext(0, 4)
 		env.stepNode(1)
 		env.stepNode(2)
-		env.deliverNext(1, 0)
-		env.deliverNext(2, 0)
+		env.network.deliverNext(1, 0)
+		env.network.deliverNext(2, 0)
 		env.runNodeUntilIdle(0)
 
 		// RequestBallot triggered for all 4 peers
-		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val ballotRequests = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(ballotRequests.size, 4)
 
 		// Drop/fail 3 of them (p-1, p-2, p-3). Remaining possible votes = 1 (self) + 1 (p-4) = 2 <= 5/2
-		env.dropNext(0, 1)
-		env.dropNext(0, 2)
-		env.dropNext(0, 3)
+		env.network.dropNext(0, 1)
+		env.network.dropNext(0, 2)
+		env.network.dropNext(0, 3)
 		env.runNodeUntilIdle(0)
 
 		// p-0 immediately demotes to ISOLATED due to mathematical impossibility, without waiting for p-4
 		assertEquals(env.nodeRole(0), "ISOLATED")
 
 		// p-4's RequestBallot packet is still pending in channel, never delivered
-		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val remainingBallot = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(remainingBallot.size, 1)
 		assertEquals(remainingBallot.head.destination, NodeId("p-4"))
 	}
@@ -381,14 +382,14 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// Reach majority on discovery
-		env.deliverNext(0, 1)
-		env.dropNext(0, 2)
+		env.network.deliverNext(0, 1)
+		env.network.dropNext(0, 2)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
 		// RequestBallot triggered
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
+		assertEquals(env.network.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
 
 		// Advance p-1's term via an AppendRecords RPC from a higher term (term 5)
 		env.node(1).stepDoer.executeSequentially(() => {
@@ -397,9 +398,9 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(1)
 
 		// Deliver RequestBallot to p-1 only
-		env.deliverNext(0, 1)
+		env.network.deliverNext(0, 1)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 
 		// p-0 receives vote with term 5: aborts and updates term without waiting for p-2
 		env.runNodeUntilIdle(0)
@@ -407,7 +408,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 		assert(env.nodeRole(0) != "LEADER")
 
 		// p-2's RequestBallot request is still pending
-		val remainingBallot = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val remainingBallot = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(remainingBallot.size, 1)
 		assertEquals(remainingBallot.head.destination, NodeId("p-2"))
 	}
@@ -420,30 +421,30 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// Reach majority on discovery
-		env.deliverNext(0, 1)
-		env.dropNext(0, 2)
+		env.network.deliverNext(0, 1)
+		env.network.dropNext(0, 2)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 
 		// RequestBallot triggered
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
+		assertEquals(env.network.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 2)
 
 		// Win early with p-1's vote
-		env.deliverNext(0, 1)
+		env.network.deliverNext(0, 1)
 		env.stepNode(1)
-		env.dropNext(1, 2)
+		env.network.dropNext(1, 2)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 		env.runNodeUntilIdle(0)
 		assertEquals(env.nodeRole(0), "LEADER")
 
 		// Now deliver late request to p-2 and its response back to p-0
-		env.deliverNext(0, 2)
+		env.network.deliverNext(0, 2)
 		env.stepNode(2)
-		env.dropNext(2, 1)
+		env.network.dropNext(2, 1)
 		env.stepNode(2)
-		env.deliverNext(2, 0)
+		env.network.deliverNext(2, 0)
 		env.runNodeUntilIdle(0)
 
 		// Leader p-0 remains stably LEADER without crashing or regressing
@@ -458,23 +459,23 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// howAreYou queries triggered for p-1 and p-2
-		val hayRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		val hayRequests = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
 		assertEquals(hayRequests.size, 2)
 
 		// Deliver howAreYou to p-1 only, leave p-2 in flight
-		env.deliverNext(0, 1)
+		env.network.deliverNext(0, 1)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 
 		// p-0 receives p-1's state info: reaches discovery majority (2/3) without waiting for p-2
 		env.runNodeUntilIdle(0)
 
 		// Phase 2 (RequestBallot) is launched for both peers
-		val ballotRequests = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
+		val ballotRequests = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot])
 		assertEquals(ballotRequests.size, 2)
 
 		// p-2's HAY request is still pending in flight
-		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		val remainingHay = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
 		assertEquals(remainingHay.size, 1)
 	}
 
@@ -486,19 +487,19 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(0)
 
 		// 4 HAY queries sent to p-1, p-2, p-3, p-4
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou]), 4)
+		assertEquals(env.network.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou]), 4)
 
 		// Drop/fail 3 of them (p-1, p-2, p-3). Remaining possible = 1 (self) + 1 (p-4) = 2 <= 5/2
-		env.dropNext(0, 1)
-		env.dropNext(0, 2)
-		env.dropNext(0, 3)
+		env.network.dropNext(0, 1)
+		env.network.dropNext(0, 2)
+		env.network.dropNext(0, 3)
 		env.runNodeUntilIdle(0)
 
 		// p-0 immediately demotes to ISOLATED due to mathematical impossibility, without waiting for p-4
 		assertEquals(env.nodeRole(0), "ISOLATED")
 
 		// p-4's HAY request was never needed
-		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		val remainingHay = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
 		assertEquals(remainingHay.size, 1)
 		assertEquals(remainingHay.head.destination, NodeId("p-4"))
 	}
@@ -517,18 +518,18 @@ class ConsensusEnvironmentTest extends FunSuite {
 		env.stepNode(1)
 
 		// Deliver howAreYou to p-1 only
-		env.deliverNext(0, 1)
+		env.network.deliverNext(0, 1)
 		env.stepNode(1)
-		env.deliverNext(1, 0)
+		env.network.deliverNext(1, 0)
 
 		// p-0 receives StateInfo with term 5: aborts election and updates term without waiting for p-2
 		env.runNodeUntilIdle(0)
 		assertEquals(env.node(0).storage.savedMemory.currentTerm, 5.asInstanceOf[Term])
 		assert(env.nodeRole(0) != "LEADER")
-		assertEquals(env.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 0)
+		assertEquals(env.network.pendingPackets.count(_.rpc.isInstanceOf[ConsensusRpc.RequestBallot]), 0)
 
 		// p-2's HAY query is still pending
-		val remainingHay = env.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
+		val remainingHay = env.network.pendingPackets.filter(_.rpc.isInstanceOf[ConsensusRpc.HowAreYou])
 		assertEquals(remainingHay.size, 1)
 	}
 }

@@ -88,7 +88,17 @@ trait ConsensusElectorateCdm { thisModule =>
 
 		def hasMajorityAppended(index: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): Boolean
 
-		def indexOfTheCommittableRecordWithHighestIndex(log: LogTermLookup, from: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): RecordIndex
+		final def indexOfTheCommittableRecordWithHighestIndex(log: LogTermLookup, from: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): RecordIndex = {
+			assert(from >= log.latestSnapshotLastIncludedRecordIndex, s"from=$from, snapshotLastIncluded=${log.latestSnapshotLastIncludedRecordIndex}")
+			var n = log.firstEmptyRecordIndex
+			while {
+				n -= 1
+				// The second condition of this expression enforces Raft §5.4.2 ("A leader cannot determine commitment using entries from previous terms") and that a leader inheriting previous-term records cannot commit them without first committing a current-term record
+				n > from && (log.getRecordTermAt(n) != log.currentTerm || !hasMajorityAppended(n, learnerProgressByIndex))
+			} do ()
+			n
+		}
+
 
 		/** Accumulates peer ballots until a definitive quorum decision (Won, Lost, or Stale) is reached, unsubscribing all remaining in-flight inquires upon early exit. */
 		def accumulateVotingQuorum(
@@ -141,7 +151,7 @@ trait ConsensusElectorateCdm { thisModule =>
 
 		override val stableParticipants: Set[ParticipantId] = backingElectorateChange.newParticipants
 
-		def otherProbableParticipants: ListSet[ParticipantId] = {
+		override def otherProbableParticipants: ListSet[ParticipantId] = {
 			ListSet.newBuilder
 				.addAll(peers)
 				.addAll(clusterView.getOtherProbableParticipants)
@@ -151,17 +161,6 @@ trait ConsensusElectorateCdm { thisModule =>
 		override def hasMajorityAppended(index: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): Boolean = {
 			val othersQuorumThreshold = if isBoundIncluded then halfTheNumberOfParticipants else halfTheNumberOfParticipants + 1
 			learnerProgressByIndex.countWithIndex((learnerProgress, _) => learnerProgress.highestRecordIndexKnownToBeAppended >= index) >= othersQuorumThreshold
-		}
-
-		override def indexOfTheCommittableRecordWithHighestIndex(log: LogTermLookup, from: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): RecordIndex = {
-			assert(from >= log.latestSnapshotLastIncludedRecordIndex, s"from=$from, snapshotLastIncluded=${log.latestSnapshotLastIncludedRecordIndex}")
-			var n = log.firstEmptyRecordIndex
-			while {
-				n -= 1
-				// The second condition of this expression enforces Raft §5.4.2 ("A leader cannot determine commitment using entries from previous terms") and that a leader inheriting previous-term records cannot commit them without first committing a current-term record
-				n > from && (log.getRecordTermAt(n) != log.currentTerm || !hasMajorityAppended(n, learnerProgressByIndex))
-			} do ()
-			n
 		}
 
 		override def decideMyNomination(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[CandidateNomination[ParticipantId]] = {
@@ -384,7 +383,7 @@ trait ConsensusElectorateCdm { thisModule =>
 
 		override val stableParticipants: Set[ParticipantId] = newParticipants
 
-		def otherProbableParticipants: ListSet[ParticipantId] = {
+		override def otherProbableParticipants: ListSet[ParticipantId] = {
 			ListSet.newBuilder
 				.addAll(peers)
 				.addAll(clusterView.getOtherProbableParticipants)
@@ -412,17 +411,6 @@ trait ConsensusElectorateCdm { thisModule =>
 				}
 			}
 			(oldParticipantsWithRecordAtN > halfOfOldParticipants || oldParticipants.isEmpty) && (newParticipantsWithRecordAtN > halfOfNewParticipants || newParticipants.isEmpty)
-		}
-
-		override def indexOfTheCommittableRecordWithHighestIndex(log: LogTermLookup, from: RecordIndex, learnerProgressByIndex: IArray[PeerProgressView]): RecordIndex = {
-			assert(from >= log.latestSnapshotLastIncludedRecordIndex, s"from=$from, snapshotLastIncluded=${log.latestSnapshotLastIncludedRecordIndex}")
-			var n = log.firstEmptyRecordIndex - 1
-			while n > from do {
-				// The first condition of this `if` enforces Raft §5.4.2 ("A leader cannot determine commitment using entries from previous terms") and that a leader inheriting previous-term records cannot commit them without first committing a current-term record
-				if log.getRecordTermAt(n) == log.currentTerm && hasMajorityAppended(n, learnerProgressByIndex) then return n
-				n -= 1
-			}
-			from
 		}
 
 		override def decideMyNomination(myStateInfo: StateInfo, peersReplies: IArray[Try[StateInfo]])(using Trace.Context): Maybe[CandidateNomination[ParticipantId]] = {
@@ -632,8 +620,10 @@ trait ConsensusElectorateCdm { thisModule =>
 									if oldParticipants.contains(peerId) then oldMatching += 1
 									if newParticipants.contains(peerId) then newMatching += 1
 								} else {
-									if ballot.voterRank == ER_RETIREE && oldParticipants.contains(peerId) then oldRetiring += 1
-									if ballot.voterRank == ER_JOINER && newParticipants.contains(peerId) then newJoining += 1
+									val peerRank = ballot.voterRank
+									if peerRank == ER_RETIREE && oldParticipants.contains(peerId) then oldRetiring += 1
+									// If any newcomer to the target configuration casts a blank ballot because it is currently joining (ER_JOINER) or because it was excluded by a prior configuration change and is currently retiring (ER_RETIREE), it cannot vote yet because it has not received the transitional entry. So treat them as non-voting quorum buffers of the new participants set.
+									if (peerRank == ER_JOINER || peerRank == ER_RETIREE && !oldParticipants.contains(peerId)) && newParticipants.contains(peerId) then newJoining += 1
 								}
 								checkTermination()
 							}

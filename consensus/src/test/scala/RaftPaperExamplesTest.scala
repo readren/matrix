@@ -3,6 +3,7 @@ package readren.consensus
 import munit.FunSuite
 import readren.common.Maybe
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.env.*
 import readren.consensus.protocol.*
 
 class RaftPaperExamplesTest extends FunSuite {
@@ -109,8 +110,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.runAllNodesUntilIdle()
 
 		// Dispatch discovery and election packets
-		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.nodeRole(0) != "LEADER" && env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -121,12 +122,12 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.startNode(4)
 
 		// Advance virtual time to trigger retry for unreachable followers
-		env.advanceTime(500)
+		env.clock.advanceTime(500)
 		env.runAllNodesUntilIdle()
 
 		// Dispatch all append requests and replies across the cluster until all logs are repaired
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -205,8 +206,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.submitClientCommand(targetNode = 0, client = 1)
 		env.runAllNodesUntilIdle()
 
-		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.nodeRole(0) != "LEADER" && env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -216,9 +217,9 @@ class RaftPaperExamplesTest extends FunSuite {
 		// Leader p-0 sent AppendRecords for [index 2 (term 2), index 3 (term 4)] to p-1 and p-2.
 		// Deliver AppendRecords only to p-2 and step p-2, but hold p-1's response.
 		// This replicates index 2 to p-2, reaching a majority {p-0, p-1, p-2} of 3 out of 5.
-		while env.pendingPackets.exists(p => p.destination == "p-2" || p.source == "p-2") do {
-			for p <- env.pendingPackets.filter(p => p.destination == "p-2" || p.source == "p-2") do {
-				env.deliverPacket(p.id)
+		while env.network.pendingPackets.exists(p => p.destination == "p-2" || p.source == "p-2") do {
+			for p <- env.network.pendingPackets.filter(p => p.destination == "p-2" || p.source == "p-2") do {
+				env.network.deliverPacket(p.id)
 			}
 			env.runAllNodesUntilIdle()
 		}
@@ -235,8 +236,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		assert(env.node(0).machine.highestAppliedCommandIndex < 2)
 
 		// Phase (e): Now deliver replication to p-1 as well, so current-term entry 3 reaches majority
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -255,12 +256,12 @@ class RaftPaperExamplesTest extends FunSuite {
 		val hInit = env.submitClientCommand(targetNode = 0, client = 1)
 		env.runAllNodesUntilIdle()
 
-		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.nodeRole(0) != "LEADER" && env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
-		while env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 		val ClientCommandStatus.Processed(_, resInit) = env.clientCommandStatus(hInit.commandId): @unchecked
@@ -280,8 +281,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		// Drive the 2-phase joint consensus transition:
 		// Phase 1: JointElectorateChange (Cold,new) replicated and committed across joint quorum
 		// Phase 2: SoleElectorateChange (Cnew) replicated and committed
-		while env.electorateChangeStatus(ccHandle.requestId) == ElectorateChangeStatus.InFlight && env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.electorateChangeStatus(ccHandle.requestId) == ElectorateChangeStatus.InFlight && env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -362,8 +363,8 @@ class RaftPaperExamplesTest extends FunSuite {
 		env.runAllNodesUntilIdle()
 
 		// Run leader election and initial synchronization between p-0 and p-2
-		while env.nodeRole(0) != "LEADER" && env.pendingPackets.nonEmpty do {
-			env.deliverAll()
+		while env.nodeRole(0) != "LEADER" && env.network.pendingPackets.nonEmpty do {
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 
@@ -373,11 +374,11 @@ class RaftPaperExamplesTest extends FunSuite {
 		// Because p-1 requires records predating p-0's logBufferOffset (6),
 		// p-0 dispatches InstallSnapshot instead of AppendRecords.
 		var snapshotTransmitted = false
-		while env.pendingPackets.nonEmpty do {
-			for packet <- env.pendingPackets do {
+		while env.network.pendingPackets.nonEmpty do {
+			for packet <- env.network.pendingPackets do {
 				if packet.rpc.isInstanceOf[ConsensusRpc.InstallSnapshot] then snapshotTransmitted = true
 			}
-			env.deliverAll()
+			env.network.deliverAll()
 			env.runAllNodesUntilIdle()
 		}
 

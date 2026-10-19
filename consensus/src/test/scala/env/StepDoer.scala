@@ -1,4 +1,4 @@
-package readren.consensus
+package readren.consensus.env
 
 import readren.common.Maybe
 import readren.sequencer.Doer
@@ -12,19 +12,15 @@ object StepDoer {
 
 /** A deterministic, single-threaded [[Doer]] implementation for discrete-event testing.
  * Does not spawn or rely on background threads. All tasks enqueued via [[executeSequentially]]
- * are held in an in-memory queue until explicitly executed via [[step]] or [[drain]].
- *
- * @param tag human-readable tag identifying this sequencer instance.
- */
+ * are held in an in-memory queue until explicitly executed via [[step]] or [[walk]].
+ * @param tag human-readable tag identifying this sequencer instance. */
 class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	override type Tag = String
 
 	private var executionSequencer: ExecutionSerial = 0
 	private val taskQueue: mutable.Queue[Runnable] = mutable.Queue.empty
 
-	override def executeSequentially(runnable: Runnable): Unit = {
-		taskQueue.enqueue(runnable)
-	}
+	override def executeSequentially(runnable: Runnable): Unit = taskQueue.enqueue(runnable)
 
 	override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
@@ -39,9 +35,7 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	/** Dequeues and executes exactly one task from the queue within this sequencer's context.
 	 * Increments [[currentExecutionSerial]] and sets [[currentlyRunningDoer]] so that
 	 * [[Doer.checkWithin]] assertions succeed during execution.
-	 *
-	 * @return true if a task was executed; false if the queue was empty.
-	 */
+	 * @return true if a task was executed; false if the queue was empty. */
 	def step(): Boolean = {
 		if taskQueue.isEmpty then false
 		else {
@@ -58,12 +52,10 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 		}
 	}
 
-	/** Executes all pending tasks in the queue until empty or until [[maxSteps]] is reached.
-	 *
+	/** Executes all pending tasks in the queue until empty or until `maxSteps` is reached.
 	 * @param maxSteps safeguard against infinite loops from mutually recursive task submissions.
-	 * @return the number of tasks executed.
-	 */
-	def drain(maxSteps: Int = 1000): Int = {
+	 * @return the number of tasks executed. */
+	def walk(maxSteps: Int = 1000): Int = {
 		var executedCount = 0
 		while hasPendingTasks && executedCount < maxSteps do {
 			step()
@@ -73,7 +65,5 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	}
 
 	/** Clears all pending tasks from the queue without executing them. */
-	def clear(): Unit = {
-		taskQueue.clear()
-	}
+	def forgetPendingTasks(): Unit = taskQueue.clear()
 }

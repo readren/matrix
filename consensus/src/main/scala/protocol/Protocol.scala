@@ -28,7 +28,7 @@ final val STARTING: RoleOrdinal = 1
 final val RETIRING: RoleOrdinal = 4
 final val JOINING: RoleOrdinal = 8
 final val ISOLATED: RoleOrdinal = 16
-final val HANDING_OFF: RoleOrdinal = 17
+final val ABDICATING: RoleOrdinal = 17
 final val FOLLOWER: RoleOrdinal = 18
 final val LEADER: RoleOrdinal = 32
 
@@ -46,7 +46,7 @@ def RoleOrdinal_nameOf(ordinal: RoleOrdinal): String = {
 		case STARTING => "STARTING"
 		case JOINING => "JOINING"
 		case ISOLATED => "ISOLATED"
-		case HANDING_OFF => "HANDING_OFF"
+		case ABDICATING => "ABDICATING"
 		case FOLLOWER => "FOLLOWER"
 		case LEADER => "LEADER"
 	}
@@ -79,34 +79,52 @@ def ElectionRank_nameOf(rank: ElectionRank): String = {
 
 /** Outcome of an electorate change request.
  * Parameterless cases are compiled as static singleton values, eliminating allocation overhead across consensus transitions.
- * @param isTerminal true if the response represents a terminal outcome (completed or already matching) that satisfies the requester; false otherwise. */
-enum ElectorateChangeResponse(val isTerminal: Boolean) {
+ * @param isTerminal true if the response represents a terminal outcome (completed or already matching) that satisfies the requester; false otherwise.
+ * @param suggestedPeers candidate participants to attempt contacting next upon non-terminal rejection or redirection.\
+ * This set is provided on a best-effort, advisory basis and reflects the participant's local, potentially historical consensus state.\
+ * It does not guarantee that the suggested peers are currently reachable or still members of the active electorate if cluster reconfiguration occurred while the responder was partitioned or isolated.\
+ * Callers should fall back to broader discovery or alternative target pools if contacting the suggested peers fails. */
+enum ElectorateChangeResponse[+P](val isTerminal: Boolean, val suggestedPeers: Set[? <: P]) {
 	/** The requested electorate change was successfully replicated to a majority (not necessarily committed). Only participants with the [[LEADER]] role answer this. */
-	case SuccessfullyChanged extends ElectorateChangeResponse(true)
+	case SuccessfullyChanged extends ElectorateChangeResponse[Nothing](true, Set.empty)
 
 	/** The participant is leading and already has the requested electorate committed. */
-	case AlreadyChanged extends ElectorateChangeResponse(true)
+	case AlreadyChanged extends ElectorateChangeResponse[Nothing](true, Set.empty)
 
 	/** The participant is leading but excluded (leading as a ghost). A ghost leader cannot initiate configuration changes. */
-	case WaitGhostLeaderIsDemoted extends ElectorateChangeResponse(false)
+	case WaitGhostLeaderIsDemoted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	/** The participant is a follower, suggesting redirection to the leader it follows. */
-	case AskTheLeader(leaderId: AnyRef) extends ElectorateChangeResponse(false)
+	/** The participant is the leader but is currently processing another electorate change.
+	 * @param inProgressRequestId the identifier of the electorate change currently being processed.
+	 * @param inProgressTargetParticipants the target electorate of the change currently being processed.
+	 * @param peers advisory routing hints indicating active peers known to the leader. */
+	case AnotherChangeInProgress[P](inProgressRequestId: ElectorateChangeRequestId, inProgressTargetParticipants: Set[P], peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers ++ inProgressTargetParticipants)
 
-	/** The participant is catching up because it is joining. */
-	case CatchingUp extends ElectorateChangeResponse(false)
+	/** The participant is a follower, suggesting redirection to the leader it follows.\
+	 * The suggested leader reflects the participant's last known leader, which may have since abdicated or disconnected. */
+	case AskTheLeader[P](leaderId: P) extends ElectorateChangeResponse[P](false, Set(leaderId))
 
-	case RequestTrackingLostAfterFirstPhaseStarted extends ElectorateChangeResponse(false)
+	/** The participant is catching up because it is joining as an unanchored learner.\
+	 * The suggested peers set is empty until the participant absorbs its first configuration change. */
+	case CatchingUp[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	case RequestTrackingLostAfterFirstPhaseCommitted extends ElectorateChangeResponse(false)
+	case RequestTrackingLostAfterFirstPhaseStarted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	case RequestTrackingLostAfterSecondPhaseStarted extends ElectorateChangeResponse(false)
+	case RequestTrackingLostAfterFirstPhaseCommitted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	case Excluded extends ElectorateChangeResponse(false)
+	case RequestTrackingLostAfterSecondPhaseStarted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	case Secluded extends ElectorateChangeResponse(false)
+	/** The participant is excluded from the active electorate.\
+	 * The suggested peers reflect the members of the excluding configuration committed in its log. */
+	case Excluded[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 
-	case Stopped extends ElectorateChangeResponse(false)
+	/** The participant is isolated from the cluster majority.\
+	 * The suggested peers reflect the participants in its locally recorded configuration. Because the cluster may have reconfigured during the isolation, these hints are advisory and the caller should fall back to other known participants if contacting them fails. */
+	case Secluded[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+
+	/** The participant has stopped or quiesced and has no active consensus state.\
+	 * The suggested peers set is empty, signaling the absence of consensus-derived routing information. */
+	case Stopped[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
 }
 
 /** Informs a participant receiving a command about the outcome of the client's previous attempt to send that command to the consensus group. */

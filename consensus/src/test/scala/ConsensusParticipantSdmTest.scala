@@ -185,7 +185,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		def startAllNodes: netSequencer.Capture[Array[Unit]] = {
 			val starters = for nodeIndex <- 0 until clusterSize yield {
 				val node = getNode(nodeIndex)
-				node.startIfNotRunning(0, ListSet.empty).onBehalfOf(netSequencer)
+				node.startIfNotRunning().onBehalfOf(netSequencer)
 			}
 			netSequencer.Capture_sequenceToArray(starters)
 		}
@@ -489,10 +489,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 		/** Sends a electorate change request to each [[Node]] of this [[Net]].
 		 * @return a [[Capture]] of the responses of the [[Node]]s */
-		private def sendsElectorateChangeRequests(targetNodes: Seq[Id], electorateChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse]] = {
+		private def sendsElectorateChangeRequests(targetNodes: Seq[Id], electorateChangeRequest: String, includedParticipants: ListSet[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse[Id]]] = {
 			scribe.info(s"Net: About to request (#$electorateChangeRequest) a electorate change to $includedParticipants")
 
-			def loop(previousResponses: ListMap[Id, ElectorateChangeResponse], alreadyTriedNodes: List[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse]] = {
+			def loop(previousResponses: ListMap[Id, ElectorateChangeResponse[Id]], alreadyTriedNodes: List[Id]): netSequencer.Capture[ListMap[Id, ElectorateChangeResponse[Id]]] = {
 				val remainingTargetNodes = ArrayBuffer.from[Id](targetNodes.filter(n => !alreadyTriedNodes.contains(n)))
 
 
@@ -513,7 +513,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							previousResponse match {
 								case ElectorateChangeResponse.SuccessfullyChanged | ElectorateChangeResponse.AlreadyChanged =>
 									Maybe.empty
-								case ElectorateChangeResponse.WaitGhostLeaderIsDemoted =>
+								case _: ElectorateChangeResponse.WaitGhostLeaderIsDemoted[_] =>
 									Maybe.empty
 								case ElectorateChangeResponse.AskTheLeader(leaderId) =>
 									val leaderIndex = remainingTargetNodes.indexOf(leaderId)
@@ -522,9 +522,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 										Maybe(chosenLeaderId)
 									} else Maybe(takeRandomNode().myId)
 
-								case ElectorateChangeResponse.CatchingUp | ElectorateChangeResponse.Excluded | ElectorateChangeResponse.Secluded | ElectorateChangeResponse.Stopped =>
+								case _: ElectorateChangeResponse.CatchingUp[_] | _: ElectorateChangeResponse.Excluded[_] | _: ElectorateChangeResponse.Secluded[_] | _: ElectorateChangeResponse.Stopped[_] | _: ElectorateChangeResponse.AnotherChangeInProgress[_] =>
 									Maybe(takeRandomNode().myId)
-								case ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted | ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseCommitted | ElectorateChangeResponse.RequestTrackingLostAfterSecondPhaseStarted =>
+								case _: ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseStarted[_] | _: ElectorateChangeResponse.RequestTrackingLostAfterFirstPhaseCommitted[_] | _: ElectorateChangeResponse.RequestTrackingLostAfterSecondPhaseStarted[_] =>
 									Maybe.empty
 							}
 					}
@@ -573,8 +573,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 							for nodeIndex <- 0 until clusterSize do {
 								val node = this.getNode(nodeIndex)
 								if tcc.newParticipants.contains(node.myId) && !tcc.oldParticipants.contains(node.myId) then {
-									val participantsInTheJec = ListSet.newBuilder.addAll(tcc.oldParticipants).addAll(tcc.newParticipants).result()
-									node.startIfNotRunning(changeIndex, participantsInTheJec).triggerAndForget(false)
+									node.startIfNotRunning().triggerAndForget(false)
 								}
 							}
 						case _ => // Do nothing.
@@ -589,8 +588,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveElectorateChange=$indexOfActiveElectorateChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
 				if activeElectorateChange.isActive(node.myId) then {
-					val participantsInActiveElectorateChange = ListSet.newBuilder.addAll(activeElectorateChange.oldParticipants).addAll(activeElectorateChange.newParticipants).result()
-					node.startIfNotRunning(indexOfActiveElectorateChange, participantsInActiveElectorateChange).triggerAndForget(false)
+					node.startIfNotRunning().triggerAndForget(false)
 				}
 			}
 		}
@@ -615,7 +613,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						responses <- sendsElectorateChangeRequests(nodesIds, electorateChangeRequestId, ListSet.empty)
 						maybeErrorMessage <- {
 							if responses.exists { response => response._2.isTerminal }
-								|| responses.forall { response => response._2 == ElectorateChangeResponse.Stopped }
+								|| responses.forall { response => response._2.isInstanceOf[ElectorateChangeResponse.Stopped[?]] }
 							then {
 								scribe.trace(s"Net: Graceful shutdown of the net completed with: ${responses.mkString("[", ", ", "]")}")
 								netSequencer.Keeper(Maybe.empty)
@@ -779,11 +777,12 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Creates the [[ConsensusParticipant]] service instance of this [[Node]]. */
-		def startIfNotRunning(indexOfTheIncludingElectorateChange: RecordIndex, participantsInTheIncludingElectorateChange: ListSet[ParticipantId]): sequencer.Capture[Unit] = {
+		def startIfNotRunning(): sequencer.Capture[Unit] = {
 			sequencer.Capture_apply { () =>
 				if isDown || participant.getRoleOrdinal == QUIESCED then {
-					scribe.info(s"node-$myId: about to create the consensus participant service due to the electorate change at $indexOfTheIncludingElectorateChange")
-					_participant = ConsensusParticipant(clusterParticipant, storage, machine, indexOfTheIncludingElectorateChange, participantsInTheIncludingElectorateChange, List(initialNotificationListener, notificationScribe))
+					scribe.info(s"node-$myId: about to create the consensus participant service")
+					val maybeSeeds = if initialParticipants.contains(myId) then Maybe(initialParticipants) else Maybe.empty
+					_participant = ConsensusParticipant(clusterParticipant, storage, machine, maybeSeeds, List(initialNotificationListener, notificationScribe))
 				} else scribe.info(s"node-$myId: service creation skipped because it is already running with role ${participant.getRoleOrdinal}.")
 			}
 		}
@@ -847,14 +846,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		 */
 		object clusterParticipant extends ClusterParticipant {
 			override val boundParticipantId: ParticipantId = myId
-			private val currentParticipants: Set[ParticipantId] = initialParticipants
 
 			var delegate: Delegate = uninitialized
-
-			override def getInitialParticipants: Set[ParticipantId] = {
-				sequencer.checkWithin()
-				currentParticipants
-			}
 
 			override def setBound(delegate: Delegate): Unit = {
 				sequencer.checkWithin()
@@ -1092,9 +1085,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		object notificationScribe extends NotificationListener {
-			override def onStarting(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
+			override def onStarting(previous: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is starting ${if indexOfTheIncludingElectorateChange == 0 then "as seed" else s"to join due to a joint-configuration-change at $indexOfTheIncludingElectorateChange"}.")
+				scribe.info(s"scribe-$myId: is starting.")
 			}
 
 			override def onStarted(previous: RoleOrdinal, term: Term, initialElectorateChange: ElectorateChange[ParticipantId], isSeed: Boolean): Unit = {
@@ -1107,9 +1100,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				scribe.info(s"scribe-$myId: became quiesced from ${RoleOrdinal_nameOf(previous)} during term $term because $motive.")
 			}
 
-			override def onJoining(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
+			override def onJoining(previous: RoleOrdinal): Unit = {
 				sequencer.checkWithin()
-				scribe.info(s"scribe-$myId: is catching-up to join due to a joint-electorate-change at $indexOfTheIncludingElectorateChange.")
+				scribe.info(s"scribe-$myId: is catching-up to join.")
 			}
 
 			override def onBecameIsolated(previous: RoleOrdinal, term: Term): Unit = {
@@ -1329,7 +1322,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 			new node.DefaultNotificationListener() {
-				override def onStarting(previous: RoleOrdinal, indexOfTheIncludingElectorateChange: RecordIndex): Unit = {
+				override def onStarting(previous: RoleOrdinal): Unit = {
 					if !node.remembersLastAppliedCommandIndex then {
 						committedRecordsByNodeIndex(net.indexOf(node.myId)).clear()
 						appliedCommandsByNodeIndex(net.indexOf(node.myId)).clear()
@@ -1416,7 +1409,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				maybeErrorMsg <- maybeCommandErrorMsg.fold {
 					val maxAuthAttempts = net.getNode(0).MAX_PERMIT_QUIESCENCE_RETRIES
 					val authTotalTime = quiescenceAuthorizationRetryPeriod * (maxAuthAttempts + 1) * (maxAuthAttempts + 2) / 2
-					val maxDriveAttempts = net.getNode(0).retiringParticipantMaxRetries
+					val maxDriveAttempts = net.getNode(0).retiringParticipantMaxRetriesUnderEmptyElectorate
 					val driveTotalTime = retirementDriveRetryPeriod * (maxDriveAttempts + 1) * (maxDriveAttempts + 2) / 2
 					val maxNodeSettleTime = (authTotalTime + driveTotalTime) * net.clusterSize
 					net.shutDownGracefully(maxRetries, maxNodeSettleTime)

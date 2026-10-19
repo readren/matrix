@@ -3,6 +3,7 @@ package readren.consensus
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import readren.common.Maybe
 import readren.consensus.ConsensusParticipantSdm.*
+import readren.consensus.env.*
 import readren.consensus.protocol.*
 
 import java.io.{ByteArrayOutputStream, IOException, InputStream, ObjectOutputStream, OutputStream}
@@ -463,7 +464,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	def serializeState(): String = lock.synchronized {
 		val sb = new java.lang.StringBuilder(16384)
 		sb.append("{")
-		sb.append("\"virtualTime\":").append(env.currentVirtualTime).append(",")
+		sb.append("\"virtualTime\":").append(env.clock.currentVirtualTime).append(",")
 		sb.append("\"clusterSize\":").append(env.clusterSize).append(",")
 
 		// Nodes
@@ -522,7 +523,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 		// Channels
 		sb.append("\"channels\":[")
-		val channels = env.allChannels
+		val channels = env.network.allChannels
 		var chanCount = 0
 		for ((pair, packets) <- channels if packets.nonEmpty) do {
 			if chanCount > 0 then sb.append(",")
@@ -543,7 +544,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 		// Pending Packets (flattened for global table)
 		sb.append("\"pendingPackets\":[")
-		val allPackets = env.pendingPackets
+		val allPackets = env.network.pendingPackets
 		for pIdx <- allPackets.indices do {
 			if pIdx > 0 then sb.append(",")
 			serializePacket(sb, allPackets(pIdx))
@@ -552,7 +553,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 		// Pending Persistence
 		sb.append("\"pendingPersistence\":[")
-		val pOps = env.pendingPersistenceOperations
+		val pOps = env.storage.pendingPersistenceOperations
 		for pIdx <- pOps.indices do {
 			if pIdx > 0 then sb.append(",")
 			val pop = pOps(pIdx)
@@ -569,7 +570,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 		// Pending WakeUps
 		sb.append("\"pendingWakeUps\":[")
-		val wakeUps = env.pendingWakeUps
+		val wakeUps = env.clock.pendingWakeUps
 		for wIdx <- wakeUps.indices do {
 			if wIdx > 0 then sb.append(",")
 			val w = wakeUps(wIdx)
@@ -593,7 +594,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 				case ClientCommandStatus.InFlight => "InFlight"
 				case ClientCommandStatus.Processed(recIdx, res) => s"Processed(index=$recIdx, res=$res)"
 				case ClientCommandStatus.Redirected(lId) => s"Redirected($lId)"
-				case ClientCommandStatus.Unable(flag, _) => s"Unable($flag)"
+				case ClientCommandStatus.Unable(flag, others) => s"Unable(flag=$flag, others=[${others.mkString(",")}])"
 				case ClientCommandStatus.Failed(e) => s"Failed(${e.getMessage})"
 			}
 			sb.append("{")
@@ -614,6 +615,26 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			sb.append("\"lastSent\":").append(cs.lastSent.map(_.toString).getOrElse("null")).append(",")
 			sb.append("\"lastSuccess\":").append(cs.lastSuccess.map(_.toString).getOrElse("null")).append(",")
 			sb.append("\"lastRecordIndex\":").append(cs.lastRecordIndex.map(_.toString).getOrElse("null"))
+			cs.lastStatus match {
+				case Some(ClientCommandStatus.Redirected(leaderId)) =>
+					sb.append(",\"lastStatus\":{\"type\":\"Redirected\",\"targetNode\":\"").append(escapeJson(leaderId)).append("\",\"flag\":1}")
+				case Some(ClientCommandStatus.Unable(flag, others)) =>
+					sb.append(",\"lastStatus\":{\"type\":\"Unable\",\"flag\":").append(flag).append(",\"candidates\":[")
+					var candCount = 0
+					for cand <- others do {
+						if candCount > 0 then sb.append(",")
+						sb.append("\"").append(escapeJson(cand)).append("\"")
+						candCount += 1
+					}
+					sb.append("]}")
+				case Some(ClientCommandStatus.Processed(recIdx, _)) =>
+					sb.append(",\"lastStatus\":{\"type\":\"Processed\",\"recordIndex\":").append(recIdx).append("}")
+				case Some(ClientCommandStatus.InFlight) =>
+					sb.append(",\"lastStatus\":{\"type\":\"InFlight\"}")
+				case Some(ClientCommandStatus.Failed(ex)) =>
+					sb.append(",\"lastStatus\":{\"type\":\"Failed\",\"error\":\"").append(escapeJson(ex.getMessage)).append("\"}")
+				case None =>
+			}
 			sb.append("}")
 			csCount += 1
 		}
@@ -639,7 +660,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		var logMatchingPass = true
 		var invariantError: String = ""
 		try {
-			env.checkLogMatching()
+			env.oracle.checkLogMatching()
 		} catch {
 			case NonFatal(e) =>
 				logMatchingPass = false
@@ -652,13 +673,17 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		sb.append("},")
 
 		// History & Tags
-		sb.append("\"appliedOperationsCount\":").append(env.appliedOperationsCount).append(",")
+		sb.append("\"appliedOperationsCount\":").append(env.journal.appliedOperationsCount).append(",")
+		sb.append("\"undoneOperationsCount\":").append(env.journal.undoneOperationsCount).append(",")
 		sb.append("\"tags\":[")
-		val tagList = env.tags.toSeq.sortBy(_._1)
+		val tagList = env.journal.tags.toSeq.sortBy(_._1)
 		for tIdx <- tagList.indices do {
 			if tIdx > 0 then sb.append(",")
-			val (tName, tOps) = tagList(tIdx)
-			sb.append("{\"name\":\"").append(escapeJson(tName)).append("\",\"opsCount\":").append(tOps.size).append("}")
+			val (tName, tTag) = tagList(tIdx)
+			sb.append("{\"name\":\"").append(escapeJson(tName))
+				.append("\",\"opsCount\":").append(tTag.appliedOperations.size)
+				.append(",\"redoCount\":").append(tTag.undoneOperations.size)
+				.append("}")
 		}
 		sb.append("]")
 
@@ -856,38 +881,40 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 						case "dispatchPacket" =>
 							val id = params("packetId").toInt
-							env.deliverPacket(id)
+							env.network.deliverPacket(id)
 
 						case "dropPacket" =>
 							val id = params("packetId").toInt
-							env.dropPacket(id)
+							env.network.dropPacket(id)
 
 						case "dispatchNext" =>
 							val from = params("from")
 							val to = params("to")
-							env.deliverNext(from, to)
+							env.network.deliverNext(from, to)
 
 						case "dropNext" =>
 							val from = params("from")
 							val to = params("to")
-							env.dropNext(from, to)
+							env.network.dropNext(from, to)
 
 						case "dispatchAllBetween" =>
 							val from = params("from")
 							val to = params("to")
-							env.deliverAllBetween(from, to)
+							env.network.deliverAllBetween(from, to)
 
 						case "dispatchAll" =>
-							env.deliverAll()
+							env.network.deliverAll()
 
 						case "advanceTime" =>
 							val ticks = params.getOrElse("ticks", "10").toInt
-							env.advanceTime(ticks)
+							env.clock.advanceTime(ticks)
 
 						case "submitCommand" =>
 							val target = params.getOrElse("targetNode", "0")
 							val client = params.getOrElse("client", "1")
-							env.submitClientCommand(target, client)
+							val serial = params.get("serial").flatMap(_.toIntOption)
+							val attemptFlag: CommandAttemptFlag = params.get("attemptFlag").flatMap(_.toByteOption).map(_.asInstanceOf[CommandAttemptFlag]).getOrElse(FIRST_ATTEMPT)
+							env.submitClientCommand(target, client, serial, attemptFlag)
 
 						case "submitElectorateChange" =>
 							val target = params.getOrElse("targetNode", "0")
@@ -897,12 +924,12 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 						case "completeStorageSave" =>
 							val node = params("node")
-							env.completeNextStorageSave(node)
+							env.storage.completeNextStorageSave(node)
 
 						case "failStorageSave" =>
 							val opId = params("opId").toInt
 							val err = params.getOrElse("error", "Simulated disk failure")
-							env.failStorageSave(opId, new RuntimeException(err))
+							env.storage.failStorageSave(opId, new RuntimeException(err))
 
 						case "startNode" =>
 							val node = params("node")
@@ -937,12 +964,21 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 							}
 
 						case "undo" =>
-							val undone = env.undo()
+							val undone = env.journal.undo()
 							if undone then {
 								message = "Undid last operation"
 							} else {
 								success = false
 								message = "No operations to undo"
+							}
+
+						case "redo" =>
+							val redone = env.journal.redo()
+							if redone then {
+								message = "Redid last operation"
+							} else {
+								success = false
+								message = "No operations to redo"
 							}
 
 						case "createTag" =>
@@ -951,7 +987,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 								success = false
 								message = "Tag name cannot be empty"
 							} else {
-								env.createTag(name)
+								env.journal.createTag(name)
 								message = s"Created tag '$name'"
 							}
 
@@ -961,7 +997,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 								success = false
 								message = "Tag name cannot be empty"
 							} else {
-								val restored = env.restoreTag(name)
+								val restored = env.journal.restoreTag(name)
 								if restored then {
 									message = s"Restored to tag '$name'"
 								} else {
@@ -976,7 +1012,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 								success = false
 								message = "Tag name cannot be empty"
 							} else {
-								val deleted = env.deleteTag(name)
+								val deleted = env.journal.deleteTag(name)
 								if deleted then {
 									message = s"Deleted tag '$name'"
 								} else {
@@ -987,7 +1023,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 
 						case "toggleStorageAutoSucceed" =>
 							val targetOpt = params.get("node").filter(n => n.nonEmpty && n != "all")
-							env.toggleStorageAutoSucceed(targetOpt)
+							env.storage.toggleStorageAutoSucceed(targetOpt)
 							message = params.get("node") match {
 								case Some("all") | None => "Toggled storage auto-succeed on all nodes"
 								case Some(nodeId) => s"Toggled storage auto-succeed on $nodeId"

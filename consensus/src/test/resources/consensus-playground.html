@@ -980,6 +980,9 @@
             <button id="btnUndo" class="btn-sm" onclick="triggerUndo()" title="Undo last applied operation by resetting and replaying all operations except the last">
                 ↩ Undo (<span id="appliedOpsCount">0</span>)
             </button>
+            <button id="btnRedo" class="btn-sm" onclick="triggerRedo()" title="Redo last undone operation">
+                ↪ Redo (<span id="undoneOpsCount">0</span>)
+            </button>
             <button id="btnToggleTagsDrawer" class="btn-sm" onclick="toggleTagsDrawer()" title="Manage scenario tags / checkpoints">
                 🏷️ Tags (<span id="tagsCount">0</span>)
             </button>
@@ -1311,6 +1314,91 @@
             </div>
             <div class="modal-footer">
                 <button onclick="closeChannelModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CUSTOM CLIENT COMMAND DISPATCH MODAL -->
+    <div id="customCommandModal" class="modal-backdrop">
+        <div class="modal-dialog" style="min-width:440px; max-width:500px; min-height:auto;">
+            <div class="modal-header">
+                <div class="modal-title" id="customCommandModalTitle">Custom Command: client-1</div>
+                <button class="btn-sm" onclick="closeCustomCommandModal()">✕</button>
+            </div>
+            <div class="modal-body" style="padding:1rem; display:flex; flex-direction:column; gap:0.9rem; font-size:0.8rem;">
+                <!-- Target Node -->
+                <div style="display:flex; flex-direction:column; gap:0.3rem;">
+                    <label style="font-weight:600; color:var(--text-subtle); text-transform:uppercase; font-size:0.7rem;">Target Node</label>
+                    <select id="customCmdTargetNode" style="width:100%;"></select>
+                </div>
+
+                <!-- Command Serial -->
+                <div style="display:flex; flex-direction:column; gap:0.3rem;">
+                    <label style="font-weight:600; color:var(--text-subtle); text-transform:uppercase; font-size:0.7rem;">Command Serial</label>
+                    <div style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="radio" name="customCmdSerialMode" id="customCmdSerialModeRetry" value="retry">
+                            <span id="customCmdSerialRetryLabel">Retry #1</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="radio" name="customCmdSerialMode" id="customCmdSerialModeNew" value="new" checked>
+                            <span id="customCmdSerialNewLabel">New #2</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="radio" name="customCmdSerialMode" id="customCmdSerialModeCustom" value="custom">
+                            <span>Custom:</span>
+                            <input type="number" id="customCmdSerialInput" min="1" style="width:65px; padding:0.15rem 0.3rem; font-size:0.75rem;">
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Command Attempt Flag -->
+                <div style="display:flex; flex-direction:column; gap:0.5rem; border-top:1px solid var(--border-color); padding-top:0.7rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <label style="font-weight:600; color:var(--text-subtle); text-transform:uppercase; font-size:0.7rem;">Command Attempt Flag</label>
+                        <span id="customCmdFlagBadge" style="font-family:monospace; font-size:0.75rem; background:rgba(99,102,241,0.2); color:#818cf8; padding:0.1rem 0.4rem; border-radius:4px;">0x00 (0)</span>
+                    </div>
+
+                    <!-- Preset Selector -->
+                    <div style="display:flex; gap:0.4rem; align-items:center;">
+                        <span style="font-size:0.75rem; color:var(--text-subtle);">Preset:</span>
+                        <select id="customCmdFlagPreset" style="flex:1;" onchange="handleFlagPresetChange()">
+                            <option value="0">FIRST_ATTEMPT (0x00)</option>
+                            <option value="1">REDIRECTED (0x01)</option>
+                            <option value="2">FALLBACK (0x02)</option>
+                            <option value="6">LEADERSHIP_VACATED (0x06)</option>
+                            <option value="custom">Custom Bitmask / Value</option>
+                        </select>
+                    </div>
+
+                    <!-- Bitmask Checkboxes -->
+                    <div style="display:flex; gap:0.8rem; align-items:center; background:rgba(0,0,0,0.2); padding:0.4rem 0.6rem; border-radius:4px; border:1px solid rgba(255,255,255,0.05);">
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="checkbox" id="flagBitRedirected" value="1" onchange="handleFlagBitsChange()">
+                            <span style="font-family:monospace; font-size:0.75rem;">REDIRECTED (0x01)</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="checkbox" id="flagBitFallback" value="2" onchange="handleFlagBitsChange()">
+                            <span style="font-family:monospace; font-size:0.75rem;">FALLBACK (0x02)</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:0.3rem; cursor:pointer;">
+                            <input type="checkbox" id="flagBitVacated" value="4" onchange="handleFlagBitsChange()">
+                            <span style="font-family:monospace; font-size:0.75rem;">VACATED (0x04)</span>
+                        </label>
+                    </div>
+
+                    <!-- Raw Value Input -->
+                    <div style="display:flex; gap:0.6rem; align-items:center;">
+                        <span style="font-size:0.75rem; color:var(--text-subtle);">Raw Byte (0-255):</span>
+                        <input type="number" id="customCmdRawFlagInput" min="0" max="255" value="0" style="width:70px; padding:0.15rem 0.3rem; font-size:0.75rem;" onchange="handleRawFlagInputChange()">
+                        <span style="font-size:0.75rem; color:var(--text-subtle);">Hex:</span>
+                        <span id="customCmdHexDisplay" style="font-family:monospace; font-size:0.75rem; color:var(--text-main);">0x00</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:0.5rem; padding:0.6rem 1rem; border-top:1px solid var(--border-color);">
+                <button class="btn-sm" onclick="closeCustomCommandModal()">Cancel</button>
+                <button class="btn-sm btn-primary" onclick="submitCustomCommand()">Inject Command</button>
             </div>
         </div>
     </div>
@@ -1650,11 +1738,14 @@
 
         // Keyboard shortcuts
         window.addEventListener("keydown", (e) => {
+            const activeTag = document.activeElement?.tagName?.toLowerCase();
+            if (activeTag === "input" || activeTag === "textarea") return;
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
-                const activeTag = document.activeElement?.tagName?.toLowerCase();
-                if (activeTag === "input" || activeTag === "textarea") return;
                 e.preventDefault();
                 triggerUndo();
+            } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) {
+                e.preventDefault();
+                triggerRedo();
             }
         });
     });
@@ -1838,7 +1929,7 @@
         renderClientList();
         renderConfigPills();
 
-        // Operations & Undo state
+        // Operations & Undo/Redo state
         const opsCount = currentState.appliedOperationsCount ?? 0;
         const opsEl = document.getElementById("appliedOpsCount");
         if (opsEl) opsEl.textContent = opsCount;
@@ -1847,6 +1938,16 @@
             btnUndo.disabled = opsCount === 0;
             btnUndo.style.opacity = opsCount === 0 ? "0.5" : "1.0";
             btnUndo.style.cursor = opsCount === 0 ? "not-allowed" : "pointer";
+        }
+
+        const undoneCount = currentState.undoneOperationsCount ?? 0;
+        const undoneEl = document.getElementById("undoneOpsCount");
+        if (undoneEl) undoneEl.textContent = undoneCount;
+        const btnRedo = document.getElementById("btnRedo");
+        if (btnRedo) {
+            btnRedo.disabled = undoneCount === 0;
+            btnRedo.style.opacity = undoneCount === 0 ? "0.5" : "1.0";
+            btnRedo.style.cursor = undoneCount === 0 ? "not-allowed" : "pointer";
         }
 
         // Tags
@@ -2538,9 +2639,9 @@
         document.getElementById("channelModal").classList.remove("open");
     }
 
-    function setupModalDraggable() {
-        const dialog = document.querySelector("#channelModal .modal-dialog");
-        const header = document.querySelector("#channelModal .modal-header");
+    function makeDialogDraggable(modalSelector) {
+        const dialog = document.querySelector(`${modalSelector} .modal-dialog`);
+        const header = document.querySelector(`${modalSelector} .modal-header`);
         if (!dialog || !header) return;
 
         let isDragging = false;
@@ -2578,7 +2679,7 @@
             dialog.style.top = `${newY}px`;
         });
 
-        header.addEventListener("pointerup", (e) => {
+        const stopDragging = (e) => {
             if (isDragging) {
                 isDragging = false;
                 try {
@@ -2586,8 +2687,9 @@
                 } catch (err) {
                 }
             }
-        });
+        };
 
+        header.addEventListener("pointerup", stopDragging);
         header.addEventListener("pointercancel", () => {
             isDragging = false;
         });
@@ -2603,9 +2705,15 @@
         });
     }
 
+    function setupModalDraggable() {
+        makeDialogDraggable("#channelModal");
+        makeDialogDraggable("#customCommandModal");
+    }
+
     // Client List Management
     let clientList = ["client-1"];
     let nextClientCounter = 2;
+    let activeCustomDispatchClient = null;
 
     function renderClientList() {
         const container = document.getElementById("clientListContainer");
@@ -2632,6 +2740,22 @@
             const sentStr = (cStat.lastSent !== null && cStat.lastSent !== undefined) ? `#${cStat.lastSent}` : "—";
             const succStr = (cStat.lastSuccess !== null && cStat.lastSuccess !== undefined) ? `#${cStat.lastSuccess}` : "—";
             const recStr = (cStat.lastRecordIndex !== null && cStat.lastRecordIndex !== undefined) ? `@${cStat.lastRecordIndex}` : "—";
+            const st = cStat.lastStatus;
+
+            let actionBtn = "";
+            if (st && st.type === "InFlight") {
+                actionBtn = `<button class="btn-sm" style="padding:0.15rem 0.35rem; font-size:0.7rem; opacity:0.6; cursor:not-allowed;" disabled title="Command in flight...">InFlight</button>`;
+            } else if (st && st.type === "Redirected") {
+                const leader = st.targetNode || "p-0";
+                actionBtn = `<button class="btn-sm" style="padding:0.15rem 0.35rem; font-size:0.7rem; background:#312e81; border-color:#6366f1; color:#c7d2fe;" onclick="submitClientCommand('${clientId}', {targetNode:'${leader}', serial:${cStat.lastSent}, attemptFlag:1})" title="Follow redirect: Retry command #${cStat.lastSent} to ${leader} with REDIRECTED (0x01)">⤹ ${leader}</button>`;
+            } else if (st && st.type === "Unable") {
+                const cand = (st.candidates && st.candidates.length > 0) ? st.candidates[0] : selectedNodeId;
+                const flagVal = st.flag !== undefined ? st.flag : 2;
+                const flagName = flagVal === 2 ? "FALLBACK" : flagVal === 6 ? "VACATED" : `0x${flagVal.toString(16)}`;
+                actionBtn = `<button class="btn-sm" style="padding:0.15rem 0.35rem; font-size:0.7rem; background:#78350f; border-color:#f59e0b; color:#fef3c7;" onclick="submitClientCommand('${clientId}', {targetNode:'${cand}', serial:${cStat.lastSent}, attemptFlag:${flagVal}})" title="Retry command #${cStat.lastSent} to ${cand} with ${flagName} (${flagVal})">⟳ ${cand}</button>`;
+            } else {
+                actionBtn = `<button class="btn-sm btn-success" style="padding:0.15rem 0.4rem; font-size:0.7rem;" onclick="submitClientCommand('${clientId}')" title="Submit command from ${clientId} to selected node (${selectedNodeId}) with FIRST_ATTEMPT">Send</button>`;
+            }
 
             html += `
           <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
@@ -2640,8 +2764,9 @@
             <td style="padding:0.3rem 0.4rem; text-align:center; font-family:monospace; color:#34d399;">${succStr}</td>
             <td style="padding:0.3rem 0.4rem; text-align:center; font-family:monospace; color:#fbbf24;">${recStr}</td>
             <td style="padding:0.3rem 0.4rem; text-align:right; white-space:nowrap;">
-              <button class="btn-sm btn-success" style="padding:0.15rem 0.4rem; font-size:0.7rem;" onclick="submitClientCommand('${clientId}')" title="Submit command from ${clientId} to selected node (${selectedNodeId})">Send</button>
-              <button class="btn-sm btn-danger" style="padding:0.15rem 0.35rem; font-size:0.7rem;" onclick="handleRemoveClient('${clientId}')" title="Remove ${clientId}">✕</button>
+              ${actionBtn}
+              <button class="btn-sm" style="padding:0.15rem 0.3rem; font-size:0.7rem; margin-left:3px; background:var(--bg-card); border-color:var(--border-color); color:var(--text-subtle);" onclick="openCustomCommandModal('${clientId}')" title="Custom command dispatch: specify target node, serial, or attemptFlag">⚙</button>
+              <button class="btn-sm btn-danger" style="padding:0.15rem 0.35rem; font-size:0.7rem; margin-left:3px;" onclick="handleRemoveClient('${clientId}')" title="Remove ${clientId}">✕</button>
             </td>
           </tr>
         `;
@@ -2672,8 +2797,160 @@
         showToast(`Removed ${id}`, "info");
     }
 
-    function submitClientCommand(clientId) {
-        triggerAction("submitCommand", {targetNode: selectedNodeId, client: clientId});
+    function submitClientCommand(clientId, opts = {}) {
+        const payload = {
+            client: clientId,
+            targetNode: opts.targetNode || selectedNodeId
+        };
+        if (opts.serial !== undefined && opts.serial !== null) {
+            payload.serial = opts.serial;
+        }
+        if (opts.attemptFlag !== undefined && opts.attemptFlag !== null) {
+            payload.attemptFlag = opts.attemptFlag;
+        }
+        triggerAction("submitCommand", payload);
+    }
+
+    function openCustomCommandModal(clientId) {
+        activeCustomDispatchClient = clientId;
+        const modal = document.getElementById("customCommandModal");
+        if (!modal) return;
+
+        document.getElementById("customCommandModalTitle").textContent = `Custom Command: ${clientId}`;
+        const stats = (currentState && currentState.clientStats) ? currentState.clientStats : {};
+        const cStat = stats[clientId] || {};
+        const lastSent = (cStat.lastSent !== null && cStat.lastSent !== undefined) ? cStat.lastSent : null;
+        const st = cStat.lastStatus;
+
+        // Populate Target Node select
+        const targetSelect = document.getElementById("customCmdTargetNode");
+        targetSelect.innerHTML = "";
+        const nodes = (currentState && currentState.nodes) ? currentState.nodes : [];
+        let defaultTarget = selectedNodeId;
+        if (st && st.type === "Redirected" && st.targetNode) {
+            defaultTarget = st.targetNode;
+        } else if (st && st.type === "Unable" && st.candidates && st.candidates.length > 0) {
+            defaultTarget = st.candidates[0];
+        }
+        nodes.forEach(n => {
+            const opt = document.createElement("option");
+            opt.value = n.id;
+            opt.textContent = `${n.id} (${n.role || 'NODE'})`;
+            if (n.id === defaultTarget) opt.selected = true;
+            targetSelect.appendChild(opt);
+        });
+
+        // Serial radios
+        const retryRadio = document.getElementById("customCmdSerialModeRetry");
+        const retryLabel = document.getElementById("customCmdSerialRetryLabel");
+        const newRadio = document.getElementById("customCmdSerialModeNew");
+        const newLabel = document.getElementById("customCmdSerialNewLabel");
+        const customInput = document.getElementById("customCmdSerialInput");
+
+        if (lastSent !== null) {
+            retryRadio.disabled = false;
+            retryLabel.textContent = `Retry #${lastSent}`;
+            newLabel.textContent = `New #${lastSent + 1}`;
+            customInput.value = lastSent + 1;
+            if (st && (st.type === "Redirected" || st.type === "Unable")) {
+                retryRadio.checked = true;
+            } else {
+                newRadio.checked = true;
+            }
+        } else {
+            retryRadio.disabled = true;
+            retryLabel.textContent = `Retry (none)`;
+            newRadio.checked = true;
+            newLabel.textContent = `New #1`;
+            customInput.value = 1;
+        }
+
+        // Set Attempt Flag default
+        let initialFlag = 0;
+        if (st && st.type === "Redirected") {
+            initialFlag = 1;
+        } else if (st && st.type === "Unable" && st.flag !== undefined) {
+            initialFlag = st.flag;
+        }
+        setFlagUIValues(initialFlag);
+
+        modal.classList.add("open");
+        const dialog = modal.querySelector(".modal-dialog");
+        if (dialog && !dialog.dataset.dragged) {
+            dialog.style.left = "50%";
+            dialog.style.top = "50%";
+            dialog.style.transform = "translate(-50%, -50%)";
+        }
+    }
+
+    function closeCustomCommandModal() {
+        activeCustomDispatchClient = null;
+        const modal = document.getElementById("customCommandModal");
+        if (modal) modal.classList.remove("open");
+    }
+
+    function setFlagUIValues(flag) {
+        const flagVal = parseInt(flag, 10) || 0;
+        const clamped = Math.max(0, Math.min(255, flagVal));
+        document.getElementById("customCmdRawFlagInput").value = clamped;
+        const hexStr = `0x${clamped.toString(16).padStart(2, '0').toUpperCase()}`;
+        document.getElementById("customCmdHexDisplay").textContent = hexStr;
+        document.getElementById("customCmdFlagBadge").textContent = `${hexStr} (${clamped})`;
+
+        document.getElementById("flagBitRedirected").checked = (clamped & 1) !== 0;
+        document.getElementById("flagBitFallback").checked = (clamped & 2) !== 0;
+        document.getElementById("flagBitVacated").checked = (clamped & 4) !== 0;
+
+        const presetSelect = document.getElementById("customCmdFlagPreset");
+        if (clamped === 0) presetSelect.value = "0";
+        else if (clamped === 1) presetSelect.value = "1";
+        else if (clamped === 2) presetSelect.value = "2";
+        else if (clamped === 6) presetSelect.value = "6";
+        else presetSelect.value = "custom";
+    }
+
+    function handleFlagPresetChange() {
+        const presetSelect = document.getElementById("customCmdFlagPreset");
+        if (presetSelect.value !== "custom") {
+            setFlagUIValues(parseInt(presetSelect.value, 10));
+        }
+    }
+
+    function handleFlagBitsChange() {
+        let flag = 0;
+        if (document.getElementById("flagBitRedirected").checked) flag |= 1;
+        if (document.getElementById("flagBitFallback").checked) flag |= 2;
+        if (document.getElementById("flagBitVacated").checked) flag |= 4;
+        setFlagUIValues(flag);
+    }
+
+    function handleRawFlagInputChange() {
+        const val = parseInt(document.getElementById("customCmdRawFlagInput").value, 10) || 0;
+        setFlagUIValues(val);
+    }
+
+    function submitCustomCommand() {
+        if (!activeCustomDispatchClient) return;
+        const clientId = activeCustomDispatchClient;
+        const targetNode = document.getElementById("customCmdTargetNode").value;
+
+        const stats = (currentState && currentState.clientStats) ? currentState.clientStats : {};
+        const cStat = stats[clientId] || {};
+        const lastSent = (cStat.lastSent !== null && cStat.lastSent !== undefined) ? cStat.lastSent : null;
+
+        let serial = null;
+        if (document.getElementById("customCmdSerialModeRetry").checked && lastSent !== null) {
+            serial = lastSent;
+        } else if (document.getElementById("customCmdSerialModeNew").checked) {
+            serial = (lastSent !== null) ? lastSent + 1 : 1;
+        } else if (document.getElementById("customCmdSerialModeCustom").checked) {
+            serial = parseInt(document.getElementById("customCmdSerialInput").value, 10) || 1;
+        }
+
+        const flag = parseInt(document.getElementById("customCmdRawFlagInput").value, 10) || 0;
+
+        closeCustomCommandModal();
+        submitClientCommand(clientId, {targetNode, serial, attemptFlag: flag});
     }
 
     const expandedPacketRecords = new Set();
@@ -3096,6 +3373,14 @@
         triggerAction("undo");
     }
 
+    function triggerRedo() {
+        if (!currentState || (currentState.undoneOperationsCount ?? 0) === 0) {
+            showToast("No operations to redo", "info");
+            return;
+        }
+        triggerAction("redo");
+    }
+
     function toggleTagsDrawer() {
         const drawer = document.getElementById("tagsDrawer");
         if (!drawer) return;
@@ -3142,18 +3427,21 @@
             container.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-subtle);">No tags created yet.</span>';
             return;
         }
-        container.innerHTML = tags.map(tag => `
+        container.innerHTML = tags.map(tag => {
+            const redoInfo = (tag.redoCount !== undefined && tag.redoCount > 0) ? `, ${tag.redoCount} redo` : "";
+            return `
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0.5rem; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 4px;">
                 <div style="display: flex; flex-direction: column; overflow: hidden; margin-right: 0.5rem;">
                     <span style="font-weight: 600; font-size: 0.8rem; color: #a7f3d0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">🏷️ ${escapeHtml(tag.name)}</span>
-                    <span style="font-size: 0.68rem; color: var(--text-subtle);">${tag.opsCount} ops</span>
+                    <span style="font-size: 0.68rem; color: var(--text-subtle);">${tag.opsCount} ops${redoInfo}</span>
                 </div>
                 <div style="display: flex; gap: 0.3rem;">
                     <button class="btn-sm" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="handleRestoreTag('${escapeHtml(tag.name)}')" title="Restore state to tag '${escapeHtml(tag.name)}'">Restore</button>
                     <button class="btn-sm" style="padding: 0.2rem 0.4rem; font-size: 0.72rem; color: #f87171;" onclick="handleDeleteTag('${escapeHtml(tag.name)}')" title="Delete tag">✕</button>
                 </div>
             </div>
-        `).join("");
+        `;
+        }).join("");
     }
 
     function handleAdvanceToNextWakeUp() {
@@ -3251,6 +3539,7 @@
             ],
             clientCommands: [],
             appliedOperationsCount: 0,
+            undoneOperationsCount: 0,
             tags: [],
             invariants: {logMatching: true, error: ""}
         };

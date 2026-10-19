@@ -290,7 +290,8 @@ trait ConsensusPrimaryStateCdm { this: ConsensusElectorateCdm =>
 					} { snapshot =>
 						indexInBatchOfFirstRecordToFuse = (snapshot.lastIncludedRecordIndex - prevRecordIndex).toInt
 						if indexInBatchOfFirstRecordToFuse == 0 then prevRecordTerm == snapshot.lastIncludedRecordTerm
-						else indexInBatchOfFirstRecordToFuse <= batch.length && batch(indexInBatchOfFirstRecordToFuse - 1).term == snapshot.lastIncludedRecordTerm
+						else if indexInBatchOfFirstRecordToFuse > batch.length then true
+						else batch(indexInBatchOfFirstRecordToFuse - 1).term == snapshot.lastIncludedRecordTerm
 					}
 				}
 			}
