@@ -2820,18 +2820,13 @@
         const stats = (currentState && currentState.clientStats) ? currentState.clientStats : {};
         const cStat = stats[clientId] || {};
         const lastSent = (cStat.lastSent !== null && cStat.lastSent !== undefined) ? cStat.lastSent : null;
-        const st = cStat.lastStatus;
+        const rec = cStat.recommendedSubmission;
 
         // Populate Target Node select
         const targetSelect = document.getElementById("customCmdTargetNode");
         targetSelect.innerHTML = "";
         const nodes = (currentState && currentState.nodes) ? currentState.nodes : [];
-        let defaultTarget = selectedNodeId;
-        if (st && st.type === "Redirected" && st.targetNode) {
-            defaultTarget = st.targetNode;
-        } else if (st && st.type === "Unable" && st.candidates && st.candidates.length > 0) {
-            defaultTarget = st.candidates[0];
-        }
+        let defaultTarget = (rec && rec.targetNode) ? rec.targetNode : selectedNodeId;
         nodes.forEach(n => {
             const opt = document.createElement("option");
             opt.value = n.id;
@@ -2851,27 +2846,23 @@
             retryRadio.disabled = false;
             retryLabel.textContent = `Retry #${lastSent}`;
             newLabel.textContent = `New #${lastSent + 1}`;
-            customInput.value = lastSent + 1;
-            if (st && (st.type === "Redirected" || st.type === "Unable")) {
+            if (rec && rec.isRetry) {
                 retryRadio.checked = true;
+                customInput.value = rec.serial;
             } else {
                 newRadio.checked = true;
+                customInput.value = rec ? rec.serial : (lastSent + 1);
             }
         } else {
             retryRadio.disabled = true;
             retryLabel.textContent = `Retry (none)`;
             newRadio.checked = true;
             newLabel.textContent = `New #1`;
-            customInput.value = 1;
+            customInput.value = rec ? rec.serial : 1;
         }
 
-        // Set Attempt Flag default
-        let initialFlag = 0;
-        if (st && st.type === "Redirected") {
-            initialFlag = 1;
-        } else if (st && st.type === "Unable" && st.flag !== undefined) {
-            initialFlag = st.flag;
-        }
+        // Set Attempt Flag default from backend client recommendation
+        const initialFlag = (rec && rec.attemptFlag !== undefined) ? rec.attemptFlag : 0;
         setFlagUIValues(initialFlag);
 
         modal.classList.add("open");

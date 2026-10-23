@@ -1,6 +1,7 @@
 package readren.consensus.protocol
 
 import readren.common.*
+import scala.collection.immutable.ListSet
 import scala.util.{Failure, Success, Try}
 
 /** The type of the index for the logs where [[Record]]s are stored.
@@ -80,51 +81,51 @@ def ElectionRank_nameOf(rank: ElectionRank): String = {
 /** Outcome of an electorate change request.
  * Parameterless cases are compiled as static singleton values, eliminating allocation overhead across consensus transitions.
  * @param isTerminal true if the response represents a terminal outcome (completed or already matching) that satisfies the requester; false otherwise.
- * @param suggestedPeers candidate participants to attempt contacting next upon non-terminal rejection or redirection.\
+ * @param suggestedParticipants candidate participants to attempt contacting next upon non-terminal rejection or redirection, ordered from most to least probable next appropriate target.\
  * This set is provided on a best-effort, advisory basis and reflects the participant's local, potentially historical consensus state.\
- * It does not guarantee that the suggested peers are currently reachable or still members of the active electorate if cluster reconfiguration occurred while the responder was partitioned or isolated.\
- * Callers should fall back to broader discovery or alternative target pools if contacting the suggested peers fails. */
-enum ElectorateChangeResponse[+P](val isTerminal: Boolean, val suggestedPeers: Set[? <: P]) {
+ * It does not guarantee that the suggested participants are currently reachable or still members of the active electorate if cluster reconfiguration occurred while the responder was partitioned or isolated.\
+ * Callers should fall back to broader discovery or alternative target pools if contacting the suggested participants fails. */
+enum ElectorateChangeResponse[+P](val isTerminal: Boolean, val suggestedParticipants: ListSet[? <: P]) {
 	/** The requested electorate change was successfully replicated to a majority (not necessarily committed). Only participants with the [[LEADER]] role answer this. */
-	case SuccessfullyChanged extends ElectorateChangeResponse[Nothing](true, Set.empty)
+	case SuccessfullyChanged extends ElectorateChangeResponse[Nothing](true, ListSet.empty)
 
 	/** The participant is leading and already has the requested electorate committed. */
-	case AlreadyChanged extends ElectorateChangeResponse[Nothing](true, Set.empty)
+	case AlreadyChanged extends ElectorateChangeResponse[Nothing](true, ListSet.empty)
 
 	/** The participant is leading but excluded (leading as a ghost). A ghost leader cannot initiate configuration changes. */
-	case WaitGhostLeaderIsDemoted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	case WaitGhostLeaderIsDemoted[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
 	/** The participant is the leader but is currently processing another electorate change.
 	 * @param inProgressRequestId the identifier of the electorate change currently being processed.
 	 * @param inProgressTargetParticipants the target electorate of the change currently being processed.
-	 * @param peers advisory routing hints indicating active peers known to the leader. */
-	case AnotherChangeInProgress[P](inProgressRequestId: ElectorateChangeRequestId, inProgressTargetParticipants: Set[P], peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers ++ inProgressTargetParticipants)
+	 * @param suggested advisory routing hints indicating candidate participants ordered from most to least probable next target. */
+	case AnotherChangeInProgress[P](inProgressRequestId: ElectorateChangeRequestId, inProgressTargetParticipants: Set[P], suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
-	/** The participant is a follower, suggesting redirection to the leader it follows.\
-	 * The suggested leader reflects the participant's last known leader, which may have since abdicated or disconnected. */
-	case AskTheLeader[P](leaderId: P) extends ElectorateChangeResponse[P](false, Set(leaderId))
+	/** The participant is a follower, suggesting redirection to the leader it follows (at the head of [[suggested]]) followed by other probable participants.\
+	 * The first element reflects the participant's last known leader, which may have since abdicated or disconnected. */
+	case AskTheLeader[P](suggested: ListSet[P]) extends ElectorateChangeResponse[P](false, suggested)
 
-	/** The participant is catching up because it is joining as an unanchored learner.\
-	 * The suggested peers set is empty until the participant absorbs its first configuration change. */
-	case CatchingUp[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	/** The participant is catching up because it is joining.\
+	 * The suggested participants set is empty when the participant is an unanchored learner that has not yet absorbed its first configuration change. */
+	case CatchingUp[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
-	case RequestTrackingLostAfterFirstPhaseStarted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	case RequestTrackingLostAfterFirstPhaseStarted[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
-	case RequestTrackingLostAfterFirstPhaseCommitted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	case RequestTrackingLostAfterFirstPhaseCommitted[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
-	case RequestTrackingLostAfterSecondPhaseStarted[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	case RequestTrackingLostAfterSecondPhaseStarted[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
 	/** The participant is excluded from the active electorate.\
-	 * The suggested peers reflect the members of the excluding configuration committed in its log. */
-	case Excluded[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	 * The suggested participants reflect the members of the excluding configuration committed in its log. */
+	case Excluded[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
 	/** The participant is isolated from the cluster majority.\
-	 * The suggested peers reflect the participants in its locally recorded configuration. Because the cluster may have reconfigured during the isolation, these hints are advisory and the caller should fall back to other known participants if contacting them fails. */
-	case Secluded[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	 * The suggested participants reflect the participants in its locally recorded configuration. Because the cluster may have reconfigured during the isolation, these hints are advisory and the caller should fall back to other known participants if contacting them fails. */
+	case Secluded[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 
 	/** The participant has stopped or quiesced and has no active consensus state.\
-	 * The suggested peers set is empty, signaling the absence of consensus-derived routing information. */
-	case Stopped[P](peers: Set[P] = Set.empty) extends ElectorateChangeResponse[P](false, peers)
+	 * The suggested participants set is empty, signaling the absence of consensus-derived routing information. */
+	case Stopped[P](suggested: ListSet[P] = ListSet.empty) extends ElectorateChangeResponse[P](false, suggested)
 }
 
 /** Informs a participant receiving a command about the outcome of the client's previous attempt to send that command to the consensus group. */

@@ -61,5 +61,7 @@ metals.sbt
 ### This project ###
 /dump
 **/logs
+!**/src/main/**/logs
+!**/src/test/**/logs
 
 /scratch/**

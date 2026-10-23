@@ -12,7 +12,12 @@ import scala.collection.mutable
 import scala.compiletime.uninitialized
 import scala.util.Try
 
-/** A node instance managed by [[ConsensusEnvironment]]. */
+/** A single simulated consensus participant node managed by [[ConsensusEnvironment]].
+ *
+ * Implements [[ConsensusParticipantSdm]] by binding a deterministic single-threaded [[StepDoer]] alongside simulated host bridges for state machine execution ([[TestStateMachine]]), in-memory workspace persistence ([[TestWorkspace]] and [[TestStorage]]), point-to-point transport ([[TestClusterParticipant]]), and oracle notification hooks ([[notificationListener]]).
+ * @param myId unique identifier of this node.
+ * @param initialParticipants seed voting participants configured at cluster creation.
+ * @param env the owning [[ConsensusEnvironment]]. */
 class EnvironmentNode(
 	val myId: NodeId,
 	val initialParticipants: ListSet[NodeId],
@@ -32,26 +37,41 @@ class EnvironmentNode(
 
 	override def logRetentionAfterSnapshot: Int = env.logRetentionAfterSnapshot
 
+	/** Deterministic single-threaded sequencer driving all state mutations on this node. */
 	val stepDoer: StepDoer = new StepDoer(s"doer-$myId")
 	override val sequencer: Doer = stepDoer
 
+	/** True when this node is currently crashed, unstarted, or dismantled after quiescence. */
 	var isDown: Boolean = true
 	private var _participant: ConsensusParticipant = null
 
+	/** The active [[ConsensusParticipant]] instance running on this node, or `null` if uninitialized or released. */
 	inline def participant: ConsensusParticipant = _participant
 
+	/** Returns the causally consistent [[RoleDiagnostic]] snapshot of the active participant role, or [[None]] if the node is down. */
 	def inspectRole: Option[RoleDiagnostic] = {
 		if isDown || _participant == null then None
 		else Some(_participant.inspectRole)
 	}
 
+	/** Term threshold below which [[TestStorage.save]] completes synchronously; saves at or above this term are queued in [[SimulatedStorageSubsystem]]. */
 	var autoSucceedUntilTerm: Term = Int.MaxValue.asInstanceOf[Term]
+
+	/** Record index threshold up to which [[TestStorage.save]] completes synchronously; saves exceeding this index are queued in [[SimulatedStorageSubsystem]]. */
 	var autoSucceedUntilRecordIndex: RecordIndex = Long.MaxValue
 
+	/** Simulated state machine instance for this node. */
 	val machine: TestStateMachine = new TestStateMachine()
+
+	/** Simulated storage provider for this node. */
 	val storage: TestStorage = new TestStorage()
+
+	/** Simulated cluster transport bridge for this node. */
 	val clusterParticipant: TestClusterParticipant = new TestClusterParticipant()
 
+	/** Instantiates and starts a [[ConsensusParticipant]] on this node if it is not currently running or if it has quiesced.
+	 *
+	 * Seed nodes (members of [[initialParticipants]]) receive the initial seed list on construction, whereas non-seed nodes start with [[Maybe.empty]] to exercise the joining learner flow. */
 	def startIfNotRunning(): Unit = {
 		stepDoer.executeSequentially(() => {
 			if _participant == null || _participant.getRoleOrdinal == QUIESCED then {
@@ -69,16 +89,22 @@ class EnvironmentNode(
 		if !stepDoer.isInSequence then stepDoer.walk()
 	}
 
+	/** Permanently dismantles the active [[ConsensusParticipant]] instance and marks this node as down. */
 	def release(): Unit = {
 		stepDoer.executeSequentially(() => {
 			_participant = null
 			isDown = true
+			env.controlPlane.onNodeQuiesced(myId)
 		})
 		if !stepDoer.isInSequence then stepDoer.walk()
 	}
 
+	/** In-memory [[StateMachine]] implementation tracking applied command watermarks and reporting command applications to [[ConsensusOracle]]. */
 	class TestStateMachine extends StateMachine {
+		/** Highest client command serial number applied by this state machine. */
 		var highestAppliedCommandSerial: Int = 0
+
+		/** Highest log [[RecordIndex]] applied by this state machine. */
 		var highestAppliedCommandIndex: RecordIndex = 0
 
 		override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Capture[StateMachineResponse] = {
@@ -118,11 +144,21 @@ class EnvironmentNode(
 		}
 	}
 
+	/** In-memory [[Workspace]] implementation backing [[TestStorage]] and notifying [[ConsensusOracle]] upon suffix truncation. */
 	class TestWorkspace extends Workspace {
+		/** Current consensus term stored in this workspace. */
 		var currentTerm: Term = PRE_INIT
+
+		/** Candidate voted for in [[currentTerm]], or [[Maybe.empty]] if none. */
 		var _votedFor: Maybe[ParticipantId] = Maybe.empty
+
+		/** Contiguous in-memory log buffer starting at [[_logBufferOffset]]. */
 		val logBuffer: mutable.ArrayBuffer[Record] = mutable.ArrayBuffer.empty
+
+		/** Log index of the first entry in [[logBuffer]] (base 1). */
 		var _logBufferOffset: RecordIndex = 1
+
+		/** Most recent compaction or installed snapshot stored in this workspace. */
 		var maybeLatestSnapshot: Maybe[SnapshotData[ParticipantId]] = Maybe.empty
 
 		override def getCurrentTerm: Term = currentTerm
@@ -198,6 +234,7 @@ class EnvironmentNode(
 
 		override def release(): sequencer.Capture[Unit] = sequencer.Capture_unit
 
+		/** Creates an isolated deep copy of this workspace to prevent aliasing between working memory and durable storage. */
 		def deepCopy(): TestWorkspace = {
 			val cp = new TestWorkspace()
 			cp.currentTerm = this.currentTerm
@@ -209,7 +246,9 @@ class EnvironmentNode(
 		}
 	}
 
+	/** Simulated [[Storage]] implementation supporting both synchronous auto-succeed writes and deferred persistence queueing via [[SimulatedStorageSubsystem]]. */
 	class TestStorage extends Storage {
+		/** Durable snapshot of the most recently completed workspace save. */
 		var savedMemory: TestWorkspace = new TestWorkspace()
 
 		override def load: sequencer.Capture[TestWorkspace] = {
@@ -250,11 +289,27 @@ class EnvironmentNode(
 		}
 	}
 
+	/** Simulated [[ClusterParticipant]] host bridge routing outbound RPCs into [[SimulatedNetwork]] and timer requests into [[VirtualClock]]. */
 	class TestClusterParticipant extends ClusterParticipant {
 		override val boundParticipantId: ParticipantId = myId
+
+		/** Inbound protocol delegate bound by the active [[ConsensusParticipant]]. */
 		var delegate: Delegate = uninitialized
 
-		override def getOtherProbableParticipants: ListSet[ParticipantId] = ListSet.from(initialParticipants - myId)
+		/** Memorized set of other cluster nodes currently known by the cluster tier to be up and intended for consensus.
+		 *
+		 * Initialized to [[initialParticipants]] (excluding `myId`), updated locally via [[onActiveElectorateChanged]] when the bound [[ConsensusParticipant]] activates a configuration, or updated administratively via [[updateProbableParticipants]]. */
+		private var memorizedOtherProbableParticipants: ListSet[ParticipantId] = ListSet.from(initialParticipants - myId)
+
+		override def getOtherProbableParticipants: ListSet[ParticipantId] = memorizedOtherProbableParticipants
+
+		/** Administrative update handler invoked by the control plane (Tier 2) to inform this cluster bridge of updated probable consensus participants.
+		 *
+		 * This method must be invoked within this node's [[stepDoer]]. In a production deployment, this update would be delivered by the cluster management daemon over a local control socket or actor mailbox without traversing the consensus network. */
+		def updateProbableParticipants(probableParticipants: Set[ParticipantId]): Unit = {
+			sequencer.checkWithin()
+			memorizedOtherProbableParticipants = ListSet.from(probableParticipants - myId)
+		}
 
 		override def setBound(delegate: Delegate): Unit = {
 			this.delegate = delegate
@@ -265,12 +320,11 @@ class EnvironmentNode(
 		}
 
 		override def onActiveElectorateChanged(change: ElectorateChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit = {
-			env.onActiveElectorateChanged(thisNode, change, changeIndex, roleOrdinal)
+			sequencer.checkWithin()
+			memorizedOtherProbableParticipants = (memorizedOtherProbableParticipants ++ change.newParticipants ++ change.oldParticipants) - myId
 		}
 
-		override def onQuiesced(motive: Try[String]): Unit = {
-			env.onNodeQuiesced(thisNode, motive)
-		}
+		override def onQuiesced(motive: Try[String]): Unit = thisNode.release()
 
 		override def requestWakeUp(reason: WakeUpReason, wakeupsDone: Int, callback: () => Unit): WakeUpToken = {
 			env.clock.registerWakeUp(thisNode, reason, wakeupsDone, callback)
@@ -354,6 +408,7 @@ class EnvironmentNode(
 		}
 	}
 
+	/** Internal [[NotificationListener]] forwarding leadership elections and commit watermark advancements to [[ConsensusOracle]]. */
 	object notificationListener extends NotificationListener {
 		override def onStarting(previous: RoleOrdinal): Unit = ()
 

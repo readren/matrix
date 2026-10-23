@@ -6,13 +6,15 @@ import readren.sequencer.Doer.ExecutionSerial
 
 import scala.collection.mutable
 
+/** Companion object holding thread-local execution context for [[StepDoer]] instances. */
 object StepDoer {
+	/** Tracks the [[Doer]] currently executing a task on the calling thread to satisfy [[Doer.checkWithin]] assertions. */
 	val currentDoerThreadLocal: ThreadLocal[Doer] = new ThreadLocal[Doer]()
 }
 
 /** A deterministic, single-threaded [[Doer]] implementation for discrete-event testing.
- * Does not spawn or rely on background threads. All tasks enqueued via [[executeSequentially]]
- * are held in an in-memory queue until explicitly executed via [[step]] or [[walk]].
+ *
+ * Does not spawn or rely on background threads. All tasks enqueued via [[executeSequentially]] are held in an in-memory queue until explicitly executed via [[step]] or [[walk]].
  * @param tag human-readable tag identifying this sequencer instance. */
 class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	override type Tag = String
@@ -20,10 +22,13 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	private var executionSequencer: ExecutionSerial = 0
 	private val taskQueue: mutable.Queue[Runnable] = mutable.Queue.empty
 
+	/** Enqueues `runnable` for deferred execution when [[step]] or [[walk]] is invoked. */
 	override def executeSequentially(runnable: Runnable): Unit = taskQueue.enqueue(runnable)
 
+	/** Returns the monotonic serial number of the currently executing (or most recently executed) task. */
 	override def currentExecutionSerial: ExecutionSerial = executionSequencer
 
+	/** Returns the [[Doer]] currently executing on the calling thread, or [[Maybe.empty]] if none. */
 	override def currentlyRunningDoer: Maybe[Doer] = Maybe(StepDoer.currentDoerThreadLocal.get())
 
 	/** Number of runnable tasks currently waiting in this sequencer's queue. */
@@ -33,8 +38,8 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 	def hasPendingTasks: Boolean = taskQueue.nonEmpty
 
 	/** Dequeues and executes exactly one task from the queue within this sequencer's context.
-	 * Increments [[currentExecutionSerial]] and sets [[currentlyRunningDoer]] so that
-	 * [[Doer.checkWithin]] assertions succeed during execution.
+	 *
+	 * Increments [[currentExecutionSerial]] and sets [[currentlyRunningDoer]] so that [[Doer.checkWithin]] assertions succeed during execution.
 	 * @return true if a task was executed; false if the queue was empty. */
 	def step(): Boolean = {
 		if taskQueue.isEmpty then false
@@ -64,6 +69,6 @@ class StepDoer(override val tag: String) extends Doer { thisDoer =>
 		executedCount
 	}
 
-	/** Clears all pending tasks from the queue without executing them. */
+	/** Discards all pending tasks from the queue without executing them, simulating an abrupt loss of volatile execution state. */
 	def forgetPendingTasks(): Unit = taskQueue.clear()
 }

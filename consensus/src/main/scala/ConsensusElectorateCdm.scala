@@ -43,8 +43,13 @@ trait ConsensusElectorateCdm { thisModule =>
 		def latestSnapshotLastIncludedRecordIndex: RecordIndex
 	}
 
+	/** Narrow view of the host cluster bridge required by [[Electorate]] implementations to identify the local participant and retrieve the cluster tier's memorized set of probable peers. */
 	trait ClusterView {
 		val boundParticipantId: ParticipantId
+
+		/** Returns the memorized set of other cluster participants (excluding [[boundParticipantId]]) that the cluster tier currently considers stable, up, and intended for consensus.
+		 *
+		 * Because this method returns a synchronous [[ListSet]] rather than an asynchronous [[sequencer.Capture]], the cluster tier is responsible for maintaining and updating this memorized view within the [[sequencer]] whenever cluster membership or node reachability changes. This allows the consensus tier to synchronously assemble retry suggestions and vanishing-electorate quiescence sets without performing asynchronous queries to the cluster tier. */
 		def getOtherProbableParticipants: ListSet[ParticipantId]
 	}
 
@@ -384,7 +389,11 @@ trait ConsensusElectorateCdm { thisModule =>
 		override val stableParticipants: Set[ParticipantId] = newParticipants
 
 		override def otherProbableParticipants: ListSet[ParticipantId] = {
-			ListSet.newBuilder
+			val builder = ListSet.newBuilder[ParticipantId]
+			peers.find(p => oldParticipants.contains(p) && newParticipants.contains(p))
+				.orElse(peers.find(oldParticipants.contains))
+				.foreach(builder.addOne)
+			builder
 				.addAll(peers)
 				.addAll(clusterView.getOtherProbableParticipants)
 				.result()

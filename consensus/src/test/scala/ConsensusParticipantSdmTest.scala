@@ -515,7 +515,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 									Maybe.empty
 								case _: ElectorateChangeResponse.WaitGhostLeaderIsDemoted[_] =>
 									Maybe.empty
-								case ElectorateChangeResponse.AskTheLeader(leaderId) =>
+								case ElectorateChangeResponse.AskTheLeader(suggested) =>
+									val leaderId = suggested.head
 									val leaderIndex = remainingTargetNodes.indexOf(leaderId)
 									if leaderIndex >= 0 then {
 										val chosenLeaderId = remainingTargetNodes.remove(leaderIndex)
@@ -674,8 +675,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					scribe.info(s"Client: command `$commandPayload` was processed by ${receiverNode.myId} which replied with `$content`.")
 					alreadyTriedParticipants.clear()
 					net.netSequencer.Keeper(Maybe.empty)
-				case receiverNode.RedirectTo(leaderId) =>
+				case receiverNode.RedirectTo(otherParticipants) =>
+					val leaderId = otherParticipants.head
 					scribe.info(s"Client: the follower ${receiverNode.myId} redirected the command `$commandPayload` to the leader $leaderId.")
+					knownParticipants = otherParticipants + receiverNode.myId
 					targetParticipant = net.getNode(leaderId)
 					// if despite the attempt flag sent to the participant was FALLBACK (which instructs to update the role before responding) it responds with a redirection to an already tried participant, add it to the already tried ones.
 					if attemptFlag.isFallback && alreadyTriedParticipants.contains(leaderId) then alreadyTriedParticipants.addOne(targetParticipant.myId)

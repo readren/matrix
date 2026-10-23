@@ -161,12 +161,10 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				maxInFlightAppendsPerPeer = maxInFlightAppendsPerPeer,
 				logCompactionThreshold = logCompactionThreshold,
 				initialRetiringParticipantMaxRetries = retiringParticipantMaxRetries,
-				initialLogRetentionAfterSnapshot = logRetentionAfterSnapshot
+				initialLogRetentionAfterSnapshot = logRetentionAfterSnapshot,
+				remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex
 			)
-			env.remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex
 
-			// Production lifecycle: stop nodes when onNodeQuiesced fires
-			env.onNodeQuiescedHook = (node, _) => node.release()
 
 			env.network.rpcLifecycleListener = Some(new RpcLifecycleListener {
 				private def formatRpc(rpc: ConsensusRpc): String = rpc match {
@@ -239,22 +237,24 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			/** Backoff delay in simulation steps before resubmitting a secluded graceful shutdown request. */
 			val shutdownBackoffSteps: Int = clusterSize * ticksPerNodeCycle
 
-			// --- Shared Cluster Coordination State ---
-			/** Set of participants currently presumed by the external coordinator to constitute the active cluster electorate. */
-			var presumedActiveParticipants: Set[NodeId] = initialSeeds
+			// --- Reconfiguration Coordination and Client State ---
+			/** Dedicated simulated client (Tier 3) driving business command submissions and target failover. */
+			val client: SimulatedClient = new SimulatedClient(
+				clientId = TestClientId,
+				env = env,
+				initialKnownEndpoints = initialSeeds,
+				maxInFlightSteps = maxInFlightSteps,
+				maxRetries = maxRetries
+			)
 
-			/** Accumulated set of all participants known to have been configured across cluster history. */
-			val knownParticipants: mutable.Set[NodeId] = mutable.Set.from(initialSeeds)
+			/** Target participant currently addressed by administrative reconfiguration submissions. */
+			var reconfigTarget: NodeId = if startWithHighestPriorityParticipant then initialSeeds.toSeq.sorted.head else initialSeeds.toSeq.sorted.last
 
-			/** Target participant currently addressed by client command and configuration submissions. */
-			var currentTargetParticipant: NodeId = if startWithHighestPriorityParticipant then initialSeeds.toSeq.sorted.head else initialSeeds.toSeq.sorted.last
+			/** Accumulated set of all participant endpoints discovered across reconfiguration history. */
+			val reconfigEndpoints: mutable.Set[NodeId] = mutable.Set.from(initialSeeds)
 
 			/** Elapsed discrete simulation step counter. */
 			var totalSteps: Int = 0
-
-			/** @return true if all initialized cluster nodes have reached the QUIESCED role or released; false otherwise. */
-			def areAllNodesQuiesced: Boolean =
-				env.allNodes.forall(n => n.isDown || n.participant == null || n.participant.getRoleOrdinal == QUIESCED)
 
 			/** Shared tracker for in-flight electorate change requests submitted by ElectorateNoise and GracefulShutdown. */
 			object ElectorateTracker {
@@ -264,38 +264,24 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				/** Active map of in-flight electorate changes indexed by unique request ID. */
 				val inFlightElectorateChanges: mutable.Map[String, InFlightElectorateChange] = mutable.Map.empty
 
-				/** @return true if all desired participants are currently active, operational, and neither quiesced nor retiring. */
-				def areAllTargetsActive(desired: Set[NodeId]): Boolean =
-					desired.forall { p =>
-						val n = env.node(p)
-						!n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED && n.participant.getRoleOrdinal != RETIRING
-					}
-
-				/** Rotates across a candidate pool of alive and operational participants.
+				/** Rotates across a candidate pool of participants, preserving candidate pool priority order.
 				 * @param candidatesPool the candidate set to choose from.
 				 * @param currentTarget the participant identifier that was previously targeted. */
 				def rotateAmong(candidatesPool: Iterable[NodeId], currentTarget: NodeId): Option[NodeId] = {
-					val candidates = candidatesPool.filter { p =>
-						val n = env.node(p)
-						!n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED && n.participant.getRoleOrdinal != JOINING
-					}.toSeq.sorted
+					val candidates = candidatesPool.toSeq.distinct
 					if candidates.nonEmpty then {
-						val nextIdx = (candidates.indexOf(currentTarget) + 1) % candidates.size
-						Some(candidates(nextIdx))
+						candidates.find(_ != currentTarget).orElse(candidates.headOption)
 					} else None
 				}
 
-				/** Rotates the target participant across all known participants that are currently alive and operational.
+				/** Rotates the target participant across all presumed active participants or known reconfiguration endpoints.
 				 * @param currentTarget the participant identifier that was previously targeted. */
 				def rotateTargetParticipant(currentTarget: NodeId): Unit = {
-					val activePool = if presumedActiveParticipants.nonEmpty then presumedActiveParticipants else knownParticipants
-					val candidates = activePool.filter { p =>
-						val n = env.node(p)
-						!n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED && n.participant.getRoleOrdinal != JOINING
-					}.toSeq.sorted
+					val activePool = if env.controlPlane.presumedActiveParticipants.nonEmpty then env.controlPlane.presumedActiveParticipants else reconfigEndpoints
+					val candidates = activePool.toSeq.sorted
 					if candidates.nonEmpty then {
 						val nextIdx = (candidates.indexOf(currentTarget) + 1) % candidates.size
-						currentTargetParticipant = candidates(nextIdx)
+						reconfigTarget = candidates(nextIdx)
 					}
 				}
 
@@ -306,6 +292,9 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 						val newInFlight = mutable.ArrayBuffer.empty[InFlightElectorateChange]
 						for (reqId, inFlight) <- inFlightElectorateChanges do {
 							val currentHandle = inFlight.handle
+							if NetworkPartitions.isPartitionActive && inFlight.retries > maxRetries / 2 then {
+								NetworkPartitions.healPartition()
+							}
 							env.electorateChangeStatus(reqId) match {
 								case ElectorateChangeStatus.Completed(res) =>
 									if currentHandle.desiredParticipants.isEmpty then {
@@ -313,43 +302,44 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 										scribe.trace(s"GracefulShutdown completed $reqId on ${currentHandle.targetNodeId} with $res")
 										if res.isTerminal then {
 											GracefulShutdown.shutdownCommitted = true
-											presumedActiveParticipants = Set.empty
+											env.controlPlane.onReconfigurationTerminal(Set.empty, isSuccessful = true)
 										} else {
 											res match {
-												case ElectorateChangeResponse.AskTheLeader(leaderNodeId) =>
-													currentTargetParticipant = leaderNodeId
-													knownParticipants.add(leaderNodeId)
+												case ElectorateChangeResponse.AskTheLeader(suggested) =>
+													val leaderNodeId = suggested.head
+													reconfigTarget = leaderNodeId
+													reconfigEndpoints ++= suggested
 													GracefulShutdown.shutdownBackoffRemaining = 0
 												case _: ElectorateChangeResponse.Excluded[_] | _: ElectorateChangeResponse.Stopped[_] =>
-													presumedActiveParticipants -= currentHandle.targetNodeId
-													knownParticipants.remove(currentHandle.targetNodeId)
-													val candidate = rotateAmong(res.suggestedPeers, currentHandle.targetNodeId).getOrElse {
+													env.controlPlane.onParticipantExcluded(currentHandle.targetNodeId)
+													reconfigEndpoints.remove(currentHandle.targetNodeId)
+													val candidate = rotateAmong(res.suggestedParticipants, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = candidate
+													reconfigTarget = candidate
 													GracefulShutdown.shutdownBackoffRemaining = 0
 												case _: ElectorateChangeResponse.CatchingUp[_] =>
-													presumedActiveParticipants -= currentHandle.targetNodeId
-													val candidate = rotateAmong(res.suggestedPeers, currentHandle.targetNodeId).getOrElse {
+													env.controlPlane.onParticipantExcluded(currentHandle.targetNodeId)
+													val candidate = rotateAmong(res.suggestedParticipants, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = candidate
+													reconfigTarget = candidate
 													GracefulShutdown.shutdownBackoffRemaining = 0
 												case _: ElectorateChangeResponse.AnotherChangeInProgress[_] =>
-													val candidate = rotateAmong(res.suggestedPeers, currentHandle.targetNodeId).getOrElse {
+													val candidate = rotateAmong(res.suggestedParticipants, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = candidate
+													reconfigTarget = candidate
 													GracefulShutdown.shutdownBackoffRemaining = shutdownBackoffSteps
 												case _ =>
-													val candidate = rotateAmong(res.suggestedPeers, currentHandle.targetNodeId).getOrElse {
+													val candidate = rotateAmong(res.suggestedParticipants, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = candidate
+													reconfigTarget = candidate
 													GracefulShutdown.shutdownBackoffRemaining = shutdownBackoffSteps
 											}
 										}
@@ -357,67 +347,76 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 										completedReqIds += reqId
 										res match {
 											case ElectorateChangeResponse.SuccessfullyChanged | ElectorateChangeResponse.AlreadyChanged =>
-												presumedActiveParticipants = currentHandle.desiredParticipants
-												knownParticipants ++= presumedActiveParticipants
-											case ElectorateChangeResponse.AskTheLeader(leaderNodeId) =>
-												currentTargetParticipant = leaderNodeId
-												knownParticipants.add(leaderNodeId)
-												if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
-													val target = if !env.node(leaderNodeId).isDown then leaderNodeId else {
-														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
-													}
-													val newHandle = env.submitElectorateChange(target, currentHandle.desiredParticipants)
+												env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = true)
+												reconfigEndpoints ++= currentHandle.desiredParticipants
+											case ElectorateChangeResponse.AskTheLeader(suggested) =>
+												val leaderNodeId = suggested.head
+												reconfigTarget = leaderNodeId
+												reconfigEndpoints ++= suggested
+												if inFlight.retries < maxRetries then {
+													val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 													newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+												} else {
+													env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 												}
 											case _: ElectorateChangeResponse.Excluded[_] | _: ElectorateChangeResponse.Stopped[_] =>
-												presumedActiveParticipants -= currentHandle.targetNodeId
-												knownParticipants.remove(currentHandle.targetNodeId)
-												if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
-													val candidatePool = res.suggestedPeers ++ presumedActiveParticipants
+												env.controlPlane.onParticipantExcluded(currentHandle.targetNodeId)
+												reconfigEndpoints.remove(currentHandle.targetNodeId)
+												if inFlight.retries < maxRetries then {
+													val candidatePool = res.suggestedParticipants ++ env.controlPlane.presumedActiveParticipants
 													val nextTarget = rotateAmong(candidatePool, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = nextTarget
-													val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+													reconfigTarget = nextTarget
+													val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 													newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+												} else {
+													env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 												}
 											case _: ElectorateChangeResponse.CatchingUp[_] =>
-												presumedActiveParticipants -= currentHandle.targetNodeId
-												if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
-													val candidatePool = res.suggestedPeers ++ presumedActiveParticipants
+												env.controlPlane.onParticipantExcluded(currentHandle.targetNodeId)
+												if inFlight.retries < maxRetries then {
+													val candidatePool = res.suggestedParticipants ++ env.controlPlane.presumedActiveParticipants
 													val nextTarget = rotateAmong(candidatePool, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = nextTarget
-													val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+													reconfigTarget = nextTarget
+													val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 													newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+												} else {
+													env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 												}
 											case res: ElectorateChangeResponse.AnotherChangeInProgress[_] =>
 												if currentHandle.desiredParticipants == res.inProgressTargetParticipants.asInstanceOf[Set[NodeId]] then {
-													if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
-														val candidatePool = res.suggestedPeers.asInstanceOf[Set[NodeId]] ++ presumedActiveParticipants
+													if inFlight.retries < maxRetries then {
+														val candidatePool = res.suggestedParticipants.asInstanceOf[Iterable[NodeId]] ++ env.controlPlane.presumedActiveParticipants
 														val nextTarget = rotateAmong(candidatePool, currentHandle.targetNodeId).getOrElse {
 															rotateTargetParticipant(currentHandle.targetNodeId)
-															currentTargetParticipant
+															reconfigTarget
 														}
-														currentTargetParticipant = nextTarget
-														val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+														reconfigTarget = nextTarget
+														val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 														newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+													} else {
+														env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 													}
+												} else {
+													env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 												}
 											case _ =>
-												if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
-													val candidatePool = res.suggestedPeers ++ presumedActiveParticipants
+												if inFlight.retries < maxRetries then {
+													val candidatePool = res.suggestedParticipants ++ env.controlPlane.presumedActiveParticipants
 													val nextTarget = rotateAmong(candidatePool, currentHandle.targetNodeId).getOrElse {
 														rotateTargetParticipant(currentHandle.targetNodeId)
-														currentTargetParticipant
+														reconfigTarget
 													}
-													currentTargetParticipant = nextTarget
-													val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+													reconfigTarget = nextTarget
+													val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 													newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+												} else {
+													env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 												}
 										}
 									}
@@ -427,10 +426,12 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 										scribe.trace(s"GracefulShutdown failed $reqId on ${currentHandle.targetNodeId} with $err")
 										rotateTargetParticipant(currentHandle.targetNodeId)
 										GracefulShutdown.shutdownBackoffRemaining = shutdownBackoffSteps
-									} else if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
+									} else if inFlight.retries < maxRetries then {
 										rotateTargetParticipant(currentHandle.targetNodeId)
-										val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+										val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 										newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+									} else {
+										env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 									}
 								case ElectorateChangeStatus.InFlight =>
 									inFlight.inFlightSteps += 1
@@ -440,135 +441,18 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 											scribe.trace(s"GracefulShutdown timed out $reqId on ${currentHandle.targetNodeId} after ${inFlight.inFlightSteps} steps")
 											rotateTargetParticipant(currentHandle.targetNodeId)
 											GracefulShutdown.shutdownBackoffRemaining = shutdownBackoffSteps
-										} else if inFlight.retries < maxRetries && areAllTargetsActive(currentHandle.desiredParticipants) then {
+										} else if inFlight.retries < maxRetries then {
 											rotateTargetParticipant(currentHandle.targetNodeId)
-											val newHandle = env.submitElectorateChange(currentTargetParticipant, currentHandle.desiredParticipants)
+											val newHandle = env.submitElectorateChange(reconfigTarget, currentHandle.desiredParticipants)
 											newInFlight += new InFlightElectorateChange(newHandle, 0, inFlight.retries + 1)
+										} else {
+											env.controlPlane.onReconfigurationTerminal(currentHandle.desiredParticipants, isSuccessful = false)
 										}
 									}
 							}
 						}
 						for reqId <- completedReqIds do inFlightElectorateChanges.remove(reqId)
 						for item <- newInFlight do inFlightElectorateChanges(item.handle.requestId) = item
-					}
-				}
-			}
-
-			/** Drives client command submission, response tracking, and failover rotation. */
-			object ClientCommands {
-				/** Set of participants already queried for the current command serial to prevent duplicate retries before a full cycle. */
-				val triedParticipantsForCommand: mutable.Set[NodeId] = mutable.Set.empty
-				/** Monotonically increasing command serial number submitted by the client. */
-				var currentCommandSerial: Int = 1
-				/** Active command submission handle while a command is traveling or processing. */
-				var activeCommandHandle: Option[ClientCommandHandle] = None
-				/** Protocol attempt flag communicating to the target whether this is a first attempt, fallback, or redirect. */
-				var currentAttemptFlag: CommandAttemptFlag = FIRST_ATTEMPT
-				/** Number of retry cycles exhausted across all known participants for the current command. */
-				var commandRetries: Int = 0
-				/** In-flight step counter for tracking timeouts of the active command handle. */
-				var commandInFlightSteps: Int = 0
-
-				/** @return true if commands remain to be submitted; false otherwise. */
-				def hasRemainingCommands: Boolean = currentCommandSerial <= numberOfCommandsToSend
-
-				/** Submits a new command or polls the status of the current in-flight command. */
-				def drive(): Unit = {
-					if hasRemainingCommands then {
-						if activeCommandHandle.isEmpty then {
-							val handle = env.submitClientCommand(
-								targetNode = currentTargetParticipant,
-								client = TestClientId,
-								serial = Some(currentCommandSerial),
-								attemptFlag = currentAttemptFlag
-							)
-							activeCommandHandle = Some(handle)
-							triedParticipantsForCommand.add(currentTargetParticipant)
-						} else {
-							val handle = activeCommandHandle.get
-							env.clientCommandStatus(handle.commandId) match {
-								case ClientCommandStatus.Processed(_, _) =>
-									activeCommandHandle = None
-									commandInFlightSteps = 0
-									currentCommandSerial += 1
-									commandRetries = 0
-									triedParticipantsForCommand.clear()
-									currentAttemptFlag = FIRST_ATTEMPT
-
-								case ClientCommandStatus.Redirected(leaderId) =>
-									activeCommandHandle = None
-									commandInFlightSteps = 0
-									currentTargetParticipant = leaderId
-									knownParticipants.add(leaderId)
-									if currentAttemptFlag.isFallback && triedParticipantsForCommand.contains(leaderId) then {
-										triedParticipantsForCommand.add(leaderId)
-									}
-									currentAttemptFlag = REDIRECTED
-
-								case ClientCommandStatus.Unable(nextAttemptFlag, otherParticipants) =>
-									activeCommandHandle = None
-									commandInFlightSteps = 0
-									knownParticipants ++= otherParticipants
-									val untried = knownParticipants.find(p => !triedParticipantsForCommand.contains(p) && !env.node(p).isDown)
-									untried match {
-										case Some(next) =>
-											currentTargetParticipant = next
-											currentAttemptFlag = nextAttemptFlag
-										case None =>
-											commandRetries += 1
-											if NetworkPartitions.isPartitionActive && commandRetries > maxRetries / 2 then NetworkPartitions.healPartition()
-											if commandRetries > maxRetries then {
-												throw new AssertionError(s"Cluster unable to progress command $currentCommandSerial after $maxRetries cycles across participants $knownParticipants")
-											}
-											triedParticipantsForCommand.clear()
-											val anyUp = knownParticipants.find(p => !env.node(p).isDown).getOrElse(knownParticipants.head)
-											currentTargetParticipant = anyUp
-											currentAttemptFlag = nextAttemptFlag
-									}
-
-								case ClientCommandStatus.Failed(cause) =>
-									activeCommandHandle = None
-									commandInFlightSteps = 0
-									val untried = knownParticipants.find(p => !triedParticipantsForCommand.contains(p) && !env.node(p).isDown)
-									untried match {
-										case Some(next) => currentTargetParticipant = next
-										case None =>
-											commandRetries += 1
-											if NetworkPartitions.isPartitionActive && commandRetries > maxRetries / 2 then NetworkPartitions.healPartition()
-											if commandRetries > maxRetries then {
-												throw new AssertionError(s"Command $currentCommandSerial failed after $maxRetries retries: ${cause.getMessage}", cause)
-											}
-											triedParticipantsForCommand.clear()
-											currentTargetParticipant = knownParticipants.find(p => !env.node(p).isDown).getOrElse(knownParticipants.head)
-									}
-									currentAttemptFlag = FALLBACK
-
-								case ClientCommandStatus.InFlight =>
-									commandInFlightSteps += 1
-									if commandInFlightSteps > maxInFlightSteps then {
-										commandInFlightSteps = 0
-										activeCommandHandle = None
-										val untried = knownParticipants.find(p => !triedParticipantsForCommand.contains(p) && !env.node(p).isDown)
-										untried match {
-											case Some(next) => currentTargetParticipant = next
-											case None =>
-												commandRetries += 1
-												if NetworkPartitions.isPartitionActive && commandRetries > maxRetries / 2 then NetworkPartitions.healPartition()
-												if commandRetries > maxRetries then {
-													val nodeStates = (0 until clusterSize).map(i => NodeId(s"p-$i")).map { p =>
-														val n = env.node(p)
-														s"$p: down=${n.isDown}, role=${if n.participant != null then n.participant.getRoleOrdinal else "null"}"
-													}.mkString(", ")
-													scribe.error(s"Command timeout diagnostic: presumedActiveParticipants=$presumedActiveParticipants, nodes=[$nodeStates]")
-													throw new AssertionError(s"Command $currentCommandSerial timed out after $maxRetries retries across participants $knownParticipants. Presumed active: $presumedActiveParticipants. Nodes: $nodeStates")
-												}
-												triedParticipantsForCommand.clear()
-												currentTargetParticipant = knownParticipants.find(p => !env.node(p).isDown).getOrElse(knownParticipants.head)
-										}
-										currentAttemptFlag = FALLBACK
-									}
-							}
-						}
 					}
 				}
 			}
@@ -606,20 +490,14 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 					if scheduledElectorateChangeStep.exists(totalSteps >= _) then {
 						scheduledElectorateChangeStep = None
 						if ElectorateTracker.inFlightElectorateChanges.isEmpty then {
-							val activeCandidates = presumedActiveParticipants.filter { p =>
-								val n = env.node(p)
-								!n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED && n.participant.getRoleOrdinal != RETIRING
-							}.toSeq.sorted
+							val activeCandidates = env.controlPlane.presumedActiveParticipants.toSeq.sorted
 							if activeCandidates.nonEmpty then {
 								val newMask = Array.fill(activeCandidates.size)(random.nextBoolean())
 								if !newMask.contains(true) then newMask(random.nextInt(activeCandidates.size)) = true
 								val desiredParticipants = activeCandidates.indices.filter(newMask).map(activeCandidates).toSet
-								if desiredParticipants != presumedActiveParticipants then {
-									val targetNode = {
-										val targetIsActive = presumedActiveParticipants.contains(currentTargetParticipant) && !env.node(currentTargetParticipant).isDown
-										if targetIsActive then currentTargetParticipant
-										else presumedActiveParticipants.find(p => !env.node(p).isDown).getOrElse(currentTargetParticipant)
-									}
+								if desiredParticipants != env.controlPlane.presumedActiveParticipants then {
+									val targetNode = reconfigTarget
+									env.controlPlane.onReconfigurationProposed(desiredParticipants)
 									val ccHandle = env.submitElectorateChange(targetNode, desiredParticipants)
 									ElectorateTracker.inFlightElectorateChanges(ccHandle.requestId) = new ElectorateTracker.InFlightElectorateChange(ccHandle, 0)
 									noiseElectorateChangesCount += 1
@@ -634,7 +512,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 
 			/** Drives cluster graceful shutdown by proposing an empty electorate. */
 			object GracefulShutdown {
-				/** Total shutdown attempts initiated by the client. */
+				/** Total shutdown attempts initiated by the coordinator. */
 				var shutdownAttempts: Int = 0
 				/** True once an electorate change reducing participants to empty is committed. */
 				var shutdownCommitted: Boolean = false
@@ -653,17 +531,11 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 						} else if ElectorateTracker.inFlightElectorateChanges.isEmpty then {
 							shutdownAttempts += 1
 							if shutdownAttempts > maxShutdownAttempts then {
-								throw new AssertionError(s"Cluster failed to gracefully shut down after $maxShutdownAttempts attempts across participants $knownParticipants")
+								throw new AssertionError(s"Cluster failed to gracefully shut down after $maxShutdownAttempts attempts across participants $reconfigEndpoints")
 							}
-							val candidate = {
-								if !env.node(currentTargetParticipant).isDown then currentTargetParticipant
-								else {
-									presumedActiveParticipants.find(p => !env.node(p).isDown).getOrElse {
-										knownParticipants.find(p => !env.node(p).isDown).getOrElse(currentTargetParticipant)
-									}
-								}
-							}
-							scribe.trace(s"GracefulShutdown attempt $shutdownAttempts: candidate=$candidate, currentTargetParticipant=$currentTargetParticipant, isDown=${env.node(candidate).isDown}")
+							val candidate = reconfigTarget
+							scribe.trace(s"GracefulShutdown attempt $shutdownAttempts: candidate=$candidate, reconfigTarget=$reconfigTarget")
+							env.controlPlane.onReconfigurationProposed(Set.empty)
 							val shutdownHandle = env.submitElectorateChange(candidate, Set.empty[NodeId])
 							ElectorateTracker.inFlightElectorateChanges(shutdownHandle.requestId) = new ElectorateTracker.InFlightElectorateChange(shutdownHandle, 0)
 						}
@@ -887,12 +759,15 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			while (!areAllNodesQuiesced || ClientCommands.hasRemainingCommands) && totalSteps < maxTotalSteps do {
+			while (!env.oracle.areAllNodesQuiesced || client.currentCommandSerial <= numberOfCommandsToSend) && totalSteps < maxTotalSteps do {
 				totalSteps += 1
 
-				ClientCommands.drive()
+				client.driveCommandLifecycle(numberOfCommandsToSend)
+				if NetworkPartitions.isPartitionActive && client.commandRetries > maxRetries / 2 then {
+					NetworkPartitions.healPartition()
+				}
 
-				if ClientCommands.hasRemainingCommands then {
+				if client.currentCommandSerial <= numberOfCommandsToSend then {
 					ElectorateNoise.inject()
 				} else {
 					GracefulShutdown.drive()
@@ -906,10 +781,10 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			}
 
 			if totalSteps >= maxTotalSteps then {
-				val nonQuiesced = env.allNodes.filter(n => !n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED).map(n => s"${n.myId}:${n.participant.getRoleOrdinal}").mkString(", ")
-				throw new AssertionError(s"Simulation reached step limit of $maxTotalSteps. Commands sent: ${ClientCommands.currentCommandSerial - 1}/$numberOfCommandsToSend, allNodesQuiesced=$areAllNodesQuiesced, nonQuiesced=[$nonQuiesced]")
+				val nonQuiesced = env.oracle.formatNonQuiescedNodesDiagnostic
+				throw new AssertionError(s"Simulation reached step limit of $maxTotalSteps. Commands sent: ${client.totalCommandsSucceeded}/$numberOfCommandsToSend, allNodesQuiesced=${env.oracle.areAllNodesQuiesced}, nonQuiesced=[$nonQuiesced]")
 			}
-			assert(areAllNodesQuiesced, s"Not all nodes reached QUIESCED after simulation (${GracefulShutdown.shutdownAttempts} shutdown attempts)")
+			assert(env.oracle.areAllNodesQuiesced, s"Not all nodes reached QUIESCED after simulation (${GracefulShutdown.shutdownAttempts} shutdown attempts)")
 
 			// Final invariant verification
 			env.oracle.checkLogMatching()
@@ -1139,7 +1014,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			(4, IArray.fill(4)(true), 7L, false, 10, 10, 10, 0.03f, 25, false, 3, 2, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
 			(4, IArray.fill(4)(true), 8370446902253282128L, false, 10, 10, 10, 0.03f, 25, false, 3, 2, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
 			(5, IArray.fill(5)(true), -2138682370221098961L, true, 10, 10, 10, 0.03f, 25, true, 5, 2, 1, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
-			(4, IArray.fill(4)(true), -7866577207221667707L, true, 10, 10, 10, 0.03f, 25, true, 3, 1, 1, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
+			(4, IArray.fill(4)(true), -7866577207221667707L, true, 10, 10, 10, 0.03f, 25, true, 3, 1, 1, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
+			(5, IArray.fill(5)(true), -1433210546132280752L, false, 10, 10, 10, 0.0f, 25, false, 3, 1, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
 		)
 
 		for (caseData <- failingCases) {
@@ -1196,7 +1072,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 	}
 
 	test("All invariants special case") {
-		val scribeLevel = Level.Info
+		val scribeLevel = Level.Trace
 		val (
 			clusterSize,
 			initialConfigMask,
@@ -1220,7 +1096,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			healedBaseStepsPerChannel,
 			emaSmoothingDecay,
 			retiringParticipantMaxRetries
-		) = (9, IArray(true, true, true, true, true, true, true, true, true), -2325986766342497797L, true, 30, 10, 10, 0.1f, 25, false, 3, 2, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
+		) = (5, IArray.fill(5)(true), -1433210546132280752L, false, 10, 10, 10, 0.0f, 25, false, 3, 1, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
 		runSimulation(
 			clusterSize = clusterSize,
 			initialConfigMask = initialConfigMask,

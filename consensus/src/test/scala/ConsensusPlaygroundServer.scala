@@ -29,10 +29,15 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 	private val shutdownLatch = new CountDownLatch(1)
 	private val threadCounter = new AtomicInteger(0)
 	private val sseClients = new CopyOnWriteArrayList[SseClient]()
+	private val clients = mutable.Map.empty[String, SimulatedClient]
 	private var env: ConsensusEnvironment = {
 		val e = new ConsensusEnvironment(clusterSize = 3, initializer = _.startAllNodes())
 		e.reset()
 		e
+	}
+
+	private def getOrCreateClient(clientId: String): SimulatedClient = lock.synchronized {
+		clients.getOrElseUpdate(clientId, new SimulatedClient(clientId, env, env.defaultInitialParticipants))
 	}
 
 	def start(): Unit = lock.synchronized {
@@ -234,6 +239,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		maxInFlightAppendsPerPeer: Int = 2,
 		logCompactionThreshold: Int = 5
 	): Unit = lock.synchronized {
+		clients.clear()
 		env = new ConsensusEnvironment(
 			clusterSize = size,
 			initialSeedParticipants = seedNodes,
@@ -250,6 +256,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		maxInFlightAppendsPerPeer: Int = 2,
 		logCompactionThreshold: Int = 5
 	): Unit = lock.synchronized {
+		clients.clear()
 		name.toLowerCase match {
 			case "figure7" =>
 				env = new ConsensusEnvironment(
@@ -593,7 +600,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			val statusStr = status match {
 				case ClientCommandStatus.InFlight => "InFlight"
 				case ClientCommandStatus.Processed(recIdx, res) => s"Processed(index=$recIdx, res=$res)"
-				case ClientCommandStatus.Redirected(lId) => s"Redirected($lId)"
+				case ClientCommandStatus.Redirected(others) => s"Redirected(others=[${others.mkString(",")}])"
 				case ClientCommandStatus.Unable(flag, others) => s"Unable(flag=$flag, others=[${others.mkString(",")}])"
 				case ClientCommandStatus.Failed(e) => s"Failed(${e.getMessage})"
 			}
@@ -616,8 +623,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 			sb.append("\"lastSuccess\":").append(cs.lastSuccess.map(_.toString).getOrElse("null")).append(",")
 			sb.append("\"lastRecordIndex\":").append(cs.lastRecordIndex.map(_.toString).getOrElse("null"))
 			cs.lastStatus match {
-				case Some(ClientCommandStatus.Redirected(leaderId)) =>
-					sb.append(",\"lastStatus\":{\"type\":\"Redirected\",\"targetNode\":\"").append(escapeJson(leaderId)).append("\",\"flag\":1}")
+				case Some(ClientCommandStatus.Redirected(others)) =>
+					sb.append(",\"lastStatus\":{\"type\":\"Redirected\",\"targetNode\":\"").append(escapeJson(others.head)).append("\",\"flag\":1}")
 				case Some(ClientCommandStatus.Unable(flag, others)) =>
 					sb.append(",\"lastStatus\":{\"type\":\"Unable\",\"flag\":").append(flag).append(",\"candidates\":[")
 					var candCount = 0
@@ -635,6 +642,13 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 					sb.append(",\"lastStatus\":{\"type\":\"Failed\",\"error\":\"").append(escapeJson(ex.getMessage)).append("\"}")
 				case None =>
 			}
+			val hint = getOrCreateClient(cId).nextSubmissionHint
+			sb.append(",\"recommendedSubmission\":{")
+			sb.append("\"targetNode\":\"").append(escapeJson(hint.targetNode)).append("\",")
+			sb.append("\"serial\":").append(hint.serial).append(",")
+			sb.append("\"attemptFlag\":").append(hint.attemptFlag).append(",")
+			sb.append("\"isRetry\":").append(hint.isRetry)
+			sb.append("}")
 			sb.append("}")
 			csCount += 1
 		}
@@ -914,7 +928,8 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 							val client = params.getOrElse("client", "1")
 							val serial = params.get("serial").flatMap(_.toIntOption)
 							val attemptFlag: CommandAttemptFlag = params.get("attemptFlag").flatMap(_.toByteOption).map(_.asInstanceOf[CommandAttemptFlag]).getOrElse(FIRST_ATTEMPT)
-							env.submitClientCommand(target, client, serial, attemptFlag)
+							val handle = env.submitClientCommand(target, client, serial, attemptFlag)
+							getOrCreateClient(client).recordSubmission(handle, attemptFlag)
 
 						case "submitElectorateChange" =>
 							val target = params.getOrElse("targetNode", "0")

@@ -3,8 +3,35 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-19T16:15:00Z"
+timestamp: "2026-10-22T20:50:00Z"
 ---
+
+## [2026-10-22T20:50:00Z]
+
+- Formalized the Ghost Leader Term Promotion & Non-Abdication Invariant Under Vanishing Electorates in `okf/lazy-multi-raft-consensus.md`, establishing that a ghost leader finalizing a zero-voting-member electorate change
+  ($C_{\text{new}} = \emptyset$) must ignore higher terms observed in outbound replication responses (`AppendResult_Rejected`) or uncoordinated discovery probes (`HowAreYou`), promote its own tenure term to match the highest observed peer
+  term ($T_{\text{leader}} \leftarrow T_{\text{peer}}$) without stepping down or triggering an election, and only abdicate upon receiving an authoritative inbound append from a higher-term leader.
+
+## [2026-10-22T19:00:00Z]
+
+- Created `okf/consensus-test-framework.md` and updated `okf/index.md`, establishing the unified architectural specification for the consensus simulation test framework, including the three-tier boundary (physical substrate, administrative
+  control plane, quarantined invariant oracle), subsystem modularization (`readren.consensus.env`), two-tier hierarchical process scheduling model, decoupled local virtual clock timer mechanics, deterministic operation journal replay, and
+  continuous per-step safety verification model.
+
+## [2026-10-20T20:25:00Z]
+
+- Refined the Synchronous Cluster-Tier Probable-Participant Memorization Contract (`ClusterParticipant.getOtherProbableParticipants`) in Section 13 of `okf/lazy-multi-raft-consensus.md`, formalizing that the host cluster tier maintains its
+  sequencer-confined memorized peer view via local administrative update handlers and outbound consensus electorate notifications (`onActiveElectorateChanged`) without omniscient cross-node consensus state inspection.
+
+## [2026-10-19T19:53:00Z]
+
+- Updated Section 12 of `okf/lazy-multi-raft-consensus.md` to formalize the Deterministic Journal Replay & Reset Completeness Invariant across the modularized discrete-event simulation subsystems.
+
+## [2026-10-19T19:15:00Z]
+
+- Updated Section 10 and Section 14 of `okf/lazy-multi-raft-consensus.md` to formalize probability-ordered `ListSet` candidate routing hints across all non-terminal `ElectorateChangeResponse` (`suggestedParticipants: ListSet`) and
+  `ResponseToClient` (`RedirectTo` and `Unable` carrying `otherParticipants: ListSet`) variants, unifying leader redirection (`AskTheLeader` and `RedirectTo`) with ordered fallback candidates and specifying head-candidate priority
+  heuristics across follower, isolated, retiring, leader, and joint consensus states.
 
 ## [2026-10-19T16:15:00Z]
 
@@ -654,3 +681,9 @@ timestamp: "2026-10-19T16:15:00Z"
 - Updated Section 6 (Participant Exclusion, Retirement Dynamics & Quiescence Protocol) of `okf/lazy-multi-raft-consensus.md` to specify the initial retirement driving invariant for newly crowned leaders.
 - Formalized that a newly crowned leader assumes office with an empty active retirement driver registry and must drive the retirement of all historical non-active nodes (`Universe \ Cnew`) upon committing its first sole electorate change,
   preventing abandoned replication to prior retirees when coronation occurs during in-flight, uncommitted configuration transitions.
+
+## [2026-10-21T20:30:00Z]
+
+- Refined the Synchronous Cluster-Tier Probable-Participant Memorization Contract in Section 13 of `okf/lazy-multi-raft-consensus.md`, specifying that the host bridge method `ClusterParticipant.getOtherProbableParticipants` supplies an
+  optimistic set of nodes intended for consensus ordered by descending probability of certainty to support client fallback routing and vanishing-electorate teardown, and purged the misplaced administrative control-plane entry from Section
+  10.

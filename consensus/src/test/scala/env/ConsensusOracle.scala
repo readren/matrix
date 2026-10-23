@@ -6,20 +6,33 @@ import readren.consensus.protocol.*
 
 import scala.collection.mutable
 
-/** Quarantined omniscient invariant inspector for [[ConsensusEnvironment]], verifying cross-node consensus safety properties. */
+/** Quarantined omniscient invariant inspector (Tier 3) for [[ConsensusEnvironment]], verifying cross-node consensus safety properties.
+ *
+ * Isolates privileged global state tracking—such as cross-node committed log histories, elected leaders per term, and state machine command applications—from external client and control-plane gateways (Tier 2). Continuously enforces the five fundamental Raft safety invariants:
+ *  - **Election Safety**: At most one leader can be elected in a given term ([[onBecameLeader]]).
+ *  - **Leader Append-Only**: A leader never overwrites or truncates entries in its log ([[onLogTruncated]]).
+ *  - **Log Matching**: If two logs contain an entry with the same index and term, then the logs are identical in all entries up through the given index ([[checkLogMatching]]).
+ *  - **Leader Completeness**: If a log entry is committed in a given term, that entry will be present in the logs of the leaders for all higher-numbered terms ([[onCommitIndexChanged]]).
+ *  - **State Machine Safety**: If a participant has applied a log entry at a given index to its state machine, no other participant will ever apply a different log entry for the same index ([[onCommandApplied]]).
+ * @param env the owning [[ConsensusEnvironment]]. */
 class ConsensusOracle(env: ConsensusEnvironment) {
 	private val _leaderByTerm: mutable.Map[Term, NodeId] = mutable.Map.empty
 	private val _appliedCommandsByIndex: mutable.Map[RecordIndex, (NodeId, TestClientCommand)] = mutable.Map.empty
 	private val _committedRecordsByNode: mutable.Map[NodeId, mutable.ArrayBuffer[Record | None.type]] = mutable.Map.empty
 
+	/** Read-only view of the unique leader elected in each [[Term]]. */
 	def leaderByTerm: collection.Map[Term, NodeId] = _leaderByTerm
 
+	/** Read-only view mapping each applied [[RecordIndex]] to the first `(NodeId, TestClientCommand)` pair that applied it. */
 	def appliedCommandsByIndex: collection.Map[RecordIndex, (NodeId, TestClientCommand)] = _appliedCommandsByIndex
 
+	/** Read-only view of each node's historical committed log records (0-based buffer where index `i` corresponds to `RecordIndex = i + 1`, with `None` occupying unrecorded snapshot gaps). */
 	def committedRecordsByNode: collection.Map[NodeId, collection.Seq[Record | None.type]] = _committedRecordsByNode
 
+	/** Returns the highest [[RecordIndex]] known to have been committed by any node in the cluster. */
 	def highestCommittedRecordIndex: RecordIndex = _committedRecordsByNode.values.map(_.size.toLong).maxOption.getOrElse(0L)
 
+	/** Clears all recorded oracle history and re-initializes per-node committed record buffers. */
 	private[env] def reset(): Unit = {
 		_leaderByTerm.clear()
 		_appliedCommandsByIndex.clear()
@@ -30,6 +43,9 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
+	/** Verifies the **Leader Append-Only** invariant when `node` truncates its log suffix starting at `index`.
+	 *
+	 * Schedules the role check at the end of the current sequencer turn so that atomic role demotions (such as a leader stepping down to follower upon discovering a higher term before truncating) complete before the assertion is evaluated. */
 	private[env] def onLogTruncated(node: EnvironmentNode, index: RecordIndex, firstRemovedRecord: Record): Unit = {
 		// Defer the check to let the updating execution complete its atomic state and role changes.
 		node.stepDoer.run {
@@ -39,8 +55,10 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
+	/** Invoked whenever `node` persists its workspace to durable storage, triggering [[checkLogMatching]]. */
 	private[env] def onStorageSaved(node: EnvironmentNode): Unit = checkLogMatching()
 
+	/** Verifies the **Election Safety** invariant when `node` transitions to [[LEADER]] in `term`. */
 	private[env] def onBecameLeader(node: EnvironmentNode, term: Term): Unit = {
 		_leaderByTerm.get(term) match {
 			case Some(existing) if existing != node.myId =>
@@ -50,6 +68,7 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
+	/** Records newly committed log entries for `node` and verifies both per-node commit consistency across restarts and **Leader Completeness** when `as == LEADER`. */
 	private[env] def onCommitIndexChanged(node: EnvironmentNode, previous: RecordIndex, current: RecordIndex, as: RoleOrdinal, at: Term): Unit = {
 		val thisNodeCommitted = _committedRecordsByNode.getOrElseUpdate(node.myId, mutable.ArrayBuffer.empty)
 		val mem = node.storage.savedMemory
@@ -105,6 +124,7 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
+	/** Verifies the **State Machine Safety** invariant when `node` applies `command` at log `index`. */
 	private[env] def onCommandApplied(node: EnvironmentNode, command: TestClientCommand, index: RecordIndex): Unit = {
 		_appliedCommandsByIndex.get(index) match {
 			case Some((prevNode, prevCmd)) =>
@@ -116,6 +136,9 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
+	/** Verifies the **Log Matching** invariant across all active (non-down) nodes' durable storage logs.
+	 *
+	 * For every pair of active nodes, finds the highest overlapping log index where both logs share the same term and asserts that all preceding overlapping records are identical. */
 	def checkLogMatching(): Unit = {
 		val activeNodes = env.allNodes.filterNot(_.isDown)
 		for i <- activeNodes.indices do {
@@ -140,4 +163,12 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 			}
 		}
 	}
+
+	/** Returns true if all cluster nodes have shut down, released their service, or reached [[QUIESCED]]. */
+	def areAllNodesQuiesced: Boolean =
+		env.allNodes.forall(n => n.isDown || n.participant == null || n.participant.getRoleOrdinal == QUIESCED)
+
+	/** Formats a diagnostic string of all active non-quiesced node roles. */
+	def formatNonQuiescedNodesDiagnostic: String =
+		env.allNodes.filter(n => !n.isDown && n.participant != null && n.participant.getRoleOrdinal != QUIESCED).map(n => s"${n.myId}:${n.participant.getRoleOrdinal}").mkString(", ")
 }

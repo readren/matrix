@@ -3,7 +3,7 @@ type: "Concept"
 title: "Lazy Multi-Raft Consensus Architecture"
 description: "Architectural design, scalability analysis, and trade-offs of the reactive Lazy Multi-Raft consensus engine with co-located persistence."
 tags: ["user-guide", "design-history", "consensus", "nexus"]
-timestamp: "2026-10-19T16:15:00Z"
+timestamp: "2026-10-21T20:30:00Z"
 ---
 
 # Lazy Multi-Raft Consensus Architecture
@@ -271,6 +271,12 @@ Quiescence authorization ensures that a retiring participant does not shut down 
      `Leader`, ensuring retiring participants are stateless and never harbor active or leaked drivers or unacknowledged permission tracking.
     3. **Permission Grant**: Explicit quiescence authorization has been granted by the cluster (received from an active leader, or self-authorized by a vanishing ghost leader once all peers have acknowledged or retries are exhausted).
     4. **Index Verification**: The authorized electorate change index is greater than or equal to the participant's excluding electorate index.
+  5. **Ghost Leader Term Promotion & Non-Abdication Invariant Under Vanishing Electorates**: When finalizing an empty electorate configuration change ($C_{\text{new}} = \emptyset$), the ghost leader is the sole terminal coordinator of
+     cluster shutdown; crowning a successor leader is structurally impossible. Consequently, the ghost leader must ignore higher terms observed in outbound replication responses (such as `AppendResult_Rejected`) or uncoordinated discovery
+     queries (`HowAreYou`), refusing to abdicate. To resolve term disparity against lagging peers whose persistent terms were speculatively inflated by aborted candidate inquiries, the ghost leader promotes its own tenure term to match the
+     highest observed peer term ($T_{\text{leader}} \leftarrow T_{\text{peer}}$) without stepping down or triggering an election. This term promotion satisfies the recipient's term monotonicity precondition
+     ($T_{\text{inquirer}} \ge T_{\text{local}}$), enabling lagging peers to ingest the committed configuration, transition to `Retiring`, and receive quiescence authorizations. The ghost leader only abdicates if it receives an
+     authoritative inbound append from a higher-term leader.
 
 ---
 
@@ -534,15 +540,19 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
   would otherwise execute stale reconfigurations against nodes that have already been excluded, decommissioned, and permanently shut down by intervening configuration changes. When an external coordinator receives `AnotherChangeInProgress`
   whose reported in-progress target configuration matches the coordinator's own desired configuration, the coordinator must continue retrying and polling that transition until a terminal outcome (`SuccessfullyChanged` or `AlreadyChanged`)
   is observed, thereby keeping coordinator in-flight tracking synchronized with the active cluster transition and preventing premature termination of tracking or candidate pool corruption.
-- **Leader Redirection Semantics**: When an electorate change request is submitted to a non-leader or demoted leader, the response provides an explicit redirection (`AskTheLeader`) identifying the current perceived leader. This allows
-  clients to retarget the active consensus leader directly rather than initiating blind cluster discovery.
-- **Strongly-Typed Participant Identifiers and Candidate Routing Hints**: Electorate change response contracts are parameterized by the participant identifier type (`ElectorateChangeResponse[+P]`), ensuring compile-time type safety for
-  leader redirections (`AskTheLeader(leaderId: P)`) without runtime downcasting. Non-terminal rejection and redirection responses carry candidate routing suggestions (`suggestedPeers: Set[? <: P]`) populated strictly from consensus-derived
-  state (such as the actively followed leader, the active configuration peers derived from the anchored primary state via `deriveElectorateFrom`, or the committed excluding configuration members in `Excluded`). All candidate routing
-  suggestions are strictly advisory, point-in-time heuristics based on local, potentially historical state; in partitioned or isolated states (such as `Secluded`), the cluster may have reconfigured while the node was disconnected. Callers
-  must treat suggestions as best-effort leads and fall back to broader discovery mechanisms or target rotation pools if contacting the suggested peers fails. Roles lacking consensus-derived membership knowledge (such as `Stopped`,
-  `Quiesced`, or unanchored `CatchingUp`) return an empty set to signal the lack of better knowledge than the caller and avoid circular echoing of the host's own transport discovery view. Terminal responses (`SuccessfullyChanged` and
-  `AlreadyChanged`) remain static allocation-free singletons extending `ElectorateChangeResponse[Nothing]` with empty suggestions.
+- **Leader Redirection Semantics**: When a client command or electorate change request is submitted to a follower, the response provides an explicit redirection (`RedirectTo` or `AskTheLeader`) carrying an ordered `ListSet` of candidate
+  targets with the currently followed leader (`followeeId`) positioned as the first element, followed by fallback electorate candidates. This allows callers to retarget the active consensus leader directly on the first retry attempt and
+  seamlessly fall back to remaining electorate members if the leader has become unreachable.
+- **Strongly-Typed Participant Identifiers and Probability-Ordered Candidate Routing Hints**: Electorate change response contracts (`ElectorateChangeResponse[+P]`) and non-terminal client command responses (`RedirectTo` and `Unable`) carry
+  candidate routing suggestions as an ordered `ListSet` (`suggestedParticipants: ListSet[? <: P]` for electorate change responses and `otherParticipants: ListSet[ParticipantId]` for client command responses) ordered in descending
+  probability that each participant is the next appropriate target to contact, even when the response variant implies that the responder itself is the primary target. Rather than over-complicating set construction with full multi-key
+  sorting, ordering logic prioritizes placing the highest-probability candidate at the head of the `ListSet`: followers place their followed leader (`followeeId`) first followed by active electorate peers; isolated participants place their
+  most recently nominated election candidate first (when available) followed by active peers and self; retiring participants place the quiescence-authorizing leader first (when included in the excluding configuration) followed by the
+  excluding configuration members; leaders rejecting concurrent configuration proposals (`AnotherChangeInProgress`) or reporting lost tracking place themselves first when included in the active target configuration, or place a surviving
+  peer ($C_{\text{old}} \cap C_{\text{new}}$) first when self-excluding; and joint consensus configurations place a surviving peer ($C_{\text{old}} \cap C_{\text{new}}$) ahead of retiring-only ($C_{\text{old}} \setminus C_{\text{new}}$) and
+  joining-only ($C_{\text{new}} \setminus C_{\text{old}}$) peers. While client command rejections (`Unable`) exclude the responding node from `otherParticipants` because the responder cannot execute the command in its current role,
+  electorate change responses (`suggestedParticipants`) include the responder whenever it remains a valid candidate for subsequent configuration coordination. Roles lacking consensus-derived membership knowledge (such as `Stopped` or
+  `Quiesced`) return an empty `ListSet`, and terminal responses (`SuccessfullyChanged` and `AlreadyChanged`) remain static allocation-free singletons extending `ElectorateChangeResponse[Nothing]` with an empty `ListSet`.
 - **Electorate Transition Quiescence Decoupling**: Successful replication and commitment of an electorate change across a majority quorum immediately yields a terminal response to the client. Terminality is strictly decoupled from the
   subsequent, asynchronous retirement and quiescence of excluded participants; the coordinator is unblocked the moment the configuration is durably committed in the Raft log.
 - **Ghost Leader Quiescence & Commit Watermark Fulfillment Order**: When a leader is excluded by an active configuration change (operating as a ghost leader to conclude membership transitions) and all active and retiring participants have
@@ -588,7 +598,6 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
   configuration change whose log index exceeds its excluding configuration index. Because committed configurations are preserved as either transitional joint configuration records (`JointElectorateChange`) or stable configuration records
   (`SoleElectorateChange`), any subsequent configuration change that includes the participant in its target membership ($C_{\text{new}}$) constitutes authoritative proof of re-inclusion. Upon observing such a configuration change in
   uncompacted log entries or snapshot metadata, the participant immediately transitions from retirement to initialization (`STARTING`) to reload persistent state, synchronize with the active leader, and resume active cluster participation.
-
 ## 11. Decoupled Mutation Contract & Causal State Synchronization
 
 To guarantee strictly sequential state transitions without the stalling overhead of Thread/Actor-blocking or the race-condition vulnerabilities of Mutexes (lock-and-release), the consensus participant wraps its PrimaryState inside a
@@ -667,9 +676,17 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
   gateway tier mediates command submissions and configuration transitions strictly through client-visible protocol responses without inspecting internal node state; and (3) the omniscient invariant oracle tier is quarantined into a
   dedicated verification component reserved exclusively for cross-node safety assertions (including Election Safety, Leader Completeness, Log Matching, Leader Append-Only, and State Machine Safety), ensuring that external coordination and
   failover logic never rely on privileged internal state.
+- **Deterministic Journal Replay & Reset Completeness Invariant**: Discrete-event operation journals that support timeline rollback (`undo`), forward re-execution (`redo`), and checkpoint tag restoration rely on full state reconstruction
+  from an initial environment reset followed by deterministic operation replay. For replay to be strictly isomorphic to the original execution, environment reset must purge all subsystem state across all three tiers—including physical
+  network channels, virtual clock timers, suspended persistence queues, client session counters, in-flight reconfiguration tracking tables, and oracle history buffers—and execute baseline initialization with journal recording suppressed so
+  that replayed operations never accumulate duplicate journal entries or observe residual state from rolled-back branches.
 
 ## 13. Host Bridge RPC Completion & Transport Termination Invariants
 
+- **Synchronous Cluster-Tier Probable-Participant Memorization Contract**: The host bridge method `ClusterParticipant.getOtherProbableParticipants` returns a synchronous `ListSet[ParticipantId]` rather than an asynchronous `Capture`. This
+  signature mandates that the host cluster tier proactively maintain and memorize within the participant's sequencer the optimistic set of other cluster nodes currently intended for consensus, ordered from most to least probable certainty
+  of availability. By maintaining this probability-ordered view as nodes join, become reachable, crash, or leave, the cluster tier enables the consensus engine to synchronously extract high-priority fallback routing candidates for client
+  responses and discover candidate peers during vanishing-electorate teardown without issuing asynchronous queries.
 - **Asynchronous Completion Guarantee**: The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `requestBallot`,
   `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying
   strictly on the host layer to bound request lifecycles.
@@ -694,7 +711,7 @@ of the notification loop to the end, eliminating re-entrancy bugs, stale-state r
 - **Reconciliation of Indeterminate Configuration Responses**: When a leadership transition or network partition yields an indeterminate outcome for a proposed configuration change (e.g., loss of request tracking after an initial phase is
   logged or committed), the control plane must not prematurely abandon the proposal or revert its presumed electorate tracking. It must reconcile the proposal state with the newly elected leader until obtaining a definitive terminal
   response, preventing divergence between the consensus log and external control-plane tracking.
-- **Leader Redirection Advisory Invariant (`AskTheLeader` Non-Membership)**: Receiving an `AskTheLeader(leaderId)` redirection communicates purely advisory peer-routing state indicating the responder's known leader; it conveys no
-  authoritative statement regarding active voting electorate membership. Because a leader excluded by a committed configuration change continues to lead as a transitional ghost leader to drive configuration convergence, the designated
-  leader may itself be excluded from the active electorate. The external coordinator must never mutate its presumed active electorate based on `AskTheLeader`. Active electorate membership is updated strictly upon receiving definitive
-  terminal outcomes (`SuccessfullyChanged`, `AlreadyChanged`, or explicit membership derivation from committed configuration changes).
+- **Leader Redirection Advisory Invariant (`AskTheLeader` Non-Membership)**: Receiving an `AskTheLeader(suggested)` redirection communicates purely advisory peer-routing state with the responder's known leader at the head of `suggested`; it
+  conveys no authoritative statement regarding active voting electorate membership. Because a leader excluded by a committed configuration change continues to lead as a transitional ghost leader to drive configuration convergence, the
+  designated leader at the head of `suggested` may itself be excluded from the active electorate. The external coordinator must never mutate its presumed active electorate based on `AskTheLeader`. Active electorate membership is updated
+  strictly upon receiving definitive terminal outcomes (`SuccessfullyChanged`, `AlreadyChanged`, or explicit membership derivation from committed configuration changes).

@@ -3,7 +3,4 @@
 !**/src/main/**/target/
 !**/src/test/**/target/
 
-**/logs
-!**/src/main/**/logs
-!**/src/test/**/logs
 /dump
