@@ -3,8 +3,28 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-22T20:50:00Z"
+timestamp: "2026-10-28T01:40:00Z"
 ---
+
+## [2026-10-28T01:40:00Z]
+
+- Formalized the Graceful Teardown Fault Injection & Two-Tier Disarm Safeguard in `okf/consensus-test-framework.md` (Section 8), specifying that network partitions remain active during empty electorate post-commit retirement until internal
+  consensus protocol retries reach half of the leader's retry quota, ensuring exhaustive fault testing of the two-phase retirement protocol while preventing false-positive peer abandonment.
+
+## [2026-10-27T23:35:00Z]
+
+- Added dedicated Section 5 (Adversarial Channel Selection & Traffic Shaping Architecture) to `okf/consensus-test-framework.md`, formalizing the multiplicative hybrid model (shifted exponential epoch drift, continuous log-uniform node
+  affinity multipliers, and semantic head-packet weighting), non-starvation invariants, and substrate decoupling.
+
+## [2026-10-27T23:30:00Z]
+
+- Formalized the `AdversarialPacketPicker` component in `okf/consensus-test-framework.md`, documenting the multiplicative hybrid model combining continuous log-uniform node affinity drift across shifted exponential epochs with semantic RPC
+  head-packet weighting for adversarial discrete-event simulation while preserving point-to-point FIFO delivery.
+
+## [2026-10-27T21:10:00Z]
+
+- Aligned Section 4 of `okf/consensus-test-framework.md` to formalize the Two-Tier Discrete Step Dispatcher (Hierarchical Process Stepper), eliminating references to "scheduler" to cleanly distinguish immediate discrete simulation step
+  dispatching (compute vs. network domain arbitration) from future virtual timer scheduling (`VirtualClock`).
 
 ## [2026-10-22T20:50:00Z]
 

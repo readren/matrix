@@ -32,6 +32,7 @@ class EnvironmentNode(
 
 	override val maxInFlightAppendsPerPeer: Int = env.maxInFlightAppendsPerPeer
 	override val logCompactionThreshold: Int = env.logCompactionThreshold
+	override val MAX_PERMIT_QUIESCENCE_RETRIES: Int = env.maxPermitQuiescenceRetries
 
 	override def retiringParticipantMaxRetriesUnderEmptyElectorate: Int = env.retiringParticipantMaxRetries
 

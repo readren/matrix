@@ -19,6 +19,10 @@ import scala.collection.immutable.{ListMap, ListSet}
 import scala.collection.mutable
 import scala.util.{Failure, Random, Success, Try}
 
+object ConsensusParticipantSdmSyncTest {
+	final val MAX_PERMIT_QUIESCENCE_RETRIES: Int = 9
+}
+
 /** A synchronous, discrete-event invariant verification test suite for [[ConsensusParticipantSdm]],
  * backed by [[ConsensusEnvironment]].
  *
@@ -26,6 +30,8 @@ import scala.util.{Failure, Random, Success, Try}
  * with a deterministic, single-threaded simulation loop using [[StepDoer]].
  */
 class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
+
+	import ConsensusParticipantSdmSyncTest.*
 
 	ScribeConfig.init(deleteLogFilesOnLaunch = true, modifiers = List(new LogModifier {
 		override def id: String = "simulated-failures-filter"
@@ -145,7 +151,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		healedBaseStepsPerChannel: Int,
 		emaSmoothingDecay: Double,
 		retiringParticipantMaxRetries: Int,
-		scribeLevel: Level
+		scribeLevel: Level,
+		maxPermitQuiescenceRetries: Int = MAX_PERMIT_QUIESCENCE_RETRIES
 	): Int = {
 		scribe.Logger.root.withMinimumLevel(scribeLevel).replace()
 		scribe.info(s"\n----------------\nBegin: clusterSize=$clusterSize, initialConfig=${initialConfigMask.mkString("[", ", ", "]")}, randomnessSeed=$randomnessSeed, startWithHighestPriorityParticipant=$startWithHighestPriorityParticipant, numberOfCommandsToSend=$numberOfCommandsToSend, requestFailurePercentage=$requestFailurePercentage, responseFailurePercentage=$responseFailurePercentage, electorateChangeProbability=$electorateChangeProbability, maxRetries=$maxRetries, remembersLastAppliedCommandIndex=$remembersLastAppliedCommandIndex, logCompactionThreshold=$logCompactionThreshold, maxInFlightAppendsPerPeer=$maxInFlightAppendsPerPeer, logRetentionAfterSnapshot=$logRetentionAfterSnapshot, computeDomainProbability=$computeDomainProbability, ticksPerNodeCycle=$ticksPerNodeCycle, asymmetricSplitProbability=$asymmetricSplitProbability, bufferPartitionProbability=$bufferPartitionProbability, maxPartitionWakeUps=$maxPartitionWakeUps, partitionBaseStepsPerChannel=$partitionBaseStepsPerChannel, healedBaseStepsPerChannel=$healedBaseStepsPerChannel, emaSmoothingDecay=$emaSmoothingDecay, retiringParticipantMaxRetries=$retiringParticipantMaxRetries, scribeLevel=$scribeLevel\n($clusterSize, IArray(${initialConfigMask.mkString(", ")}), ${randomnessSeed}L, $startWithHighestPriorityParticipant, $numberOfCommandsToSend, $requestFailurePercentage, $responseFailurePercentage, ${electorateChangeProbability}f, $maxRetries, $remembersLastAppliedCommandIndex, $logCompactionThreshold, $maxInFlightAppendsPerPeer, $logRetentionAfterSnapshot, ${computeDomainProbability}f, $ticksPerNodeCycle, ${asymmetricSplitProbability}f, ${bufferPartitionProbability}f, $maxPartitionWakeUps, $partitionBaseStepsPerChannel, $healedBaseStepsPerChannel, $emaSmoothingDecay, $retiringParticipantMaxRetries),")
@@ -162,7 +169,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				logCompactionThreshold = logCompactionThreshold,
 				initialRetiringParticipantMaxRetries = retiringParticipantMaxRetries,
 				initialLogRetentionAfterSnapshot = logRetentionAfterSnapshot,
-				remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex
+				remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex,
+				maxPermitQuiescenceRetries = maxPermitQuiescenceRetries
 			)
 
 
@@ -510,7 +518,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			/** Drives cluster graceful shutdown by proposing an empty electorate. */
+			/** Drives cluster graceful shutdown by proposing an empty electorate and tracking quiescence retries under network faults. */
 			object GracefulShutdown {
 				/** Total shutdown attempts initiated by the coordinator. */
 				var shutdownAttempts: Int = 0
@@ -518,11 +526,33 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				var shutdownCommitted: Boolean = false
 				/** Delay counter in simulation steps before resubmitting an empty electorate request after seclusion. */
 				var shutdownBackoffRemaining: Int = 0
+				/** Highest quiescence authorization retries observed across all nodes during post-commit shutdown. */
+				var maxQuiescenceRetriesObserved: Int = 0
+				/** Highest unreachable retiree replication retries observed across all nodes during post-commit shutdown. */
+				var maxUnreachableRetriesObserved: Int = 0
 
 				/** Drives graceful shutdown requests until all nodes are unseated and quiesced. */
 				def drive(): Unit = {
 					ElectorateNoise.scheduledElectorateChangeStep = None
-					if (shutdownAttempts > maxShutdownAttempts / 2 || shutdownCommitted) && !NetworkPartitions.partitionsPermanentlyDisarmed then {
+
+					if shutdownCommitted then {
+						for w <- env.clock.pendingWakeUps do {
+							if w.reason == WakeUpReason.QuiescenceAuthorizationRetry && w.wakeupsDone > maxQuiescenceRetriesObserved then {
+								maxQuiescenceRetriesObserved = w.wakeupsDone
+							} else if w.reason == WakeUpReason.UnreachableFollowersRetry && w.wakeupsDone > maxUnreachableRetriesObserved then {
+								maxUnreachableRetriesObserved = w.wakeupsDone
+							}
+						}
+					}
+
+					val shouldDisarm = if !shutdownCommitted then {
+						shutdownAttempts > maxShutdownAttempts / 2
+					} else {
+						maxQuiescenceRetriesObserved >= math.max(1, maxPermitQuiescenceRetries / 2) ||
+							maxUnreachableRetriesObserved >= math.max(1, env.retiringParticipantMaxRetries / 2)
+					}
+
+					if shouldDisarm && !NetworkPartitions.partitionsPermanentlyDisarmed then {
 						NetworkPartitions.disarmAndHeal()
 					}
 					if !shutdownCommitted then {
@@ -695,10 +725,15 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			/** Arbitrates compute versus network execution and executes discrete event steps. */
-			object StepExecutions {
+			/** Dedicated adversarial channel picker driving temporally correlated drift and semantic packet weighting. */
+			val adversarialPicker = new AdversarialPacketPicker(env, random)
+
+			/** Arbitrates compute versus network execution and dispatches discrete event steps with adversarial traffic shaping. */
+			object DiscreteStepDispatcher {
 				/** Executes one discrete simulation step by arbitrating between node task execution and packet transmission. */
-				def executeNext(): Unit = {
+				def dispatchNext(): Unit = {
+					adversarialPicker.advanceStep()
+
 					val currentActiveChannels = if NetworkPartitions.isPartitionActive && NetworkPartitions.currentFaultMode == PartitionFaultMode.Buffer then {
 						env.network.activeChannelKeys.filterNot(NetworkPartitions.severedChannels.contains)
 					} else {
@@ -740,7 +775,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 								}
 							}
 						} else {
-							val (from, to) = currentActiveChannels(random.nextInt(currentActiveChannels.size))
+							val (from, to) = adversarialPicker.selectChannel(currentActiveChannels)
 							if NetworkPartitions.isPartitionActive && NetworkPartitions.currentFaultMode == PartitionFaultMode.Drop && NetworkPartitions.severedChannels.contains((from, to)) then {
 								env.network.dropNext(from, to)
 							} else {
@@ -777,7 +812,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 
 				WakeUpSynchronization.synchronize()
 				QuiescenceFastForward.advanceIfIdle()
-				StepExecutions.executeNext()
+				DiscreteStepDispatcher.dispatchNext()
 			}
 
 			if totalSteps >= maxTotalSteps then {

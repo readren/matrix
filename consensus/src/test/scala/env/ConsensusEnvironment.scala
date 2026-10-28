@@ -22,6 +22,7 @@ import scala.collection.mutable
  * @param initialRetiringParticipantMaxRetries initial retry limit for ghost leaders driving retirement under an empty electorate.
  * @param initialLogRetentionAfterSnapshot initial number of trailing log entries retained after snapshot truncation.
  * @param remembersLastAppliedCommandIndex when true, [[EnvironmentNode.TestStateMachine.recoverIndexOfLastAppliedCommand]] returns the last applied index across restarts; when false, it resets to 0 to force snapshot installation and log replay.
+ * @param maxPermitQuiescenceRetries retry quota for quiescence authorization requests to retiring participants.
  * @param initializer hook invoked automatically at the end of [[reset]] (with journal recording suppressed) to establish baseline cluster state. */
 class ConsensusEnvironment(
 	val clusterSize: Int,
@@ -32,6 +33,7 @@ class ConsensusEnvironment(
 	val initialRetiringParticipantMaxRetries: Int = 2,
 	val initialLogRetentionAfterSnapshot: Int = 1,
 	val remembersLastAppliedCommandIndex: Boolean = false,
+	val maxPermitQuiescenceRetries: Int = 9,
 	private val initializer: ConsensusEnvironment => Unit = _ => ()
 ) {
 	private var _retiringParticipantMaxRetries: Int = initialRetiringParticipantMaxRetries

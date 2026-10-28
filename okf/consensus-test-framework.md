@@ -1,15 +1,15 @@
 ---
 type: "Concept"
 title: "Consensus Simulation & Test Framework"
-description: "Architecture, three-tier boundary, modular subsystems, hierarchical process scheduling, decoupled virtual clocks, and deterministic replay journal of the consensus test framework."
+description: "Architecture, three-tier boundary, modular subsystems, two-tier discrete step dispatching, adversarial channel selection, decoupled virtual clocks, and deterministic replay journal of the consensus test framework."
 tags: [ "user-guide", "consensus", "testing" ]
-timestamp: "2026-10-22T19:00:00Z"
+timestamp: "2026-10-27T23:35:00Z"
 ---
 
 # Consensus Simulation & Test Framework
 
-This document specifies the architecture, three-tier separation of concerns, modular subsystem decomposition, hierarchical process scheduling model, decoupled virtual clock mechanics, and deterministic replay journal of the test framework
-used to verify [Lazy Multi-Raft Consensus Architecture](lazy-multi-raft-consensus.md).
+This document specifies the architecture, three-tier separation of concerns, modular subsystem decomposition, two-tier discrete step dispatching model, adversarial channel selection architecture, decoupled virtual clock mechanics, and
+deterministic replay journal of the test framework used to verify [Lazy Multi-Raft Consensus Architecture](lazy-multi-raft-consensus.md).
 
 ## 1. Concurrency Verification Objectives & Deterministic Simulation
 
@@ -59,24 +59,26 @@ The simulation infrastructure is decomposed into dedicated, single-responsibilit
 - **`EnvironmentJournal`**: Provides a deterministic operation recording and replay engine supporting transactional operation boundaries (`recordOrExecute`), checkpoint tagging, and reversible timeline navigation (`undo`, `redo`, `reset`,
   `restoreTag`).
 - **`ConsensusOracle`**: Implements the quarantined Tier 3 verification oracle, tracking global leadership terms, committed records, applied state machine commands, and executing cross-node log matching validations.
+- **`AdversarialPacketPicker`**: Implements the adversarial channel selection strategy, combining continuous log-uniform node affinity drift across shifted exponential epochs with semantic RPC head-packet weighting to maximize race
+  condition coverage while strictly preserving point-to-point FIFO delivery.
 - **`ConsensusEnvironment`**: Serves as the composition facade coordinating all subsystems (`network`, `clock`, `storage`, `nodes`, `controlPlane`, `journal`, `oracle`) while exposing top-level convenience delegates for test suites.
 
-## 4. Two-Tier Hierarchical Process Stepper
+## 4. Two-Tier Discrete Step Dispatcher (Hierarchical Process Stepper)
 
-A flat discrete-event scheduler that selects uniformly across all active entities suffers from domain dilution in distributed environments. In a cluster of $N$ nodes, there exist up to $N (N-1)$ directional communication channels. During
-message broadcast phases, active network channels outnumber active nodes by an order of magnitude. Under a flat selection policy, node execution frequency drops proportionally to the number of traveling packets, artificially throttling
-compute progression and distorting the relative speed of nodes versus network transport.
+A flat discrete-event dispatching policy that selects uniformly across all active entities suffers from domain dilution in distributed environments. In a cluster of $N$ nodes, there exist up to $N (N-1)$ directional communication channels.
+During message broadcast phases, active network channels outnumber active nodes by an order of magnitude. Under a flat selection policy, node execution frequency drops proportionally to the number of traveling packets, artificially
+throttling compute progression and distorting the relative speed of nodes versus network transport.
 
-To provide complete processing speed independence for each parallel entity while maximizing interleaving variance, the scheduler implements a Two-Tier Hierarchical Process Scheduler:
+To provide complete processing speed independence for each parallel entity while maximizing interleaving variance, the simulation harness implements a Two-Tier Discrete Step Dispatcher:
 
 ### Tier 1: Domain Arbitration
 
-At each simulation step, the scheduler identifies the active domains:
+At each simulation step, the dispatcher identifies the active domains:
 
 - **Compute Domain**: Active when at least one node has pending tasks in its [Sequencer Core](sequencer-core.md) queue or registered active timers.
 - **Network Domain**: Active when at least one directional channel contains in-flight packets.
 
-When both domains are active, the scheduler arbitrates between them using a configurable probability parameter $P_{\text{compute}}$:
+When both domains are active, the dispatcher arbitrates between them using a configurable probability parameter $P_{\text{compute}}$:
 
 $$\text{Domain} = \begin{cases} \text{Compute Domain} & \text{with probability } P_{\text{compute}} \\ \text{Network Domain} & \text{with probability } 1 - P_{\text{compute}} \end{cases}$$
 
@@ -84,21 +86,59 @@ If only one domain contains active entities, that domain is chosen unconditional
 
 ### Tier 2: Entity Selection & Execution
 
-Once a domain is selected, the scheduler selects uniformly among all active entities within that domain:
+Once a domain is selected, the dispatcher selects uniformly among all active entities within that domain:
 
-- **Compute Domain Execution**: The scheduler selects uniformly among all active nodes ($P (n_i) = \frac{1}{|ActiveNodes|}$). The selected node executes one discrete "CPU cycle":
+- **Compute Domain Execution**: The dispatcher selects uniformly among all active nodes ($P (n_i) = \frac{1}{|ActiveNodes|}$). The selected node executes one discrete "CPU cycle":
   - **Sequencer Progress**: If the node has a runnable task enqueued in its single-threaded sequencer, it executes exactly one runnable.
   - **Local Clock Progression**: Any active retry timer registered by this node decrements its remaining tick counter by a normalized cycle quantum ($\delta_{\text{node}}$).
   - **Timer Maturity**: If an active timer's remaining tick counter reaches zero, its registered callback is enqueued into the node's sequencer queue for subsequent execution.
-- **Network Domain Execution**: The scheduler selects uniformly among all non-empty directional channels ($P (c_{i \to j}) = \frac{1}{|ActiveChannels|}$). The selected channel consumes strictly its head packet, enforcing the per-channel
-  FIFO invariant:
+- **Network Domain Execution**: The dispatcher selects among all non-empty directional channels using an adversarial channel selection strategy (`AdversarialPacketPicker`) that samples channels proportionally based on continuous log-uniform
+  node affinity drift and semantic head-packet weights. The selected channel consumes strictly its head packet, enforcing the per-channel FIFO invariant:
   - **Packet Drop Evaluation**: The head packet is evaluated against drop probabilities (differentiating request drops from response drops). If dropped, the packet is removed from the channel without delivery.
   - **Packet Delivery**: If not dropped, the packet is delivered directly into the recipient node's sequencer queue.
 
 Because each node and channel represents an independent slot within its respective domain, processing speeds across nodes are completely decoupled: one node can execute multiple cycles while a peer remains idle, and channels deliver
 messages at varying rates without synthetic global synchronization.
 
-## 5. Decoupled Local Virtual Clock & Local Timer Mechanics
+## 5. Adversarial Channel Selection & Traffic Shaping Architecture
+
+In concurrent distributed consensus systems, memoryless uniform random packet scheduling (white noise) fails to reliably trigger edge-case race conditions: stochastic variance averages out across hundreds of discrete steps, and critical
+vulnerability windows (such as node retirement or joint-consensus configuration commits) close too quickly for competing client or election traffic to interleave.
+
+To maximize concurrency race coverage while preserving strict bit-for-bit simulation determinism, the test framework introduces an adversarial channel selection strategy (`AdversarialPacketPicker`) within the discrete step dispatching
+layer.
+
+### The Multiplicative Hybrid Model
+
+The strategy combines two orthogonal mechanisms into a single composite channel selection weight:
+
+1. **Temporally Correlated Node Affinity Drift (Colored Noise)**: In distributed systems, latency variance is predominantly host-centric (e.g. GC pauses, thread pool starvation, kernel context switches). To model this, simulation progresses
+   in dynamic epochs whose durations are drawn from a shifted exponential distribution:
+   $$L_{\text{epoch}} = \min \left (L_{\max}, \; L_{\min} + \lfloor - \bar{L} \ln (1 - U) \rfloor \right), \quad U \sim \text{Uniform} (0, 1)$$
+   with $L_{\min} = 20$, $\bar{L} = 60$, and $L_{\max} = 200$ steps. At the boundary of each epoch, every node $n \in Nodes$ independently samples a continuous multiplier $X_n \sim \text{Uniform} (-3.0, 1.0)$
+   yielding $A_n = 2^{X_n} \in [0.125, 2.0]$. This unconstrained distribution allows zero, one, or multiple stragglers and accelerated nodes to emerge naturally per epoch with up to $16\times$ speed disparity between peers.
+2. **Semantic Head-Packet Weighting**: Evaluates the head packet of each directional channel against known consensus vulnerability boundaries:
+    - **Quiescence Barrier Suppression ($0.05\times$)**: Delays `PermitQuiescence` to extend the `RETIRING` role tenure, allowing client commands and election ballots to strike the retiree before departure.
+    - **Learner Catch-up Throttling ($0.10\times$)**: Throttles `AppendRecords` to nodes in `RETIRING` or `JOINING`, widening replication lag and reliably provoking log compaction lapping and `InstallSnapshot` fallbacks.
+    - **Current-Term Barrier Stalling ($0.20\times$)**: Delays acknowledgment of the leader's current-term entry to test Raft §5.4.2 transitive commitment barriers under active client write traffic.
+    - **Joint Quorum Skew ($0.25\times$)**: Delays append acknowledgments from $C_{\text{new}}$ during uncommitted joint consensus to stress asymmetric dual-quorum progress.
+    - **Pre-Vote Discovery Baiting ($2.00\times$)**: Prioritizes `StateInfo` responses from non-leading nodes to bait uncoordinated participants into launching doomed candidate campaigns.
+    - **Snapshot Delivery Acceleration ($2.00\times$)**: Accelerates snapshot ingestion once lapping occurs to verify state machine adoption.
+    - **Election Contention ($3.00\times$)**: Accelerates `RequestBallot` delivery before incumbent leaders can assert tenure.
+    - **Baseline Normal Traffic ($1.00\times$)**: Serves as the normalized reference flow.
+
+### Composite Weight Formulation & Invariants
+
+For each active non-empty channel $c_{i \to j}$, the composite sampling weight is formulated as:
+$$\text{Weight} (c_{i \to j}) = \max \left (1.0, \; 100.0 \times S (P, j) \times A_i \times A_j \right)$$
+The dispatcher samples among active channels proportionally to their composite weights ($\frac{\text{Weight} (c)}{\sum \text{Weight}}$).
+
+- **Strict Channel FIFO Invariant**: The picker arbitrates exclusively among *channels*, never individual packets within a queue. Dispatched channels consume strictly their head packet via `deliverNext(from, to)`, ensuring zero out-of-order
+  delivery on point-to-point connections.
+- **Liveness and Non-Starvation Invariant**: Clamping composite weights to a minimum floor of $1.0$ guarantees that deprioritized packets are never permanently starved and will eventually be delivered once peer channels drain.
+- **Physical Substrate Purity Invariant**: All traffic-shaping logic is encapsulated in `AdversarialPacketPicker`; the Tier 1 physical network substrate (`SimulatedNetwork`) remains an unopinionated FIFO queue container.
+
+## 6. Decoupled Local Virtual Clock & Local Timer Mechanics
 
 Distributed consensus nodes in the lazy multi-raft architecture contain no internal concepts of wall-clock time, system timestamps, or monotonic hardware clocks; state machines interact with time exclusively through an abstract wake-up
 registration contract (`requestWakeUp`).
@@ -112,7 +152,7 @@ Alternative approaches to virtual time introduce critical flaws in property-base
 - **Queue-Depth Ratio Scaling**: Heuristically scaling timeout durations based on instantaneous queue depths causes severe ratio fluctuations. When network queues swell, timers scale down drastically and expire before RPC round-trips can
   complete, rapidly exhausting retry limits and generating false-positive test failures on valid code. Conversely, when activity subsides, timers scale up to tens of thousands of skips, resulting in step-limit starvation hangs.
 
-The hierarchical stepper resolves these issues by anchoring timer progression strictly to node execution cycles. A node's timers advance if and only if that node is allocated compute cycles. If a node is scheduled frequently, its timers
+The hierarchical stepper resolves these issues by anchoring timer progression strictly to node execution cycles. A node's timers advance if and only if that node is allocated compute cycles. If a node is stepped frequently, its timers
 mature quickly; if a node is neglected, its timers progress slowly.
 
 ### Zero Head-of-Line Blocking
@@ -124,14 +164,14 @@ timers. Timers mature independently during node CPU cycles and enqueue their cal
 
 When all directional network channels are empty and no node possesses pending sequencer tasks, but active timers remain registered across the cluster, the system is quiescent and waiting for timeout expiration.
 
-Rather than stepping idle compute cycles, the scheduler evaluates the global timer state:
+Rather than stepping idle compute cycles, the simulation harness evaluates the global timer state:
 
 $$\Delta = \min_{n \in Nodes, t \in Timers_n} t.\text{remainingTicks}$$
 
-The scheduler advances cluster virtual time by $\Delta$ in $O (1)$ time, subtracts $\Delta$ from all active timers across all nodes, and triggers all timers that reach zero into their respective node sequencers. This breaks quiescence
-instantaneously without wasted simulation cycles while preserving exact causal event order.
+The simulation harness advances cluster virtual time by $\Delta$ in $O (1)$ time, subtracts $\Delta$ from all active timers across all nodes, and triggers all timers that reach zero into their respective node sequencers. This breaks
+quiescence instantaneously without wasted simulation cycles while preserving exact causal event order.
 
-## 6. Deterministic Journal Replay & Reset Completeness Invariant
+## 7. Deterministic Journal Replay & Reset Completeness Invariant
 
 The test framework includes an operation journal (`EnvironmentJournal`) supporting timeline rollback (`undo`), forward re-execution (`redo`), and checkpoint tag restoration (`restoreTag`) for interactive debugging and failure analysis.
 
@@ -140,7 +180,7 @@ The test framework includes an operation journal (`EnvironmentJournal`) supporti
   virtual clock timers, suspended persistence queues, client session counters, in-flight reconfiguration tracking tables, and oracle history buffers—and execute baseline initialization with journal recording suppressed so that replayed
   operations never accumulate duplicate journal entries or observe residual state from rolled-back branches.
 
-## 7. Dynamic Node Lifecycle & Continuous Invariant Verification
+## 8. Dynamic Node Lifecycle & Continuous Invariant Verification
 
 The framework supports dynamic cluster reconfiguration and rigorous safety verification:
 
@@ -148,6 +188,10 @@ The framework supports dynamic cluster reconfiguration and rigorous safety verif
   reconfiguration proposals incorporate offline nodes, the administrative control plane bootstraps them dynamically (`startDynamicNode`) and broadcasts updated peer views to surviving participants.
 - **Terminal Quiescence Irreversibility**: Quiescence is terminal and irreversible (`isDown = true`, `_participant = null`). Quiesced nodes are never automatically restarted; their release events notify `controlPlane.onNodeQuiesced` to
   update surviving peer views.
+- **Graceful Teardown Fault Injection & Two-Tier Disarm Safeguard**: During cluster graceful shutdown via an empty electorate proposal, network partition faults remain active across two distinct governance tiers. In the pre-commit proposal
+  phase, partitions are disarmed only if external client coordination attempts exceed half of the configured budget, preventing client-level election starvation. In the post-commit retirement phase, partitions continue to cycle and sever
+  channels during log catch-up and quiescence authorization until internal protocol retries reach half of the leader's retry quota, ensuring exhaustive fault testing of the two-phase retirement protocol while guaranteeing that remaining
+  attempts execute in a healed network to prevent false-positive peer abandonment.
 - **Continuous Per-Step Invariant Verification**: Core consensus invariants—including Leader Uniqueness (at most one leader per term), State Machine Safety (identical committed log entries produce identical state machine states), and Log
   Matching (identical index and term imply identical prefix history)—are asserted after every single discrete simulation step. When an invariant is violated, the simulation halts immediately at the exact causal step that caused the
   divergence.
