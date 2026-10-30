@@ -9,7 +9,7 @@ timestamp: "2026-10-27T23:35:00Z"
 # Consensus Simulation & Test Framework
 
 This document specifies the architecture, three-tier separation of concerns, modular subsystem decomposition, two-tier discrete step dispatching model, adversarial channel selection architecture, decoupled virtual clock mechanics, and
-deterministic replay journal of the test framework used to verify [Lazy Multi-Raft Consensus Architecture](lazy-multi-raft-consensus.md).
+deterministic replay journal of the test framework used to verify the [Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md) within the [Multi-Raft System Architecture](system-architecture.md).
 
 ## 1. Concurrency Verification Objectives & Deterministic Simulation
 

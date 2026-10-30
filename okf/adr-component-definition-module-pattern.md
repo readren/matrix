@@ -3,14 +3,15 @@ type: "Decision"
 title: "Component Definition Module (CDM) Pattern for Service Decomposition"
 description: "Architectural specification and design rationale for the Component Definition Module (CDM) pattern, enabling modular decomposition of complex service definitions while preserving path-dependent type unity and eliminating type parameter pollution."
 tags: ["design-history", "consensus", "architecture"]
-timestamp: "2026-09-22T22:50:00Z"
+timestamp: "2026-10-29T20:34:00Z"
 ---
 
 # ADR: Component Definition Module (CDM) Pattern for Service Decomposition
 
 ## Context
 
-In complex distributed actor and consensus subsystems, modules often grow significantly in size and scope. Specifically, `ConsensusParticipantSdm` encapsulates the full lifecycle of a multi-raft consensus participant, including:
+In complex distributed actor and consensus subsystems, modules often grow significantly in size and scope. Specifically, `ConsensusParticipantSdm` encapsulates the full lifecycle of a multi-raft consensus participant
+(see [Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md) and [Multi-Raft System Architecture](system-architecture.md)), including:
 - Participant role transitions and message handling (follower, candidate, leader, retiree).
 - Reactive lazy consensus election protocols (pre-vote state discovery and candidate voting quorums).
 - Cluster electorate management across sole electorates and two-phase joint consensus transitions.
@@ -18,15 +19,18 @@ In complex distributed actor and consensus subsystems, modules often grow signif
 
 Traditional object-oriented decomposition approaches—such as extracting independent helper classes or pure functional components—face severe friction in Scala 3 when decomposing large Service Definition Modules (SDMs):
 
-1. **Type Parameter Explosion**: The SDM defines multiple abstract member types (`ParticipantId`, `ClientCommand`, `ClientResponse`, `StorageRecord`, `SnapshotData`). Decomposed external components would each require generic type parameters for every abstract type they touch, polluting signatures across call sites.
-2. **Path-Dependent Type Incompatibility**: The sequencing primitives (`Capture`, `Captor`, `CausalFence`) are path-dependent on the single sequencer instance (`sequencer: Doer`). If auxiliary components are instantiated as separate objects with their own sequencer references, the compiler cannot automatically unify path-dependent types (e.g., `this.sequencer.Capture[T]` vs `external.sequencer.Capture[T]`) without:
+1. **Type Parameter Explosion:** The SDM defines multiple abstract member types (`ParticipantId`, `ClientCommand`, `ClientResponse`, `StorageRecord`, `SnapshotData`). Decomposed external components would each require generic type parameters
+   for every abstract type they touch, polluting signatures across call sites.
+2. **Path-Dependent Type Incompatibility:** The sequencing primitives (`Capture`, `Captor`, `CausalFence`) are path-dependent on the single sequencer instance (`sequencer: Doer`; see [Sequencer Core](sequencer-core.md)). If auxiliary
+   components are instantiated as separate objects with their own sequencer references, the compiler cannot automatically unify path-dependent types (e.g., `this.sequencer.Capture[T]` vs `external.sequencer.Capture[T]`) without:
    - Introducing singleton type parameter bounds (`S <: Doer & Singleton`),
    - Or wrapping operations in runtime adapter conversions, both of which introduce cognitive overhead and performance penalties.
-3. **Circular References and Coupling**: Auxiliary subsystems (such as quorum evaluation and candidate ranking) need to inspect peer progress and log terms without being coupled to the full state machine or internal lifecycle classes (`LearnerProgress`, `PrimaryState`).
+3. **Circular References and Coupling:** Auxiliary subsystems (such as quorum evaluation and candidate ranking) need to inspect peer progress and log terms without being coupled to the full state machine or internal lifecycle classes
+   (`LearnerProgress`, `PrimaryState`).
 
 ## Decision
 
-We introduce the **Component Definition Module (CDM)** pattern as the standardized architectural convention for decomposing large Service Definition Modules.
+We introduce the **Component Definition Module (CDM)** pattern as the standardized architectural convention for decomposing large Service Definition Modules (see [Coding Guidelines](coding-guidelines.md)).
 
 ### 1. Structural Composition via Subtyping
 

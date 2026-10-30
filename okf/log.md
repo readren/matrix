@@ -3,8 +3,46 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-28T01:40:00Z"
+timestamp: "2026-10-29T21:25:00Z"
 ---
+
+## [2026-10-29T21:25:00Z]
+
+- Conceptualized consensus commit advancement and awaiter fulfillment in `okf/lazy-multi-raft-consensus.md` and `okf/adr-causal-fence-state-synchronization.md`, replacing specific code method names (`recalculateCommitIndex`) and obsolete
+  types (`CommitIndexAwaiter`) with timeless architectural descriptions, and removed internal variable references.
+- Added a defective implementation notice to `okf/adr-causal-fence-state-synchronization.md` marking the In-Place Partition & Reverse-Execution pattern as violating FIFO subscription order when partial commits leave multiple unfulfilled
+  awaiters behind.
+- Updated `okf/sequencer-core.md` to establish `Mono` as the base single-value lazy computation trait (purging obsolete `Observable (future Mono)` references) and removed machine-specific absolute Windows paths.
+- Cleaned up `okf/adr-spare-slot-pattern-evaluation.md` and `okf/adr-scheduling-subscription-design.md`, removing dead sandbox links and replacing absolute file paths with relative links and conceptual descriptions.
+
+## [2026-10-29T20:34:00Z]
+
+- Created `okf/coding-guidelines.md` establishing standardized repository conventions for Scala 3 explicit block bracing, continuous prose wrapping, semantic naming patterns (boundary `on...` versus internal `handle...`), and Scaladoc
+  continuation formatting, resolving the broken index link in `okf/index.md`.
+- Enhanced OKF cross-document connectivity by adding outbound cross-references across isolated ADRs and core component specifications (`okf/adr-causal-fence-state-synchronization.md`, `okf/adr-component-definition-module-pattern.md`,
+  `okf/transcript-lazy-multi-raft-design.md`, `okf/sequencer-core.md`, and `okf/consensus-test-framework.md`).
+
+## [2026-10-29T20:28:00Z]
+
+- Enhanced cross-document traceability between `okf/system-architecture.md` and `okf/lazy-multi-raft-consensus.md` by embedding deep section anchor links connecting high-level architectural mechanisms (Adaptive Pipelining, fault detection,
+  electorate transitions, Storage SPI boundary, and client deduplication) to their formal protocol specifications, and linked `CausalFence` synchronization to `okf/adr-causal-fence-state-synchronization.md`.
+
+## [2026-10-29T20:20:00Z]
+
+- Refined the Adaptive Pipelining ("First-Stitch" Recovery) specification in Section 2.I of `okf/system-architecture.md` to clarify the operational sequence: pausing client commands in memory on dormant shards, triggering reactive leader
+  election, and executing the paused command in the newly inaugurated leader's initial replication wave.
+
+## [2026-10-29T20:02:00Z]
+
+- Expanded Section 8 of `okf/lazy-multi-raft-consensus.md` to specify the complete triad of host integration SPI contracts (`ClusterParticipant` transport bridge, `Workspace` storage SPI, and `StateMachine` application SPI), formalizing the
+  unopinionated sequential storage boundary against the consensus invariant engine and detailing the delegation of client command deduplication to the application state machine across log compaction snapshot boundaries.
+
+## [2026-10-29T19:37:00Z]
+
+- Restructured the OKF core architecture documentation by decoupling the macro-framework design from the micro-consensus protocol engine: created `okf/system-architecture.md` to document the distributed Multi-Raft application framework
+  (Gunther's USL scaling model, Control Plane vs. Data Plane separation, shard isolation, zero-RTT routing, and co-located persistence IoC), refocused `okf/lazy-multi-raft-consensus.md` strictly as the
+  `Lazy Raft Consensus Protocol Specification` for the single-group consensus state machine (`ConsensusParticipantSdm`), purged obsolete implementation-level class references (`Accessible`) in favor of timeless Storage SPI (`Workspace`) and
+  consensus invariant boundaries, and updated `okf/index.md`.
 
 ## [2026-10-28T01:40:00Z]
 

@@ -8,7 +8,8 @@ timestamp: "2026-07-09T00:08:20Z"
 
 # Design Discussion Transcript: Lazy Multi-Raft
 
-This reference document contains the translated transcript of the architectural design session regarding the Lazy Multi-Raft framework, scalability considerations under Gunther's Universal Scalability Law, and localized storage.
+This reference document contains the translated transcript of the architectural design session regarding the Lazy Multi-Raft framework, scalability considerations under Gunther's Universal Scalability Law, and localized storage. The
+resulting formal specifications are codified in the [Multi-Raft System Architecture](system-architecture.md) and the [Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md).
 
 ---
 

@@ -3,15 +3,15 @@ type: "Index"
 title: "Matrix Project Knowledge Base"
 description: "Index of all architectural and operational specifications."
 tags: ["index", "documentation"]
-timestamp: "2026-10-22T19:00:00Z"
+timestamp: "2026-10-29T19:37:00Z"
 ---
 
 # Matrix Project Knowledge Base
 
 ## Core Architecture
 
-- [System Architecture](system-architecture.md)
-- [Lazy Multi-Raft Consensus Architecture](lazy-multi-raft-consensus.md)
+- [Multi-Raft System Architecture](system-architecture.md)
+- [Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md)
 
 ## Components
 

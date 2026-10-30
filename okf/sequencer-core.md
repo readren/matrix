@@ -3,16 +3,17 @@ type: "Component"
 title: "Sequencer Core Component"
 description: "Core execution model, Task hierarchy, and Capture (Captor) implementation details."
 tags: ["sequencer", "task", "captor", "flux", "testing"]
-timestamp: "2026-09-01T23:10:00Z"
+timestamp: "2026-10-29T21:25:00Z"
 ---
 
 # Sequencer Core Component
 
-This component defines the single-threaded deterministic sequencing primitives under matrix.
+This component defines the single-threaded deterministic sequencing primitives under matrix (`Doer`, `Duty`, `Capture`, and [`CausalFence`](adr-causal-fence-state-synchronization.md)), providing the foundational execution model for
+the [Multi-Raft System Architecture](system-architecture.md) and [Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md).
 
 ## Core Hierarchy
 
-* `Observable` (future `Mono`): The base trait for all lazy computations.
+* `Mono`: The base trait for all single-value lazy computations.
 * `Task`: A task that executes lazily and can be subscribed to multiple times.
 * `Capture`: A single-run task that caches its completed result.
 * `Captor`: A latching task with an externally controllable completion hook (Promise-like).
@@ -49,8 +50,7 @@ This component defines the single-threaded deterministic sequencing primitives u
 
 ## Scheduling and Timing Extensions
 
-The [SchedulingExtension](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/SchedulingExtension.scala) and [ScheduledFluxExtension](file:///C:/Projects/tools/matrix/sequencer/core/src/main/scala/ScheduledFluxExtension.scala)
-traits extend `Doer` with temporal operators. Exposing underlying timer configurations and aligning execution behaviors is structured as follows:
+The `SchedulingExtension` and `ScheduledFluxExtension` traits extend `Doer` with temporal operators. Exposing underlying timer configurations and aligning execution behaviors is structured as follows:
 
 * **Separation of Task (Mono) vs. Flux (Stream) Scheduling**:
     * Single-shot delays (`delayed`, `timeLimited`, `Task_sleeps`, `Task_delays`, `Task_delaysFlat`, `retriedOnTimeout`) return a `Task[A]` / `TimedTask[A]` in `SchedulingExtension` and complete at most once.
