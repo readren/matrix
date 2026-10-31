@@ -18,6 +18,7 @@ import scala.collection.mutable
 class ConsensusOracle(env: ConsensusEnvironment) {
 	private val _leaderByTerm: mutable.Map[Term, NodeId] = mutable.Map.empty
 	private val _appliedCommandsByIndex: mutable.Map[RecordIndex, (NodeId, TestClientCommand)] = mutable.Map.empty
+	private val _lastAppliedIndexByNode: mutable.Map[NodeId, RecordIndex] = mutable.Map.empty
 	private val _committedRecordsByNode: mutable.Map[NodeId, mutable.ArrayBuffer[Record | None.type]] = mutable.Map.empty
 
 	/** Read-only view of the unique leader elected in each [[Term]]. */
@@ -25,6 +26,9 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 
 	/** Read-only view mapping each applied [[RecordIndex]] to the first `(NodeId, TestClientCommand)` pair that applied it. */
 	def appliedCommandsByIndex: collection.Map[RecordIndex, (NodeId, TestClientCommand)] = _appliedCommandsByIndex
+
+	/** Read-only view mapping each participant [[NodeId]] to its highest applied [[RecordIndex]]. */
+	def lastAppliedIndexByNode: collection.Map[NodeId, RecordIndex] = _lastAppliedIndexByNode
 
 	/** Read-only view of each node's historical committed log records (0-based buffer where index `i` corresponds to `RecordIndex = i + 1`, with `None` occupying unrecorded snapshot gaps). */
 	def committedRecordsByNode: collection.Map[NodeId, collection.Seq[Record | None.type]] = _committedRecordsByNode
@@ -36,6 +40,7 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 	private[env] def reset(): Unit = {
 		_leaderByTerm.clear()
 		_appliedCommandsByIndex.clear()
+		_lastAppliedIndexByNode.clear()
 		_committedRecordsByNode.clear()
 		for i <- 0 until env.clusterSize do {
 			val id = NodeId(s"p-$i")
@@ -124,8 +129,19 @@ class ConsensusOracle(env: ConsensusEnvironment) {
 		}
 	}
 
-	/** Verifies the **State Machine Safety** invariant when `node` applies `command` at log `index`. */
+	/** Verifies the **State Machine Safety** invariant and strictly monotonic command application when `node` applies `command` at log `index`. */
 	private[env] def onCommandApplied(node: EnvironmentNode, command: TestClientCommand, index: RecordIndex): Unit = {
+		_lastAppliedIndexByNode.get(node.myId) match {
+			case Some(previousAppliedIndex) =>
+				if index == previousAppliedIndex then {
+					throw new AssertionError(s"Duplicate command application on node ${node.myId} at index $index: command $command applied more than once")
+				} else if index < previousAppliedIndex then {
+					throw new AssertionError(s"Non-monotonic command application on node ${node.myId}: applied index $index after previous index $previousAppliedIndex (watermark regression)")
+				}
+			case None => ()
+		}
+		_lastAppliedIndexByNode(node.myId) = index
+
 		_appliedCommandsByIndex.get(index) match {
 			case Some((prevNode, prevCmd)) =>
 				if prevCmd != command then {

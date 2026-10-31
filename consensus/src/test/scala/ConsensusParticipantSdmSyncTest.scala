@@ -246,14 +246,25 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			val shutdownBackoffSteps: Int = clusterSize * ticksPerNodeCycle
 
 			// --- Reconfiguration Coordination and Client State ---
-			/** Dedicated simulated client (Tier 3) driving business command submissions and target failover. */
-			val client: SimulatedClient = new SimulatedClient(
-				clientId = TestClientId,
-				env = env,
-				initialKnownEndpoints = initialSeeds,
-				maxInFlightSteps = maxInFlightSteps,
-				maxRetries = maxRetries
-			)
+			/** Randomized pool of simulated clients (Tier 3) driving concurrent business command submissions and pipelining. */
+			val clientPoolSize: Int = 3 + random.nextInt(2)
+			val clients: IArray[SimulatedClient] = IArray.tabulate(clientPoolSize) { i =>
+				val window = 2 + random.nextInt(3)
+				new SimulatedClient(
+					clientId = s"c-$i",
+					env = env,
+					initialKnownEndpoints = initialSeeds,
+					maxInFlightSteps = maxInFlightSteps,
+					maxRetries = maxRetries,
+					pipelineWindow = window
+				)
+			}
+
+			val baseCommandsPerClient: Int = numberOfCommandsToSend / clientPoolSize
+			val extraCommands: Int = numberOfCommandsToSend % clientPoolSize
+			val targetCommandsPerClient: IArray[Int] = IArray.tabulate(clientPoolSize) { i =>
+				baseCommandsPerClient + (if i < extraCommands then 1 else 0)
+			}
 
 			/** Target participant currently addressed by administrative reconfiguration submissions. */
 			var reconfigTarget: NodeId = if startWithHighestPriorityParticipant then initialSeeds.toSeq.sorted.head else initialSeeds.toSeq.sorted.last
@@ -794,15 +805,21 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				}
 			}
 
-			while (!env.oracle.areAllNodesQuiesced || client.currentCommandSerial <= numberOfCommandsToSend) && totalSteps < maxTotalSteps do {
+			def areAllCommandsCompleted: Boolean = clients.indices.forall { i =>
+				clients(i).currentCommandSerial > targetCommandsPerClient(i)
+			}
+
+			while (!env.oracle.areAllNodesQuiesced || !areAllCommandsCompleted) && totalSteps < maxTotalSteps do {
 				totalSteps += 1
 
-				client.driveCommandLifecycle(numberOfCommandsToSend)
-				if NetworkPartitions.isPartitionActive && client.commandRetries > maxRetries / 2 then {
+				for i <- clients.indices do {
+					clients(i).driveCommandLifecycle(targetCommandsPerClient(i))
+				}
+				if NetworkPartitions.isPartitionActive && clients.exists(_.commandRetries > maxRetries / 2) then {
 					NetworkPartitions.healPartition()
 				}
 
-				if client.currentCommandSerial <= numberOfCommandsToSend then {
+				if !areAllCommandsCompleted then {
 					ElectorateNoise.inject()
 				} else {
 					GracefulShutdown.drive()
@@ -817,7 +834,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 
 			if totalSteps >= maxTotalSteps then {
 				val nonQuiesced = env.oracle.formatNonQuiescedNodesDiagnostic
-				throw new AssertionError(s"Simulation reached step limit of $maxTotalSteps. Commands sent: ${client.totalCommandsSucceeded}/$numberOfCommandsToSend, allNodesQuiesced=${env.oracle.areAllNodesQuiesced}, nonQuiesced=[$nonQuiesced]")
+				val totalCommandsSucceeded = clients.map(_.totalCommandsSucceeded).sum
+				throw new AssertionError(s"Simulation reached step limit of $maxTotalSteps. Commands sent: $totalCommandsSucceeded/$numberOfCommandsToSend, allNodesQuiesced=${env.oracle.areAllNodesQuiesced}, nonQuiesced=[$nonQuiesced]")
 			}
 			assert(env.oracle.areAllNodesQuiesced, s"Not all nodes reached QUIESCED after simulation (${GracefulShutdown.shutdownAttempts} shutdown attempts)")
 

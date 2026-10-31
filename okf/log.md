@@ -3,8 +3,20 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-29T21:25:00Z"
+timestamp: "2026-10-30T19:10:00Z"
 ---
+
+## [2026-10-30T19:10:00Z]
+
+- Formalized the Centralized Leader Command Application and Follower Parity architecture in `okf/adr-causal-fence-state-synchronization.md`, documenting the single sequential application loop, allocation-free FIFO response buffer
+  (`ArrayDeque`), and decoupled abdication safety under client pipelining while eliminating per-command promise allocations.
+
+## [2026-10-30T00:00:00Z]
+
+- Formalized the Allocation-Free, Re-entrancy-Safe FIFO Awaiter Dispatch specification in `okf/adr-causal-fence-state-synchronization.md`, documenting the contiguous prefix fulfillment invariant, atomic head dequeue prior to notification,
+  re-entrancy safety against synchronous appends and leadership clears, and stack purity under the Decoupled Mutation Contract while removing the obsolete defective implementation notice.
+- Documented strictly monotonic state machine command application tracking and participant duplicate rejection in `okf/consensus-test-framework.md` and verification oracle specifications.
+- Documented concurrent client command pipelining ($W > 1$) and multi-client contention pool architecture in the consensus discrete-event simulation harness.
 
 ## [2026-10-29T21:25:00Z]
 

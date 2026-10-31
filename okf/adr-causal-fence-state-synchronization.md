@@ -3,7 +3,7 @@ type: "Decision"
 title: "CausalFence and the Decoupled Mutation Contract"
 description: "Architectural decision and specification for safe, non-blocking sequential state mutation using CausalFence."
 tags: [ "design-history", "concurrency", "consensus", "sequencer" ]
-timestamp: "2026-10-29T20:34:00Z"
+timestamp: "2026-10-30T19:10:00Z"
 ---
 
 # ADR: CausalFence and the Decoupled Mutation Contract
@@ -89,20 +89,31 @@ stale-state references, and batch turn-splitting.
 
 ## Consequential Designs
 
-### Allocation-Free, Re-entrancy-Safe Awaiters
+### Allocation-Free, Re-entrancy-Safe FIFO Awaiter Dispatch
 
-> [!WARNING]
-> **Defective Implementation Notice:** The In-Place Partition & Reverse-Execution pattern described below violates the FIFO subscription order invariant whenever a commit advancement fulfills only a subset of awaiters and leaves two or more
-unfulfilled awaiters in the buffer. The unstable partition swaps unfulfilled awaiters into the prefix, inverting their relative order and causing subsequent commit advancements to execute those awaiters in LIFO order. This algorithm is
-marked as defective and must be refactored to a stable FIFO dispatch mechanism.
+Because the Decoupled Mutation Contract guarantees that `causalAnchor` subscribers do not synchronously trigger cascading state mutations, internal pub/sub mechanics (such as commit watermark awaiters) execute via synchronous,
+zero-allocation dispatch without re-entrancy hazards or rescan loops.
 
-Because the Decoupled Mutation Contract guarantees that `causalAnchor` subscribers do not synchronously trigger cascading state mutations, we can optimize internal pub/sub mechanics (like commit watermark awaiters) to run entirely
-synchronous, zero-allocation algorithms.
+Commit watermark awaiters are registered in non-decreasing target index order. Consequently, whenever the commit index advances, fulfilled awaiters form a contiguous prefix at the head of the pending queue. The fulfillment engine processes
+this queue using a strictly sequential, allocation-free FIFO dispatch mechanism:
 
-The awaiter fulfillment algorithm currently uses an **In-Place Partition & Reverse-Execution** pattern:
-1. **In-place Partition:** Fulfilled awaiters are swapped to the end of the buffer (from `partitionIdx` to the end), avoiding the allocation of temporary `List`s or `Array`s.
-2. **Reverse Execution:** The buffer is iterated backwards (`length - 1` down to `partitionIdx`). For each element, `remove(j)` is called, followed by execution of the awaiter's captor.
-   - *Safety against Appends:* If an observer synchronously appends a new awaiter, it is placed at the end of the buffer (index `> j`), and the `remove(j)` safely shifts it left without disrupting the current iteration.
-   - *Safety against Clears:* If an observer triggers a shutdown (clearing the buffer), the `j < length` check safely aborts the loop, avoiding `IndexOutOfBoundsException`.
-3. **No Rescan Loops Required:** Because all mutating observers are decoupled via the contract, notifying an observer mathematically cannot synchronously advance the commit index. Therefore, an outer "rescan" loop to catch cascaded
-   fulfillments is obsolete.
+1. **Strict FIFO Execution:** Awaiters are dequeued and resolved strictly in their original registration order from the head of the buffer. This guarantees that state machine command applications and client response dispatches follow strict
+   causal order, upholding linearizability and preventing catch-up duplicate executions or watermark regressions.
+2. **Atomic Dequeue Prior to Notification:** Each fulfilled awaiter is popped from the head of the buffer immediately before its continuation is invoked. This provides complete re-entrancy isolation against concurrent buffer modifications:
+  - *Safety against Appends:* If an observer synchronously registers a new watermark awaiter, the new awaiter targets an index strictly greater than the current commit index and is appended to the tail of the buffer, leaving the ongoing
+    head dispatch loop unaffected.
+  - *Safety against Clears:* If an observer triggers leadership abdication or shutdown, role exit logic atomically seizes and clears all remaining awaiters for deferred notification, causing subsequent loop head inspections to terminate
+    cleanly without index exceptions or redundant executions.
+3. **Purity and Loop Decoupling:** Because all state-mutating observers are decoupled via `Capture_defer` or task deferral per the Decoupled Mutation Contract, observer notification mathematically cannot synchronously advance the commit
+   index. Therefore, an outer rescan loop is obsolete, preserving stack purity and zero allocation on the happy path.
+
+### Centralized Leader Command Application and Follower Parity
+
+To uphold linearizability under concurrent client command pipelining ($W > 1$) while avoiding per-command promise allocations, state machine command execution in the leader role adheres to the Follower Parity principle:
+
+1. **Unified Sequential Application Loop:** Rather than spawning decentralized, competing catch-up loops per in-flight command, state machine execution is strictly serialized within a single sequential applier loop. This loop processes
+   committed entries strictly in log order from the last applied index up to the current commit watermark.
+2. **Allocation-Free FIFO Response Buffer:** In-flight client command responses are buffered in a flat circular array (`ArrayDeque`) in log registration order. When the centralized applier commits and applies a client command to the state
+   machine, it pops the matching response captor from the head of the buffer and fulfills it with the state machine result without intermediate promise chaining or lambda allocation.
+3. **Re-Entrancy and Abdication Safety:** Prior-role applier tasks from earlier terms are drained before leader state machine processing begins. If leadership is vacated while commands are in flight, the pending response buffer is
+   atomically seized and cleared, and client failover notifications are dispatched on a subsequent sequencer turn per the Decoupled Mutation Contract.

@@ -1153,7 +1153,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			/** Applies committed [[CommandRecord]]s silently and in a decoupled manner until reaching [[commitIndex]].\
 			 * This method assumes that the [[PrimaryState]]'s log is not truncated while this method is running: log truncation must wait until the [[decoupledCommandsApplierCompletion]] is fulfilled.\
-			 * CAUTION: This process may synchronously advance the [[primaryStateFence]] and therefore will cause causal safety assertions like `primaryState0 eq primaryStateFence.committedState` to fail. This problem can be avoided moving the call to this method after the check line, preferably to the end of the block that uses a [[PrimaryState]] instance.
+			 * This method mutates the [[PrimaryState]] when the compaction threshold is reached upon finishing command application, but the mutation is done in a decoupled maneer to satisfry the Decoupled Mutation Contract.
 			 * @param primaryState0 the current [[PrimaryState]].
 			 * @param mustInstallSnapshot instructs to reset the [[StateMachine]]' state from the latest snapshot in the current [[Workspace]]. */
 			protected final def startApplyingCommittedCommands(primaryState0: PrimaryState, mustInstallSnapshot: Boolean)(using Trace.Context): Unit = {
@@ -1210,7 +1210,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * They are applied one after the other as long as the [[currentRole]] is stateful, assuming the log isn't truncated while this method is running.
 			 * @param primaryState any reference to an [[PrimaryState]] instance produced by [[primaryStateFence]]. It is not necessary it be the current, causally anchored one. It is used to read committed records, which don't mutate.
 			 * @param upTo the upper inclusive bound of [[RecordIndex]] to apply, together with [[commitIndex]]. */
-			final def applyCommittedCommands(primaryState: PrimaryState, upTo: RecordIndex, recursionDepth: Int)(using Trace.Context): sequencer.Capture[Unit] = {
+			private def applyCommittedCommands(primaryState: PrimaryState, upTo: RecordIndex, recursionDepth: Int)(using Trace.Context): sequencer.Capture[Unit] = {
 				val indexOfCommandToApply = highestAppliedCommandIndex + 1
 				if indexOfCommandToApply > upTo || indexOfCommandToApply > commitIndex then sequencer.Capture_unit
 				else {
@@ -1218,10 +1218,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 						case command: CommandRecord[ClientCommand] @unchecked =>
 							val previousExecutionSerial = sequencer.currentExecutionSerial
 							for {
-								_ <- machine.applyClientCommand(indexOfCommandToApply, command.command)
+								smr <- machine.applyClientCommand(indexOfCommandToApply, command.command)
 								_ <- {
 									notifyListeners(_.onCommandApplied(indexOfCommandToApply, command.term))
 									highestAppliedCommandIndex = indexOfCommandToApply
+									handleCommandRecordApplied(indexOfCommandToApply, smr)
 									// It is not necessary to have an updated primary state here because committed records are never mutated, and we are not mutating the primary state here. We only need to know if the current role is stateful.
 									if currentRole.isInstanceOf[StatefulRole] then {
 										if sequencer.currentExecutionSerial != previousExecutionSerial then applyCommittedCommands(primaryState, upTo, 0)
@@ -1236,6 +1237,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 			}
+
+			/** Hook invoked when a committed [[CommandRecord]] has been applied to the [[StateMachine]].
+			 * Default implementation is a no-op; overridden by [[Leader]] to fulfill client response captors. */
+			protected def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = ()
 
 			/** Starts a process that compacts the log.
 			 * Assumes the [[machine]] supports calls to [[StateMachine.applyClientCommand]] while [[StateMachine.takeSnapshot]] is running.
@@ -2182,7 +2187,11 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 			private class RecordBecomesCommittedCaptor(val targetIndex: RecordIndex) extends sequencer.Captor[PrimaryState]
 
-			private val recordBecomesCommittedCaptors: mutable.ArrayBuffer[RecordBecomesCommittedCaptor] = mutable.ArrayBuffer.empty
+			private val recordBecomesCommittedCaptors: mutable.ArrayDeque[RecordBecomesCommittedCaptor] = mutable.ArrayDeque.empty
+
+			private class ClientCommandResponseCaptor(val commandRecordIndex: RecordIndex, val clientCommand: ClientCommand) extends sequencer.Captor[ResponseToClient]
+
+			private val pendingClientResponses: mutable.ArrayDeque[ClientCommandResponseCaptor] = mutable.ArrayDeque.empty
 
 			private var inProgressElectorateChange: Maybe[(ElectorateChangeRequestId, Set[ParticipantId])] = Maybe.empty
 
@@ -2251,13 +2260,26 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				inProgressElectorateChange = Maybe.empty
 				val awaitersToSeize = recordBecomesCommittedCaptors.toArray
 				recordBecomesCommittedCaptors.clear()
+				val clientsToVacate = pendingClientResponses.toArray
+				pendingClientResponses.clear()
 				super.handleExit()
 
-				// Decoupled Mutation Contract / Re-Entrance Prevention: Observers of `recordBecomesCommittedCaptors` (primarily `handleCommandReplication`) react to abdication (`currentRole ne thisLeader`) by immediately delegating vacated in-flight commands to `currentRole.onCommandFromClient(..., LEADERSHIP_VACATED)`. If awaiters were seized synchronously here, that delegation would execute re-entrance inside `handleExit`, triggering `updateRole` and mutating the primary state fence while the outer caller (e.g., `onAppendRecords`) is still suspended on the call stack. Deferring seizure to `sequencer.run` ensures the outer role transition and RPC turn complete atomically before vacated commands are handled.
+				// Decoupled Mutation Contract / Re-Entrance Prevention: Observers of `recordBecomesCommittedCaptors` and `pendingClientResponses` react to abdication (`currentRole ne thisLeader`) by immediately delegating vacated in-flight commands to `currentRole.onCommandFromClient(..., LEADERSHIP_VACATED)`. If awaiters were seized synchronously here, that delegation would execute re-entrance inside `handleExit`, triggering `updateRole` and mutating the primary state fence while the outer caller (e.g., `onAppendRecords`) is still suspended on the call stack. Deferring seizure to `sequencer.run` ensures the outer role transition and RPC turn complete atomically before vacated commands are handled.
 				val dummyPrimaryState = sequencer.Capture_ready(initialPrimaryState) // Any PrimaryState instance is valid because continuations discard the payload when `currentRole ne thisLeader`.
 				if awaitersToSeize.nonEmpty then {
 					sequencer.run {
 						awaitersToSeize.foreach(_.seizeWith(dummyPrimaryState, true))
+					}
+				}
+				if clientsToVacate.nonEmpty then {
+					sequencer.run {
+						clientsToVacate.foreach { captor =>
+							currentRole.onCommandFromClient(captor.clientCommand, LEADERSHIP_VACATED).triggerSync(new sequencer.MonoObserver[ResponseToClient] {
+								override def onSuccess(resp: ResponseToClient): Unit = captor.captureSync(resp)
+
+								override def onError(ex: Throwable): Unit = captor.trapSync(ex)
+							})
+						}
 					}
 				}
 			}
@@ -2668,48 +2690,23 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					// First, append the command to the log if it wasn't already
 					primaryState1 <- primaryStateFence.advanceIfWith(psUpdater)
 					// Second, replicate it if not already, and then, if replication was successful, apply the command to the state machine assuming it is idempotent.
-					response <- handleCommandReplication(primaryState1, clientCommand, psUpdater.commandRecordIndex)
+					response <- {
+						if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
+						else {
+							val commandRecordIndex = psUpdater.commandRecordIndex
+							val clientCaptor = new ClientCommandResponseCaptor(commandRecordIndex, clientCommand)
+							pendingClientResponses.addOne(clientCaptor)
+							driveReplicationPipelines(primaryState1)
+							clientCaptor
+						}
+					}
 				} yield response
 			}
 
-			private def handleCommandReplication(primaryState1: PrimaryState, clientCommand: ClientCommand, commandRecordIndex: RecordIndex)(using Trace.Context): sequencer.Capture[ResponseToClient] = {
-				// The role may have changed due to a failure while storing the primary state. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
-				if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
-				else {
-					assert(primaryStateFence.committedState.is(primaryState1)) // Fails if the primaryStateFence was touched after yielding the PrimaryState instance received as parameter.
-					assert(primaryState1.currentTerm == leadedTerm) // Assumes that the demotion due to higher term seen is always applied synchronously within a section causally ordered by the primaryStateFence. See the CausalFence's game changing invariant.
-					val logBufferOffset1 = primaryState1.logBufferOffset
-					for {
-						primaryState2 <- {
-							driveReplicationPipelines(primaryState1)
-							awaitCommitWatermark(primaryState1, commandRecordIndex)
-						}
-						response <- {
-							// The role may have changed while attempting the replication. In that case, delegate the handling to the current role. The appended command record will be overwritten when the new leader calls the append records RPC.
-							if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
-							else {
-								assert(commitIndex >= commandRecordIndex)
-								for {
-									_ <- decoupledCommandsApplierCompletion // Waits the committed-commands-applier to complete any work left by a previous role.
-									response <- {
-										// It is not necessary to have an updated primary state here because committed records are never mutated, and we are not mutating the primary state here. We only need to know if we are still leading.
-										if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
-										else for {
-											_ <- applyCommittedCommands(primaryState2, commandRecordIndex - 1, 0)
-											response <- {
-												if currentRole ne thisLeader then currentRole.onCommandFromClient(clientCommand, LEADERSHIP_VACATED)
-												else for smr <- machine.applyClientCommand(commandRecordIndex, clientCommand) yield {
-													highestAppliedCommandIndex = commandRecordIndex
-													if commandRecordIndex - logBufferOffset1 > logCompactionThreshold then startLogCompaction()
-													Processed(commandRecordIndex, smr)
-												}
-											}
-										} yield response
-									}
-								} yield response
-							}
-						}
-					} yield response
+			override protected def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = {
+				if pendingClientResponses.nonEmpty && pendingClientResponses.head.commandRecordIndex == appliedCommandIndex then {
+					val clientCaptor = pendingClientResponses.removeHead()
+					clientCaptor.captureSync(Processed(appliedCommandIndex, smr))
 				}
 			}
 
@@ -3010,36 +3007,27 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 
-				// We partition the awaiters in-place to avoid allocating an intermediate array.
-				// This groups all fulfilled awaiters at the end of the collection (from `partitionIdx` to the end).
-				var i = 0
-				var partitionIdx = recordBecomesCommittedCaptors.length
-				while i < partitionIdx do {
-					val awaiter = recordBecomesCommittedCaptors(i)
-					if commitIndex >= awaiter.targetIndex then {
-						partitionIdx -= 1
-						recordBecomesCommittedCaptors(i) = recordBecomesCommittedCaptors(partitionIdx)
-						recordBecomesCommittedCaptors(partitionIdx) = awaiter
-					} else {
-						i += 1
-					}
+				// Dispatches fulfilled awaiters strictly in registration (FIFO) order from the head of the queue.
+				// Because awaiters are appended in non-decreasing targetIndex order, fulfilled awaiters form a contiguous prefix.
+				// Each fulfilled awaiter is dequeued prior to notification, preserving safety against re-entrant buffer modifications:
+				// - If an observer synchronously adds a new awaiter, it is appended to the tail with a targetIndex > commitIndex, leaving head dispatch unaffected.
+				// - If an observer synchronously triggers leadership exit (e.g., via abdication), handleExit seizes and clears the remaining buffer, terminating this loop immediately and safely.
+				// - Under the Decoupled Mutation Contract, observers cannot synchronously mutate the primary state or advance the commit index, eliminating rescan loops.
+				while (currentRole eq thisLeader) && recordBecomesCommittedCaptors.nonEmpty && commitIndex >= recordBecomesCommittedCaptors.head.targetIndex do {
+					val awaiter = recordBecomesCommittedCaptors.removeHead()
+					awaiter.captureSync(primaryState0)
 				}
 
-				// We iterate backwards to remove and execute the fulfilled awaiters.
-				// This reverse iteration is completely safe against re-entrance (where `captureSync` synchronously adds or clears awaiters):
-				// - If an observer synchronously adds a new awaiter, it is appended at the end of the buffer. Our `remove(j)` safely shifts that new awaiter leftward without us processing it prematurely or corrupting the iteration.
-				// - If an observer synchronously clears the buffer (e.g., an abdication triggers `handleExit`), the `j < length` check gracefully prevents an IndexOutOfBoundsException.
-				//
-				// Furthermore, an outer rescan loop is no longer necessary after notifying observers because:
-				// 1. State-mutating observers are decoupled (e.g., via `Capture_defer` or `sequencer.run`), so `captureSync` does not synchronously trigger pipeline evaluations or advance the commit index.
-				// 2. Even if a new awaiter were added synchronously, `awaitCommitWatermark` fast-paths and returns instantly if its `targetIndex` is <= `commitIndex`, meaning immediately-fulfillable awaiters are never added to this collection anyway.
-				var j = recordBecomesCommittedCaptors.length
-				while j > partitionIdx do {
-					j -= 1
-					if j < recordBecomesCommittedCaptors.length then {
-						val awaiter = recordBecomesCommittedCaptors(j)
-						recordBecomesCommittedCaptors.remove(j)
-						awaiter.captureSync(primaryState0)
+				if (currentRole eq thisLeader) && commitIndex > highestAppliedCommandIndex then {
+					if decoupledCommandsApplierCompletion.isCompleted then {
+						startApplyingCommittedCommands(primaryState0, mustInstallSnapshot = false)
+					} else {
+						decoupledCommandsApplierCompletion.flatMap { _ =>
+							if (currentRole eq thisLeader) && commitIndex > highestAppliedCommandIndex && decoupledCommandsApplierCompletion.isCompleted then {
+								startApplyingCommittedCommands(primaryState0, mustInstallSnapshot = false)
+							}
+							sequencer.Capture_unit
+						}
 					}
 				}
 
