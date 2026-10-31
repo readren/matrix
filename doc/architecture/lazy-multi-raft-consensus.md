@@ -3,12 +3,12 @@ type: "Concept"
 title: "Lazy Raft Consensus Protocol Specification"
 description: "Specification of the reactive, heartbeat-less single-group consensus state machine, covering role lifecycles, on-demand elections, dynamic membership, log compaction, and causal state synchronization."
 tags: [ "user-guide", "consensus", "sequencer" ]
-timestamp: "2026-10-29T20:02:00Z"
+timestamp: "2026-10-31T20:00:00Z"
 ---
 
 # Lazy Raft Consensus Protocol Specification
 
-This document provides the formal architectural specification for the reactive, single-group **Lazy Raft** consensus protocol engine implemented in `consensus/src/main/scala/ConsensusParticipantSdm.scala`. For cluster-wide topology,
+This document provides the formal architectural specification for the reactive, single-group **Lazy Raft** consensus protocol engine implemented in `consensus/core/src/main/scala/ConsensusParticipantSdm.scala`. For cluster-wide topology,
 control/data plane separation, and multi-raft sharding architecture, see [Multi-Raft System Architecture](system-architecture.md). For verification harnesses and simulation models,
 see [Consensus Simulation & Test Framework](consensus-test-framework.md).
 
@@ -52,8 +52,8 @@ When an electorate transition excludes one or more participants (moving from a j
 reach the retirement boundary (the SoleElectorateChange that excluded them).
 
 - **Leader Push over Follower Pull:** The cluster leader actively drives replication to non-active participants. This eliminates the need for a pull-based `RetirementDriver` on the follower. Because the new leader relies on the cluster
-  transport layer (via `ClusterParticipant.getOtherProbableParticipants`) to discover all live nodes, it can spin up pipelines for any non-active nodes (including those excluded by past leaders). Consequently, an abdicating leader can
-  safely tear down its own pipelines, knowing the new leader will pick up the slack.
+  transport layer (via `ClusterBridge.getOtherProbableParticipants`) to discover all live nodes, it can spin up pipelines for any non-active nodes (including those excluded by past leaders). Consequently, an abdicating leader can safely
+  tear down its own pipelines, knowing the new leader will pick up the slack.
 - **Initial Retirement Driving on Takeover:** When a newly crowned leader takes over, its registry of active retirement drivers is initially empty. If the leader takes over under an already-committed configuration, it immediately initiates
   replication pipelines for all historical non-active nodes (`Universe \ Cnew`). If the leader assumes office during an uncommitted configuration transition (an uncommitted joint or sole electorate change), it must defer initializing
   retirement pipelines until that transition's sole electorate change is committed; upon that commitment, it must drive the retirement of all historical non-active nodes (`Universe \ Cnew`), rather than treating itself as an incumbent
@@ -388,9 +388,9 @@ Unlike monolithic consensus systems with background heartbeat timeouts, leader e
 - **Commit Watermark Lower-Bound Monotonicity:** Commit watermark evaluation across both sole and joint consensus configurations is monotonically non-decreasing and bounded below by the existing commit index. When no uncommitted entries in
   the current term have achieved majority replication, the evaluation unconditionally preserves the existing watermark, ensuring that commit indices never regress.
 - **Ingress Gating Precondition for Graceful Decommissioning:** When executing graceful cluster decommissioning by submitting an electorate change to the empty set (`Set.empty`), the host integration layer, ingress gateway, or
-  `ClusterParticipant` bridge is architecturally required to gate, reject, or drain inbound client command traffic prior to or concurrently with issuing the empty electorate change request. Once the empty configuration is committed to the
-  Raft log, all cluster participants transition to `RETIRING` and `QUIESCED` roles, in which inbound client commands are permanently rejected with `Unable` and cannot be committed due to the absence of voting members. Failing to gate client
-  traffic at the ingress tier results in persistent client-side retry exhaustion and spurious communication errors against a decommissioned cluster.
+  `ClusterBridge` is architecturally required to gate, reject, or drain inbound client command traffic prior to or concurrently with issuing the empty electorate change request. Once the empty configuration is committed to the Raft log, all
+  cluster participants transition to `RETIRING` and `QUIESCED` roles, in which inbound client commands are permanently rejected with `Unable` and cannot be committed due to the absence of voting members. Failing to gate client traffic at
+  the ingress tier results in persistent client-side retry exhaustion and spurious communication errors against a decommissioned cluster.
 - **Active Electorate Replication Resilience over Quiescence:** When an active voting member of the current electorate (including newly introduced participants in transitional joint consensus) returns a quiesced status in response to log
   replication—such as when processing a delayed quiescence authorization from an earlier configuration change—the leader must strictly distinguish between retiring followers and active cluster peers. While retiring followers terminate
   replication and decommission progress tracking upon reaching quiescence, active cluster peers must not be decommissioned. The leader treats quiescence from an active peer as transient unreachability: optimistic send indices are rolled
@@ -518,15 +518,15 @@ stale-state references, and batch turn-splitting.
 
 The consensus state machine in `ConsensusParticipantSdm` delegates all external capabilities (network communication, disk persistence, and domain state transitions) to three distinct host Service Provider Interfaces (SPIs).
 
-### I. Cluster Communication Bridge (`ClusterParticipant`)
+### I. Cluster Communication Bridge (`ClusterBridge`)
 
-- **Synchronous Cluster-Tier Probable-Participant Memorization Contract:** The host bridge method `ClusterParticipant.getOtherProbableParticipants` returns a synchronous `ListSet[ParticipantId]` rather than an asynchronous `Capture`. This
+- **Synchronous Cluster-Tier Probable-Participant Memorization Contract:** The host bridge method `ClusterBridge.getOtherProbableParticipants` returns a synchronous `ListSet[ParticipantId]` rather than an asynchronous `Capture`. This
   signature mandates that the host cluster tier proactively maintain and memorize within the participant's sequencer the optimistic set of other cluster nodes currently intended for consensus, ordered from most to least probable certainty
   of availability. By maintaining this probability-ordered view as nodes join, become reachable, crash, or leave, the cluster tier enables the consensus engine to synchronously extract high-priority fallback routing candidates for client
   responses and discover candidate peers during vanishing-electorate teardown without issuing asynchronous queries.
-- **Asynchronous Completion Guarantee:** The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterParticipant`). All outbound RPC methods (`howAreYou`, `requestBallot`,
-  `appendRecords`) return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying
-  strictly on the host layer to bound request lifecycles.
+- **Asynchronous Completion Guarantee:** The consensus engine delegates all inter-participant communication to the host-provided transport bridge (`ClusterBridge`). All outbound RPC methods (`howAreYou`, `requestBallot`, `appendRecords`)
+  return an asynchronous completion handle (`Capture[R]`) that contractually must resolve to either `Success` or `Failure`. The consensus state machine does not maintain internal per-request timeout watchdogs, relying strictly on the host
+  layer to bound request lifecycles.
 - **Aggregation vs. Pipelined Quorum Resilience:** While pipelined log replication makes forward progress upon reaching quorum without waiting for lagging peers, discovery and election phases aggregate responses across candidate peers
   (e.g., collecting state reports across the full electorate). If an outbound query is dropped without notifying the caller's completion observer of a transport failure, the aggregation pipeline awaits completion indefinitely, stalling the
   single-threaded participant actor.

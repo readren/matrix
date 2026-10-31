@@ -77,13 +77,17 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - Cluster participant service and protocol stack over async NIO channels.
   - Main entrypoint: `cluster/service/ParticipantService.scala`.
   - Uses delegates (`ParticipantDelegate`, `CommunicableDelegate`, `IncommunicableDelegate`) and explicit protocol/serialization/channel layers.
-- `consensus`
-  - Consensus logic with a large “service definition module” pattern (`ConsensusParticipantSdm`) that defines participant roles, persistence (`Workspace`), cluster bridge (`ClusterParticipant`), and client response contracts.
+- `consensus/core`
+    - Consensus logic with a large “service definition module” pattern (`ConsensusParticipantSdm`) that defines participant roles, persistence (`Workspace`), cluster bridge (`ClusterBridge`), and client response contracts.
+- `consensus/nio2-cluster-bridge`
+    - NIO2 transport and serialization bridge (`ClusterBridgeSdm`) connecting `consensus/core` to `nexus/cluster`.
 
 ## Dependency flow to keep in mind
-- Foundational flow: `common` → `sequencer/*` → `nexus/*` and `consensus`.
+
+- Foundational flow: `common` → `sequencer/*` → `nexus/*` and `consensus/*`.
 - `nexus/core` depends on sequencer modules, and `nexus/cluster` extends that with transport/protocol concerns.
-- `consensus` depends on sequencer abstractions and expects host-provided integration points (cluster + storage + state machine) instead of hardcoding transport/persistence.
+- `consensus/core` depends on sequencer abstractions and expects host-provided integration points (cluster bridge + storage + state machine) instead of hardcoding transport/persistence.
+- `consensus/nio2-cluster-bridge` depends on `consensus/core` and `nexus/cluster`.
 
 ## Practical navigation tips for agents
 - Start from `build.sbt` to identify module names and dependency edges before changing code.
@@ -91,7 +95,7 @@ This is a multi-module Scala codebase centered around deterministic single-threa
   - sequencing/order issues: inspect `sequencer/core/src/main/scala/Doer.scala` first.
   - actant lifecycle/message handling: inspect `nexus/core/src/main/scala/core/ActantCore.scala`.
   - cluster communication/state transitions: inspect `nexus/cluster/src/main/scala/cluster/service/ParticipantService.scala`.
-  - consensus role/configuration transitions: inspect `consensus/src/main/scala/ConsensusParticipantSdm.scala`.
+  - consensus role/configuration transitions: inspect `consensus/core/src/main/scala/ConsensusParticipantSdm.scala`.
 - Tests are MUnit/ScalaCheck-based and distributed per module under `src/test/scala`.
 
 ## OKF Maintenance

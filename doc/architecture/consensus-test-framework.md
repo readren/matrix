@@ -3,7 +3,7 @@ type: "Concept"
 title: "Consensus Simulation & Test Framework"
 description: "Architecture, three-tier boundary, modular subsystems, two-tier discrete step dispatching, adversarial channel selection, decoupled virtual clocks, and deterministic replay journal of the consensus test framework."
 tags: [ "user-guide", "consensus", "testing" ]
-timestamp: "2026-10-27T23:35:00Z"
+timestamp: "2026-10-31T20:00:00Z"
 ---
 
 # Consensus Simulation & Test Framework
@@ -53,7 +53,7 @@ The simulation infrastructure is decomposed into dedicated, single-responsibilit
 - **`VirtualClock`**: Implements discrete integer virtual time progression (`virtualTime`, `ticksPerMilli`), wake-up token registration (`pendingWakeUpsMap`), time advancement (`advanceTime`), and timer callback execution (`triggerWakeUp`).
 - **`SimulatedStorageSubsystem`**: Simulates asynchronous persistence layers with pending operation queues (`pendingPersistenceMap`), manual and automatic save completion (`completeStorageSave`, `failStorageSave`), and auto-succeed toggles.
 - **`EnvironmentNode`**: Encapsulates the runtime harness for an individual consensus participant, managing its single-threaded [Sequencer Core](sequencer-core.md) (`StepDoer`), lifecycle state (`isDown`, `isAdministrativeTarget`), and
-  internal subsystem adapters (`TestStateMachine`, `TestWorkspace`, `TestStorage`, and `TestClusterParticipant`).
+  internal subsystem adapters (`TestStateMachine`, `TestWorkspace`, `TestStorage`, and `TestClusterBridge`).
 - **`SimulatedControlPlane`**: Implements the Tier 2 administrative control plane, orchestrating dynamic offline node bootstrap (`startDynamicNode`), terminal quiescence notifications (`onNodeQuiesced`), and surviving peer view updates
   without omniscient cross-node inspection.
 - **`EnvironmentJournal`**: Provides a deterministic operation recording and replay engine supporting transactional operation boundaries (`recordOrExecute`), checkpoint tagging, and reversible timeline navigation (`undo`, `redo`, `reset`,

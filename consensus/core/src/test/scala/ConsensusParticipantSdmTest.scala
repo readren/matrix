@@ -140,11 +140,11 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		private var numberOfConfigNoiseInjectionsBetweenThePreviousTwoClientCommands = 0
 		private var lastProposedElectorateMask: ElectorateMask = initialElectorateMask
 
-		/** The [[ElectorateChange]] heard by the [[Node.clusterParticipant.onActiveElectorateChanged]] of the leading node.
+		/** The [[ElectorateChange]] heard by the [[Node.clusterBridge.onActiveElectorateChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var activeElectorateChange: ElectorateChange[Id] = JointElectorateChange(PRE_INIT, "", Set.empty, nodesIncludedIn(initialElectorateMask))
 
-		/** The index of the [[ElectorateChange]] heard by the [[Node.clusterParticipant.onActiveElectorateChanged]] of the leading node.
+		/** The index of the [[ElectorateChange]] heard by the [[Node.clusterBridge.onActiveElectorateChanged]] of the leading node.
 		 * CAUTION: This variable mutates nondeterministically. Where and when is it safe to reference it without introducing random noise? It is only safe to reference it if you take a static snapshot of it before initiating asynchronous operations, or during periods where all node workers are guaranteed to be quiescent. */
 		private var indexOfActiveElectorateChange: RecordIndex = 0
 
@@ -534,7 +534,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					} { nextNodeId =>
 						val node = thisNet.getNode(nextNodeId)
 						val inquire = node.sequencer.Capture_defer(() =>
-							node.clusterParticipant.delegate.requestElectorateChange(electorateChangeRequest, includedParticipants)
+							node.clusterBridge.delegate.requestElectorateChange(electorateChangeRequest, includedParticipants)
 						).onBehalfOf(netSequencer)
 						for {
 							response <- inquire
@@ -561,8 +561,8 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		//// Consensus services lifecycle management ////
 
 		/** Starts the participants in the Config-new-only set when the leading node active [[ElectorateChange]] changes to a [[JointElectorateChange]].\
-		 * In a production environment the nodes wouldn't be started here but before calling [[ConsensusParticipantSdm.ClusterParticipant.Delegate.requestElectorateChange]].
-		 * Called by the leading node when its [[Node.clusterParticipant.onActiveElectorateChanged]] method is called.\ */
+		 * In a production environment the nodes wouldn't be started here but before calling [[ConsensusParticipantSdm.ClusterBridge.Delegate.requestElectorateChange]].
+		 * Called by the leading node when its [[Node.clusterBridge.onActiveElectorateChanged]] method is called.\ */
 		def onActiveElectorateChanged(change: ElectorateChange[Id], changeIndex: RecordIndex): Unit = {
 			netSequencer.run {
 				if change.term > activeElectorateChange.term || change.term == activeElectorateChange.term && changeIndex > indexOfActiveElectorateChange then {
@@ -584,7 +584,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/** Starts again a [[Node]] that was just [[QUIESCED]] due to a previous [[ElectorateChange]], if the active [[ElectorateChange]] includes it again.\
-		 * Called by the [[QUIESCED]] [[Node]] when its [[Node.clusterParticipant.onQuiesced]] method is called. */
+		 * Called by the [[QUIESCED]] [[Node]] when its [[Node.clusterBridge.onQuiesced]] method is called. */
 		def onNodeQuiesced(node: Node): Unit = {
 			netSequencer.run {
 				scribe.trace(s"Net: onNodeQuiesced(${node.myId}) was called") // when indexOfActiveElectorateChange=$indexOfActiveElectorateChange, readyToRetireParticipants=$readyToRetireParticipants, quiescedParticipants=$quiescedParticipants ")
@@ -669,7 +669,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 			}
 
 			net.netSequencer.Capture_from(receiverNode.sequencer)(receiverNode.sequencer.Capture_defer { () =>
-				receiverNode.clusterParticipant.delegate.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
+				receiverNode.clusterBridge.delegate.onCommandFromClient(TestClientCommand(commandPayload, clientId), attemptFlag)
 			}).flatMap {
 				case receiverNode.Processed(_, content) =>
 					scribe.info(s"Client: command `$commandPayload` was processed by ${receiverNode.myId} which replied with `$content`.")
@@ -785,7 +785,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				if isDown || participant.getRoleOrdinal == QUIESCED then {
 					scribe.info(s"node-$myId: about to create the consensus participant service")
 					val maybeSeeds = if initialParticipants.contains(myId) then Maybe(initialParticipants) else Maybe.empty
-					_participant = ConsensusParticipant(clusterParticipant, storage, machine, maybeSeeds, List(initialNotificationListener, notificationScribe))
+					_participant = ConsensusParticipant(clusterBridge, storage, machine, maybeSeeds, List(initialNotificationListener, notificationScribe))
 				} else scribe.info(s"node-$myId: service creation skipped because it is already running with role ${participant.getRoleOrdinal}.")
 			}
 		}
@@ -845,9 +845,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 		}
 
 		/**
-		 * Test instance and implementation of the [[ClusterParticipant]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
+		 * Test instance and implementation of the [[ClusterBridge]] service interface required by the [[participant]] (the [[ConsensusParticipant]] service corresponding to a [[Node]]).
 		 */
-		object clusterParticipant extends ClusterParticipant {
+		object clusterBridge extends ClusterBridge {
 			override val boundParticipantId: ParticipantId = myId
 
 			var delegate: Delegate = uninitialized
@@ -878,7 +878,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"HowAreYou(inquirerInfo=$inquirerInfo)"
 					) { replierNode =>
-						replierNode.clusterParticipant.delegate.onHowAreYou(boundParticipantId, inquirerInfo)
+						replierNode.clusterBridge.delegate.onHowAreYou(boundParticipantId, inquirerInfo)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -888,7 +888,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"RequestBallot(inquirerId:$inquirerId, inquirerInfo:$inquirerInfo)"
 					) { replier =>
-						replier.clusterParticipant.delegate.onRequestBallot(inquirerId, inquirerInfo)
+						replier.clusterBridge.delegate.onRequestBallot(inquirerId, inquirerInfo)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -898,7 +898,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"AppendRecords(inquirerTerm:$inquirerTerm, previousLogIndex:$prevLogIndex, previousLogTerm:$prevLogTerm, records:${batch.mkString("[", ", ", "]")}, leaderCommit:$leaderCommit, termAtLeaderCommit:$termAtLeaderCommit)"
 					) { replier =>
-						replier.clusterParticipant.delegate.onAppendRecords(boundParticipantId, inquirerTerm, prevLogIndex, prevLogTerm, IArray.from(batch), leaderCommit, termAtLeaderCommit)
+						replier.clusterBridge.delegate.onAppendRecords(boundParticipantId, inquirerTerm, prevLogIndex, prevLogTerm, IArray.from(batch), leaderCommit, termAtLeaderCommit)
 					}.onBehalfOf(sequencer)
 				}
 
@@ -908,7 +908,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"PermitQuiesce($indexOfGrantedSec)"
 					) { replier =>
-						replier.sequencer.Keeper(replier.clusterParticipant.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedSec))
+						replier.sequencer.Keeper(replier.clusterBridge.delegate.onQuiescencePermitted(boundParticipantId, indexOfGrantedSec))
 					}.onBehalfOf(sequencer)
 				}
 
@@ -918,7 +918,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 						replierId,
 						s"InstallSnapshot(inquirerTerm:$inquirerTerm, snapshot:$snapshot, records:${batch.mkString("[", ", ", "]")}, leaderCommit:$leaderCommit, termAtLeaderCommit:$termAtLeaderCommit)"
 					) { replier =>
-						replier.clusterParticipant.delegate.onInstallSnapshot(boundParticipantId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
+						replier.clusterBridge.delegate.onInstallSnapshot(boundParticipantId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
 					}.onBehalfOf(sequencer)
 				}
 			}

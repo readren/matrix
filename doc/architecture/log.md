@@ -3,8 +3,13 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-31T15:45:00Z"
+timestamp: "2026-10-31T20:00:00Z"
 ---
+
+## [2026-10-31T20:00:00Z]
+
+- Renamed the consensus host transport SPI contract from `ClusterParticipant` to `ClusterBridge` (and its simulation harness counterpart to `TestClusterBridge`) in `doc/architecture/lazy-multi-raft-consensus.md` and
+  `doc/architecture/consensus-test-framework.md`, and restructured the `consensus` module into `consensus/core` (`consensus_core`) and `consensus/nio2-cluster-bridge` (`consensus_nio2-cluster-bridge`).
 
 ## [2026-10-31T15:45:00Z]
 

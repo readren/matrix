@@ -393,7 +393,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 
 		// Advance p-1's term via an AppendRecords RPC from a higher term (term 5)
 		env.node(1).stepDoer.executeSequentially(() => {
-			env.node(1).clusterParticipant.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
+			env.node(1).clusterBridge.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
 		})
 		env.stepNode(1)
 
@@ -513,7 +513,7 @@ class ConsensusEnvironmentTest extends FunSuite {
 
 		// Advance p-1's term via an AppendRecords RPC from term 5
 		env.node(1).stepDoer.executeSequentially(() => {
-			env.node(1).clusterParticipant.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
+			env.node(1).clusterBridge.delegate.onAppendRecords(NodeId("leader-5"), 5.asInstanceOf[Term], 0, 0.asInstanceOf[Term], IArray.empty[Record], 0, 0.asInstanceOf[Term])
 		})
 		env.stepNode(1)
 

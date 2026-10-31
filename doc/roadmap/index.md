@@ -3,7 +3,7 @@ type: "Index"
 title: "Matrix System Architecture Roadmap"
 description: "Central dashboard, architectural alignment matrix, gap analysis, dependency graph, and milestone tracker for transitioning Matrix to a production-grade Multi-Raft application runtime."
 tags: [ "roadmap", "index", "consensus", "cluster", "nexus" ]
-timestamp: "2026-10-31T15:45:00Z"
+timestamp: "2026-10-31T20:00:00Z"
 ---
 
 # Matrix System Architecture Roadmap
@@ -33,7 +33,7 @@ The following matrix compares each architectural pillar and invariant defined in
 
 The consensus engine has achieved mathematical and algorithmic correctness under isolated single-group deterministic simulation. However, three foundational gaps prevent this engine from operating as a production distributed runtime:
 
-1. **Physical Transport Gap**: The `ConsensusParticipantSdm.ClusterParticipant` contract is abstract. The engine cannot transmit consensus RPCs (`HowAreYou`, `RequestBallot`, `AppendRecords`) or client commands over actual TCP/IP networks,
+1. **Physical Transport Gap**: The `ConsensusParticipantSdm.ClusterBridge` contract is abstract. The engine cannot transmit consensus RPCs (`HowAreYou`, `RequestBallot`, `AppendRecords`) or client commands over actual TCP/IP networks,
    relying entirely on in-process simulated channels.
 2. **Physical Persistence Gap**: The engine delegates durability to `ConsensusPrimaryStateCdm.Workspace`, but no disk-backed implementation exists. Crashes lose all volatile state, log truncation cannot be verified against physical storage
    pages, and snapshot installation does not touch non-volatile media.
@@ -67,7 +67,7 @@ graph TD
   before introducing disk I/O.
 - **Path 2 (Storage-First: M-B &rarr; M-A &rarr; M-C &rarr; M-D)**: Implements the durable `Workspace` first. Proves physical durability, restart recovery, suffix truncation, and snapshot persistence on disk using the deterministic test
   harness before introducing network non-determinism.
-- **Path 3 (Concurrent Foundation: [M-A + M-B] &rarr; M-C &rarr; M-D)**: Develops the network bridge and storage engine concurrently, as they are fully decoupled via explicit SPI boundaries (`ClusterParticipant` and `Workspace`).
+- **Path 3 (Concurrent Foundation: [M-A + M-B] &rarr; M-C &rarr; M-D)**: Develops the network bridge and storage engine concurrently, as they are fully decoupled via explicit SPI boundaries (`ClusterBridge` and `Workspace`).
 
 ---
 

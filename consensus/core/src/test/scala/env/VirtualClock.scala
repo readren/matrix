@@ -5,7 +5,7 @@ import readren.consensus.protocol.*
 
 import scala.collection.mutable
 
-/** A pending wake-up timer registered via [[ConsensusParticipantSdm.ClusterParticipant.requestWakeUp]].
+/** A pending wake-up timer registered via [[ConsensusParticipantSdm.ClusterBridge.requestWakeUp]].
  * @param tokenId unique identifier assigned to this wake-up timer by [[VirtualClock]].
  * @param token cancellation handle returned to the registering participant.
  * @param nodeId identifier of the node that requested the wake-up.

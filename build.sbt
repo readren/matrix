@@ -118,17 +118,25 @@ lazy val cluster = (project in file("nexus/cluster"))
 		scalacOptions ++= Seq("-source:future")
 	)
 
-lazy val consensus = (project in file("consensus"))
+lazy val consensusCore = (project in file("consensus/core"))
 	.dependsOn(sequencerCore, sequencerProviders % Test)
 	.settings(
-		name := "consensus",
+		name := "consensus_core",
 		idePackagePrefix := Some("readren.consensus"),
+		scalacOptions ++= Seq("-source:future")
+	)
+
+lazy val consensusNio2ClusterBridge = (project in file("consensus/nio2-cluster-bridge"))
+	.dependsOn(common % "compile->compile;test->test", sequencerCore, sequencerProviders, cluster, consensusCore % "compile->compile;test->test")
+	.settings(
+		name := "consensus_nio2-cluster-bridge",
+		idePackagePrefix := Some("readren.consensus.nio2"),
 		scalacOptions ++= Seq("-source:future")
 	)
 
 // Root project - aggregates all subprojects
 lazy val root = (project in file("."))
-	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensus)
+	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensusCore, consensusNio2ClusterBridge)
 	.settings(
 		name := "matrix",
 	)

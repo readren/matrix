@@ -73,4 +73,4 @@ timestamp: "2026-10-31T15:45:00Z"
 
 - [Multi-Raft System Architecture: Agnostic Persistence via IoC](../../architecture/system-architecture.md#4-agnostic-persistence-via-inversion-of-control-ioc)
 - [Lazy Raft Consensus Protocol Specification: Storage SPI Contract](../../architecture/lazy-multi-raft-consensus.md#ii-storage-spi-contract-workspace--storage--persistence-boundary)
-- [ConsensusPrimaryStateCdm Source Code](file:///C:/Projects/tools/matrix/consensus/src/main/scala/ConsensusPrimaryStateCdm.scala)
+- [ConsensusPrimaryStateCdm Source Code](file:///C:/Projects/tools/matrix/consensus/core/src/main/scala/ConsensusPrimaryStateCdm.scala)

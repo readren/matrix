@@ -276,15 +276,15 @@ class SimulatedNetwork(env: ConsensusEnvironment) {
 
 						req.rpc match {
 							case ConsensusRpc.HowAreYou(inquirerInfo) =>
-								destNode.clusterParticipant.delegate.onHowAreYou(req.source, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
+								destNode.clusterBridge.delegate.onHowAreYou(req.source, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.RequestBallot(inquirerId, inquirerInfo) =>
-								destNode.clusterParticipant.delegate.onRequestBallot(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
+								destNode.clusterBridge.delegate.onRequestBallot(inquirerId, inquirerInfo).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.AppendRecords(inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit) =>
-								destNode.clusterParticipant.delegate.onAppendRecords(req.source, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
+								destNode.clusterBridge.delegate.onAppendRecords(req.source, inquirerTerm, prevLogIndex, prevLogTerm, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.InstallSnapshot(inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit) =>
-								destNode.clusterParticipant.delegate.onInstallSnapshot(req.source, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
+								destNode.clusterBridge.delegate.onInstallSnapshot(req.source, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).triggerSyncCallbacks(onSuccess, onError)
 							case ConsensusRpc.PermitQuiescence(indexOfGrantedSec) =>
-								destNode.clusterParticipant.delegate.onQuiescencePermitted(req.source, indexOfGrantedSec)
+								destNode.clusterBridge.delegate.onQuiescencePermitted(req.source, indexOfGrantedSec)
 								onSuccess(())
 						}
 					}

@@ -59,7 +59,7 @@ class SimulatedControlPlane(env: ConsensusEnvironment) {
 	/** Administratively informs `targetNode` of the updated set of probable consensus participants.
 	 *
 	 * Directly enqueues a sequential task on `targetNode`'s [[StepDoer]] to update its
-	 * [[EnvironmentNode.TestClusterParticipant.memorizedOtherProbableParticipants]].
+	 * [[EnvironmentNode.TestClusterBridge.memorizedOtherProbableParticipants]].
 	 *
 	 * @param targetNode the node whose cluster bridge is being updated.
 	 * @param probableParticipants the updated set of probable consensus participant references. */
@@ -72,7 +72,7 @@ class SimulatedControlPlane(env: ConsensusEnvironment) {
 		env.journal.recordOrExecute(EnvOperation.UpdateProbableParticipants(targetId, probableIds)) {
 			val n = env.node(targetId)
 			n.stepDoer.executeSequentially(() => {
-				n.clusterParticipant.updateProbableParticipants(probableIds)
+				n.clusterBridge.updateProbableParticipants(probableIds)
 			})
 		}
 	}

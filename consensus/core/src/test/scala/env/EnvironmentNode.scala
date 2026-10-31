@@ -14,7 +14,7 @@ import scala.util.Try
 
 /** A single simulated consensus participant node managed by [[ConsensusEnvironment]].
  *
- * Implements [[ConsensusParticipantSdm]] by binding a deterministic single-threaded [[StepDoer]] alongside simulated host bridges for state machine execution ([[TestStateMachine]]), in-memory workspace persistence ([[TestWorkspace]] and [[TestStorage]]), point-to-point transport ([[TestClusterParticipant]]), and oracle notification hooks ([[notificationListener]]).
+ * Implements [[ConsensusParticipantSdm]] by binding a deterministic single-threaded [[StepDoer]] alongside simulated host bridges for state machine execution ([[TestStateMachine]]), in-memory workspace persistence ([[TestWorkspace]] and [[TestStorage]]), point-to-point transport ([[TestClusterBridge]]), and oracle notification hooks ([[notificationListener]]).
  * @param myId unique identifier of this node.
  * @param initialParticipants seed voting participants configured at cluster creation.
  * @param env the owning [[ConsensusEnvironment]]. */
@@ -68,7 +68,7 @@ class EnvironmentNode(
 	val storage: TestStorage = new TestStorage()
 
 	/** Simulated cluster transport bridge for this node. */
-	val clusterParticipant: TestClusterParticipant = new TestClusterParticipant()
+	val clusterBridge: TestClusterBridge = new TestClusterBridge()
 
 	/** Instantiates and starts a [[ConsensusParticipant]] on this node if it is not currently running or if it has quiesced.
 	 *
@@ -78,7 +78,7 @@ class EnvironmentNode(
 			if _participant == null || _participant.getRoleOrdinal == QUIESCED then {
 				val maybeSeeds = if initialParticipants.contains(myId) then Maybe(initialParticipants) else Maybe.empty
 				_participant = new ConsensusParticipant(
-					clusterParticipant,
+					clusterBridge,
 					storage,
 					machine,
 					maybeSeeds,
@@ -290,8 +290,8 @@ class EnvironmentNode(
 		}
 	}
 
-	/** Simulated [[ClusterParticipant]] host bridge routing outbound RPCs into [[SimulatedNetwork]] and timer requests into [[VirtualClock]]. */
-	class TestClusterParticipant extends ClusterParticipant {
+	/** Simulated [[ClusterBridge]] host bridge routing outbound RPCs into [[SimulatedNetwork]] and timer requests into [[VirtualClock]]. */
+	class TestClusterBridge extends ClusterBridge {
 		override val boundParticipantId: ParticipantId = myId
 
 		/** Inbound protocol delegate bound by the active [[ConsensusParticipant]]. */

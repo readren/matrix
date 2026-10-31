@@ -286,7 +286,7 @@ class ConsensusEnvironment(
 					clientLastStatus(clientId) = status
 				} else {
 					val command = TestClientCommand(cmdSerial, clientId)
-					val capture = n.clusterParticipant.delegate.onCommandFromClient(command, attemptFlag)
+					val capture = n.clusterBridge.delegate.onCommandFromClient(command, attemptFlag)
 					capture.triggerSyncCallbacks(
 						{
 							case n.Processed(recIdx, content) =>
@@ -361,7 +361,7 @@ class ConsensusEnvironment(
 					inFlightElectorateChanges.remove(reqId)
 					electorateChangeStatuses(reqId) = ElectorateChangeStatus.Failed(new RuntimeException(s"Node $targetId is down"))
 				} else {
-					val capture = n.clusterParticipant.delegate.requestElectorateChange(reqId, desiredIds)
+					val capture = n.clusterBridge.delegate.requestElectorateChange(reqId, desiredIds)
 					capture.triggerSyncCallbacks(
 						res => {
 							inFlightElectorateChanges.remove(reqId)
