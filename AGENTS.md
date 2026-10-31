@@ -97,6 +97,6 @@ This is a multi-module Scala codebase centered around deterministic single-threa
 ## OKF Maintenance
 
 - On any interaction (including debugging, single-issue analysis, or Q&A) that reveals, clarifies, or modifies system invariants, architectural decisions, or component behaviors:
-    - Extract and synthesize that knowledge into the appropriate concept doc or ADR in `okf/`.
+    - Extract and synthesize that knowledge into the appropriate concept doc or ADR in `doc/architecture/`.
     - Express all updates as timeless, high-level system specifications focusing on invariants, constraints, and architecture—never include code implementation details (such as local variable names) or session debugging narratives.
-    - Record the documentation change in `okf/log.md`.
+    - Record the documentation change in `doc/architecture/log.md`.

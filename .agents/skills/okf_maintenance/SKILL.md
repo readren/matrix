@@ -5,12 +5,13 @@ description: Detailed guidelines, schema, and procedures for maintaining the pro
 
 # OKF Maintenance Guidelines
 
-This skill defines the schema, templates, and procedures for maintaining the Open Knowledge Format (OKF) bundle in the `okf/` directory of the repository. The OKF bundle serves as the single source of truth for the project's persistent
+This skill defines the schema, templates, and procedures for maintaining the Open Knowledge Format (OKF) bundle in the `doc/architecture/` directory of the repository. The OKF bundle serves as the single source of truth for the project's
+persistent
 documentation, acting as a User/Developer Guide, Design History (ADRs), Operations Bundle, and Contributor Guide.
 
 ## Naming & Path Constraints
 
-- **Directory**: All files must live in `okf/` at the repository root.
+- **Directory**: All files must live in `doc/architecture/` at the repository root.
 - **Filenames**: Must be lowercase kebab-case (e.g., `sequencer-core-architecture.md`).
 - **Links**: Use relative markdown links without absolute URLs (e.g., `[Core Architecture](sequencer-core-architecture.md)`).
 
@@ -42,8 +43,8 @@ timestamp: "YYYY-MM-DDTHH:MM:SSZ"
 4. **Contributor Guide**:
     - `"Guideline"`: Build guidelines, test commands, style rules, and workflow constraints.
 5. **Special**:
-    - `"Index"`: Reserved for `okf/index.md`.
-    - `"Log"`: Reserved for `okf/log.md`.
+    - `"Index"`: Reserved for `doc/architecture/index.md`.
+    - `"Log"`: Reserved for `doc/architecture/log.md`.
 
 ## Categorization & Interconnection
 
@@ -67,30 +68,31 @@ Apply one or more module tags to link documents to codebase modules:
 ### 3. Cross-Linking
 
 - Every file must reference related files using relative markdown links (e.g., `[Consensus Component](consensus-component.md)`).
-- `okf/index.md` must categorize all documents under their respective guide sections (User Guide, Design History, Operations, Contributor Guide).
+- `doc/architecture/index.md` must categorize all documents under their respective guide sections (User Guide, Design History, Operations, Contributor Guide).
 
 ## Procedures
 
 ### 1. Initialization
 
-If the `okf/` directory or its base files do not exist, create `index.md` and `log.md` immediately using the standard templates.
+If the `doc/architecture/` directory or its base files do not exist, create `index.md` and `log.md` immediately using the standard templates.
 
 ### 2. Synchronization on Interaction
 
 Before concluding any analysis, research, or implementation task:
 
 1. Identify if new persistent knowledge was generated (e.g. stable component specs, API constraints, ADRs, runbooks, or guidelines).
-2. Create or update the corresponding `.md` files under `okf/`.
+2. Create or update the corresponding `.md` files under `doc/architecture/`.
 3. Update the `timestamp` in the frontmatter of any modified files.
-4. Record the changes in `okf/log.md` and update `okf/index.md` if new files were added.
+4. Record the changes in `doc/architecture/log.md` and update `doc/architecture/index.md` if new files were added.
 
 ### 3. Rule of Persistent-Only Information
 
 - **Knowledge Extraction from Every Session**: Debugging, log analysis, single-issue analysis, and Q&A sessions frequently reveal unwritten invariants, edge cases, and state machine rules. Always synthesize and extract that knowledge into
-  substantive `okf/` documents (e.g. concept files, ADRs, or reference specifications).
+  substantive `doc/architecture/` documents (e.g. concept files, ADRs, or reference specifications).
 - **Invariant Focus**: Write only about the current stable architecture, constraints, API protocols, and guidelines. Express documentation in terms of high-level concepts and system dynamics—never include code implementation details, or
   internal variable names.
 - **No Bug Diaries**: Never document individual bugs, transient code fixes, specific log filenames (e.g. `scratch_2.log`), line-number stack traces, or session action logs (e.g., "Analyzed error in scratch_2.log", "Formulated suggestions
   during session"). Always phrase updates as timeless documentation of system architecture and component behaviors.
-- **Log Scope**: `okf/log.md` must describe what system documentation was created or updated (e.g., "Documented retirement snapshot fallback invariants in `okf/lazy-multi-raft-consensus.md`"), never the history of conversational actions,
+- **Log Scope**: `doc/architecture/log.md` must describe what system documentation was created or updated (e.g., "Documented retirement snapshot fallback invariants in `doc/architecture/lazy-multi-raft-consensus.md`"), never the history of
+  conversational actions,
   code fixes, or git commits.

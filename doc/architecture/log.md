@@ -3,8 +3,13 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-30T19:10:00Z"
+timestamp: "2026-10-31T15:45:00Z"
 ---
+
+## [2026-10-31T15:45:00Z]
+
+- Relocated the canonical Open Knowledge Format (OKF) bundle from repository root `okf/` to `doc/architecture/` as part of repository-wide documentation consolidation, and updated path constraints in `AGENTS.md` and
+  `.agents/skills/okf_maintenance/SKILL.md`.
 
 ## [2026-10-30T19:10:00Z]
 
