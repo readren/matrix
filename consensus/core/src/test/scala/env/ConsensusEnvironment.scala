@@ -1,10 +1,15 @@
-package readren.consensus.env
+package readren.consensus
+package env
+
+import protocol.*
 
 import readren.consensus.TestClientCommand
-import readren.consensus.protocol.*
 
 import scala.collection.immutable.ListSet
 import scala.collection.mutable
+
+/** Indicates that an attempted client command target node is permanently quiesced, down, or released. */
+final case class NodeDownException(nodeId: NodeId) extends RuntimeException(s"Node $nodeId is down")
 
 /** The discrete-event, fine-grained simulation and verification harness for [[readren.consensus.ConsensusParticipantSdm]].
  *
@@ -23,6 +28,7 @@ import scala.collection.mutable
  * @param initialLogRetentionAfterSnapshot initial number of trailing log entries retained after snapshot truncation.
  * @param remembersLastAppliedCommandIndex when true, [[EnvironmentNode.TestStateMachine.recoverIndexOfLastAppliedCommand]] returns the last applied index across restarts; when false, it resets to 0 to force snapshot installation and log replay.
  * @param maxPermitQuiescenceRetries retry quota for quiescence authorization requests to retiring participants.
+ * @param downNodeDelaySteps simulation step delay before returning a failure when contacting a down or released node.
  * @param initializer hook invoked automatically at the end of [[reset]] (with journal recording suppressed) to establish baseline cluster state. */
 class ConsensusEnvironment(
 	val clusterSize: Int,
@@ -34,6 +40,8 @@ class ConsensusEnvironment(
 	val initialLogRetentionAfterSnapshot: Int = 1,
 	val remembersLastAppliedCommandIndex: Boolean = false,
 	val maxPermitQuiescenceRetries: Int = 9,
+	val downNodeDelaySteps: Int = 5,
+	val nodeMaxRecursionDepth: Int = 5,
 	private val initializer: ConsensusEnvironment => Unit = _ => ()
 ) {
 	private var _retiringParticipantMaxRetries: Int = initialRetiringParticipantMaxRetries
@@ -64,6 +72,8 @@ class ConsensusEnvironment(
 	private val clientLastStatus: mutable.Map[String, ClientCommandStatus] = mutable.Map.empty
 	private val electorateChangeStatuses: mutable.Map[String, ElectorateChangeStatus] = mutable.Map.empty
 	private val inFlightElectorateChanges: mutable.Map[String, ElectorateChangeHandle] = mutable.Map.empty
+	private final case class PendingDownNodeCommand(targetId: NodeId, clientId: String, var remainingSteps: Int)
+	private val pendingDownNodeCommands: mutable.Map[Int, PendingDownNodeCommand] = mutable.Map.empty
 
 	/** Deterministic operation journal providing undo, redo, and checkpoint tag replay. */
 	val journal: EnvironmentJournal = new EnvironmentJournal(this)
@@ -109,6 +119,7 @@ class ConsensusEnvironment(
 		clientLastStatus.clear()
 		electorateChangeStatuses.clear()
 		inFlightElectorateChanges.clear()
+		pendingDownNodeCommands.clear()
 
 		_retiringParticipantMaxRetries = initialRetiringParticipantMaxRetries
 		_logRetentionAfterSnapshot = initialLogRetentionAfterSnapshot
@@ -277,47 +288,81 @@ class ConsensusEnvironment(
 			clientStatuses(cmdId) = ClientCommandStatus.InFlight
 			clientLastStatus(clientId) = ClientCommandStatus.InFlight
 			clientLastSent(clientId) = cmdSerial
+			scribe.trace(s"ENV.submitClientCommand: client=$clientId serial=$cmdSerial target=$targetId attempt=$attemptFlag cmdId=$cmdId")
 
 			val n = node(targetId)
-			n.stepDoer.executeSequentially(() => {
-				if n.isDown || n.participant == null then {
-					val status = ClientCommandStatus.Failed(new RuntimeException(s"Node $targetId is down"))
-					clientStatuses(cmdId) = status
-					clientLastStatus(clientId) = status
-				} else {
-					val command = TestClientCommand(cmdSerial, clientId)
-					val capture = n.clusterBridge.delegate.onCommandFromClient(command, attemptFlag)
-					capture.triggerSyncCallbacks(
-						{
-							case n.Processed(recIdx, content) =>
-								val status = ClientCommandStatus.Processed(recIdx, content)
+			if n.isDown || n.participant == null then {
+				scribe.trace(s"ENV.nodeImmediatelyDown: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId")
+				pendingDownNodeCommands(cmdId) = PendingDownNodeCommand(targetId, clientId, downNodeDelaySteps)
+			} else {
+				n.stepDoer.executeSequentially(() => {
+					scribe.trace(s"ENV.executingClientCommandTask: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId")
+					if n.isDown || n.participant == null then {
+						scribe.trace(s"ENV.nodeAsyncDown: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId")
+						pendingDownNodeCommands(cmdId) = PendingDownNodeCommand(targetId, clientId, downNodeDelaySteps)
+					} else {
+						val command = TestClientCommand(cmdSerial, clientId)
+						scribe.trace(s"ENV.callingOnCommandFromClient: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId")
+						val capture = n.clusterBridge.delegate.onCommandFromClient(command, attemptFlag)
+						scribe.trace(s"ENV.calledOnCommandFromClient: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId isCompleted=${capture.isCompleted} maybeResult=${capture.maybeResult}")
+						capture.triggerSyncCallbacks(
+							resp => {
+								scribe.trace(s"ENV.captureSuccessCallback: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId resp=$resp")
+								resp match {
+									case n.Processed(recIdx, content) =>
+										scribe.trace(s"ENV.clientCommandProcessed: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId recIdx=$recIdx")
+										val status = ClientCommandStatus.Processed(recIdx, content)
+										clientStatuses(cmdId) = status
+										clientLastStatus(clientId) = status
+										clientLastSuccess(clientId) = cmdSerial
+										clientLastRecordIndex(clientId) = recIdx
+									case n.RedirectTo(others) =>
+										scribe.trace(s"ENV.clientCommandRedirected: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId others=$others")
+										val status = ClientCommandStatus.Redirected(others)
+										clientStatuses(cmdId) = status
+										clientLastStatus(clientId) = status
+									case n.Unable(flag, others) =>
+										scribe.trace(s"ENV.clientCommandUnable: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId flag=$flag others=$others")
+										val status = ClientCommandStatus.Unable(flag, others)
+										clientStatuses(cmdId) = status
+										clientLastStatus(clientId) = status
+									case other =>
+										scribe.trace(s"ENV.clientCommandUnknownResponse: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId respClass=${other.getClass.getName}")
+								}
+							},
+							ex => {
+								scribe.trace(s"ENV.clientCommandFailed: client=$clientId serial=$cmdSerial target=$targetId cmdId=$cmdId ex=${ex.getMessage}")
+								val status = ClientCommandStatus.Failed(ex)
 								clientStatuses(cmdId) = status
 								clientLastStatus(clientId) = status
-								clientLastSuccess(clientId) = cmdSerial
-								clientLastRecordIndex(clientId) = recIdx
-							case n.RedirectTo(others) =>
-								val status = ClientCommandStatus.Redirected(others)
-								clientStatuses(cmdId) = status
-								clientLastStatus(clientId) = status
-							case n.Unable(flag, others) =>
-								val status = ClientCommandStatus.Unable(flag, others)
-								clientStatuses(cmdId) = status
-								clientLastStatus(clientId) = status
-						},
-						ex => {
-							val status = ClientCommandStatus.Failed(ex)
-							clientStatuses(cmdId) = status
-							clientLastStatus(clientId) = status
-						}
-					)
-				}
-			})
+							}
+						)
+					}
+				})
+			}
 			handle
 		}
 	}
 
 	/** Returns the current [[ClientCommandStatus]] of the command submission identified by `commandId`. */
-	def clientCommandStatus(commandId: Int): ClientCommandStatus = clientStatuses.getOrElse(commandId, ClientCommandStatus.InFlight)
+	def clientCommandStatus(commandId: Int): ClientCommandStatus = {
+		pendingDownNodeCommands.get(commandId) match {
+			case Some(pending) =>
+				pending.remainingSteps -= 1
+				if pending.remainingSteps <= 0 then {
+					pendingDownNodeCommands.remove(commandId)
+					val status = ClientCommandStatus.Failed(NodeDownException(pending.targetId))
+					scribe.trace(s"ENV.downNodeExpired: client=${pending.clientId} target=${pending.targetId} cmdId=$commandId")
+					clientStatuses(commandId) = status
+					clientLastStatus(pending.clientId) = status
+					status
+				} else {
+					ClientCommandStatus.InFlight
+				}
+			case None =>
+				clientStatuses.getOrElse(commandId, ClientCommandStatus.InFlight)
+		}
+	}
 
 	/** Returns the number of commands currently in flight across the environment. */
 	def inFlightClientCommandsCount(client: ClientRef): Int = {

@@ -41,7 +41,7 @@ ThisBuild / run / connectInput := true // tells sbt to connect the console's inp
 Global / excludeLintKeys += idePackagePrefix
 
 // registers the test framework
-// ThisBuild / testFrameworks += new TestFramework("munit.Framework")
+ThisBuild / testFrameworks += new TestFramework("munit.Framework")
 
 lazy val common = (project in file("common"))
 	.settings(
@@ -134,9 +134,17 @@ lazy val consensusNio2ClusterBridge = (project in file("consensus/nio2-cluster-b
 		scalacOptions ++= Seq("-source:future")
 	)
 
+lazy val consensusNio2Persistence = (project in file("consensus/nio2-persistence"))
+	.dependsOn(common % "compile->compile;test->test", sequencerCore, consensusCore % "compile->compile;test->test")
+	.settings(
+		name := "consensus_nio2-persistence",
+		idePackagePrefix := Some("readren.consensus.persistence.nio2"),
+		scalacOptions ++= Seq("-source:future")
+	)
+
 // Root project - aggregates all subprojects
 lazy val root = (project in file("."))
-	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensusCore, consensusNio2ClusterBridge)
+	.aggregate(common, sequencerCore, sequencerProviders, sequencerAkkaIntegration, nexusCore, checkedSpuron, cluster, consensusCore, consensusNio2ClusterBridge, consensusNio2Persistence)
 	.settings(
 		name := "matrix",
 	)

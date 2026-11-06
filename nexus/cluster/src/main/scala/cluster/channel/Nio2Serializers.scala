@@ -11,7 +11,7 @@ import java.net.{InetAddress, InetSocketAddress, SocketAddress}
 object Nio2Serializers {
 	//// InetAddress
 	given Serializer[InetAddress] = (address: InetAddress, writer: Serializer.Writer) => {
-		writer.writeFull(address.getHostName)
+		writer.write(address.getHostName)
 		// Write the IP address as a byte array
 		val ipAddress = address.getAddress
 		writer.putByte(ipAddress.length.toByte) // Write the length of the IP address
@@ -26,7 +26,7 @@ object Nio2Serializers {
 
 	//// InetSocketAddress
 	given Serializer[InetSocketAddress] = (message: InetSocketAddress, writer: Serializer.Writer) => {
-		writer.writeFull(message.getAddress)
+		writer.write(message.getAddress)
 		writer.putInt(message.getPort)
 	}
 
@@ -40,7 +40,7 @@ object Nio2Serializers {
 		message match {
 			case inet: InetSocketAddress =>
 				writer.putByte(1)
-				writer.writeFull(inet)
+				writer.write(inet)
 			case _ =>
 				throw new SerializationException(writer.position, s"This serializer only supports instances of `InetSocketAddress`")
 		}

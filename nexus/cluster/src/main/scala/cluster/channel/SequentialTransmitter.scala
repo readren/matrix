@@ -2,6 +2,7 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.Transmitter.{Context, Report}
+import cluster.misc.DualEndedCircularStorage
 import cluster.serialization.{ProtocolVersion, Serializer}
 
 import java.lang.invoke.VarHandle
@@ -32,9 +33,19 @@ import java.util.concurrent.{ConcurrentLinkedQueue, TimeUnit}
  * @param buffersCapacity the capacity of transmission buffers
  * @tparam M the type of messages to transmit
  */
-class SequentialTransmitter[M](channel: AsynchronousSocketChannel, val context: Context, buffersCapacity: Int = 8192) {
+class SequentialTransmitter[M](
+	channel: AsynchronousSocketChannel,
+	val context: Context,
+	buffersCapacity: Int = 8192,
+	maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
+	val minBuffersOnIdle: Int = 2
+) {
 
-	private val transmitter = new Transmitter(channel, context, buffersCapacity)
+	private val transmitter = new Transmitter(channel, context, buffersCapacity, maxBuffers)
+
+	def pruneTo(targetCount: Int): Int = transmitter.pruneTo(targetCount)
+
+	def bufferCount: Int = transmitter.bufferCount
 
 	/**
 	 * Tracks the number of messages in the queue plus one if a transmission is currently in progress.
@@ -86,7 +97,10 @@ class SequentialTransmitter[M](channel: AsynchronousSocketChannel, val context: 
 					
 					// Recursively transmit the next message
 					transmit(next.message, msgVersion, behindTransmissionEnabled, timeout, timeUnit)(next.onComplete)
-				} else onIdleHandler()
+				} else {
+					transmitter.pruneTo(minBuffersOnIdle)
+					onIdleHandler()
+				}
 				// Always invoke the completion callback for the current message
 				onTransmissionComplete(report)
 			}

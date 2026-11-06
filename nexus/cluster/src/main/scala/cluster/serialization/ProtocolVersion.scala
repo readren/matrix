@@ -1,32 +1,30 @@
 package readren.nexus
 package cluster.serialization
 
-/** Represents a version of message-protocol in a compact form (one byte), without losing the ability to determine which of a group of versions is the newest, as long as such versions are sufficiently close. */
-opaque type ProtocolVersion <: AnyVal = Byte
+/** Represents a version of message-protocol as a monotonic integer, encoded compactly on the wire via VLQ. */
+opaque type ProtocolVersion <: AnyVal = Int
 
 object ProtocolVersion {
 
-	/** The identifier of the version of the [[ParticipantService]]'s [[Protocol]] corresponding to this project version.
-	 * Every time a new version of the cluster subproject that changes the [[Protocol]] will be released, this identifier must be circularly incremented by one.
-	 * */
+	/** The identifier of the version corresponding to this project version.
+	 * Every time a new version that changes the protocol is released, this identifier must be incremented by one. */
 	val OF_THIS_PROJECT: ProtocolVersion = 1
 	/** A singular value that indicates no version was specified. */
 	val NOT_SPECIFIED: ProtocolVersion = 0
 
-	inline def apply(identifier: Byte): ProtocolVersion = identifier
+	inline def apply(identifier: Int): ProtocolVersion = identifier
 
 	extension (thisVersion: ProtocolVersion) {
-		def identifier: Byte = thisVersion
-		def isNewerThan(otherVersion: ProtocolVersion): Boolean = {
-			(thisVersion << 24) - (otherVersion << 24) > 0
-		}
+		def identifier: Int = thisVersion
+		inline def isNewerThan(otherVersion: ProtocolVersion): Boolean = thisVersion > otherVersion
+		inline def isAtLeast(otherVersion: ProtocolVersion): Boolean = thisVersion >= otherVersion
 	}
 
-	val serializer: Serializer[ProtocolVersion] = (message: ProtocolVersion, writer: Serializer.Writer) => writer.putByte(message)
+	val serializer: Serializer[ProtocolVersion] = (message: ProtocolVersion, writer: Serializer.Writer) => writer.putUnsignedIntVlq(message)
 
 	given Serializer[ProtocolVersion] = serializer
 
-	val deserializer: Deserializer[ProtocolVersion] = (reader: Deserializer.Reader) => reader.readByte()
+	val deserializer: Deserializer[ProtocolVersion] = (reader: Deserializer.Reader) => reader.readUnsignedIntVlq()
 
 	given Deserializer[ProtocolVersion] = deserializer
 
@@ -34,7 +32,7 @@ object ProtocolVersion {
 	 * Defines an ordering where newer versions come first.
 	 */
 	val newerFirstOrdering: Ordering[ProtocolVersion] =
-		(x: ProtocolVersion, y: ProtocolVersion) => if x == y then 0 else if x.isNewerThan(y) then -1 else 1
+		(x: ProtocolVersion, y: ProtocolVersion) => java.lang.Integer.compare(y, x)
 
 	given Ordering[ProtocolVersion] = newerFirstOrdering
 }

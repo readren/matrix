@@ -130,12 +130,12 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		 * The implementation should support calls to [[StateMachine.applyClientCommand]] while this method is running, keeping the result invariant.\
 		 * This method is called when the log exceeds the compaction threshold and all entries up to the highest applied command index have been applied.\
 		 * @return a [[sequencer.Capture]] that yields the serialized state machine state. */
-		def takeSnapshot(): sequencer.Capture[IArray[Byte]]
+		def takeSnapshot(): sequencer.Capture[SnapshotPayload]
 
 		/** Installs a snapshot received from the leader, replacing the current state machine state.\
 		 * @param data the serialized state machine state.
 		 * @return a [[sequencer.Capture]] that completes when the snapshot has been installed. */
-		def installSnapshot(data: IArray[Byte]): sequencer.Capture[Unit]
+		def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit]
 	}
 
 	//// RESPONSE TO CLIENT
@@ -735,6 +735,10 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			val ordinal: RoleOrdinal
 			val rank: ElectionRank
 
+			/** Hook invoked when a committed [[CommandRecord]] has been applied to the [[StateMachine]].
+			 * Default implementation is a no-op; overridden by [[Leader]] to fulfill client response captors. */
+			def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = ()
+
 			def diagnosticInfo: RoleDiagnostic = GenericRoleDiagnostic(ordinal)
 
 			final def blankBallot(term: Term): Ballot = Ballot(term, granted = false, thisRole.rank)
@@ -916,7 +920,8 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 							val electorate1 = deriveElectorateFrom(primaryState1)
 							if !electorate1.isBoundIncluded then {
 								retireDueToExclusion(primaryState1, electorate1)
-								currentRole.onRequestBallot(inquirerId, inquirerInfo)
+								if currentRole ne thisStatefulRole then currentRole.onRequestBallot(inquirerId, inquirerInfo)
+								else yieldsBlankBallot(primaryState1.currentTerm)
 							} else if inquirerInfo.currentTerm < primaryState1.currentTerm then {
 								yieldsBlankBallot(primaryState1.currentTerm)
 							} else {
@@ -1222,7 +1227,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								_ <- {
 									notifyListeners(_.onCommandApplied(indexOfCommandToApply, command.term))
 									highestAppliedCommandIndex = indexOfCommandToApply
-									handleCommandRecordApplied(indexOfCommandToApply, smr)
+									currentRole.handleCommandRecordApplied(indexOfCommandToApply, smr)
 									// It is not necessary to have an updated primary state here because committed records are never mutated, and we are not mutating the primary state here. We only need to know if the current role is stateful.
 									if currentRole.isInstanceOf[StatefulRole] then {
 										if sequencer.currentExecutionSerial != previousExecutionSerial then applyCommittedCommands(primaryState, upTo, 0)
@@ -1237,10 +1242,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					}
 				}
 			}
-
-			/** Hook invoked when a committed [[CommandRecord]] has been applied to the [[StateMachine]].
-			 * Default implementation is a no-op; overridden by [[Leader]] to fulfill client response captors. */
-			protected def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = ()
 
 			/** Starts a process that compacts the log.
 			 * Assumes the [[machine]] supports calls to [[StateMachine.applyClientCommand]] while [[StateMachine.takeSnapshot]] is running.
@@ -2175,7 +2176,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			private var indexOfSecThatExcludedMe: RecordIndex = 0
 
 			/** Memorizes the index of the latest [[SoleElectorateChange]] for which quiescence permission to retirees was already granted, or the granting process has been started.
-			 * @See [[authorizeQuiescenceTo]]. */
+			 * See [[authorizeQuiescenceTo]]. */
 			private var highestSecIndexForWhichQuiescenceAuthorizationToRetireesWasGranted: RecordIndex = 0L
 
 			/** Tracks whether this leader has already driven the retirements of non-new participants for its initial committed [[SoleElectorateChange]].\
@@ -2183,16 +2184,33 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * Subsequent sole electorate transitions occurring during this leader's tenure only drive the retirement of newly excluded peers (`Cold \ Cnew`), as earlier retirees remain tracked in [[retiringLearnersById]]. */
 			private var hasDrivenInitialRetirements: Boolean = false
 
-			private def RecordBecomesCommittedCaptor(targetIndex: RecordIndex): RecordBecomesCommittedCaptor = new RecordBecomesCommittedCaptor(targetIndex)
+			/** Factory method for constructing a [[RecordBecomesCommittedCaptor]] to prevents the compiler to synthesize a companion object. */
+			private inline def RecordBecomesCommittedCaptor(targetIndex: RecordIndex): RecordBecomesCommittedCaptor = new RecordBecomesCommittedCaptor(targetIndex)
 
+			/** An asynchronous awaiter that completes with the current [[PrimaryState]] once [[commitIndex]] reaches or exceeds [[targetIndex]].
+			 * @param targetIndex the [[RecordIndex]] that must become committed before fulfilling this captor. */
 			private class RecordBecomesCommittedCaptor(val targetIndex: RecordIndex) extends sequencer.Captor[PrimaryState]
 
+			/** A FIFO queue of awaiters waiting for [[commitIndex]] to advance to their respective target indices.
+			 *
+			 * Because records are committed monotonically in ascending index order, awaiters in this queue are ordered by non-decreasing [[RecordBecomesCommittedCaptor.targetIndex]], allowing [[updateCommitIndex]] to inspect and drain ready awaiters strictly from the head. */
 			private val recordBecomesCommittedCaptors: mutable.ArrayDeque[RecordBecomesCommittedCaptor] = mutable.ArrayDeque.empty
 
+			/** Factory method for constructing a [[ClientCommandResponseCaptor]] to prevents the compiler to synthesize a companion object. */
+			private inline def ClientCommandResponseCaptor(commandRecordIndex: RecordIndex, clientCommand: ClientCommand): ClientCommandResponseCaptor = new ClientCommandResponseCaptor(commandRecordIndex, clientCommand)
+
+			/** Captures the asynchronous outcome of a client command submitted to this leader.\
+			 * Retains [[clientCommand]] alongside [[commandRecordIndex]] so that if this leader abdicates before the command is applied, the request can be vacated and transparently re-routed to the new leader via [[handleExit]].
+			 * @param commandRecordIndex the log index assigned to this command in the leader's local log.
+			 * @param clientCommand the original client command payload. */
 			private class ClientCommandResponseCaptor(val commandRecordIndex: RecordIndex, val clientCommand: ClientCommand) extends sequencer.Captor[ResponseToClient]
 
+			/** A FIFO queue of in-flight client response captors awaiting state-machine application of their committed commands.\
+			 * Entries are queued in strictly ascending order of [[ClientCommandResponseCaptor.commandRecordIndex]]. Upon sequential state-machine execution in [[handleCommandRecordApplied]], the head captor is dequeued and resolved with [[ConsensusParticipantSdm.ResponseToClient.Processed]]. */
 			private val pendingClientResponses: mutable.ArrayDeque[ClientCommandResponseCaptor] = mutable.ArrayDeque.empty
 
+			/** Tracks an in-flight cluster electorate transition initiated or resumed by this leader.\
+			 * Holds the [[ElectorateChangeRequestId]] paired with the target participant set while joint consensus or sole configuration commitment is underway, preventing concurrent overlapping membership changes. */
 			private var inProgressElectorateChange: Maybe[(ElectorateChangeRequestId, Set[ParticipantId])] = Maybe.empty
 
 			override def handleEnter(previous: Role)(using Trace.Context): Unit = {
@@ -2284,7 +2302,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				}
 			}
 
-			override final def isGhost: Boolean = indexOfSecThatExcludedMe > 0
+			override def isGhost: Boolean = indexOfSecThatExcludedMe > 0
 
 			/** Updates the derived state that is stored in the [[Role]] instance and depends on the current [[Electorate]]. Only the [[Leader]] role has such state as this writing.
 			 *  This implementation does two different things:
@@ -2703,7 +2721,12 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				} yield response
 			}
 
-			override protected def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = {
+			/** Fulfills the pending client response captor associated with the newly applied command.\
+			 * Because log appends and state-machine applications proceed in strictly monotonic index order, [[pendingClientResponses]] is maintained as a FIFO queue sorted by [[RecordIndex]]. The matching captor, if present, is guaranteed to reside at the head of the queue.\
+			 * The index equality check safely ignores records for which no client response is pending, such as historical committed records from prior terms applied during catch-up, internal barrier or transition records, or commands whose leadership was already vacated and cleared via [[handleExit]].
+			 * @param appliedCommandIndex the [[RecordIndex]] of the applied [[CommandRecord]].
+			 * @param smr the [[StateMachineResponse]] returned by [[StateMachine.applyClientCommand]]. */
+			override def handleCommandRecordApplied(appliedCommandIndex: RecordIndex, smr: StateMachineResponse): Unit = {
 				if pendingClientResponses.nonEmpty && pendingClientResponses.head.commandRecordIndex == appliedCommandIndex then {
 					val clientCaptor = pendingClientResponses.removeHead()
 					clientCaptor.captureSync(Processed(appliedCommandIndex, smr))
@@ -3059,7 +3082,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 				}
 			}
 
-			private final def triggerAbdicationIfPreconditionsAreMet()(using Trace.Context): Unit = {
+			private def triggerAbdicationIfPreconditionsAreMet()(using Trace.Context): Unit = {
 				if (currentRole eq thisLeader) && isGhostAndAllLearnersCommittedTheExcludingSec then sequencer.run {
 					if currentRole eq thisLeader then {
 						for primaryState <- primaryStateFence.causalAnchor() do {
@@ -3089,7 +3112,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					case sole: SoleElectorate =>
 						if sole.members.length > 0 then become(Retiring(primaryState.currentTerm, sole.term, sole.changeIndex, sole.members))
 						else {
-							val nonNewPeers: Set[ParticipantId] = sole.backingElectorateChange.oldParticipants.union(clusterBridge.getOtherProbableParticipants).diff(decommissionedRetirees ++ acknowledgedQuiescencePermissions + boundParticipantId)
+							val nonNewPeers: Set[ParticipantId] = sole.backingElectorateChange.oldParticipants.union(clusterBridge.getOtherProbableParticipants).filterNot(p => p == boundParticipantId || decommissionedRetirees.contains(p) || acknowledgedQuiescencePermissions.contains(p))
 							authorizeQuiescenceTo(nonNewPeers, sole.changeIndex, sole.term)
 						}
 

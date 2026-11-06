@@ -3,6 +3,12 @@ package cluster.misc
 
 import java.util.function.Supplier
 
+object DualEndedCircularStorage {
+	inline val DEFAULT_MAX_BUFFERS = 128
+
+	class StorageCapacityExceededException(val allocatedBuffers: Int, val maxAllowed: Int)
+		extends RuntimeException(s"DualEndedCircularStorage capacity limit reached: allocated $allocatedBuffers buffers, max allowed is $maxAllowed")
+}
 
 /**
  * A circular FIFO buffer-like storage designed to help a writer write continuously without worrying about buffer bounds.
@@ -10,9 +16,10 @@ import java.util.function.Supplier
  * The circular storage provides two ends: a **write end** for appending new data and a **read end** for consuming the oldest unread data.
  *
  * @param bufferSupplier A supplier function that provides new buffers (e.g., `ByteBuffer`).
+ * @param maxBuffers The maximum number of buffers that may be allocated in this circular storage ring.
  * @tparam T The type of the buffers used to hold data in the circular storage.
  */
-class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
+class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS) {
 
 	private class Node {
 		val buffer: T = bufferSupplier.get
@@ -26,6 +33,10 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
 	@volatile private var writeEndNode: Node = new Node
 	/** The read-end points to the buffer that contains the oldest data. */
 	@volatile private var readEndNode: Node = writeEndNode
+	private var _bufferCount: Int = 1
+
+	/** Returns the total number of buffers currently allocated in this circular storage ring. */
+	def bufferCount: Int = _bufferCount
 
 	/**
 	 * Returns the buffer at the write-end, where new information is appended.
@@ -69,12 +80,34 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T]) {
 	def advanceWriteEnd(): T = {
 		val nextNode = writeEndNode.next
 		if nextNode eq readEndNode then {
+			if _bufferCount >= maxBuffers then throw new DualEndedCircularStorage.StorageCapacityExceededException(_bufferCount, maxBuffers)
 			val newNode = new Node
 			newNode.next = nextNode
 			writeEndNode.next = newNode
 			writeEndNode = newNode
+			_bufferCount += 1
 		} else writeEndNode = nextNode
 		writeEndNode.buffer
+	}
+
+	/**
+	 * Prunes the number of allocated buffers down to `targetCount` if the storage is currently quiescent
+	 * (`readEndNode eq writeEndNode`), releasing detached buffers for garbage collection.
+	 *
+	 * @param targetCount the desired number of buffers to retain in the ring (must be at least 1).
+	 * @return the number of buffers in the ring after pruning.
+	 */
+	def pruneTo(targetCount: Int): Int = {
+		val effectiveTarget = math.max(1, targetCount)
+		if _bufferCount > effectiveTarget && (readEndNode eq writeEndNode) then {
+			var current = writeEndNode
+			for _ <- 1 until effectiveTarget do {
+				current = current.next
+			}
+			current.next = writeEndNode
+			_bufferCount = effectiveTarget
+		}
+		_bufferCount
 	}
 
 	/**

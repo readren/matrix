@@ -336,7 +336,7 @@ trait ConsensusPrimaryStateCdm { this: ConsensusElectorateCdm =>
 		/** Truncates the log by replacing earlier records (up to and including the provided [[RecordIndex]]) with the provided snapshot.\
 		 * The snapshot must be taken immediately after the last applied command of the removed records.
 		 * @see [[PrimaryState]] for causal mutation temporal safety invariants. */
-		def withLogTruncated(term: Term, lastIncludedRecordIndex: RecordIndex, stateMachineSnapshot: IArray[Byte])(using Trace.Context): sequencer.Capture[PrimaryState] = {
+		def withLogTruncated(term: Term, lastIncludedRecordIndex: RecordIndex, stateMachineSnapshot: SnapshotPayload)(using Trace.Context): sequencer.Capture[PrimaryState] = {
 			if term > workspace.getCurrentTerm then workspace.setTermAndVote(term, Maybe.empty)
 			else workspace.setCurrentTerm(term)
 			val lastIncludedRecordTerm = getRecordTermAt(lastIncludedRecordIndex)

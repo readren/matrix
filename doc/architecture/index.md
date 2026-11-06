@@ -3,7 +3,7 @@ type: "Index"
 title: "Matrix Project Knowledge Base"
 description: "Index of all architectural and operational specifications."
 tags: ["index", "documentation"]
-timestamp: "2026-10-29T19:37:00Z"
+timestamp: "2026-11-02T13:45:00Z"
 ---
 
 # Matrix Project Knowledge Base
@@ -16,6 +16,8 @@ timestamp: "2026-10-29T19:37:00Z"
 ## Components
 
 - [Sequencer Core](sequencer-core.md)
+- [Cluster Binary Serialization & Macro Derivation](cluster-serialization.md)
+- [Cluster Binary Serialization Developer Guide](cluster-serialization-guide.md)
 - [Consensus Simulation & Test Framework](consensus-test-framework.md)
 
 ## Guidelines

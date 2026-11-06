@@ -15,10 +15,31 @@ object Deserializer {
 		def this(position: Int, cause: Throwable) = this(position, null, cause)
 	}
 
-	abstract class Reader extends VLQ.ByteReader {
+	sealed abstract class PayloadCorruptedException(position: Int, explanation: String, cause: Throwable = null)
+		extends DeserializationException(position, explanation, cause)
 
-		/** Memorizes the components that were already deserialized in the order they were serialized. */
-		private val refs: scala.collection.mutable.ArrayBuffer[Any] = scala.collection.mutable.ArrayBuffer.empty
+	final class NegativeLengthException(position: Int, val length: Long, val targetType: String)
+		extends PayloadCorruptedException(position, s"Negative length $length decoded for $targetType at position $position.")
+
+	final class LengthExceedsRemainingBytesException(position: Int, val requestedLength: Long, val remainingBytes: Int, val targetType: String)
+		extends PayloadCorruptedException(position, s"Requested capacity $requestedLength for $targetType exceeds remaining package bytes ($remainingBytes) at position $position.")
+
+	final class AllocationThresholdExceededException(position: Int, val requestedLength: Long, val maxAllowed: Long, val targetType: String)
+		extends PayloadCorruptedException(position, s"Requested capacity $requestedLength for $targetType exceeds maximum safe allocation threshold ($maxAllowed) at position $position.")
+
+	final class InvalidDiscriminatorException(position: Int, val discriminator: Int, val targetSumType: String)
+		extends PayloadCorruptedException(position, s"Invalid discriminator $discriminator for sum type $targetSumType at position $position.")
+
+	final class InvalidReferenceKeyException(position: Int, val refKey: Int, val tableSize: Int)
+		extends PayloadCorruptedException(position, s"Invalid reference key $refKey (table size: $tableSize) at position $position.")
+
+	abstract class Reader(
+		protected val refs: RecyclableObjectBuffer = new RecyclableObjectBuffer(),
+		val allocationLimits: AllocationLimits = AllocationLimits.Default
+	) extends VLQ.ByteReader {
+
+		/** Resets the reference deduplication buffer across composite message frames. */
+		def resetDeduplication(): Unit = refs.reset()
 
 
 		/** The version to deserialize with.
@@ -30,6 +51,51 @@ object Deserializer {
 		/** The implementation should return the position of the backing [[ByteBuffer]] from where the bytes are read.
 		 * This method is used for diagnostic only. */
 		def position: Int
+
+		/** Returns the remaining content or buffer bytes available in the current package, or Int.MaxValue if unbounded. */
+		def remainingContentBytes: Int = Int.MaxValue
+
+		/** Validates requested length for array or raw byte allocations against remaining bytes and allocation limits.
+		 * @throws NegativeLengthException if length < 0
+		 * @throws LengthExceedsRemainingBytesException if length * elementByteSize > remainingContentBytes
+		 * @throws AllocationThresholdExceededException if length or total bytes exceed configured limits */
+		def validateArrayLength(length: Int, elementByteSize: Int, targetType: String): Int = {
+			if length < 0 then throw new Deserializer.NegativeLengthException(position, length, targetType)
+			val totalElementBytes = length.toLong * elementByteSize
+			if totalElementBytes > remainingContentBytes then {
+				throw new Deserializer.LengthExceedsRemainingBytesException(position, length, remainingContentBytes, targetType)
+			}
+			val maxElementsByBytes = allocationLimits.maxAllocationBytes / math.max(1, elementByteSize)
+			val effectiveMaxElements = math.min(allocationLimits.maxCollectionElements, maxElementsByBytes)
+			if length > effectiveMaxElements || totalElementBytes > allocationLimits.maxAllocationBytes then {
+				throw new Deserializer.AllocationThresholdExceededException(position, length, effectiveMaxElements, targetType)
+			}
+			length
+		}
+
+		/** Validates requested count for collection builders against remaining bytes and allocation limits.
+		 * @throws NegativeLengthException if count < 0
+		 * @throws LengthExceedsRemainingBytesException if count * minElementByteSize > remainingContentBytes
+		 * @throws AllocationThresholdExceededException if count exceeds allocationLimits.maxCollectionElements */
+		def validateCollectionLength(count: Int, minElementByteSize: Int, targetType: String): Int = {
+			if count < 0 then throw new Deserializer.NegativeLengthException(position, count, targetType)
+			if minElementByteSize > 0 && (count.toLong * minElementByteSize > remainingContentBytes) then {
+				throw new Deserializer.LengthExceedsRemainingBytesException(position, count, remainingContentBytes, targetType)
+			}
+			if count > allocationLimits.maxCollectionElements then {
+				throw new Deserializer.AllocationThresholdExceededException(position, count, allocationLimits.maxCollectionElements, targetType)
+			}
+			count
+		}
+
+		/** Validates back-reference keys against the deduplication table size.
+		 * @throws InvalidReferenceKeyException if refKey < 0 or refKey >= refs.size */
+		def validateReferenceKey(refKey: Int): Int = {
+			if refKey < 0 || refKey >= refs.size then {
+				throw new Deserializer.InvalidReferenceKeyException(position, refKey, refs.size)
+			}
+			refKey
+		}
 
 		/** The implementation must return a [[ByteBuffer]] with at least `maxBytesToConsume` of content bytes starting from its current position. */
 		def getContentBytes(maxBytesToConsume: Int): ByteBuffer
@@ -147,6 +213,24 @@ object Deserializer {
 			getContentBytes(8).getDouble
 		}
 
+		/** Reads the next `length` content bytes from the backing buffer into `destination` starting at `offset`.
+		 *
+		 * @throws LengthMismatchException if the end-of-stream is reached.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * @throws FrameMisalignmentException if a frame boundary is touched.
+		 * */
+		def readBytes(destination: Array[Byte], offset: Int, length: Int): Unit = {
+			var currOffset = offset
+			var remaining = length
+			while remaining > 0 do {
+				val buffer = getContentBytes(1)
+				val chunk = math.min(remaining, buffer.remaining)
+				buffer.get(destination, currOffset, chunk)
+				currOffset += chunk
+				remaining -= chunk
+			}
+		}
+
 		/** Reads the next `howMany` content bytes from the backing buffer consuming it.
 		 *
 		 * @throws LengthMismatchException if the end-of-stream is reached.
@@ -154,9 +238,9 @@ object Deserializer {
 		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 * */
 		def readBytes(howMany: Int): Array[Byte] = {
+			validateArrayLength(howMany, 1, "Array[Byte]")
 			val array = new Array[Byte](howMany)
-			// TODO optimize
-			for i <- 0 until howMany do array(i) = getContentBytes(1).get()
+			readBytes(array, 0, howMany)
 			array
 		}
 
@@ -183,13 +267,13 @@ object Deserializer {
 		 * @throws FrameMisalignmentException if a frame boundary is touched.
 		 */
 		def read[R](using deserializer: Deserializer[R], ivR: ValueOrReferenceTest[R]): R = {
-			// if the next byte isn't a back reference header or is an escape then we have no back reference here.
-			if ivR.isValueType || !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER then {
+			if ivR.isValueType then readFull[R]
+			else if !consumeByteIfEqualTo(Serializer.BACK_REFERENCE_HEADER) || peekByte == Serializer.BACK_REFERENCE_HEADER then {
 				val ref = readFull[R]
-				refs.addOne(ref)
+				refs.add(ref.asInstanceOf[AnyRef])
 				ref
 			} else {
-				val refKey = readUnsignedIntVlq()
+				val refKey = validateReferenceKey(readIntVlq())
 				refs(refKey).asInstanceOf[R]
 			}
 		}
@@ -197,6 +281,10 @@ object Deserializer {
 
 	def apply[A](using deserializer: Deserializer[A]): Deserializer[A] = deserializer
 
+	/** Derives a [[Deserializer]] for a singleton, product, or sealed sum type `A` using [[NestedSumMatchMode.FLAT]] for nested sum types. */
+	inline def derive[A]: Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('{ NestedSumMatchMode.FLAT }) }
+
+	/** Derives a [[Deserializer]] for a singleton, product, or sealed sum type `A` using the specified [[NestedSumMatchMode]]. */
 	inline def derive[A](inline mode: NestedSumMatchMode): Deserializer[A] = ${ DeserializerDerivation.deriveDeserializerImpl[A]('mode) }
 
 }

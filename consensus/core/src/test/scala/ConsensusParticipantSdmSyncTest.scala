@@ -1,21 +1,19 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
-import readren.consensus.env.*
-import readren.consensus.protocol.*
+import env.*
+import protocol.*
 
 import munit.ScalaCheckSuite
-import org.scalacheck.Gen
-import org.scalacheck.Prop
 import org.scalacheck.Test.Parameters
+import org.scalacheck.{Gen, Prop}
 import readren.common.ScribeConfig
-import scribe.modify.LogModifier
 import scribe.message.LoggableMessage
+import scribe.modify.LogModifier
 import scribe.output.TextOutput
 import scribe.throwable.TraceLoggableMessage
 import scribe.{Level, LogRecord, Priority}
 
-import scala.collection.immutable.{ListMap, ListSet}
 import scala.collection.mutable
 import scala.util.{Failure, Random, Success, Try}
 
@@ -161,6 +159,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			val random = new Random(randomnessSeed)
 			val initialSeedSet: Set[NodeId] = (0 until clusterSize).filter(initialConfigMask).map(i => NodeId(s"p-$i")).toSet
 			val initialSeeds: Set[NodeId] = if initialSeedSet.isEmpty then Set(NodeId("p-0")) else initialSeedSet
+			val nodeMaxRecursionDepth: Int = random.between(2, 9)
 
 			val env = new ConsensusEnvironment(
 				clusterSize = clusterSize,
@@ -170,7 +169,8 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				initialRetiringParticipantMaxRetries = retiringParticipantMaxRetries,
 				initialLogRetentionAfterSnapshot = logRetentionAfterSnapshot,
 				remembersLastAppliedCommandIndex = remembersLastAppliedCommandIndex,
-				maxPermitQuiescenceRetries = maxPermitQuiescenceRetries
+				maxPermitQuiescenceRetries = maxPermitQuiescenceRetries,
+				nodeMaxRecursionDepth = nodeMaxRecursionDepth
 			)
 
 
@@ -267,7 +267,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			}
 
 			/** Target participant currently addressed by administrative reconfiguration submissions. */
-			var reconfigTarget: NodeId = if startWithHighestPriorityParticipant then initialSeeds.toSeq.sorted.head else initialSeeds.toSeq.sorted.last
+			var reconfigTarget: NodeId = if startWithHighestPriorityParticipant then initialSeeds.toSeq.min else initialSeeds.toSeq.max
 
 			/** Accumulated set of all participant endpoints discovered across reconfiguration history. */
 			val reconfigEndpoints: mutable.Set[NodeId] = mutable.Set.from(initialSeeds)
@@ -623,7 +623,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 				def startPartition(): Unit = {
 					if !partitionsPermanentlyDisarmed && clusterSize >= 2 then {
 						val mode = if random.nextFloat() < bufferPartitionProbability then PartitionFaultMode.Buffer else PartitionFaultMode.Drop
-						val allNodeIds = (0 until clusterSize).map(i => NodeId(s"p-$i")).toIndexedSeq
+						val allNodeIds = (0 until clusterSize).map(i => NodeId(s"p-$i"))
 						val mask = Array.fill(clusterSize)(random.nextBoolean())
 						if !mask.contains(true) then mask(random.nextInt(clusterSize)) = true
 						if !mask.contains(false) then mask(random.nextInt(clusterSize)) = false
@@ -1031,6 +1031,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 		)
 
 		val failingCases = Seq[FailingCase](
+			(3, IArray(true, true, true), -6334503564539640371L, false, 30, 10, 10, 0.1f, 25, true, 3, 9, 3, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
 			(6, IArray(true, true, true, true, true, true), 6862003055765340310L, false, 30, 10, 10, 0.1f, 25, true, 5, 9, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
 			(7, IArray(true, true, true, true, true, true, true), -2151228842506317038L, false, 10, 10, 10, 0.1f, 25, false, 3, 9, 1, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
 			(9, IArray(true, true, true, true, true, true, true, true, true), 8770737199023491237L, false, 30, 10, 10, 0.1f, 25, false, 3, 2, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25),
@@ -1149,7 +1150,7 @@ class ConsensusParticipantSdmSyncTest extends ScalaCheckSuite {
 			healedBaseStepsPerChannel,
 			emaSmoothingDecay,
 			retiringParticipantMaxRetries
-		) = (5, IArray.fill(5)(true), -1433210546132280752L, false, 10, 10, 10, 0.0f, 25, false, 3, 1, 0, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
+		) = (3, IArray(true, true, true), -6334503564539640371L, false, 30, 10, 10, 0.1f, 25, true, 3, 9, 3, 0.5f, 10, 0.2f, 0.5f, 3, 15, 20, 0.8, 25)
 		runSimulation(
 			clusterSize = clusterSize,
 			initialConfigMask = initialConfigMask,

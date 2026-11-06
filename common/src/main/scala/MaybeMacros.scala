@@ -25,26 +25,35 @@ object MaybeMacros {
 		'{
 			val ref = $a.asInstanceOf[AnyRef | Null]
 			if ref eq null then throw new IllegalArgumentException("Maybe.some cannot wrap null")
-			else $a.asInstanceOf[Maybe[A]]
+			else ref.asInstanceOf[Maybe[A]]
 		}
 	}
 
 	def liftPartialFunctionImpl[A: Type, B: Type](pf: Expr[PartialFunction[A, B]])(using Quotes): Expr[A => Maybe[B]] = {
 		abortIfNullableType[B]
 
-		'{ (a: A) => if $pf.isDefinedAt(a) then Maybe.apply($pf.apply(a)) else Maybe.empty }
+		'{
+			val p = $pf
+			(a: A) => if p.isDefinedAt(a) then Maybe.apply(p.apply(a)) else Maybe.empty
+		}
 	}
 
 	def mapImpl[A: Type, B: Type](self: Expr[Maybe[A]], f: Expr[A => B])(using Quotes): Expr[Maybe[B]] = {
 		abortIfNullableType[B]
 
-		'{ if $self.isEmpty then Maybe.empty else $f($self.get).asInstanceOf[Maybe[B]] }
+		'{
+			val m = $self
+			if m.isEmpty then Maybe.empty else $f(m.get).asInstanceOf[Maybe[B]]
+		}
 	}
 
 	def flatMapImpl[A: Type, B: Type](self: Expr[Maybe[A]], f: Expr[A => Maybe[B]])(using Quotes): Expr[Maybe[B]] = {
 		abortIfNullableType[B]
 
-		'{ if $self.isEmpty then Maybe.empty else $f($self.get) }
+		'{
+			val m = $self
+			if m.isEmpty then Maybe.empty else $f(m.get)
+		}
 	}
 
 	private def abortIfNullableType[A: Type](using Quotes): Unit = {

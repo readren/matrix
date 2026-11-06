@@ -24,11 +24,10 @@ object Serializer {
 		def this(position: Int, cause: Throwable) = this(position, null, cause)
 	}
 
-	abstract class Writer extends VLQ.ByteWriter {
+	abstract class Writer(protected val refs: RecyclableIdentityIntMap = new RecyclableIdentityIntMap()) extends VLQ.ByteWriter {
 
-		/** Memorizes the components that were already serialized associated with the order in which they were serialized.
-		 * //TODO consider implementing a map that reuses the entries to avoid the cost of memory allocation and reclaim. */
-		private val refs: java.util.IdentityHashMap[AnyRef, Int] = new java.util.IdentityHashMap()
+		/** Resets the reference deduplication table across composite message frames. */
+		def resetDeduplication(): Unit = refs.reset()
 
 		/** Flag that determines if the first byte produced by the serialization of the next component should be escaped if it is equal to [[BACK_REFERENCE_HEADER]].
 		 * This flag is set by the [[write]] method before calling [[writeFull]] when the argument is not deduplicated (is the first occurrence of it within the context of the serialization of the composite that contains it).
@@ -133,13 +132,38 @@ object Serializer {
 			VLQ.encodeUnsignedLong(unsignedLong, this)
 		}
 
-		def putBytes(bytes: Array[Byte]): Unit = {
-			if haveToEscape && bytes(0) == BACK_REFERENCE_HEADER then {
-				getBuffer(1).put(BACK_REFERENCE_HEADER)
+		def putBytes(bytes: Array[Byte], offset: Int, length: Int): Unit = {
+			if length > 0 then {
+				if haveToEscape && bytes(offset) == BACK_REFERENCE_HEADER then getBuffer(1).put(BACK_REFERENCE_HEADER)
+				haveToEscape = false
+				var currOffset = offset
+				var remaining = length
+				while remaining > 0 do {
+					val buffer = getBuffer(1)
+					val chunk = math.min(remaining, buffer.remaining)
+					buffer.put(bytes, currOffset, chunk)
+					currOffset += chunk
+					remaining -= chunk
+				}
 			}
-			// TODO optimize
-			for i <- bytes.indices do getBuffer(1).put(bytes(i))
-			haveToEscape = false
+		}
+
+		inline def putBytes(bytes: Array[Byte]): Unit =
+			putBytes(bytes, 0, bytes.length)
+
+		def putBuffer(source: ByteBuffer): Unit = {
+			if source.hasRemaining then {
+				if haveToEscape && source.get(source.position) == BACK_REFERENCE_HEADER then getBuffer(1).put(BACK_REFERENCE_HEADER)
+				haveToEscape = false
+				while source.hasRemaining do {
+					val buffer = getBuffer(1)
+					val chunk = math.min(source.remaining, buffer.remaining)
+					val prevLimit = source.limit
+					source.limit(source.position + chunk)
+					buffer.put(source)
+					source.limit(prevLimit)
+				}
+			}
 		}
 
 		/** Unconditionally serializes the provided `value` to the backing buffer using the provided [[Serializer]].
@@ -154,22 +178,31 @@ object Serializer {
 		 *
 		 * __Important__: This method must be paired with [[Deserializer.Reader.read]] on the deserializer side. Failing to do so will result in the deserialization of this component and all subsequent composites failing.
 		 */
-		// TODO use [[IsValueOrReferenceTest]] like in the deserializer
-		def write[R <: AnyRef](ref: R)(using sR: Serializer[R]): Unit = {
-			val nextRefKey = refs.size + 1
-			val refKey = refs.computeIfAbsent(ref, r => nextRefKey)
-			if refKey == nextRefKey then {
-				haveToEscape = true
-				writeFull(ref)
-			} else {
-				putByte(BACK_REFERENCE_HEADER)
-				putUnsignedIntVlq(refKey)
+		def write[T](value: T)(using sT: Serializer[T], ivT: ValueOrReferenceTest[T]): Unit = {
+			if ivT.isValueType then writeFull(value)
+			else {
+				val ref = value.asInstanceOf[AnyRef]
+				val nextRefKey = refs.size
+				val refKey = refs.putIfAbsent(ref, nextRefKey)
+				if refKey == nextRefKey then {
+					haveToEscape = true
+					writeFull(value)
+					haveToEscape = false
+				} else {
+					putByte(BACK_REFERENCE_HEADER)
+					putIntVlq(refKey)
+				}
 			}
 		}
+
 	}
 
 	def apply[A](using serializer: Serializer[A]): Serializer[A] = serializer
 
+	/** Derives a [[Serializer]] for a singleton, product, or sealed sum type `A` using [[NestedSumMatchMode.FLAT]] for nested sum types. */
+	inline def derive[A]: Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('{ NestedSumMatchMode.FLAT }) }
+
+	/** Derives a [[Serializer]] for a singleton, product, or sealed sum type `A` using the specified [[NestedSumMatchMode]]. */
 	inline def derive[A](inline mode: NestedSumMatchMode): Serializer[A] = ${ SerializerDerivation.deriveSerializerImpl[A]('mode) }
 
 }

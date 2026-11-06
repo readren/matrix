@@ -1,4 +1,5 @@
-package readren.consensus.protocol
+package readren.consensus
+package protocol
 
 import scala.collection.immutable.Set
 
@@ -63,12 +64,12 @@ final case class SoleElectorateChange[P <: AnyRef](
  * @param lastIncludedRecordTerm the term of the last log entry included in the snapshot.
  * @param latestElectorateChange the most recent electorate change as of the snapshot.
  * @param latestElectorateChangeIndex the log index of `latestElectorateChange`.
- * @param stateMachineSnapshot opaque serialized state of the state machine.
+ * @param stateMachineSnapshot opaque streaming snapshot payload of the state machine.
  */
 final case class SnapshotData[P <: AnyRef](
 	lastIncludedRecordIndex: RecordIndex,
 	lastIncludedRecordTerm: Term,
 	latestElectorateChange: ElectorateChange[P],
 	latestElectorateChangeIndex: RecordIndex,
-	stateMachineSnapshot: IArray[Byte]
+	stateMachineSnapshot: SnapshotPayload
 )

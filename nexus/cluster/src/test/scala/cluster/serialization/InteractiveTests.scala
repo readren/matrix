@@ -20,7 +20,7 @@ object InteractiveTests {
 	case class Dog(field: String) extends Animal
 
 	object animalDc extends DiscriminationCriteria[Animal] {
-		override transparent inline def discriminator[S <: Animal]: Int = 32
+		override type Discriminator[S <: Animal] = 32
 	}
 
 	given animalDc.type = animalDc
@@ -43,29 +43,23 @@ object InteractiveTests {
 	@main def runIt(): Unit = {
 		
 		scribe.error("Scribe is working fine")
-		transparent inline def carPartDiscriminatorByVariant[V <: CarPart] = {
-			inline erasedValue[V] match {
-				case _: Wheel => 21
-				case _: Motor => 22
-				case _: Glass.type => 23
-			}
-		}
 
 		object carPartDiscriminatorCriteria extends DiscriminationCriteria[CarPart] {
-			override transparent inline def discriminator[V <: CarPart]: Int = carPartDiscriminatorByVariant[V]
+			override type Discriminator[V <: CarPart] = V match {
+				case Wheel => 21
+				case Motor => 22
+				case Glass.type => 23
+			}
 		}
 
-		transparent inline def thingDiscriminatorByVariant[V <: Thing]: Int =
-			inline erasedValue[V] match {
-				case _: Rare => 10
-				case _: Wheel => 111
-				case _: Motor => 112
-				case _: Glass.type => 113
-				case _: CarPart => 11
-			}
-
 		object thingDiscriminatorCriteria extends DiscriminationCriteria[Thing] {
-			override transparent inline def discriminator[V <: Thing]: Int = thingDiscriminatorByVariant[V]
+			override type Discriminator[V <: Thing] = V match {
+				case Rare => 10
+				case Wheel => 111
+				case Motor => 112
+				case Glass.type => 113
+				case CarPart => 11
+			}
 		}
 
 		val buffer = ByteBuffer.allocate(20)

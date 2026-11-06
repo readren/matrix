@@ -1,7 +1,8 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
-import readren.consensus.protocol.*
+import env.BufferSnapshotPayload
+import protocol.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
@@ -10,8 +11,8 @@ import org.scalacheck.effect.PropF
 import readren.common.{Maybe, ScribeConfig}
 import readren.sequencer.providers.CooperativeFlatPollingSchedulerDp
 import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
-import scribe.modify.LogModifier
 import scribe.message.LoggableMessage
+import scribe.modify.LogModifier
 import scribe.output.TextOutput
 import scribe.throwable.TraceLoggableMessage
 import scribe.{LogRecord, Priority}
@@ -824,7 +825,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 
-			override def takeSnapshot(): sequencer.Capture[IArray[Byte]] = {
+			override def takeSnapshot(): sequencer.Capture[SnapshotPayload] = {
 				sequencer.checkWithin()
 				// Serialize the applied commands map as a simple byte array
 				val bytes = java.io.ByteArrayOutputStream()
@@ -832,14 +833,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				out.writeInt(highestAppliedCommandSerial)
 				out.writeLong(highestAppliedCommandIndex)
 				out.flush()
-				sequencer.Keeper(IArray.unsafeFromArray(bytes.toByteArray))
+				sequencer.Keeper(BufferSnapshotPayload(bytes.toByteArray))
 			}
 
-			override def installSnapshot(data: IArray[Byte]): sequencer.Capture[Unit] = {
+			override def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit] = {
 				sequencer.checkWithin()
-				val in = java.io.ObjectInputStream(java.io.ByteArrayInputStream(data.unsafeArray))
+				val channel = data.openChannel()
+				val in = java.io.ObjectInputStream(java.nio.channels.Channels.newInputStream(channel))
 				highestAppliedCommandSerial = in.readInt()
 				highestAppliedCommandIndex = in.readLong()
+				in.close()
 				sequencer.Capture_ready(Doer.successUnit)
 			}
 		}

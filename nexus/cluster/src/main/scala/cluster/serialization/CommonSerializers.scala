@@ -55,6 +55,54 @@ object CommonSerializers {
 
 	given Deserializer[Long] = longDeserializer
 
+	//// Float
+	private val floatSerializer: Serializer[Float] = (message: Float, writer: Serializer.Writer) => writer.putFloat(message)
+
+	given Serializer[Float] = floatSerializer
+
+	private val floatDeserializer: Deserializer[Float] = (reader: Deserializer.Reader) => reader.readFloat()
+
+	given Deserializer[Float] = floatDeserializer
+
+	//// Double
+	private val doubleSerializer: Serializer[Double] = (message: Double, writer: Serializer.Writer) => writer.putDouble(message)
+
+	given Serializer[Double] = doubleSerializer
+
+	private val doubleDeserializer: Deserializer[Double] = (reader: Deserializer.Reader) => reader.readDouble()
+
+	given Deserializer[Double] = doubleDeserializer
+
+	//// Array[Byte]
+	private val byteArraySerializer: Serializer[Array[Byte]] = (message: Array[Byte], writer: Serializer.Writer) => {
+		writer.putUnsignedIntVlq(message.length)
+		writer.putBytes(message)
+	}
+
+	given Serializer[Array[Byte]] = byteArraySerializer
+
+	private val byteArrayDeserializer: Deserializer[Array[Byte]] = (reader: Deserializer.Reader) => {
+		val length = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, "Array[Byte]")
+		reader.readBytes(length)
+	}
+
+	given Deserializer[Array[Byte]] = byteArrayDeserializer
+
+	//// IArray[Byte]
+	private val iArrayByteSerializer: Serializer[IArray[Byte]] = (message: IArray[Byte], writer: Serializer.Writer) => {
+		writer.putUnsignedIntVlq(message.length)
+		writer.putBytes(message.asInstanceOf[Array[Byte]])
+	}
+
+	given Serializer[IArray[Byte]] = iArrayByteSerializer
+
+	private val iArrayByteDeserializer: Deserializer[IArray[Byte]] = (reader: Deserializer.Reader) => {
+		val length = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, "IArray[Byte]")
+		IArray.unsafeFromArray(reader.readBytes(length))
+	}
+
+	given Deserializer[IArray[Byte]] = iArrayByteDeserializer
+
 	//// Array
 	given [T: Serializer as sT] => Serializer[Array[T]] = (message: Array[T], writer: Serializer.Writer) => {
 		val length = message.length
@@ -67,7 +115,7 @@ object CommonSerializers {
 	}
 
 	given [T: {ClassTag, Deserializer as dT}] => Deserializer[Array[T]] = (reader: Deserializer.Reader) => {
-		val length = reader.readUnsignedIntVlq()
+		val length = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, s"Array[${summon[ClassTag[T]]}]")
 		val array = new Array[T](length)
 		var index = 0
 		while index < length do {
@@ -75,6 +123,28 @@ object CommonSerializers {
 			index += 1
 		}
 		array
+	}
+
+	//// IArray
+	given [T: Serializer as sT] => Serializer[IArray[T]] = (message: IArray[T], writer: Serializer.Writer) => {
+		val length = message.length
+		writer.putUnsignedIntVlq(length)
+		var index = 0
+		while index < length do {
+			sT.serialize(message(index), writer)
+			index += 1
+		}
+	}
+
+	given [T: {ClassTag, Deserializer as dT}] => Deserializer[IArray[T]] = (reader: Deserializer.Reader) => {
+		val length = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, s"IArray[${summon[ClassTag[T]]}]")
+		val array = new Array[T](length)
+		var index = 0
+		while index < length do {
+			array(index) = dT.deserialize(reader)
+			index += 1
+		}
+		IArray.unsafeFromArray(array)
 	}
 
 	//// String
@@ -89,7 +159,7 @@ object CommonSerializers {
 
 	private val stringDeserializer: Deserializer[String] =
 		(reader: Deserializer.Reader) => {
-			val length = reader.readUnsignedIntVlq()
+			val length = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, "String")
 			val bytes = reader.readBytes(length)
 			new String(bytes, StandardCharsets.UTF_8)
 		}
@@ -104,20 +174,22 @@ object CommonSerializers {
 		}
 
 	given [E] =>(dE: Deserializer[E]) => Deserializer[Maybe[E]] = reader =>
-		if reader.readBoolean() then Maybe.some(dE.deserialize(reader))
-		else Maybe.empty
+		if reader.readBoolean() then {
+			val e = dE.deserialize(reader)
+			Maybe.some(e)
+		} else Maybe.empty
 
 	/// Iterable
-	given iterableSerializer: [E, Ic[e] <: Iterable[e]] =>(sE: Serializer[E]) =>Serializer[Ic[E]] {
+	given iterableSerializer: [E, Ic[e] <: Iterable[e]] =>(sE: Serializer[E], vorE: ValueOrReferenceTest[E]) =>Serializer[Ic[E]] {
 		override def serialize(iterable: Ic[E], writer: Serializer.Writer): Unit = {
 			writer.putUnsignedIntVlq(iterable.size)
-			iterable.foreach(e => sE.serialize(e, writer))
+			iterable.foreach(e => writer.write(e))
 		}
 	}
 
 	given iterableDeserializer: [E, Ic[e] <: Iterable[e]] =>(dE: Deserializer[E], vorE: ValueOrReferenceTest[E], iif: InvariantIterableFactory[Ic]) =>Deserializer[Ic[E]] {
 		override def deserialize(reader: Deserializer.Reader): Ic[E] = {
-			var count = reader.readUnsignedIntVlq()
+			var count = reader.validateCollectionLength(reader.readUnsignedIntVlq(), 0, "Iterable")
 			val builder = iif.factory.newBuilder[E]
 			while count > 0 do {
 				builder.addOne(reader.read[E])
@@ -140,7 +212,7 @@ object CommonSerializers {
 
 	given mapDeserializer: [K, V, Mc[k, v] <: scala.collection.Map[k, v]] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V], imf: InvariantMapFactory[Mc]) =>Deserializer[Mc[K, V]] {
 		override def deserialize(reader: Deserializer.Reader): Mc[K, V] = {
-			var count = reader.readIntVlq()
+			var count = reader.validateCollectionLength(reader.readIntVlq(), 0, "Map")
 			val builder = imf.factory.newBuilder[K, V]
 			while count > 0 do {
 				builder.addOne(dK.deserialize(reader), dV.deserialize(reader))
@@ -163,7 +235,7 @@ object CommonSerializers {
 
 	given sortedMapDeserializer: [K, V, Mc[k, v] <: scala.collection.SortedMap[k, v]] =>(dK: Deserializer[K], dV: Deserializer[V], vorK: ValueOrReferenceTest[K], vorV: ValueOrReferenceTest[V], imf: InvariantSortedMapFactory[Mc], oK: Ordering[K]) =>Deserializer[Mc[K, V]] {
 		override def deserialize(reader: Deserializer.Reader): Mc[K, V] = {
-			var count = reader.readIntVlq()
+			var count = reader.validateCollectionLength(reader.readIntVlq(), 0, "SortedMap")
 			val builder = imf.factory.newBuilder[K, V]
 			while count > 0 do {
 				builder.addOne(dK.deserialize(reader), dV.deserialize(reader))
@@ -172,4 +244,30 @@ object CommonSerializers {
 			builder.result()
 		}
 	}
+
+	//// EmptyTuple
+	private val emptyTupleSerializer: Serializer[EmptyTuple] =
+		(_: EmptyTuple, _: Serializer.Writer) => ()
+
+	given Serializer[EmptyTuple] = emptyTupleSerializer
+
+	private val emptyTupleDeserializer: Deserializer[EmptyTuple] =
+		(_: Deserializer.Reader) => EmptyTuple
+
+	given Deserializer[EmptyTuple] = emptyTupleDeserializer
+
+	//// H *: T (Tuples)
+	given consTupleSerializer: [H, T <: Tuple] => (sH: Serializer[H], sT: Serializer[T]) => Serializer[H *: T] =
+		(message: H *: T, writer: Serializer.Writer) => {
+			sH.serialize(message.head, writer)
+			sT.serialize(message.tail, writer)
+		}
+
+	given consTupleDeserializer: [H, T <: Tuple] => (dH: Deserializer[H], dT: Deserializer[T]) => Deserializer[H *: T] =
+		(reader: Deserializer.Reader) => {
+			val head = dH.deserialize(reader)
+			val tail = dT.deserialize(reader)
+			head *: tail
+		}
+
 }

@@ -1,16 +1,17 @@
 package readren.consensus
 
+import ConsensusParticipantSdm.*
+import env.*
+import protocol.*
+
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
 import readren.common.Maybe
-import readren.consensus.ConsensusParticipantSdm.*
-import readren.consensus.env.*
-import readren.consensus.protocol.*
 
-import java.io.{ByteArrayOutputStream, IOException, InputStream, ObjectOutputStream, OutputStream}
+import java.io.*
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{CopyOnWriteArrayList, CountDownLatch, ExecutorService, Executors, TimeUnit}
+import java.util.concurrent.*
 import scala.collection.mutable
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
@@ -207,7 +208,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		smOut.flush()
 		val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
 
-		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, snapshotData)
+		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, BufferSnapshotPayload(snapshotData))
 
 		val m0 = e.node(0).storage.savedMemory
 		m0.currentTerm = 1.asInstanceOf[Term]
@@ -350,14 +351,14 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 						val appendedNew = ld.peerProgress.count(p => newPeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val committedOld = ld.peerProgress.count(p => oldPeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
 						val committedNew = ld.peerProgress.count(p => newPeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
-						sb.append(s""","peersAppended":"(${appendedOld}/${oldPeers.size}, ${appendedNew}/${newPeers.size})"""")
-						sb.append(s""","peersCommitted":"(${committedOld}/${oldPeers.size}, ${committedNew}/${newPeers.size})"""")
+						sb.append(s""","peersAppended":"($appendedOld/${oldPeers.size}, $appendedNew/${newPeers.size})"""")
+						sb.append(s""","peersCommitted":"($committedOld/${oldPeers.size}, $committedNew/${newPeers.size})"""")
 					case scc: SoleElectorateChange[?] =>
 						val remotePeers = scc.newParticipants.asInstanceOf[Set[NodeId]] - nodeId
 						val appended = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnownToBeAppended >= index)
 						val committed = ld.peerProgress.count(p => remotePeers.contains(p.peerId) && p.highestRecordIndexKnowToBeCommitted >= index)
-						sb.append(s""","peersAppended":"${appended}/${remotePeers.size}"""")
-						sb.append(s""","peersCommitted":"${committed}/${remotePeers.size}"""")
+						sb.append(s""","peersAppended":"$appended/${remotePeers.size}"""")
+						sb.append(s""","peersCommitted":"$committed/${remotePeers.size}"""")
 				}
 			case None =>
 				sb.append(""","peersAppended":null,"peersCommitted":null""")

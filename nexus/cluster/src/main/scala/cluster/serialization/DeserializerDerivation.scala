@@ -2,190 +2,344 @@ package readren.nexus
 package cluster.serialization
 
 import cluster.serialization.Deserializer.Reader
+import cluster.serialization.MacroTools.TypeClassification
 import cluster.serialization.NestedSumMatchMode.{FLAT, TREE}
 
 import scala.annotation.tailrec
-import scala.deriving.Mirror
 import scala.quoted.{Expr, Quotes, Type}
 
+/** Compile-time macro derivation for [[Deserializer]] using direct Tasty reflection.
+ *
+ * Supports monomorphic and parameterized product types (including non-`case` concrete classes with an accessible primary constructor), singleton types (`case object`s and parameterless `enum` cases), and `sealed` sum hierarchies (including nested sum types under [[NestedSumMatchMode.FLAT]] and [[NestedSumMatchMode.TREE]], as well as directly and indirectly recursive types). */
 object DeserializerDerivation {
 
-
+	/** Entry point for [[Deserializer.derive]]. */
 	def deriveDeserializerImpl[A: Type](modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Deserializer[A]] = {
 		import quotes.reflect.*
 
-		Expr.summon[Mirror.Of[A]] match {
-			case Some('{ $m: Mirror.ProductOf[`A`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
-				deriveProductDeserializer[A, fieldTypes, fieldLabels]
-			case Some('{ $m: Mirror.SumOf[`A`] {type MirroredElemTypes = variantTypes} }) =>
-				deriveSumDeserializer[A, variantTypes](modeExpr)
-			case _ =>
-				// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
-				report.errorAndAbort(s"Cannot derive Deserializer for non-ADT type ${Type.show[A]}")
+		MacroTools.classifyType(TypeRepr.of[A]) match {
+			case Some(TypeClassification.Singleton(termSymbol)) =>
+				'{
+					new Deserializer[A] {
+						def deserialize(reader: Reader): A = ${ Ref(termSymbol).asExprOf[A] }
+					}
+				}
+
+			case Some(TypeClassification.ValueClass(underlyingTpe, _, ctor)) =>
+				deriveValueClassDeserializer[A](underlyingTpe, ctor)
+
+			case Some(TypeClassification.OpaqueAlias(underlyingTpe)) =>
+				deriveOpaqueAliasDeserializer[A](underlyingTpe)
+
+			case Some(TypeClassification.Product(_, _)) =>
+				deriveProductDeserializer[A]
+
+			case Some(TypeClassification.Sum(_)) =>
+				deriveSumDeserializer[A](modeExpr)
+
+			case None =>
+				report.errorAndAbort(s"Cannot derive Deserializer for `${Type.show[A]}`: it is neither a sealed sum type, an opaque type alias, a value class, nor a concrete class with an accessible primary constructor.")
 		}
 	}
 
-	private def deriveProductDeserializer[P: Type, FieldTypes: Type, FieldLabels: Type](using quotes: Quotes): Expr[Deserializer[P]] = {
+	private def deriveValueClassDeserializer[A: Type](using quotes: Quotes)(underlyingTpe: quotes.reflect.TypeRepr, ctor: quotes.reflect.Term): Expr[Deserializer[A]] = {
+		import quotes.reflect.*
+
+		underlyingTpe.asType match {
+			case '[underlying] =>
+				Implicits.search(TypeRepr.of[Deserializer[underlying]]) match {
+					case iss: ImplicitSearchSuccess =>
+						val underlyingDeserializer = iss.tree.asExprOf[Deserializer[underlying]]
+						'{
+							new Deserializer[A] {
+								def deserialize(reader: Reader): A = {
+									val raw = $underlyingDeserializer.deserialize(reader)
+									${ ctor.appliedTo('raw.asTerm).asExprOf[A] }
+								}
+							}
+						}
+					case _: NoMatchingImplicits =>
+						report.errorAndAbort(s"Cannot derive Deserializer for value class `${Type.show[A]}`: missing given `Deserializer[${Type.show[underlying]}]`.")
+					case isf: ImplicitSearchFailure =>
+						report.errorAndAbort(s"Cannot derive Deserializer for value class `${Type.show[A]}`: ${isf.explanation}")
+				}
+		}
+	}
+
+	private def deriveOpaqueAliasDeserializer[A: Type](using quotes: Quotes)(underlyingTpe: quotes.reflect.TypeRepr): Expr[Deserializer[A]] = {
+		import quotes.reflect.*
+
+		underlyingTpe.asType match {
+			case '[underlying] =>
+				Implicits.search(TypeRepr.of[Deserializer[underlying]]) match {
+					case iss: ImplicitSearchSuccess =>
+						val underlyingDeserializer = iss.tree.asExprOf[Deserializer[underlying]]
+						'{
+							new Deserializer[A] {
+								def deserialize(reader: Reader): A = {
+									$underlyingDeserializer.deserialize(reader).asInstanceOf[A]
+								}
+							}
+						}
+					case _: NoMatchingImplicits =>
+						report.errorAndAbort(s"Cannot derive Deserializer for opaque type `${Type.show[A]}`: missing given `Deserializer[${Type.show[underlying]}]`.")
+					case isf: ImplicitSearchFailure =>
+						report.errorAndAbort(s"Cannot derive Deserializer for opaque type `${Type.show[A]}`: ${isf.explanation}")
+				}
+		}
+	}
+
+	private def deriveProductDeserializer[P: Type](using quotes: Quotes): Expr[Deserializer[P]] = {
 		'{
 			new Deserializer[P] {
-				def deserialize(reader: Reader): P =
-					${ productDeserializerBodyFor[P, FieldTypes, FieldLabels]('reader) }
+				def deserialize(reader: Reader): P = {
+					given self: Deserializer[P] = this
+					${ productDeserializerBodyFor[P, P]('reader, 'self) }
+				}
 			}
 		}
 	}
 
-	private def deriveSumDeserializer[S: Type, VariantTypes: Type](modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Deserializer[S]] = {
+	private def deriveSumDeserializer[S: Type](modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[Deserializer[S]] = {
 		'{
 			new Deserializer[S] {
 				def deserialize(reader: Reader): S = {
-					${ sumDeserializerBodyFor[S, VariantTypes]('reader, modeExpr) }
+					given self: Deserializer[S] = this
+					${ sumDeserializerBodyFor[S]('reader, 'self, modeExpr) }
 				}
 			}
 		}
 	}
 
-	/**
-	 * @tparam P the type of the product type to deserialize
-	 * @tparam FieldTypes the types of the fields of `A`
-	 * @tparam FieldLabels the names of the fields of `A`
-	 * @param readerExpr a reference to the reader parameter of the [[Deserializer.deserialize]] method.
-	 * @return a body for the [[Deserializer]] */
-	private def productDeserializerBodyFor[P: Type, FieldTypes: Type, FieldLabels: Type](readerExpr: Expr[Reader])(using quotes: Quotes): Expr[P] = {
+	/** Generates the deserialization expression that reads all constructor arguments from `readerExpr` and instantiates product type `P`.
+	 *
+	 * @tparam Root the root type for which [[Deserializer.derive]] was invoked, used to short-circuit direct recursive field calls to `rootSelfExpr`.
+	 * @tparam P the product type to instantiate.
+	 * @param readerExpr reference to the [[Deserializer.Reader]] parameter of [[Deserializer.deserialize]].
+	 * @param rootSelfExpr reference to the enclosing [[Deserializer]] instance for `Root`.
+	 * @return an expression that deserializes and constructs an instance of `P`. */
+	private def productDeserializerBodyFor[Root: Type, P: Type](
+		readerExpr: Expr[Reader],
+		rootSelfExpr: Expr[Deserializer[Root]]
+	)(using quotes: Quotes): Expr[P] = {
 		import quotes.reflect.*
 
-		@tailrec
-		def loop[RemainingFieldTypes: Type, RemainingFieldLabels: Type](alreadyDone: List[Term]): List[Term] = {
-			(Type.of[RemainingFieldTypes], Type.of[RemainingFieldLabels]) match {
-				case ('[headType *: tailTypes], '[headLabel *: tailLabels]) =>
+		val productTpe = TypeRepr.of[P].dealias
+		val rootTpe = TypeRepr.of[Root].dealias
 
-					Implicits.search(TypeRepr.of[Deserializer[headType]]) match {
-						case iss: ImplicitSearchSuccess =>
-							val deserializerExpr = iss.tree.asExprOf[Deserializer[headType]]
-							val fieldValueExpr = '{ $deserializerExpr.deserialize($readerExpr) }
-							loop[tailTypes, tailLabels](fieldValueExpr.asTerm :: alreadyDone)
+		MacroTools.classifyType(productTpe) match {
+			case Some(TypeClassification.Singleton(termSymbol)) =>
+				Ref(termSymbol).asExprOf[P]
 
-						case nmi: NoMatchingImplicits =>
-							val fieldName: String = Type.valueOfConstant[headLabel].get.asInstanceOf[String]
-							report.errorAndAbort(s"Missing a given `${Type.show[Deserializer[headType]]}` for field `$fieldName` of `${Type.show[P]}`)")
+			case Some(TypeClassification.ValueClass(underlyingTpe, _, ctor)) =>
+				val rawReadTerm: Term = if underlyingTpe.dealias =:= rootTpe then {
+					'{ $rootSelfExpr.deserialize($readerExpr) }.asTerm
+				} else {
+					underlyingTpe.asType match {
+						case '[underlying] =>
+							Implicits.search(TypeRepr.of[Deserializer[underlying]]) match {
+								case iss: ImplicitSearchSuccess =>
+									val deserializerExpr = iss.tree.asExprOf[Deserializer[underlying]]
+									'{ $deserializerExpr.deserialize($readerExpr) }.asTerm
+								case _: NoMatchingImplicits =>
+									report.errorAndAbort(s"Missing a given `Deserializer[${Type.show[underlying]}]` for value class `${Type.show[P]}`.")
+								case isf: ImplicitSearchFailure =>
+									report.errorAndAbort(s"The search of a given `Deserializer[${Type.show[underlying]}]` for value class `${Type.show[P]}` failed with: ${isf.explanation}")
+							}
+					}
+				}
+				ctor.appliedTo(rawReadTerm).asExprOf[P]
 
-						case isf: ImplicitSearchFailure =>
-							val fieldName: String = Type.valueOfConstant[headLabel].get.asInstanceOf[String]
-							report.errorAndAbort(s"The search of a `given ${Type.show[Deserializer[headType]]}` for the field `$fieldName` of `${Type.show[P]}` failed with: ${isf.explanation}")
+			case Some(TypeClassification.Product(typedCtorTerm, paramLists)) =>
+				def deserializeParam(param: MacroTools.ProductParam[TypeRepr, Term]): Term = {
+					val rawReadTerm: Term = if param.tpe.dealias =:= rootTpe then {
+						'{ $rootSelfExpr.deserialize($readerExpr) }.asTerm
+					} else {
+						param.tpe.asType match {
+							case '[fieldType] =>
+								Implicits.search(TypeRepr.of[Deserializer[fieldType]]) match {
+									case iss: ImplicitSearchSuccess =>
+										val deserializerExpr = iss.tree.asExprOf[Deserializer[fieldType]]
+										'{ $deserializerExpr.deserialize($readerExpr) }.asTerm
 
+									case failure =>
+										MacroTools.classifyType(param.tpe) match {
+											case Some(TypeClassification.ValueClass(underlyingTpe, _, ctor)) =>
+												val rawUnderlyingTerm: Term = if underlyingTpe.dealias =:= rootTpe then {
+													'{ $rootSelfExpr.deserialize($readerExpr) }.asTerm
+												} else {
+													underlyingTpe.asType match {
+														case '[underlying] =>
+															Implicits.search(TypeRepr.of[Deserializer[underlying]]) match {
+																case uIss: ImplicitSearchSuccess =>
+																	val uDeserializerExpr = uIss.tree.asExprOf[Deserializer[underlying]]
+																	'{ $uDeserializerExpr.deserialize($readerExpr) }.asTerm
+																case _: NoMatchingImplicits =>
+																	report.errorAndAbort(s"Missing a given `Deserializer[${Type.show[fieldType]}]` or `Deserializer[${Type.show[underlying]}]` for field `${param.name}` of `${Type.show[P]}`.")
+																case isf: ImplicitSearchFailure =>
+																	report.errorAndAbort(s"The search of a `given Deserializer[${Type.show[underlying]}]` for field `${param.name}` of `${Type.show[P]}` failed with: ${isf.explanation}")
+															}
+													}
+												}
+												ctor.appliedTo(rawUnderlyingTerm)
+
+											case _ =>
+												failure match {
+													case _: NoMatchingImplicits =>
+														report.errorAndAbort(s"Missing a given `${Type.show[Deserializer[fieldType]]}` for field `${param.name}` of `${Type.show[P]}`.")
+													case isf: ImplicitSearchFailure =>
+														report.errorAndAbort(s"The search of a `given ${Type.show[Deserializer[fieldType]]}` for the field `${param.name}` of `${Type.show[P]}` failed with: ${isf.explanation}")
+												}
+										}
+								}
+						}
 					}
 
-				case ('[EmptyTuple], '[EmptyTuple]) =>
-					alreadyDone
+					param.sinceVersion match {
+						case Some(v) =>
+							val condExpr = '{ $readerExpr.governingVersion.isAtLeast(ProtocolVersion(${ Expr(v) })) }
+							val defaultTerm = param.defaultValue.getOrElse {
+								report.errorAndAbort(s"Missing default constructor value for field `${param.name}` of `${Type.show[P]}`.")
+							}
+							If(condExpr.asTerm, rawReadTerm, defaultTerm)
+						case None =>
+							rawReadTerm
+					}
+				}
 
-				case _ =>
-					report.errorAndAbort("Unreachable")
-			}
-		}
+				val argLists: List[List[Term]] = paramLists.map { paramList =>
+					paramList.map(param => deserializeParam(param))
+				}
 
-		val constructorArgs = loop[FieldTypes, FieldLabels](Nil).reverse
-
-		val tpe = TypeRepr.of[P]
-		tpe match {
-			case termRef: TermRef =>
-				// Handle enum cases or singleton cases
-				Ref(termRef.termSymbol).asExprOf[P]
-			case _ =>
-				val constructor = tpe.typeSymbol.primaryConstructor
-				val constructorTerm = New(Inferred(tpe)).select(constructor)
-				val constructorCall = constructorTerm.appliedToArgs(constructorArgs)
+				val constructorCall = argLists.foldLeft(typedCtorTerm)((acc, args) => acc.appliedToArgs(args))
 				constructorCall.asExprOf[P]
+
+			case _ =>
+				report.errorAndAbort(s"Expected product, value class, or singleton type, but got `${Type.show[P]}`.")
 		}
 	}
 
-	private def sumDeserializerBodyFor[OuterSum: Type, OuterVariants: Type](readerExpr: Expr[Reader], modeExpr: Expr[NestedSumMatchMode])(using quotes: Quotes): Expr[OuterSum] = {
+	/** Generates the switch expression that reads the VLQ discriminator from `readerExpr` and dispatches to the matching variant of sum type `OuterSum`. */
+	private def sumDeserializerBodyFor[OuterSum: Type](
+		readerExpr: Expr[Reader],
+		rootSelfExpr: Expr[Deserializer[OuterSum]],
+		modeExpr: Expr[NestedSumMatchMode]
+	)(using quotes: Quotes): Expr[OuterSum] = {
 		import quotes.reflect.*
 
 		val mode = modeExpr.valueOrAbort
-		var caseIndex = 0
+		given outerTargetName: String = Type.show[Deserializer[OuterSum]]
 
-		def genSumCases[Sum: Type, Variants: Type](alreadyFlattenedCases: List[CaseDef]): List[CaseDef] = {
-
-			val oSumDiscriminationCriteriaSelect: Option[Select] =
-				Implicits.search(TypeRepr.of[DiscriminationCriteria[Sum]]) match {
-					case iss: ImplicitSearchSuccess =>
-						Some(Select.unique(iss.tree, "discriminator"))
-					case nmi: NoMatchingImplicits =>
-						None
-					case isf: ImplicitSearchFailure =>
-						report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[DiscriminationCriteria[Sum]]}` failed with: ${isf.explanation}")
-				}
-
-			@tailrec
-			def loop[RemainingVariants: Type](alreadyDone: List[CaseDef]): List[CaseDef] = {
-				Type.of[RemainingVariants] match {
-					case '[headType *: tailTypes] =>
-
-						def buildCaseDef(deserialization: Expr[headType]): CaseDef = {
-							val caseDef: CaseDef = oSumDiscriminationCriteriaSelect match {
-								case Some(discriminatorCriteriaSelect) =>
-									val discriminator = discriminatorCriteriaSelect.appliedToType(TypeRepr.of[headType])
-									val bindSymbol = Symbol.newBind(Symbol.spliceOwner, s"d$caseIndex", Flags.EmptyFlags, TypeRepr.of[Int])
-									val guard = Select.overloaded(Ref(bindSymbol), "==", Nil, List(discriminator))
-									// Try to reduce the resulting discriminator term to a constant to be able to create a Literal pattern and avoid the guard.
-									guard.underlying match {
-										case Apply(Select(_, _), List(literal@Literal(IntConstant(_)))) =>
-											CaseDef(literal, None, deserialization.asTerm)
-										case _ =>
-											CaseDef(Bind(bindSymbol, Wildcard()), Some(guard), deserialization.asTerm)
-									}
-
-								case None =>
-									CaseDef(Literal(IntConstant(alreadyDone.size)), None, deserialization.asTerm)
-							}
-							caseIndex += 1
-							caseDef
-						}
-
-						Implicits.search(TypeRepr.of[Deserializer[headType]]) match {
-							case iss: ImplicitSearchSuccess =>
-								val deserializerExpr = iss.tree.asExprOf[Deserializer[headType]]
-								val caseDef = buildCaseDef('{ $deserializerExpr.deserialize($readerExpr) })
-								loop[tailTypes](caseDef :: alreadyDone)
-
-							case nmi: NoMatchingImplicits =>
-								Expr.summon[Mirror.Of[`headType`]] match {
-									case Some('{ $m: Mirror.ProductOf[`headType`] {type MirroredElemTypes = fieldTypes; type MirroredElemLabels = fieldLabels} }) =>
-										val deserialization = productDeserializerBodyFor[headType, fieldTypes, fieldLabels](readerExpr)
-										val caseDef = buildCaseDef(deserialization)
-										loop[tailTypes](caseDef :: alreadyDone)
-
-									case Some('{ $m: Mirror.SumOf[`headType`] {type MirroredElemTypes = variantTypes} }) =>
-										mode match {
-											case FLAT =>
-												loop[tailTypes](genSumCases[headType, variantTypes](alreadyDone))
-											case TREE =>
-												val nestedCases = genSumCases[headType, variantTypes](Nil).reverse
-												val nestedScrutineeExpr: Expr[Int] = '{ $readerExpr.readUnsignedIntVlq() }
-												val deserialization = Match(nestedScrutineeExpr.asTerm, nestedCases).asExprOf[headType]
-												val caseDef = buildCaseDef(deserialization)
-												loop[tailTypes](caseDef :: alreadyDone)
-										}
-
-									case _ =>
-										// TODO add support of non-ADT types as I did in "https://github.com/readren/json-facile"
-										report.errorAndAbort(s"Cannot derive Deserializer for non-ADT type ${Type.show[headType]}")
-								}
-							case isf: ImplicitSearchFailure =>
-								report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[Deserializer[headType]]}` failed with: ${isf.explanation}")
-						}
-
-					case '[EmptyTuple] =>
-						alreadyDone
-
-					case _ => report.errorAndAbort("Unreachable")
-				}
-
-			}
-			
-			loop[Variants](alreadyFlattenedCases)
+		val outerVariants = MacroTools.classifyType(TypeRepr.of[OuterSum]) match {
+			case Some(TypeClassification.Sum(variants)) =>
+				variants
+			case _ =>
+				report.errorAndAbort(s"Expected sealed sum type, but got `${Type.show[OuterSum]}`.")
 		}
 
-		val cases = genSumCases[OuterSum, OuterVariants](Nil).reverse
+		case class GeneratedCase(variantTpe: TypeRepr, discriminator: Int, caseDef: CaseDef)
+
+		def genSumCases[Sum: Type](
+			variants: List[TypeRepr],
+			alreadyFlattenedCases: List[GeneratedCase]
+		): List[GeneratedCase] = {
+
+			val oCriteriaTerm: Option[Term] = MacroTools.findDiscriminationCriteria[Sum]
+
+			@tailrec
+			def loop(remainingVariants: List[TypeRepr], alreadyDone: List[GeneratedCase]): List[GeneratedCase] = {
+				remainingVariants match {
+					case Nil =>
+						alreadyDone
+
+					case headTpe :: tailTypes =>
+						if mode == FLAT && alreadyDone.exists(_.variantTpe =:= headTpe) then {
+							loop(tailTypes, alreadyDone)
+						} else {
+							headTpe.asType match {
+								case '[headType] =>
+									def buildGeneratedCase(deserialization: Expr[headType]): GeneratedCase = {
+										val discInt: Int = oCriteriaTerm match {
+											case Some(dcTerm) =>
+												MacroTools.resolveDiscriminator[Sum](dcTerm, headTpe)
+											case None =>
+												alreadyDone.size
+										}
+										alreadyDone.find(_.discriminator == discInt).foreach { collision =>
+											report.errorAndAbort(
+												s"Duplicate discriminator value $discInt in `${Type.show[OuterSum]}`: assigned to both `${MacroTools.simpleNameOf(collision.variantTpe)}` and `${MacroTools.simpleNameOf(headTpe)}`."
+											)
+										}
+										val caseDef = CaseDef(Literal(IntConstant(discInt)), None, deserialization.asTerm)
+										GeneratedCase(headTpe, discInt, caseDef)
+									}
+
+									Implicits.search(TypeRepr.of[Deserializer[headType]]) match {
+										case iss: ImplicitSearchSuccess =>
+											val deserializerExpr = iss.tree.asExprOf[Deserializer[headType]]
+											val genCase = buildGeneratedCase('{ $deserializerExpr.deserialize($readerExpr) })
+											loop(tailTypes, genCase :: alreadyDone)
+
+										case isf: AmbiguousImplicits =>
+											report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[Deserializer[headType]]}` failed with: ${isf.explanation}")
+
+										case isf: DivergingImplicit =>
+											report.errorAndAbort(s"During the derivation of a `${Type.show[Deserializer[OuterSum]]}`, the search of a potential `given ${Type.show[Deserializer[headType]]}` failed with: ${isf.explanation}")
+
+										case _: ImplicitSearchFailure =>
+											MacroTools.classifyType(headTpe) match {
+												case Some(TypeClassification.Singleton(_)) | Some(TypeClassification.Product(_, _)) | Some(TypeClassification.ValueClass(_, _, _)) =>
+													val deserialization = productDeserializerBodyFor[OuterSum, headType](readerExpr, rootSelfExpr)
+													val genCase = buildGeneratedCase(deserialization)
+													loop(tailTypes, genCase :: alreadyDone)
+
+												case Some(TypeClassification.Sum(nestedVariantTypes)) =>
+													mode match {
+														case FLAT =>
+															loop(tailTypes, genSumCases[headType](nestedVariantTypes, alreadyDone))
+														case TREE =>
+															val nestedBindSymbol = Symbol.newBind(
+																Symbol.spliceOwner,
+																"nestedDiscriminator",
+																Flags.EmptyFlags,
+																TypeRepr.of[Int]
+															)
+															val nestedDefaultCase = CaseDef(
+																Bind(nestedBindSymbol, Wildcard()),
+																None,
+																'{ throw new Deserializer.InvalidDiscriminatorException($readerExpr.position, ${ Ref(nestedBindSymbol).asExprOf[Int] }, ${ Expr(Type.show[headType]) }) }.asTerm
+															)
+															val nestedCases = genSumCases[headType](nestedVariantTypes, Nil).reverse.map(_.caseDef) :+ nestedDefaultCase
+															val nestedScrutineeExpr: Expr[Int] = '{ $readerExpr.readUnsignedIntVlq() }
+															val deserialization = Match(nestedScrutineeExpr.asTerm, nestedCases).asExprOf[headType]
+															val genCase = buildGeneratedCase(deserialization)
+															loop(tailTypes, genCase :: alreadyDone)
+													}
+
+												case None | Some(TypeClassification.OpaqueAlias(_)) =>
+													report.errorAndAbort(s"Cannot derive Deserializer for variant `${Type.show[headType]}` of `${Type.show[OuterSum]}`: it is neither a sealed sum type nor a concrete class with an accessible primary constructor.")
+											}
+									}
+							}
+						}
+				}
+			}
+
+			loop(variants, alreadyFlattenedCases)
+		}
+
+		val bindSymbol = Symbol.newBind(
+			Symbol.spliceOwner,
+			"discriminator",
+			Flags.EmptyFlags,
+			TypeRepr.of[Int]
+		)
+		val defaultCase = CaseDef(
+			Bind(bindSymbol, Wildcard()),
+			None,
+			'{ throw new Deserializer.InvalidDiscriminatorException($readerExpr.position, ${ Ref(bindSymbol).asExprOf[Int] }, ${ Expr(Type.show[OuterSum]) }) }.asTerm
+		)
+		val cases = genSumCases[OuterSum](outerVariants, Nil).reverse.map(_.caseDef) :+ defaultCase
 		val scrutineeExpr: Expr[Int] = '{ $readerExpr.readUnsignedIntVlq() }
 		Match(scrutineeExpr.asTerm, cases).asExprOf[OuterSum]
 	}

@@ -287,6 +287,48 @@ object Protocol {
 
 	given Deserializer[CommunicationStatus] = Deserializer.derive[CommunicationStatus](FLAT)
 
+	object protocolDc extends DiscriminationCriteria[Protocol] {
+		override type Discriminator[P <: Protocol] = P match {
+			case HelloIExist => 10
+			case HelloIAmBack => 11
+			case SupportedVersionsMismatch => 13
+			case Welcome => 14
+			case ClusterCreatorProposal => 20
+			case ICreatedACluster => 21
+			case RequestApprovalToJoin => 30
+			case JoinApprovalGranted => 31
+			case RequestToJoin => 32
+			case JoinGranted => 33
+			case JoinRejected => 34
+			case JoinDecision => 35
+			case WaitMyMembershipStatusIs => 40
+			case Farewell => 41
+			case AnotherParticipantGone => 42
+			case AreYouInSyncWithMe => 43
+			case AreWeInSyncResponse => 44
+			case ILostCommunicationWith => 45
+			case ConversationStartedWith => 46
+			case AMemberHasBeenRebooted => 47
+			case Heartbeat => 48
+			case ClusterStateChanged => 49
+			case ChannelDiscarded.type => 50
+			case WeHaveToResolveClustersConflict => 51
+			case AreWeIsolated => 52
+			case AreWeIsolatedResponse => 53
+			case WeAreIsolated => 54
+			case ApplicationMsg => 60
+
+			// The following cases are needed only if the NestedSumMatchMode is TREE but do not bother if FLAT.
+			case Hello => 4
+			case LeadRequest => 5
+			case Request => 3
+			case NonResponse => 2
+			case Response => 1
+		}
+	}
+
+	transparent inline given DiscriminationCriteria[Protocol] = protocolDc
+
 	private val protocolSerializer: Serializer[Protocol] = Serializer.derive[Protocol](FLAT)
 
 	given Serializer[Protocol] = protocolSerializer
@@ -294,47 +336,4 @@ object Protocol {
 	private val protocolDeserializer: Deserializer[Protocol] = Deserializer.derive[Protocol](FLAT)
 
 	given Deserializer[Protocol] = protocolDeserializer
-
-
-	object protocolDc extends DiscriminationCriteria[Protocol] {
-		override transparent inline def discriminator[P <: Protocol]: Int =
-			inline erasedValue[P] match {
-				case _: HelloIExist => 10
-				case _: HelloIAmBack => 11
-				case _: SupportedVersionsMismatch => 13
-				case _: Welcome => 14
-				case _: ClusterCreatorProposal => 20
-				case _: ICreatedACluster => 21
-				case _: RequestApprovalToJoin => 30
-				case _: JoinApprovalGranted => 31
-				case _: RequestToJoin => 32
-				case _: JoinGranted => 33
-				case _: JoinRejected => 34
-				case _: JoinDecision => 35
-				case _: WaitMyMembershipStatusIs => 40
-				case _: Farewell => 41
-				case _: AnotherParticipantGone => 42
-				case _: AreYouInSyncWithMe => 43
-				case _: AreWeInSyncResponse => 44
-				case _: ILostCommunicationWith => 45
-				case _: ConversationStartedWith => 46
-				case _: AMemberHasBeenRebooted => 47
-				case _: Heartbeat => 48
-				case _: ClusterStateChanged => 49
-				case ChannelDiscarded => 50
-				case _: WeHaveToResolveClustersConflict => 51
-				case _: AreWeIsolated => 52
-				case _: ApplicationMsg => 60
-
-				// The following cases are needed only if the NestedSumMatchMode is NESTED but do not bother if FLAT. 
-				case _: LeadRequest => 5
-				case _: Hello => 4
-				case _: Request => 3
-				case _: NonResponse => 2
-				case _: Response => 1
-			}
-	}
-
-	transparent inline given DiscriminationCriteria[Protocol] = protocolDc
-
 }

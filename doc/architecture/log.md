@@ -3,8 +3,76 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-10-31T20:00:00Z"
+timestamp: "2026-11-05T21:50:00Z"
 ---
+
+## [2026-11-05T21:50:00Z]
+
+- Formalized the aggregate transport capacity invariant in Section 11 of `doc/architecture/cluster-serialization.md`, enforcing at construction time that `maxBuffers * buffersCapacity <= Int.MaxValue` in `Receiver` and `ParticipantService.DelegateConfig`, validating incoming frame lengths against `totalBufferCapacity` in `Receiver.completed` to reject corrupted frames and prevent negative indexing, and standardizing frame accumulators, package bounds, and `Reader.remainingContentBytes` on 32-bit `Int`.
+
+## [2026-11-05T20:55:00Z]
+
+- Refined the pre-allocation remaining content bound invariant in Section 11 of `doc/architecture/cluster-serialization.md`, specifying that total package content bytes are accumulated from decoded frame headers during packet ingestion in `Receiver.completed` rather than dynamically traversing circular storage buffer distances, providing an exact $O(1)$ content ceiling to the reader without iterator allocations or hot-path traversal overhead.
+
+## [2026-11-05T18:30:00Z]
+
+- Formalized adversarial payload defense and allocation guard invariants in Section 11 of `doc/architecture/cluster-serialization.md`, specifying pre-allocation validation of VLQ length headers against physical transport buffer distance, defensive allocation ceilings (`AllocationLimits`) bounding element and byte allocations across collections and zero-wire-footprint types, structured non-fatal deserialization fault isolation (`PayloadCorruptedException`) preventing `OutOfMemoryError` denial-of-service conditions in transport reception, and synthesized exhaustive discriminator fallback branches in macro-derived sum deserializers.
+
+## [2026-11-05T16:35:00Z]
+
+- Formalized the ghost leader ballot rejection invariant in Section 9 of `doc/architecture/lazy-multi-raft-consensus.md`, specifying that a ghost leader driving quiescence authorization under an empty electorate must reject ballot requests immediately with a blank ballot rather than re-entrantly delegating to itself, ensuring rapid election rejection without recursive loop hazards when no valid voting electorate exists.
+
+## [2026-11-05T15:22:00Z]
+
+- Formalized the dynamic role dispatch invariant for command application completion in Section 8.III of `doc/architecture/lazy-multi-raft-consensus.md`, specifying that state-machine application callbacks must dispatch dynamically to the participant's active role rather than the historical role instance that scheduled the applier, guaranteeing that incoming leaders receive state-machine completion events to fulfill in-flight client response covenants across role transitions without head-of-line blocking or stalled queues.
+
+## [2026-11-04T22:10:00Z]
+
+- Formalized AnyVal value class and Scala 3 opaque type alias serialization invariants in Section 2 and Section 5 of `doc/architecture/cluster-serialization.md`, specifying top-level derivation for opaque types via translucent underlying type resolution, strict domain encapsulation enforcement preventing silent alias piercing during product field traversal, explicit-over-structural precedence for AnyVal codecs, zero-allocation field unboxing fallback directly against underlying representations, and value class self-recursion short-circuiting.
+
+## [2026-11-04T19:45:00Z]
+
+- Formalized the single-evaluation macro invariant in `doc/architecture/common-primitives.md`, specifying that expression parameters in synthesized quote ASTs across `MaybeMacros` (`some`, `map`, `flatMap`, `liftPartialFunction`) must bind to intermediate local references, and restricting `ToolsMacro` (`deriveToString`) strictly to the enclosing class instance (`this` or an enclosing self-type alias) to prevent duplicated execution and preserve private constructor parameter access.
+
+## [2026-11-04T19:00:00Z]
+
+- Formalized Scala 3 tuple serialization and composite resolution invariants in Section 10 of `doc/architecture/cluster-serialization.md`, specifying inductive structural product decomposition over `EmptyTuple` and `*:[H, T]`, zero-discriminator product wire parity matching case class field layout, strict left-to-right deserialization evaluation order avoiding right-associative stream inversion hazards, and transparent implicit propagation into macro-derived product types without nominal wrappers.
+
+## [2026-11-03T21:55:00Z]
+
+- Formalized object reference deduplication table lifecycle and zero-allocation invariants in Section 9 of `doc/architecture/cluster-serialization.md`, specifying connection-bound lifecycles for `RecyclableIdentityIntMap` and `RecyclableObjectBuffer` on `Transmitter` and `Receiver`, open-addressing linear probing with primitive integer value arrays and inlined lookups to eliminate boxing and closure churn, composite multi-frame reference accumulation with in-place $O(\text{size})$ reset, and thread-confined lock-free execution across sequential transport pipelines.
+
+## [2026-11-03T21:10:00Z]
+
+- Formalized object reference deduplication framing, indexing, and value-type bypass invariants in `doc/architecture/cluster-serialization.md`, specifying signed VLQ wire encoding (`putIntVlq` / `readIntVlq`) to prevent wire collisions between reference identifiers and the `0x40` escape header, establishing 0-based reference table indexing across serialization writers and deserialization readers, enforcing strict value-type bypass via `ValueOrReferenceTest` to prevent primitive boxing and index desynchronization, and restoring symmetric reference deduplication across transport and collection serializers.
+
+## [2026-11-03T16:30:00Z]
+
+- Formalized the streaming snapshot protocol and carrier invariants in Section 8.III of `doc/architecture/lazy-multi-raft-consensus.md`, specifying the abstract `SnapshotPayload` repeatable channel supplier contract in `consensus/core`, extracting `FileSnapshotPayload` to the `consensus_nio2-persistence` subproject, isolating in-memory `BufferSnapshotPayload` within the simulation test suite, and establishing `Workspace` ownership of snapshot file persistence lifecycles.
+
+## [2026-11-02T21:25:00Z]
+
+- Formalized transport buffer capacity ceiling and quiescent pruning invariants in `doc/architecture/cluster-serialization.md`, specifying hard buffer limits (`maxBuffers`) with fail-fast backpressure and in-flight corrupted-package sentinel aborts without connection teardown, alongside hysteresis-based ring pruning (`pruneTo`) down to minimal buffer floors when channels transition to idle.
+
+## [2026-11-02T19:20:00Z]
+
+- Formalized binary payload transfer and buffer lifecycle invariants in `doc/architecture/cluster-serialization.md`, specifying chunked boundary-aware bulk transfer across transport frames, direct slice and `ByteBuffer` streaming without intermediate heap allocations, and buffer lifecycle isolation requiring durable payloads (such as snapshot data) to be copied into immutable heap structures (`IArray[Byte]`) rather than retaining zero-copy references to ephemeral pooled direct buffers.
+
+## [2026-11-02T17:53:00Z]
+
+- Formalized protocol versioning and product schema evolution in `doc/architecture/cluster-serialization.md`, specifying monotonic integer `ProtocolVersion` semantics (`opaque type ProtocolVersion <: AnyVal = Int`), `@since(version: Int)` version attribution, compile-time companion default value enforcement, dynamic wire adaptation via writer/reader governing versions, and preservation of invariant type class safety.
+
+## [2026-11-02T15:05:00Z]
+
+- Formalized the interaction between `DiscriminationCriteria` and `NestedSumMatchMode` in `doc/architecture/cluster-serialization.md` and `doc/architecture/cluster-serialization-guide.md`, specifying discriminator requirements across leaf variants versus intermediate sum traits in `FLAT` and `TREE` modes, unified versus split match-type criteria, and mode decoupling via explicit intermediate serializer givens.
+
+## [2026-11-02T13:45:00Z]
+
+- Refactored `doc/architecture/cluster-serialization.md` to purge compiler AST implementation details in accordance with OKF invariant constraints, created `doc/architecture/cluster-serialization-guide.md` illustrating synthesized code expansions across singletons, products, self-recursion, flat/tree nesting modes, and custom `DiscriminationCriteria`, and indexed the developer guide in `doc/architecture/index.md`.
+
+## [2026-11-02T12:41:00Z]
+
+- Created `doc/architecture/cluster-serialization.md` and updated `doc/architecture/index.md` to formalize the cluster binary serialization and macro derivation architecture, specifying direct Tasty reflection type classification (`Singleton`, `Sum`, `Product`) without `scala.deriving.Mirror`, parameterized product and sum child-variant type unification, non-ADT concrete class support, diamond-inheritance deduplication in `FLAT` mode, explicit field type givens with allocation-free direct and indirect self-recursion, and match-type `DiscriminationCriteria[-S]` reduction with static subtyping fallback for intermediate sum types.
 
 ## [2026-10-31T20:00:00Z]
 

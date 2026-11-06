@@ -2,7 +2,7 @@ package readren.nexus
 package cluster.service
 
 import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
-import cluster.serialization.ProtocolVersion
+import cluster.serialization.{AllocationLimits, ProtocolVersion}
 import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
 import cluster.service.ParticipantService.*
 import cluster.service.Protocol.*
@@ -88,7 +88,12 @@ object ParticipantService {
 		val closeDelay: MilliDuration = 200,
 		val heartbeatPeriod: MilliDuration = 10_000,
 		val heartbeatMargin: MilliDuration = 12_000,
-	)
+		val maxBuffers: Int = cluster.misc.DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
+		val minBuffersOnIdle: Int = 2,
+		val allocationLimits: AllocationLimits = AllocationLimits.Default
+	) {
+		require(maxBuffers.toLong * frameCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * frameCapacity.toLong} bytes) exceeds Int.MaxValue")
+	}
 
 	def start(sequencer: SchedulingDoer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ParticipantService = {
 
@@ -463,7 +468,7 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 			override val oPeerAddress: Maybe[ContactAddress] = oPeerContactAddress
 			override val channelId: ChannelId = aChannelId
 		}
-		new SequentialTransmitter[Protocol](channel, context, config.participantDelegatesConfig.frameCapacity)
+		new SequentialTransmitter[Protocol](channel, context, config.participantDelegatesConfig.frameCapacity, config.participantDelegatesConfig.maxBuffers, config.participantDelegatesConfig.minBuffersOnIdle)
 	}
 
 	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], aChannelId: ChannelId): Receiver = {
@@ -474,6 +479,6 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 
 			override val channelId: ChannelId = aChannelId
 		}
-		new Receiver(channel, context, config.participantDelegatesConfig.frameCapacity)
+		new Receiver(channel, context, config.participantDelegatesConfig.frameCapacity, maxBytesToCompact = 256, config.participantDelegatesConfig.maxBuffers, config.participantDelegatesConfig.minBuffersOnIdle, config.participantDelegatesConfig.allocationLimits)
 	}
 }

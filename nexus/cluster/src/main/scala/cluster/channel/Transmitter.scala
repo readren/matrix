@@ -5,7 +5,7 @@ import cluster.channel.Transmitter.*
 import cluster.misc.LoggingTools.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
 import cluster.serialization.Serializer.{SerializationException, Writer}
-import cluster.serialization.{ProtocolVersion, Serializer}
+import cluster.serialization.{ProtocolVersion, RecyclableIdentityIntMap, Serializer}
 import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
 
@@ -69,12 +69,17 @@ object Transmitter {
  * @param channel the channel over which the messages will be transmitted.
  * @param buffersCapacity the capacity of each buffer of the [[DualEndedCircularStorage]], which determines the frames max size (frameMaxSize == buffersCapacity)..
  */
-class Transmitter(channel: AsynchronousSocketChannel, context: Context, buffersCapacity: Int = 8192) {
+class Transmitter(channel: AsynchronousSocketChannel, context: Context, buffersCapacity: Int = 8192, val maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS) {
 	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
+	private val deduplicationMap: RecyclableIdentityIntMap = new RecyclableIdentityIntMap()
 	private val frameHeaderBuffer: ByteBuffer = ByteBuffer.allocate(VLQ.INT_MAX_LENGTH)
 	private val frameHeaderWriter: VLQ.ByteWriter = (byte: Byte) => frameHeaderBuffer.put(byte) 
-	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity))
+	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
 	private val frameBuffer: Array[ByteBuffer] = new Array(2)
+
+	def pruneTo(targetCount: Int): Int = circularStorage.pruneTo(targetCount)
+
+	def bufferCount: Int = circularStorage.bufferCount
 
 	/** Consist of two buffers: the first for the frame header (which tells the size of the frame content in bytes), and the second for the frame content. */
 	frameBuffer(0) = frameHeaderBuffer
@@ -161,8 +166,10 @@ class Transmitter(channel: AsynchronousSocketChannel, context: Context, buffersC
 
 		if frameBuffer(1) ne null then throw new TransmissionInProgressException
 
+		deduplicationMap.reset()
+
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[transmit]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
-		object handler extends Writer, CompletionHandler[java.lang.Long, Boolean] { thisHandler =>
+		object handler extends Writer(deduplicationMap), CompletionHandler[java.lang.Long, Boolean] { thisHandler =>
 			override val governingVersion: ProtocolVersion = msgVersion
 
 			override def position: Int = writeEndBuffer.position
@@ -170,7 +177,12 @@ class Transmitter(channel: AsynchronousSocketChannel, context: Context, buffersC
 			/** This method is called by the serializer only; therefore, it runs within the thread that called the [[transmitWithAttachment]] method. */
 			override def getBuffer(minimumRemaining: Int): ByteBuffer = {
 				if writeEndBuffer.remaining() < minimumRemaining then {
-					val nextBuffer = circularStorage.advanceWriteEnd()
+					val nextBuffer = try {
+						circularStorage.advanceWriteEnd()
+					} catch {
+						case e: DualEndedCircularStorage.StorageCapacityExceededException =>
+							throw new SerializationException(writeEndBuffer.position, s"Serialization exceeded maximum buffer capacity (${e.maxAllowed} buffers of $buffersCapacity bytes)", e)
+					}
 					nextBuffer.clear()
 					if !behindTransmissionStarted && behindTransmissionEnabled then {
 						assert(writeEndBuffer eq circularStorage.readEnd)

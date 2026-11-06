@@ -5,7 +5,7 @@ package channel
 import cluster.channel.Receiver.*
 import cluster.misc.LoggingTools.*
 import cluster.misc.{DualEndedCircularStorage, VLQ}
-import cluster.serialization.{Deserializer, ProtocolVersion}
+import cluster.serialization.{AllocationLimits, Deserializer, ProtocolVersion, RecyclableObjectBuffer}
 import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
 
@@ -68,11 +68,24 @@ object Receiver {
  *
  * @param channel the channel that connects the peer with us.
  * @param buffersCapacity the capacity of each buffer of the [[DualEndedCircularStorage]]. */
-class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapacity: Int = 8192, maxBytesToCompact: Int = 256) {
+class Receiver(
+	channel: AsynchronousSocketChannel,
+	context: Context,
+	buffersCapacity: Int = 8192,
+	maxBytesToCompact: Int = 256,
+	val maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
+	val minBuffersOnIdle: Int = 2,
+	val allocationLimits: AllocationLimits = AllocationLimits.Default
+) {
 	private val buffersInitialLimit = buffersCapacity - FRAME_HEADER_MAX_SIZE
 
 	assert(buffersCapacity >= FRAME_HEADER_MAX_SIZE + Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
-	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity))
+	require(maxBuffers.toLong * buffersCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * buffersCapacity.toLong} bytes) exceeds Int.MaxValue")
+	private val totalBufferCapacity: Int = maxBuffers * buffersCapacity
+	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
+
+	def bufferCount: Int = circularStorage.bufferCount
+	private val deduplicationBuffer: RecyclableObjectBuffer = new RecyclableObjectBuffer()
 	private val continuousBuffer: ByteBuffer = ByteBuffer.allocate(Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 
 	/** A [[VLQ.ByteReader]] that reads the bytes from the [[ByteBuffer]] it is attached to, consuming its content.
@@ -138,17 +151,22 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 	def receiveWithAttachment[M, A](msgVersion: ProtocolVersion, attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: (M | Fault, A) => Unit)(using deserializer: Deserializer[M]): Unit = {
 		// initialize the state of the continuous buffer to have no remaining bytes
 		continuousBuffer.position(continuousBuffer.limit)
+		deduplicationBuffer.reset()
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[receiveWithAttachment]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
-		object handler extends Deserializer.Reader, CompletionHandler[Integer, ByteBuffer] { thisHandler =>
+		object handler extends Deserializer.Reader(deduplicationBuffer, allocationLimits), CompletionHandler[Integer, ByteBuffer] { thisHandler =>
 
 			var remainingContentBytesUntilNextFrameHeader = 0
 			var readEndBuffer: ByteBuffer = circularStorage.readEnd
 			var nextFrameHeaderPosRelativeToReadEndBufferBase = 0
+			var packageContentBytesCommitted: Int = 0
+			var currentPackageContentBytesBound: Int = Int.MaxValue
 
 			override def governingVersion: ProtocolVersion = msgVersion
 
 			override def position: Int = readEndBuffer.position
+
+			override def remainingContentBytes: Int = currentPackageContentBytesBound
 
 			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
 			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
@@ -206,8 +224,29 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 				}
 			}
 
-			inline private def deserializePackage(writeEndBuffer: ByteBuffer, sentinelPos: Int): M | Fault = {
+			override def readBytes(destination: Array[Byte], offset: Int, length: Int): Unit = {
+				var currOffset = offset
+				var remaining = length
+				if continuousBuffer.hasRemaining then {
+					val fromCont = math.min(continuousBuffer.remaining, remaining)
+					continuousBuffer.get(destination, currOffset, fromCont)
+					currOffset += fromCont
+					remaining -= fromCont
+				}
+				while remaining > 0 do {
+					skipFrameHeader()
+					val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+					val available = math.min(readEndBuffer.remaining, bytesUntilHeader)
+					val chunk = math.min(remaining, available)
+					readEndBuffer.get(destination, currOffset, chunk)
+					currOffset += chunk
+					remaining -= chunk
+				}
+			}
+
+			inline private def deserializePackage(writeEndBuffer: ByteBuffer, sentinelPos: Int, totalContentBytes: Int): M | Fault = {
 				scribe.trace(s"Reception progress at `${context.myAddress}` from `${context.showPeerAddress}`: before deserialization: sentinelPos=$sentinelPos, nextFrameHeaderPosRelativeToReadEndBufferBase=$nextFrameHeaderPosRelativeToReadEndBufferBase, readEndPos=${readEndBuffer.position()},  circularStorage=${show.circularStorage(circularStorage, false).end}")
+				currentPackageContentBytesBound = totalContentBytes
 				try {
 					skipFrameHeader() // this line is not necessary, but its presence avoids unnecessary use of the continuous buffer, not only for the first byte, but many of the following thanx to its nasty behavior.
 					val message = deserializer.deserialize(thisHandler)
@@ -223,6 +262,8 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 				} catch {
 					case lme: LengthMismatchException => DeserializerAndFrameMismatch(lme)
 					case scala.util.control.NonFatal(e) => DeserializationProblem(e)
+				} finally {
+					currentPackageContentBytesBound = Int.MaxValue
 				}
 			}
 
@@ -246,12 +287,16 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 
 			override def completed(bytesReceived: Integer, writeEndBuffer: ByteBuffer): Unit = {
 				scribe.trace(s"Reception progress at `${context.myAddress}` from `${context.showPeerAddress}`: bytesReceived=$bytesReceived, remainingContentBytesUntilNextFrameHeader=$remainingContentBytesUntilNextFrameHeader, writeEndBuffer=${show.fillingByteBuffer(writeEndBuffer)}")
-				if bytesReceived == -1 then onComplete(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
+				if bytesReceived == -1 then {
+					packageContentBytesCommitted = 0
+					onComplete(ChannelClosedByPeer(remainingContentBytesUntilNextFrameHeader), attachment)
+				}
 				else {
 					val posAfterLastReceivedByte = writeEndBuffer.position
 
 					// Find, within the write-end buffer, either, the package's sentinel, a split frame-header, or the position of the first frame-header (of the package) whose first byte was not already received and written to the write-end buffer.
 					var nextFrameHeaderPos = remainingContentBytesUntilNextFrameHeader
+					var currentBufferContentBytes = 0
 					var sentinelFound = SentinelFound.NONE
 					while nextFrameHeaderPos < posAfterLastReceivedByte && sentinelFound == SentinelFound.NONE do {
 						frameHeaderFetcher.attachTo(writeEndBuffer, nextFrameHeaderPos, posAfterLastReceivedByte)
@@ -259,24 +304,34 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 						if nextFrameContentLength == 0L then sentinelFound = SentinelFound.UNTAINTED
 						else if nextFrameContentLength == -1L then sentinelFound = SentinelFound.SPLIT
 						else if nextFrameContentLength == (Transmitter.CORRUPTED_PACKAGE_SENTINEL & 0xffff_ffffL) then sentinelFound = SentinelFound.TAINTED
-						else nextFrameHeaderPos += nextFrameContentLength.toInt + frameHeaderFetcher.numberOfBytesRead
+						else if nextFrameContentLength > totalBufferCapacity then sentinelFound = SentinelFound.TAINTED
+						else {
+							val frameContentLength = nextFrameContentLength.toInt
+							currentBufferContentBytes += frameContentLength
+							nextFrameHeaderPos += frameContentLength + frameHeaderFetcher.numberOfBytesRead
+						}
 					}
 					// Invariants here: `sentinelFound != None || nextFrameHeaderPos >= posAfterLastReceivedByte`
 
 					// If a whole package was received (written to the buffers) that is followed by an untainted sentinel, deserialize its content, consume the sentinel, compact the write-end buffer, call the onComplete call-back with the result, and exit the reception cycle.
 					if sentinelFound eq SentinelFound.UNTAINTED then {
 						writeEndBuffer.flip()
-						val outcome = deserializePackage(writeEndBuffer, nextFrameHeaderPos)
+						val totalPackageContentBytes = packageContentBytesCommitted + currentBufferContentBytes
+						packageContentBytesCommitted = 0
+						val outcome = deserializePackage(writeEndBuffer, nextFrameHeaderPos, totalPackageContentBytes)
 						prepareStorageForNextCall(writeEndBuffer, nextFrameHeaderPos, posAfterLastReceivedByte)
+						if writeEndBuffer.position == 0 then circularStorage.pruneTo(minBuffersOnIdle)
 						onComplete(outcome, attachment)
 					}
 					// If a whole package was received (written to the buffers) that is followed by a tainted sentinel, discard the package and start receiving the next.
 					else if sentinelFound eq SentinelFound.TAINTED then {
+						packageContentBytesCommitted = 0
 						while circularStorage.advanceReadEnd() do ()
 						writeEndBuffer.position(nextFrameHeaderPos + Transmitter.CORRUPTED_PACKAGE_SENTINEL_ENCODED.length)
 						writeEndBuffer.limit(posAfterLastReceivedByte)
 						writeEndBuffer.compact()
 						writeEndBuffer.limit(buffersInitialLimit)
+						if writeEndBuffer.position == 0 then circularStorage.pruneTo(minBuffersOnIdle)
 						scribe.warn(s"Reception progress at `${context.myAddress}` from `${context.showPeerAddress}`: A corrupted package was skipped")
 						receiveWithAttachment[M, A](msgVersion, attachment, timeout, timeUnit)(onComplete)
 					}
@@ -301,7 +356,15 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 					else {
 						writeEndBuffer.flip()
 						remainingContentBytesUntilNextFrameHeader = nextFrameHeaderPos - writeEndBuffer.limit
-						val nextWriteBuffer = circularStorage.advanceWriteEnd()
+						packageContentBytesCommitted += currentBufferContentBytes
+						val nextWriteBuffer = try {
+							circularStorage.advanceWriteEnd()
+						} catch {
+							case e: DualEndedCircularStorage.StorageCapacityExceededException =>
+								packageContentBytesCommitted = 0
+								onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.channelId, e), attachment)
+								return
+						}
 						nextWriteBuffer.clear()
 						nextWriteBuffer.limit(buffersInitialLimit)
 						channel.read(nextWriteBuffer, timeout, timeUnit, nextWriteBuffer, thisHandler)
@@ -310,6 +373,7 @@ class Receiver(channel: AsynchronousSocketChannel, context: Context, buffersCapa
 			}
 
 			override def failed(exc: Throwable, writeEndBuffer: ByteBuffer): Unit = {
+				packageContentBytesCommitted = 0
 				onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.channelId, exc), attachment)
 			}
 

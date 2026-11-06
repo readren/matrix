@@ -1,10 +1,11 @@
 package readren.consensus
 
+import ConsensusParticipantSdm.*
+import env.*
+import protocol.*
+
 import munit.FunSuite
 import readren.common.Maybe
-import readren.consensus.ConsensusParticipantSdm.*
-import readren.consensus.env.*
-import readren.consensus.protocol.*
 
 class RaftPaperExamplesTest extends FunSuite {
 
@@ -327,7 +328,7 @@ class RaftPaperExamplesTest extends FunSuite {
 			lastIncludedRecordTerm = 1.asInstanceOf[Term],
 			latestElectorateChange = initConfig,
 			latestElectorateChangeIndex = 1,
-			stateMachineSnapshot = snapshotData
+			stateMachineSnapshot = BufferSnapshotPayload(snapshotData)
 		)
 		leaderMem.maybeLatestSnapshot = Maybe(snapshot)
 		leaderMem._logBufferOffset = 6

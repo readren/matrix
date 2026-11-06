@@ -1,10 +1,10 @@
-package readren.consensus.env
+package readren.consensus
+package env
+
+import protocol.*
 
 import readren.common.Maybe
-import readren.consensus.ConsensusParticipantSdm
-import readren.consensus.ConsensusParticipantSdm.*
-import readren.consensus.TestClientCommand
-import readren.consensus.protocol.*
+import readren.consensus.{ConsensusParticipantSdm, TestClientCommand}
 import readren.sequencer.Doer
 
 import scala.collection.immutable.ListSet
@@ -33,6 +33,7 @@ class EnvironmentNode(
 	override val maxInFlightAppendsPerPeer: Int = env.maxInFlightAppendsPerPeer
 	override val logCompactionThreshold: Int = env.logCompactionThreshold
 	override val MAX_PERMIT_QUIESCENCE_RETRIES: Int = env.maxPermitQuiescenceRetries
+	override val MAX_RECURSION_DEPTH: Int = env.nodeMaxRecursionDepth
 
 	override def retiringParticipantMaxRetriesUnderEmptyElectorate: Int = env.retiringParticipantMaxRetries
 
@@ -126,21 +127,23 @@ class EnvironmentNode(
 			}
 		}
 
-		override def takeSnapshot(): sequencer.Capture[IArray[Byte]] = {
+		override def takeSnapshot(): sequencer.Capture[SnapshotPayload] = {
 			sequencer.checkWithin()
 			val bytes = java.io.ByteArrayOutputStream()
 			val out = java.io.ObjectOutputStream(bytes)
 			out.writeInt(highestAppliedCommandSerial)
 			out.writeLong(highestAppliedCommandIndex)
 			out.flush()
-			sequencer.Keeper(IArray.unsafeFromArray(bytes.toByteArray))
+			sequencer.Keeper(BufferSnapshotPayload(bytes.toByteArray))
 		}
 
-		override def installSnapshot(data: IArray[Byte]): sequencer.Capture[Unit] = {
+		override def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit] = {
 			sequencer.checkWithin()
-			val in = java.io.ObjectInputStream(java.io.ByteArrayInputStream(data.unsafeArray))
+			val channel = data.openChannel()
+			val in = java.io.ObjectInputStream(java.nio.channels.Channels.newInputStream(channel))
 			highestAppliedCommandSerial = in.readInt()
 			highestAppliedCommandIndex = in.readLong()
+			in.close()
 			sequencer.Capture_ready(Doer.successUnit)
 		}
 	}

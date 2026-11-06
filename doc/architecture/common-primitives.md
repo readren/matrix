@@ -3,7 +3,7 @@ type: "Concept"
 title: "Common Primitive Wrappers"
 description: "Semantics and invariants of low-level wrapper primitives in the common module, including Maybe and Trial."
 tags: ["common", "primitives", "maybe", "trial"]
-timestamp: "2026-08-02T13:31:00Z"
+timestamp: "2026-11-04T19:45:00Z"
 ---
 
 # Common Primitive Wrappers
@@ -17,9 +17,8 @@ This document outlines the semantics, design constraints, and known limitations 
 - **Empty State**: Represented internally as `null`.
 - **Defined State**: Any non-null value of type `A`.
 - **Allocation**: Zero allocation for reference types.
-- **Anti-Nesting Guards**: Uses Scala 3 Quote Macros (`MaybeMacros`) to statically block nullable union types (`T | Null`) and nested `Maybe` types at compile time across both factory methods (`apply`, `some`, `liftPartialFunction`) and
-  transformation methods (`map`, `flatMap`). Because `Maybe` is an `opaque type`, its underlying union representation (`A | Null`) is hidden outside `object Maybe`, meaning macro pattern matching on `OrType` does not automatically match
-  `Maybe[T]` terms unless subtype checks against `Maybe[?]` are explicitly performed.
+- **Anti-Nesting Guards**: Uses Scala 3 Quote Macros (`MaybeMacros`) to statically block nullable union types (`T | Null`) and nested `Maybe` types at compile time across both factory methods (`apply`, `some`, `liftPartialFunction`) and transformation methods (`map`, `flatMap`). Because `Maybe` is an `opaque type`, its underlying union representation (`A | Null`) is hidden outside `object Maybe`, meaning macro pattern matching on `OrType` does not automatically match `Maybe[T]` terms unless subtype checks against `Maybe[?]` are explicitly performed.
+- **Single-Evaluation Invariant**: Macro expansions for `Maybe` operations (`some`, `map`, `flatMap`, `liftPartialFunction`) bind expression arguments to intermediate local references within the synthesized AST, guaranteeing that side-effecting, state-mutating, or computed expressions are evaluated strictly once at runtime. In `ToolsMacro` (`deriveToString`), multiple evaluation and access hazards are eliminated by statically restricting the target expression to the enclosing class instance (`this` or an enclosing self-type alias).
 
 ## Trial[+A]
 

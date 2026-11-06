@@ -1,4 +1,4 @@
-import readren.matrix.cluster.serialization.{Deserializer, ProtocolVersion, Serializer}
+import readren.nexus.cluster.serialization.{Deserializer, ProtocolVersion, Serializer}
 
 import java.nio.ByteBuffer
 
@@ -17,7 +17,7 @@ object model {
 	case class Fails(crash: Int) extends CarPart(13)
 }
 import model.*
-import readren.matrix.cluster.serialization.CommonSerializers.given
+import readren.nexus.cluster.serialization.CommonSerializers.given
 
 val serializer = Serializer.derive[Thing] 
 val deserializer = Deserializer.derive[Thing]
