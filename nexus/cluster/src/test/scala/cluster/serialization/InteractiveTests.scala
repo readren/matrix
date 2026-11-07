@@ -75,7 +75,7 @@ object InteractiveTests {
 
 			override def position: Int = buffer.position()
 
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = buffer
+			override def readByte(): Byte = buffer.get()
 
 			override def peekByte: Byte = buffer.get(buffer.position())
 		}

@@ -51,35 +51,12 @@ object ConsensusParticipantSdm {
  * @see [[ConsensusParticipant]] for the main service implementation and detailed algorithm documentation
  * @define suppressSyntheticCompanionObject Suppresses the generation of the synthetic companion object. This dummy definition creates a name collision to prevent the compiler from generating a module for universal apply, thereby avoiding the bytecode overhead of a lazy-initialized nested module. By requiring a [[Nothing]] parameter, this method is made uncallable, ensuring any inadvertent use is caught at compile-time.
  */
-trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrimaryStateCdm { thisModule =>
+trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusClusterBridgeCdm with ConsensusElectorateCdm with ConsensusPrimaryStateCdm { thisModule =>
 
 	import ConsensusParticipantSdm.*
 
-	/** The type of participant ids. */
-	type ParticipantId <: AnyRef: {Ordering, ClassTag}
-
-	/** The type of the client identifier.
-	 *
-	 * Each client interacting with the consensus system must be uniquely identifiable.
-	 * This identifier is used to associate commands with their origin and to enforce per-client deduplication and retry semantics.
-	 */
-	type ClientId
-
-	/** The type of commands received from clients.
-	 *
-	 * Commands must carry enough information to support deduplication, ordering, and conflict detection. Typically, this includes a `ClientId` and a monotonically increasing request identifier or timestamp.
-	 */
-	type ClientCommand <: AnyRef
-
-	/** The type of the state-machine's [[StateMachine.applyClientCommand]] method's responses. */
-	type StateMachineResponse
-
 	/** The type of [[Workspace]] implementation. */
 	type WS <: Workspace
-	
-	//// ConsensusElectorateCdm implementation ////
-
-	override val participantIdComparator: Comparator[ParticipantId] = summon[Ordering[ParticipantId]]
 
 	//// CONFIGURATION
 
@@ -99,17 +76,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 
 	/** Determines how many records to retain in the log when a compaction is fired. */
 	def logRetentionAfterSnapshot: Int = 10
-
-	//// THREADING
-
-	/** The execution sequencer that [[ConsensusParticipant]] instances uses to mutate its state.
-	 *
-	 * All methods that access mutable consensus state must be invoked through this sequencer to ensure deterministic,
-	 * single-threaded execution. This coordination model avoids the need for blocking synchronization.
-	 */
-	val sequencer: Doer
-
-	inline def isInSequence: Boolean = sequencer.isInSequence
 
 	//// STATE MACHINE
 
@@ -136,241 +102,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 		 * @param data the serialized state machine state.
 		 * @return a [[sequencer.Capture]] that completes when the snapshot has been installed. */
 		def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit]
-	}
-
-	//// RESPONSE TO CLIENT
-
-	/** The response to a client command.
-	 * @see [[ClusterBridge.Delegate.onCommandFromClient]]. */
-	sealed trait ResponseToClient
-
-	/** The command was appended to a majority of the participants persistent logs, and applied to the leader's [[StateMachine]] which responded with the specified [[content]]. */
-	final case class Processed(recordIndex: RecordIndex, content: StateMachineResponse) extends ResponseToClient
-
-	/** The client has to repeat the command to the first participant in [[otherParticipants]] (the leader followed by this participant), or fall back to the remaining participants in order. This happens when the receiver is or becomes a [[FOLLOWER]]. */
-	final case class RedirectTo(otherParticipants: ListSet[ParticipantId]) extends ResponseToClient
-
-	/** Indicates the participant cannot process the command because its state is [[ISOLATED]], [[RETIRING]], or [[QUIESCED]].
-	 * Upon receiving this response, the client should retry the request with one of the [[otherParticipants]] using the provided `nextAttemptFlag`.
-	 * @param nextAttemptFlag The value the client must pass in the `attemptFlag` parameter of the [[ClusterBridge]]'s command-delivery RPC method. This RPC method is responsible for passing both the flag and the command to [[ClusterBridge.Delegate.onCommandFromClient]].
-	 * @param otherParticipants A set of alternative participant identifiers for the client to attempt. This list is provided on a best-effort basis and may be incomplete or contain stale/unavailable participants. The first elements of the list are more probable to be correct and up-to-date than the last ones. */
-	final case class Unable(nextAttemptFlag: CommandAttemptFlag, otherParticipants: ListSet[ParticipantId]) extends ResponseToClient
-
-	//// CLUSTER
-
-	/** Specifies what a [[ConsensusParticipant]] service requires from the cluster-participant-service it is bound to.
-	 *
-	 * A [[ClusterBridge]] binds a single [[ConsensusParticipant]] within a specific cluster and provides the identity, membership, and communication mechanisms required by the bound [[ConsensusParticipant]] service.
-	 *
-	 * Responsibilities of a [[ClusterBridge]] include:
-	 * - Exposing the identity of the participant it services via [[boundParticipantId]].
-	 * - Acting as the source of truth for cluster membership and determining when an electorate change should be triggered. This includes reacting to node join/leave events, quorum loss, scaling decisions, or health-based adjustments.
-	 * - Initiating electorate transitions by calling [[Delegate.requestElectorateChange]] when a change is required.
-	 * - Routing inter-participant RPCs (e.g., [[howAreYou]], [[requestBallot]], [[appendRecords]]) to the appropriate [[Delegate]] methods.
-	 * - Delivering client commands and consensus messages to the bound [[ConsensusParticipant]] via the last [[Delegate]] set with [[setBound]] by the [[ConsensusParticipant]].
-	 * - Scheduling deferred wake-ups when requested by the [[ConsensusParticipant]] via [[requestWakeUp]], and invoking the provided callback within the [[sequencer]] after an appropriate host-determined delay.
-	 * - Ensuring all invocations occur within the [[sequencer]] thread.
-	 *
-	 * Each [[ClusterBridge]] instance is tightly bound to a single [[ConsensusParticipant]] instance.
-	 * If a cluster-service had to service more than one [[ConsensusParticipant]] instance simultaneously, it would have to create a different instance of [[ClusterBridge]] for each.
-	 */
-	trait ClusterBridge extends ClusterView {
-
-		/** The implementation should return the identifier of the participant that this [[ClusterBridge]] service — and its bound [[ConsensusParticipant]] service — are responsible for. */
-		val boundParticipantId: ParticipantId
-
-		/** Returns the memorized set of other cluster participants (excluding [[boundParticipantId]]) that this [[ClusterBridge]] currently considers stable, up, and intended for consensus.
-		 * The returned set should include all the participants that are or were part of the consensus electorate unless it is guaranteed that the participant is down.
-		 * Because this method returns a synchronous [[ListSet]] rather than an asynchronous [[sequencer.Capture]], the cluster tier is responsible for proactively updating and memorizing this set within the [[sequencer]] as nodes join, become reachable, crash, or leave the cluster. This allows the bound [[ConsensusParticipant]] to synchronously construct fallback retry candidates (in [[Unable]], [[SoleElectorate.otherProbableParticipants]], and [[JointElectorate.otherProbableParticipants]]) and authorize quiescence across remaining live retirees under a vanishing electorate without performing an asynchronous query to the cluster tier. */
-		def getOtherProbableParticipants: ListSet[ParticipantId]
-
-		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] to advise that its active [[Electorate]] has changed, and now it expects connectivity with the active participants of the provided [[ElectorateChange]].\
-		 *
-		 * This method is invoked upon activation of a new [[Electorate]] to tell the cluster-layer which are the participants that the consensus-layer expects to be reachable.\
-		 * Given electorate changes is a two-phase process, a call to [[Delegate.requestElectorateChange]] causes two [[ElectorateChange]] records to be appended and, therefore, two calls to this method per involved [[ConsensusParticipant]] service.\
-		 * Successive calls with the same argument may occur. Implementations may ignore such calls only if no intervening call with a different argument has occurred — i.e., if the electorate has not changed.\
-		 * @param change The [[ElectorateChange]] that backs the activated [[Electorate]].
-		 * @param changeIndex the [[RecordIndex]] of the applied [[ElectorateChange]]
-		 */
-		def onActiveElectorateChanged(change: ElectorateChange[ParticipantId], changeIndex: RecordIndex, roleOrdinal: RoleOrdinal): Unit
-
-		/** **Outbound bridge (advisory hook)**: Called by the bound [[ConsensusParticipant]] after it becomes quiesced. This allows this [[ClusterBridge]] service to release the resources dedicated to it. */
-		def onQuiesced(motive: Try[String]): Unit
-
-		/** Called by the bound [[ConsensusParticipant]] when it needs to be woken up after some host-determined delay.
-		 * The host should eventually invoke the provided `callback` within the [[sequencer]], after an appropriate delay.
-		 * The [[WakeUpReason]] conveys what the consensus algorithm needs retried so the host can choose an appropriate delay.
-		 *
-		 * Must be called within the [[sequencer]].
-		 *
-		 * @param reason describes what the consensus algorithm needs retried.
-		 * @param wakeUpsDone the number of related wake-up requests done before. Allows the implementation to determine a delay that depends on the number of failed attempts.
-		 * @param callback the function to invoke when the delay elapses. Must be invoked within the [[sequencer]].
-		 * @return a token that can be passed to [[cancelWakeUp]] to cancel the pending wake-up.
-		 */
-		def requestWakeUp(reason: WakeUpReason, wakeUpsDone: Int, callback: () => Unit): WakeUpToken
-
-		/** Defines the operations that the [[ConsensusParticipant]] exposes to this [[ClusterBridge]] instance, specially the call-backs methods for the events that the [[ConsensusParticipant]] needs to be noticed of.
-		 *
-		 * The [[ConsensusParticipant]] is responsible for setting the bound to this [[ClusterBridge]] instance by calling [[setBound]].
-		 * This [[ClusterBridge]] instance talks to the bound [[ConsensusParticipant]] by calling these methods.
-		 * For example, to deliver client commands, consensus messages, and request cluster-electorate changes.
-		 * All invocations must occur within the [[sequencer]] to preserve consistency and serialization guarantees.
-		 *
-		 * This delegate represents one direction of the interaction between the tightly bound [[ClusterBridge]] and [[ConsensusParticipant]] services.
-		 */
-		trait Delegate {
-
-			/** **Inbound bridge**: Handles a client-submitted command intended for the state machine.
-			 *
-			 * This method is invoked by the bound [[ClusterBridge]] when a client sends a command to this participant.
-			 * It must be called within the [[sequencer]].
-			 * TODO Analyze the alternative of returning a Task that yields a variant of [[Unable]] that details the failure when something fails.
-			 *
-			 * @param command The command issued by the client for state-machine execution.
-			 * @param attemptFlag Indicates the outcome of the client's previous attempt to send this command.
-			 * @return A [[sequencer.Task]] that yields one of:
-			 *         - The state-machine's response to the client.
-			 *         - A [[RedirectTo]] message instructing the client to contact the current leader.
-			 *         - An [[Unable]] message indicating that this participant cannot currently reach consensus.
-			 */
-			def onCommandFromClient(command: ClientCommand, attemptFlag: CommandAttemptFlag): sequencer.Capture[ResponseToClient]
-
-			/** **Inbound bridge**: This method is invoked by this [[ClusterBridge]] when another participant calls [[howAreYou]] on the [[ParticipantId]] of the owner of this [[Delegate]]
-			 *
-			 * Must be called within the [[sequencer]].
-			 * @param inquirerId The id of the participant that called [[howAreYou]].
-			 * @param inquirerInfo The [[StateInfo]] of the participant that called [[howAreYou]].
-			 * @return The state information of the destination participant.
-			 */
-			def onHowAreYou(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[StateInfo]
-
-			/** **Inbound bridge**: This method is invoked by this [[ClusterBridge]] when another participant calls [[requestBallot]] on the [[ParticipantId]] of the owner of this [[Delegate]]
-			 *
-			 * Must be called within the [[sequencer]].
-			 * @param inquirerId The id of the participant that called [[requestBallot]].
-			 * @param inquirerInfo Information about the state of the participant that called.
-			 * @return A [[sequencer.Capture]] that yields a [[Ballot]] indicating whether the vote was granted to the inquiring candidate.
-			 */
-			def onRequestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot]
-
-			/** **Inbound bridge**: This method is invoked by this [[ClusterBridge]] when another participant calls [[appendRecords]] on the [[ParticipantId]] of the owner of this [[Delegate]]
-			 *
-			 * Must be called within the [[sequencer]].
-			 * @param inquirerId The id of the participant that called [[appendRecords]].
-			 * @param inquirerTerm The term of the participant that called [[appendRecords]].
-			 * @param prevRecordIndex The index of record after which the specified `records` should be appended.
-			 * @param prevRecordTerm The term of the record after which the specified `records` should be appended.
-			 * @param batch The records to append. // TODO pass the whole log buffer and the range of records to send instead. That would avoid the allocation of the array.
-			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
-			 * @return A [[sequencer.Capture]] that yields the result of the append operation.
-			 */
-			def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult]
-
-			/** **Inbound bridge**: Handles an InstallSnapshot RPC from the leader.
-			 * Invoked when the leader has discarded log entries that this follower needs.
-			 *
-			 * Must be called within the [[sequencer]].
-			 * @param inquirerId the leader's participant ID.
-			 * @param inquirerTerm the leader's current term.
-			 * @param snapshot the snapshot data including state machine state and metadata.
-			 * @return A [[sequencer.Capture]] that yields a rejecting [[AppendResult]] equivalent to the one that [[onAppendRecords]] would return when asks for earlier records starting from [[SnapshotData.lastIncludedRecordIndex]] + 1. */
-			def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult]
-
-			/** **Inbound bridge**: This method is invoked by this [[ClusterBridge]] when another participant calls [[permitQuiescence]] on the [[ParticipantId]] of the owner of this [[Delegate]].
-			 * @param grantorId the identifier of the participant that granted permission to quiesce.
-			 * @param indexOfGrantedSec The index of the [[SoleElectorateChange]] record for which the permission to quiesce was granted. Said record is the one that excludes the destination participant.
-			 */
-			def onQuiescencePermitted(grantorId: ParticipantId, indexOfGrantedSec: RecordIndex): Unit
-
-			/** Allows the [[ClusterBridge]] service to request changes to the set of consensus-participants.
-			 * Usually called whenever the set of consensus-participants has forcefully changed (i.e: a cluster-member included in the current consensus-participants-set went down) or is about to change (i.e: a node intended to be part of consensus-participants-set joined the cluster, or is going to leave the cluster for maintenance).
-			 * To improve availability during planned cluster-membership transitions, the manager of the planed change should do the following:
-			 *		1 call this method on every consensus-participant service to ensure the leader gets noticed, // TODO this is awkward. Make the electorate-change request be propagated to the leader when received by non-leaders.
-			 *		2 wait until either:
-			 *			- the returned [[sequencer.Capture]] yields either [[ElectorateChangeResponse.SuccessfullyChanged]] or [[ElectorateChangeResponse.AlreadyChanged]] for any of the consensus-participants,
-			 *			- or the [[onActiveElectorateChanged]] is called in any of the consensus-participants with the provided request identifier or desired participants set.
-			 *
-			 * @param requestId an identifier chosen by the caller that will be propagated up to the invocations of the [[onActiveElectorateChanged]] method of each of the [[ClusterBridge]] instances bound to the involved [[ConsensusParticipant]] services.
-			 * @param desiredParticipantsSet the identifiers of the participants that are going to seek consensus from now on.
-			 * @return a [[sequencer.Capture]] that yields:
-			 *         [[ElectorateChangeResponse.SuccessfullyChanged]] if the requested change was successfully completed.
-			 *         [[ElectorateChangeResponse.AlreadyChanged]] if the requested change is already done or in progress.
-			 *         [[ElectorateChangeResponse.AskTheLeader]] if none of the previous bullet is true and the [[ConsensusParticipant]] is a [[FOLLOWER]].
-			 *         [[ElectorateChangeResponse.Stopped]] if the participant is not able to become neither the [[LEADER]] nor a [[FOLLOWER]]
-			 *         - currently the leader or a follower that already has the desired participants set as the current or scheduled one;
-			 *         - currently the leader and was able to replicate the corresponding [[JointElectorateChange]] to a majority according to that same [[JointElectorateChange]] rules. */
-			def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipantsSet: Set[ParticipantId]): sequencer.Capture[ElectorateChangeResponse[ParticipantId]]
-		}
-
-		/**
-		 * The [[ConsensusParticipant]] calls this method to expose itself through a [[Delegate]] instance which specifies the operations through which this [[ClusterBridge]] can talk to it.
-		 * The [[ConsensusParticipant]] calls this method not only at startup to set the bound, but also several times later, every time it changes its behavior (role).
-		 * Is called within the [[sequencer]] thread. */
-		def setBound(delegate: Delegate): Unit
-
-		/** Called by the [[ConsensusParticipant]] when it is leaving existence. */
-		def removeBound(): Unit
-
-		extension (destinationId: ParticipantId) {
-			/**
-			 * Asks the destination participant how it is doing.
-			 * The implementation should make, somehow, the destination participant's [[Delegate.onHowAreYou]] to be called, and return what it returns.
-			 * Called within the [[sequencer]] thread.
-			 * @param inquirerInfo The term of the participant that is asking.
-			 * @return A [[sequencer.Capture]] that yields the state information of the destination participant.
-			 */
-			def howAreYou(inquirerInfo: StateInfo): sequencer.Capture[StateInfo]
-
-			/**
-			 * Solicits a ballot from the destination participant.
-			 * The implementation should make, somehow, the destination participant's [[Delegate.onRequestBallot]] to be called, and return what it returns.
-			 * Called within the [[sequencer]] thread.
-			 * @param inquirerId The id of the participant that is asking.
-			 * @param inquirerInfo Information about the state of the participant that is asking.
-			 * @return A [[sequencer.Capture]] that yields a [[Ballot]] indicating whether the vote was granted by the destination participant.
-			 */
-			def requestBallot(inquirerId: ParticipantId, inquirerInfo: StateInfo): sequencer.Capture[Ballot]
-
-			/**
-			 * Request the destination participant to append records.
-			 * The implementation should make, somehow, the destination participant's [[Delegate.onAppendRecords]] to be called with the same parameter values, and return what it returns.
-			 * // TODO consider the addition of a wrapper that suppresses records already sent in in-flight calls, and maybe avoids the call at all if no records are left.
-			 * This method is called within the [[sequencer]].
-			 * @param inquirerTerm The term of the participant that is asking.
-			 * @param prevLogIndex the [[RecordIndex]] of the [[Record]] after which the records should be appended.
-			 * @param prevLogTerm the expected [[Term]] of the [[Record]] at `prevLogIndex`.
-			 * @param batch The records to append.
-			 * @param leaderCommit The index of the highest log entry known to be committed (replicated to a majority) according to the inquirer.
-			 * @return A [[sequencer.Capture]] that yields the result of the append operation.
-			 */
-			def appendRecords(inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult]
-
-			/**
-			 * Sends a snapshot to the destination participant, replacing its log and state machine state. Only leaders call this method.
-			 * The implementation should make, somehow, the destination participant's [[Delegate.onInstallSnapshot]] to be called with the same parameter values, and return what it returns.
-			 * This method is called within the [[sequencer]].
-			 * @param inquirerTerm The term of the participant that is sending the snapshot.
-			 * @param snapshot the snapshot data including state machine state and metadata.
-			 * @return A [[sequencer.Capture]] that yields the result of the installation operation.
-			 */
-			def installSnapshot(inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult]
-
-
-			/**
-			 * Authorizes the destination participant to transition from [[RETIRING]] to the terminal [[QUIESCED]] [[ConsensusParticipant.Role]], provided it becomes [[RETIRING]] due to being excluded by the [[SoleElectorateChange]] at the specified index.
-			 * This bridge is invoked by the leader established AFTER the second phase of an electorate change (that excluded the destination participant) has finalized.
-			 * By requiring the leader of the new electorate to issue this permission, the system ensures the caller is a stable authority within the finalized membership set — thereby excluding the 'ghost leader' from performing this final decommissioning.
-			 *
-			 * This call is the trigger for the **Retiring Quorum-Buffering** mechanism to release the buffer.
-			 * The purpose of this mechanism is to maintain the quorum safety of the old participants set during joint consensus.
-			 * By holding excluded participants in the [[RETIRING]] role, the system ensures they contribute to the quorum of the old set (by not voting but effectively lowering the required threshold of active votes) until a new, stable majority is functionally proven by a new leader.
-			 *
-			 * @param indexOfGrantedSec The index of the [[SoleElectorateChange]] record for which the authorization is granted, which is the one that excludes the destination participant.
-			 * @return A [[sequencer.Capture]] that completes successfully if either: the permission was successfully delivered, or the participant is already in a post-retirement state ([[QUIESCED]], released, or no longer exists).
-			 */
-			def permitQuiescence(indexOfGrantedSec: RecordIndex): sequencer.Capture[Unit]
-		}
 	}
 
 	//// NOTIFICATIONS
@@ -621,19 +352,13 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			override def onAppendRecords(inquirerId: ParticipantId, inquirerTerm: Term, prevRecordIndex: RecordIndex, prevRecordTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult] =
 				Trace.init(() => s"$boundParticipantId: onAppendRecords") {
 					checkWithin()
-					currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit).recover {
-						case e: GracefullyReleased => failedAppendResultBuilder(e)
-						case _ => Maybe.empty
-					}
+					currentRole.onAppendRecords(inquirerId, inquirerTerm, prevRecordIndex, prevRecordTerm, batch, leaderCommit, termAtLeaderCommit)
 				}
 
 			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term): sequencer.Capture[AppendResult] =
 				Trace.init(() => s"$boundParticipantId: onInstallSnapshot") {
 					checkWithin()
-					currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit).recover {
-						case e: GracefullyReleased => failedAppendResultBuilder(e)
-						case _ => Maybe.empty
-					}
+					currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
 				}
 
 			override def requestElectorateChange(requestId: ElectorateChangeRequestId, desiredParticipants: Set[ParticipantId]): sequencer.Capture[ElectorateChangeResponse[ParticipantId]] = {
@@ -2801,7 +2526,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 					override def onError(e: Throwable): Unit = {
 						Trace.debug(s"Replication with serial $appendSerial to $learnerId failed with:", e)
 						if currentRole eq thisLeader then {
-							maybeAppendResult = Maybe(new AppendResult_Failed(e))
 							primaryStateFence.causalAnchor(thisAppendResultObserver)
 						}
 					}
@@ -2810,7 +2534,7 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 						if (currentRole eq thisLeader) && !learnerProgress.isDecommissioned then {
 							val electorate1 = deriveElectorateFrom(primaryState1)
 							val isExcludedFromTarget = isRetiree || !electorate1.stableParticipants.contains(learnerId)
-							val appendOutcome = handleAppendResponse(learnerId, learnerProgress, maybeAppendResult.get, appendSerial, primaryState0.currentTerm, toIndex, requestLeaderCommit, isExcludedFromTarget)
+							val appendOutcome = handleAppendResponse(learnerId, learnerProgress, maybeAppendResult, appendSerial, primaryState0.currentTerm, toIndex, requestLeaderCommit, isExcludedFromTarget)
 
 							if appendOutcome > 0 then {
 								learnerProgress.unreachableAttempts = 0
@@ -2929,8 +2653,14 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 			 * @param appendRequestLeaderCommit the commit index passed to the `leaderCommit` parameter.
 			 * @param isExcludedFromTarget whether the participant is excluded from the stable target [[Electorate]] (either driven to retirement or omitted from stable participants).
 			 * @return the [[AppendOutcome]] categorizing the next step for the pipeline. */
-			private inline def handleAppendResponse(learnerId: ParticipantId, learnerProgress: LearnerProgress, appendResult: AppendResult, appendSerial: Int, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex, isExcludedFromTarget: Boolean)(using Context): AppendOutcome = {
-				appendResult match {
+			private inline def handleAppendResponse(learnerId: ParticipantId, learnerProgress: LearnerProgress, maybeAppendResult: Maybe[AppendResult], appendSerial: Int, appendRequestTerm: Term, indexAfterTopRecordSent: RecordIndex, appendRequestLeaderCommit: RecordIndex, isExcludedFromTarget: Boolean)(using Context): AppendOutcome = {
+				maybeAppendResult.fold {
+					if appendSerial > learnerProgress.lastReceivedAppendSerial then {
+						learnerProgress.lastReceivedAppendSerial = appendSerial
+						learnerProgress.optimisticIndexOfNextRecordToSend = learnerProgress.pessimisticIndexOfNextRecordToSend
+						AO_IS_UNREACHABLE
+					} else AO_STALE
+				} {
 					case result: AppendResult_Accepted =>
 						// Guard non-monotonic state updates against stale, out-of-order responses.
 						if appendSerial > learnerProgress.lastReceivedAppendSerial then {
@@ -2996,14 +2726,6 @@ trait ConsensusParticipantSdm extends ConsensusElectorateCdm with ConsensusPrima
 								}
 							}
 						}
-
-					case result: AppendResult_Failed =>
-						if appendSerial > learnerProgress.lastReceivedAppendSerial then {
-							learnerProgress.lastReceivedAppendSerial = appendSerial
-							Trace.debug(s"$boundParticipantId: The replication to $learnerId failed with:", result.error)
-							learnerProgress.optimisticIndexOfNextRecordToSend = learnerProgress.pessimisticIndexOfNextRecordToSend
-							AO_IS_UNREACHABLE
-						} else AO_STALE
 				}
 			}
 

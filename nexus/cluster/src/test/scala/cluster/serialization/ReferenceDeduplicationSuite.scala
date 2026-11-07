@@ -54,9 +54,9 @@ class ReferenceDeduplicationSuite extends FunSuite {
 		val reader = new Reader {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
 			override def position: Int = buffer.position()
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = {
+			override def readByte(): Byte = {
 				if buffer.remaining() < 1 then throw new Deserializer.DeserializationException(buffer.position(), "Unexpected end of buffer")
-				buffer
+				buffer.get()
 			}
 			override def peekByte: Byte = {
 				if buffer.remaining() < 1 then throw new Deserializer.DeserializationException(buffer.position(), "Unexpected end of buffer")
@@ -238,9 +238,9 @@ class ReferenceDeduplicationSuite extends FunSuite {
 		val reader = new Reader(sharedBuf) {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
 			override def position: Int = buffer.position()
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = {
+			override def readByte(): Byte = {
 				if buffer.remaining() < 1 then throw new Deserializer.DeserializationException(buffer.position(), "Unexpected end of buffer")
-				buffer
+				buffer.get()
 			}
 			override def peekByte: Byte = {
 				if buffer.remaining() < 1 then throw new Deserializer.DeserializationException(buffer.position(), "Unexpected end of buffer")

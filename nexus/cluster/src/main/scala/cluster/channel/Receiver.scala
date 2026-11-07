@@ -79,14 +79,13 @@ class Receiver(
 ) {
 	private val buffersInitialLimit = buffersCapacity - FRAME_HEADER_MAX_SIZE
 
-	assert(buffersCapacity >= FRAME_HEADER_MAX_SIZE + Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
+	assert(buffersCapacity > FRAME_HEADER_MAX_SIZE)
 	require(maxBuffers.toLong * buffersCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * buffersCapacity.toLong} bytes) exceeds Int.MaxValue")
 	private val totalBufferCapacity: Int = maxBuffers * buffersCapacity
 	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
 
 	def bufferCount: Int = circularStorage.bufferCount
 	private val deduplicationBuffer: RecyclableObjectBuffer = new RecyclableObjectBuffer()
-	private val continuousBuffer: ByteBuffer = ByteBuffer.allocate(Deserializer.CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 
 	/** A [[VLQ.ByteReader]] that reads the bytes from the [[ByteBuffer]] it is attached to, consuming its content.
 	 * Design note: Defining this object here (as a member of [[Receiver]] instead of locally - at the usage site) is not neat, but it prevents the creation of a [[VLQ.ByteReader]] instance for each frame received from the channel. */
@@ -149,8 +148,6 @@ class Receiver(
 	 * @param deserializer An implicit `Deserializer[M]` used to deserialize the incoming bytes into a message of type `M`.
 	 */
 	def receiveWithAttachment[M, A](msgVersion: ProtocolVersion, attachment: A, timeout: Long, timeUnit: TimeUnit)(onComplete: (M | Fault, A) => Unit)(using deserializer: Deserializer[M]): Unit = {
-		// initialize the state of the continuous buffer to have no remaining bytes
-		continuousBuffer.position(continuousBuffer.limit)
 		deduplicationBuffer.reset()
 
 		/** Implementation note: To optimize memory usage, this object can be moved outside the [[receiveWithAttachment]] method. This avoids repeated memory allocations but introduces mutable fields, which may require careful handling to ensure thread safety and correctness. */
@@ -171,11 +168,13 @@ class Receiver(
 			/** @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
 			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
 			override def peekByte: Byte = {
-				if continuousBuffer.hasRemaining then continuousBuffer.get(continuousBuffer.position)
-				else {
-					skipFrameHeader()
-					readEndBuffer.get(readEndBuffer.position)
-				}
+				skipFrameHeader()
+				readEndBuffer.get(readEndBuffer.position)
+			}
+
+			override def readByte(): Byte = {
+				skipFrameHeader()
+				readEndBuffer.get()
 			}
 
 			/** @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
@@ -203,36 +202,44 @@ class Receiver(
 				}
 			}
 
-			/**
-			 * TODO remove this method (here and in the [[Deserializer.Reader]] trait) and add all the "relative bulk get methods" of [[ByteBuffer]]. This change would significantly increase the methods of the [[Deserializer.Reader]] but will remove: the nasty `maxBytesToConsume` parameter, the checks that the consumed bytes doesn't exceed it, and need of the [[continuousBuffer]] and derived complexities.
-			 * @param maxBytesToConsume the number of bytes that will be consumed from the returned [[ByteBuffer]]. This value can be greater than the number of bytes that will be read, but for efficiency it is preferable it is exactly the same.
-			 *  @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
-			 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read. */
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = {
-				val continuousBufferRemaining = continuousBuffer.remaining
-				if continuousBufferRemaining == 0 && readEndBuffer.position + maxBytesToConsume < nextFrameHeaderPosRelativeToReadEndBufferBase && maxBytesToConsume <= readEndBuffer.remaining then readEndBuffer
-				else {
-					if continuousBufferRemaining > 0 then continuousBuffer.compact()
-					else continuousBuffer.clear()
-					var count = maxBytesToConsume - continuousBufferRemaining
-					while count > 0 do {
-						skipFrameHeader()
-						continuousBuffer.put(readEndBuffer.get)
-						count -= 1
-					}
-					continuousBuffer.flip()
-				}
+			override def readShort(): Short = {
+				skipFrameHeader()
+				val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+				if bytesUntilHeader >= 2 && readEndBuffer.remaining >= 2 then readEndBuffer.getShort
+				else super.readShort()
+			}
+
+			override def readInt(): Int = {
+				skipFrameHeader()
+				val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+				if bytesUntilHeader >= 4 && readEndBuffer.remaining >= 4 then readEndBuffer.getInt
+				else super.readInt()
+			}
+
+			override def readLong(): Long = {
+				skipFrameHeader()
+				val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+				if bytesUntilHeader >= 8 && readEndBuffer.remaining >= 8 then readEndBuffer.getLong
+				else super.readLong()
+			}
+
+			override def readFloat(): Float = {
+				skipFrameHeader()
+				val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+				if bytesUntilHeader >= 4 && readEndBuffer.remaining >= 4 then readEndBuffer.getFloat
+				else super.readFloat()
+			}
+
+			override def readDouble(): Double = {
+				skipFrameHeader()
+				val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
+				if bytesUntilHeader >= 8 && readEndBuffer.remaining >= 8 then readEndBuffer.getDouble
+				else super.readDouble()
 			}
 
 			override def readBytes(destination: Array[Byte], offset: Int, length: Int): Unit = {
 				var currOffset = offset
 				var remaining = length
-				if continuousBuffer.hasRemaining then {
-					val fromCont = math.min(continuousBuffer.remaining, remaining)
-					continuousBuffer.get(destination, currOffset, fromCont)
-					currOffset += fromCont
-					remaining -= fromCont
-				}
 				while remaining > 0 do {
 					skipFrameHeader()
 					val bytesUntilHeader = nextFrameHeaderPosRelativeToReadEndBufferBase - readEndBuffer.position
@@ -248,7 +255,7 @@ class Receiver(
 				scribe.trace(s"Reception progress at `${context.myAddress}` from `${context.showPeerAddress}`: before deserialization: sentinelPos=$sentinelPos, nextFrameHeaderPosRelativeToReadEndBufferBase=$nextFrameHeaderPosRelativeToReadEndBufferBase, readEndPos=${readEndBuffer.position()},  circularStorage=${show.circularStorage(circularStorage, false).end}")
 				currentPackageContentBytesBound = totalContentBytes
 				try {
-					skipFrameHeader() // this line is not necessary, but its presence avoids unnecessary use of the continuous buffer, not only for the first byte, but many of the following thanx to its nasty behavior.
+					skipFrameHeader()
 					val message = deserializer.deserialize(thisHandler)
 					// if the deserializer consumed all the bytes in the package, return a successful outcome.
 					if (readEndBuffer eq writeEndBuffer) && readEndBuffer.position() == sentinelPos then message

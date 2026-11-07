@@ -33,7 +33,7 @@ class PayloadHardeningSuite extends FunSuite {
 		new Deserializer.Reader(allocationLimits = limits) {
 			override def governingVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT
 			override def position: Int = buffer.position()
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = buffer
+			override def readByte(): Byte = buffer.get()
 			override def peekByte: Byte = buffer.get(buffer.position())
 			override def remainingContentBytes: Int =
 				if remainingBytesOverride >= 0 then remainingBytesOverride else buffer.remaining()

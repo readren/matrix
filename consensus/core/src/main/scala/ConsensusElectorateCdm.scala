@@ -19,15 +19,10 @@ import scala.util.{Failure, Success, Try}
  * This module defines the [[Electorate]] strategy hierarchy representing active
  * cluster membership authorities (both stable and joint consensus).
  */
-trait ConsensusElectorateCdm { thisModule =>
+trait ConsensusElectorateCdm extends ConsensusWireTypesCdm { thisModule =>
 
-	/** The type of participant ids. */
-	type ParticipantId <: AnyRef: {Ordering, ClassTag}
-
-	/** The execution sequencer that drives deterministic state transitions. */
 	val sequencer: Doer
 
-	val participantIdComparator: Comparator[ParticipantId]
 
 	/** View of a peer's replication progress needed for quorum evaluation. */
 	trait PeerProgressView {
@@ -43,15 +38,6 @@ trait ConsensusElectorateCdm { thisModule =>
 		def latestSnapshotLastIncludedRecordIndex: RecordIndex
 	}
 
-	/** Narrow view of the host cluster bridge required by [[Electorate]] implementations to identify the local participant and retrieve the cluster tier's memorized set of probable peers. */
-	trait ClusterView {
-		val boundParticipantId: ParticipantId
-
-		/** Returns the memorized set of other cluster participants (excluding [[boundParticipantId]]) that the cluster tier currently considers stable, up, and intended for consensus.
-		 *
-		 * Because this method returns a synchronous [[ListSet]] rather than an asynchronous [[sequencer.Capture]], the cluster tier is responsible for maintaining and updating this memorized view within the [[sequencer]] whenever cluster membership or node reachability changes. This allows the consensus tier to synchronously assemble retry suggestions and vanishing-electorate quiescence sets without performing asynchronous queries to the cluster tier. */
-		def getOtherProbableParticipants: ListSet[ParticipantId]
-	}
 
 	//// ELECTORATE STRATEGY ////
 

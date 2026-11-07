@@ -8,8 +8,8 @@ import java.nio.ByteBuffer
 import scala.deriving.Mirror
 
 object Deserializer {
-	/** The number of consecutive content bytes required by the operation that calls [[Reader.getContentBytes]] with the greatest argument. There are two: [[Reader.readLong]] and [[Reader.readDouble]]. */
-	inline val CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION = 8
+
+
 
 	class DeserializationException(val position: Int, explanation: String = null, cause: Throwable = null) extends RuntimeException(explanation, cause) {
 		def this(position: Int, cause: Throwable) = this(position, null, cause)
@@ -97,14 +97,17 @@ object Deserializer {
 			refKey
 		}
 
-		/** The implementation must return a [[ByteBuffer]] with at least `maxBytesToConsume` of content bytes starting from its current position. */
-		def getContentBytes(maxBytesToConsume: Int): ByteBuffer
-
-		/** The implementation must return the same byte as `getContentBytes(1).get()` would, but without consuming it.
+		/** The implementation must return the next content [[Byte]] without consuming it.
 		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
 		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
 		 * */
 		def peekByte: Byte
+
+		/** Reads the next content [[Byte]] from the backing stream consuming it.
+		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
+		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
+		 * */
+		def readByte(): Byte
 
 		/** Consumes the next byte if it is equal to the provided one.
 		 *
@@ -114,42 +117,29 @@ object Deserializer {
 		 * */
 		inline def consumeByteIfEqualTo(byte: Byte): Boolean = {
 			if peekByte == byte then {
-				getContentBytes(1).get()
+				readByte()
 				true
 			} else false
 		}
 		
 		inline def readBoolean(): Boolean = {
-			getContentBytes(1).get() != 0
+			readByte() != 0
 		}
 
-		/** Reads the next content [[Byte]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * */
-		inline def readByte(): Byte = {
-			getContentBytes(1).get()
+		/** Reads the next content [[Short]] from the backing stream consuming it. */
+		def readShort(): Short = {
+			val b0 = readByte() & 0xff
+			val b1 = readByte() & 0xff
+			((b0 << 8) | b1).toShort
 		}
 
-		/** Reads the next content [[Short]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
-		inline def readShort(): Short = {
-			getContentBytes(2).getShort
-		}
-
-		/** Reads the next content [[Int]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the [[Deserializer]] tries to read more bytes than the contained in the package. A package is a sequence of frames finalized with an empty frame.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
-		inline def readInt(): Int = {
-			getContentBytes(4).getInt
+		/** Reads the next content [[Int]] from the backing stream consuming it. */
+		def readInt(): Int = {
+			val b0 = readByte() & 0xff
+			val b1 = readByte() & 0xff
+			val b2 = readByte() & 0xff
+			val b3 = readByte() & 0xff
+			(b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 		}
 
 		/** Reads the next content [[Int]] in VLQ format, from the backing buffer consuming it.
@@ -168,13 +158,18 @@ object Deserializer {
 			VLQ.decodeUnsignedInt(this)
 		}
 
-		/** Reads the next content [[Long]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
-		inline def readLong(): Long = {
-			getContentBytes(8).getLong
+		/** Reads the next content [[Long]] from the backing stream consuming it. */
+		def readLong(): Long = {
+			val b0 = readByte().toLong & 0xffL
+			val b1 = readByte().toLong & 0xffL
+			val b2 = readByte().toLong & 0xffL
+			val b3 = readByte().toLong & 0xffL
+			val b4 = readByte().toLong & 0xffL
+			val b5 = readByte().toLong & 0xffL
+			val b6 = readByte().toLong & 0xffL
+			val b7 = readByte().toLong & 0xffL
+			(b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) |
+			(b4 << 24) | (b5 << 16) | (b6 << 8) | b7
 		}
 
 		/** Reads the next content [[Long]] in VLQ format, from the backing buffer consuming it.
@@ -193,41 +188,18 @@ object Deserializer {
 			VLQ.decodeUnsignedLong(this)
 		}
 
-		/** Reads the next content [[Float]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
-		inline def readFloat(): Float = {
-			getContentBytes(4).getFloat
-		}
+		/** Reads the next content [[Float]] from the backing stream consuming it. */
+		def readFloat(): Float = java.lang.Float.intBitsToFloat(readInt())
 
-		/** Reads the next content [[Double]] from the backing buffer consuming it.
-		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
-		inline def readDouble(): Double = {
-			getContentBytes(8).getDouble
-		}
+		/** Reads the next content [[Double]] from the backing stream consuming it. */
+		def readDouble(): Double = java.lang.Double.longBitsToDouble(readLong())
 
-		/** Reads the next `length` content bytes from the backing buffer into `destination` starting at `offset`.
-		 *
-		 * @throws LengthMismatchException if the end-of-stream is reached.
-		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
+		/** Reads the next `length` content bytes from the backing buffer into `destination` starting at `offset`. */
 		def readBytes(destination: Array[Byte], offset: Int, length: Int): Unit = {
-			var currOffset = offset
-			var remaining = length
-			while remaining > 0 do {
-				val buffer = getContentBytes(1)
-				val chunk = math.min(remaining, buffer.remaining)
-				buffer.get(destination, currOffset, chunk)
-				currOffset += chunk
-				remaining -= chunk
+			var i = 0
+			while i < length do {
+				destination(offset + i) = readByte()
+				i += 1
 			}
 		}
 

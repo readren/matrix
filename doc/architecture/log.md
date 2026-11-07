@@ -3,8 +3,49 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-11-05T21:50:00Z"
+timestamp: "2026-11-07T22:10:00Z"
 ---
+
+## [2026-11-07T22:10:00Z]
+
+- Refactored stream deserialization and reception mechanics across `nexus/cluster` and downstream test suites, eliminating `continuousBuffer`, `getContentBytes(maxBytesToConsume)`, and `CONSECUTIVE_CONTENT_BYTES_REQUIRED_BY_MOST_DEMANDING_OPERATION`: made primitive decoding methods on `Deserializer.Reader` abstract (`readByte`, `peekByte`) or default big-endian bitwise assemblies (`readShort`, `readInt`, `readLong`, `readFloat`, `readDouble`, `readBytes`), implemented zero-copy single-instruction fast-path contiguous reads in `Receiver` with seamless fallback to byte-by-byte boundary assembly, and formalized the Stream Deserialization Primitive Fast-Path & Split Boundary Invariant in Section 8 of `doc/architecture/cluster-serialization.md`.
+
+## [2026-11-07T19:55:00Z]
+
+- Implemented dynamic protocol version negotiation in `consensus/nio2-cluster-bridge`, aligning transport handshake mechanics with `nexus/cluster`'s `ParticipantService`: upgraded `PeerHandshake` and `ClientHandshake` to advertise supported version sets (`Set[ProtocolVersion]`), implemented highest mutually supported version selection via `ProtocolVersion.newerFirstOrdering`, threaded negotiated `agreedVersion` through active `PeerConnection` and `ClientConnection` transmission and reception loops, and formalized the Dynamic Protocol Version Negotiation & Handshake Evolution Invariant in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`.
+
+## [2026-11-07T18:05:00Z]
+
+- Resolved 8 active TODO items in `consensus/nio2-cluster-bridge`: authored complete Scaladoc on `ClusterBridgeConfig` adhering to repository standards, replaced monolithic `rpcTimeout` with differentiated `fastRpcTimeout`, `snapshotRpcTimeout`, and `clientRpcTimeout`, renamed `ClusterWireFrame` to `ClusterWireMessage` to semantically separate logical packages from physical transport buffer frames, eliminated per-RPC heap allocation by having `PendingRpc` extend `sequencer.Captor`, replaced eager $O(N)$ full-map scanning on every outbound RPC with $O(1)$ collision checks across 16-bit circular correlation sequence reuse, and renamed `SocketClusterBridgeCdm` to `Nio2ClusterBridgeCdm` across the codebase.
+
+## [2026-11-07T17:06:00Z]
+
+- Formalized the Heartbeat-Free Application-Level Snapshot Atomicity & Transport Chunking Invariant in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`, establishing that because Lazy Raft eliminates background heartbeats and follower election timers, snapshot transfers cannot cause election churn, allowing the consensus engine to maintain an atomic logical `InstallSnapshot` contract while delegating frame slicing, payload streaming, and byte reassembly entirely to the cluster transport layer (`nexus/cluster`).
+- Updated `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md` to record the delegation of snapshot chunking to transport and schedule transport-level payload streaming and receiver de-accumulation for arbitrary snapshot sizes.
+
+## [2026-11-06T23:45:00Z]
+
+- Formalized loopback TCP multi-node test harness invariants, dynamic ephemeral port registration, outbound transmitter pipeline queue confinement, and streaming snapshot reception in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`, verified complete end-to-end consensus operation across 5 integration scenarios over real Java NIO2 TCP sockets in `consensus/nio2-cluster-bridge` (discovery and election, linearizable command replication and follower redirection, log compaction and streaming `InstallSnapshot`, dynamic electorate change and node quiescence, node disconnect and reconnect recovery), resolved a re-entrant queue deadlock in `SequentialTransmitter`, and marked Milestone A (Physical Network Transport Bridge) as completed in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md`.
+
+## [2026-11-06T21:30:00Z]
+
+- Formalized the Component Definition Module (CDM) decomposition and service aggregation invariants in Section 8.IV of `doc/architecture/lazy-multi-raft-consensus.md`, establishing a directed acyclic graph of component definition slices rooted in `ConsensusWireTypesCdm` (pure domain types, `ClusterView`, and `ResponseToClient`), extracting `ConsensusClusterBridgeCdm` for the cluster transport and membership SPI, decoupling `ConsensusElectorateCdm` and `ConsensusPrimaryStateCdm` as independent peer modules, structuring `ConsensusParticipantSdm` as the downstream aggregating service module, and migrating `consensus/nio2-cluster-bridge` to implement `SocketClusterBridgeCdm` directly without exposure to consensus election or storage internals.
+
+## [2026-11-06T18:55:00Z]
+
+- Implemented Iteration 4 of Milestone A in `consensus/nio2-cluster-bridge`, delivering `ClusterBridgeSdm` (`SocketClusterBridge`) and `ClusterClient` over Java NIO2 and `nexus/cluster` framing abstractions, connecting inbound/outbound consensus RPCs (`HowAreYou`, `RequestBallot`, `AppendRecords`, `InstallSnapshot`, `PermitQuiescence`) strictly within `sequencer: SchedulingDoer`, managing circular 16-bit correlation ID tracking and timeout schedules, resolving simultaneous mutual connection opening via deterministic total-order tie-breaking, implementing client endpoints (`SubmitClientCommand`, `SubmitElectorateChange`), and verifying 100% test pass rate across handshake, wake-up scheduling, correlation tracking, and multi-node integration test suites.
+
+## [2026-11-06T18:25:00Z]
+
+- Formalized the socket lifecycle, handshake incubation, and receiver continuity invariants in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`, establishing that `Receiver` instances created upon TCP socket acceptance in `consensus/nio2-cluster-bridge` must be preserved across the entire lifetime of the channel and propagated directly to active connection delegates (`PeerConnection` or `ClientConnection`) to prevent dropping bytes buffered in `DualEndedCircularStorage` during the initial handshake read.
+
+## [2026-11-06T14:55:00Z]
+
+- Formalized the physical wire protocol framing, correlation sequence arithmetic, and discriminator band allocation invariants in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`, establishing the `ClusterWireFrame` sealed sum hierarchy in `consensus/nio2-cluster-bridge`, specifying 16-bit signed circular wrap-around awaiter capacity eviction (`CorrelationId.isLapsedRelativeTo`), mapping 18 wire frame variants to discrete numerical bands under `FLAT` match mode, and updating Milestone M-A progress in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md`.
+
+## [2026-11-06T03:02:00Z]
+
+- Formalized the pure wire protocol sum type invariant for replication responses in Section 8.I of `doc/architecture/lazy-multi-raft-consensus.md`, establishing that `AppendResult` represents solely peer protocol responses (`AppendResult_Accepted` and `AppendResult_Rejected`), eliminating synthetic transport failure representations (`AppendResult_Failed`) from domain models and serialization hierarchies, and handling asynchronous RPC transport errors strictly at the transport boundary via `Maybe[AppendResult]`.
 
 ## [2026-11-05T21:50:00Z]
 
@@ -835,3 +876,7 @@ timestamp: "2026-11-05T21:50:00Z"
 - Refined the Synchronous Cluster-Tier Probable-Participant Memorization Contract in Section 13 of `okf/lazy-multi-raft-consensus.md`, specifying that the host bridge method `ClusterParticipant.getOtherProbableParticipants` supplies an
   optimistic set of nodes intended for consensus ordered by descending probability of certainty to support client fallback routing and vanishing-electorate teardown, and purged the misplaced administrative control-plane entry from Section
   10.
+
+## [2026-11-06T02:52:00Z]
+
+- Documented consensus protocol binary serialization invariants in Section 13 of `doc/architecture/lazy-multi-raft-consensus.md`, covering fixed-width term codecs, byte-encoded role ordinals and election ranks, deterministic insertion-order collection preservation for advisory routing hints, and zero-copy channel decoupling for streaming snapshot payloads.

@@ -3,7 +3,7 @@ type: "Index"
 title: "Matrix System Architecture Roadmap"
 description: "Central dashboard, architectural alignment matrix, gap analysis, dependency graph, and milestone tracker for transitioning Matrix to a production-grade Multi-Raft application runtime."
 tags: [ "roadmap", "index", "consensus", "cluster", "nexus" ]
-timestamp: "2026-10-31T20:00:00Z"
+timestamp: "2026-11-07T17:06:00Z"
 ---
 
 # Matrix System Architecture Roadmap
@@ -21,7 +21,7 @@ The following matrix compares each architectural pillar and invariant defined in
 |:------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------|:---------------------------------|
 | **Deterministic Sequencing**              | Single-threaded actor execution using causal promises and mutation barriers.                                                               | Implemented via `Doer` and `CausalFence` in `sequencer/core`.                                                                       | **Complete (100%)**              |
 | **Reactive Lazy Consensus**               | Heartbeat-less, zero-idle load, on-demand `HowAreYou` discovery, pre-vote ballot election, centralized command applier, follower parity.   | Fully implemented in `ConsensusParticipantSdm`; verified with property tests in `ConsensusParticipantSdmSyncTest`.                  | **Complete (100% Core Logic)**   |
-| **Cluster Network Transport**             | Non-blocking NIO2 asynchronous socket channels, sequential frame transmitters, and handshaking.                                            | Transport engine exists in `ParticipantService` (`nexus/cluster`), but consensus RPC bridge is unimplemented.                       | **Partial (25% Transport Only)** |
+| **Cluster Network Transport**             | Non-blocking NIO2 asynchronous socket channels, sequential frame transmitters, and handshaking.                                            | Production bridge implemented in `Nio2ClusterBridgeCdm` (`consensus/nio2-cluster-bridge`). Baseline RPCs, correlation tracking, and in-memory snapshots verified. Arbitrary snapshot streaming pending. | **Partial (85% Baseline Complete)** |
 | **Shared-Nothing Co-located Persistence** | Decoupled Storage SPI (`Workspace`) co-located with compute, handling prefix/suffix truncation, raw WAL appends, and snapshot persistence. | Abstract SPI declared in `ConsensusPrimaryStateCdm.Workspace`; only in-memory mock `ConsensusEnvironment` exists. No disk engine.   | **Partial (20% SPI Only)**       |
 | **Supervised Actor Runtime**              | Shard coordinators, workers, and delegates managed as supervised actants structured via Component Definition Modules.                      | Core actor runtime exists in `ActantCore` and `Nexus` (`nexus/core`), but consensus participants are unhosted.                      | **Partial (30% Engine Only)**    |
 | **Multi-Raft Sharding**                   | Independent consensus groups per entity/shard providing blast radius isolation and supporting millions of dormant shards in memory.        | Not implemented. Codebase only hosts a single consensus group instance. No shard manager, activation coordinator, or routing layer. | **Unimplemented (0%)**           |
@@ -33,8 +33,7 @@ The following matrix compares each architectural pillar and invariant defined in
 
 The consensus engine has achieved mathematical and algorithmic correctness under isolated single-group deterministic simulation. However, three foundational gaps prevent this engine from operating as a production distributed runtime:
 
-1. **Physical Transport Gap**: The `ConsensusParticipantSdm.ClusterBridge` contract is abstract. The engine cannot transmit consensus RPCs (`HowAreYou`, `RequestBallot`, `AppendRecords`) or client commands over actual TCP/IP networks,
-   relying entirely on in-process simulated channels.
+1. **Physical Transport Streaming Gap**: While the baseline RPC bridge (`Nio2ClusterBridgeCdm`) connects consensus participants over NIO2 TCP channels, `nexus/cluster`'s `Receiver` accumulates all package frames in `DualEndedCircularStorage` before deserialization (~1 MB default limit). True zero-copy payload streaming and continuous frame chunking for large snapshots must be implemented at the transport layer.
 2. **Physical Persistence Gap**: The engine delegates durability to `ConsensusPrimaryStateCdm.Workspace`, but no disk-backed implementation exists. Crashes lose all volatile state, log truncation cannot be verified against physical storage
    pages, and snapshot installation does not touch non-volatile media.
 3. **Multi-Raft & Lifecycle Orchestration Gap**: The architecture requires hosting thousands to millions of dormant shards that activate on-demand upon client command arrival ("first-stitch" recovery). Currently, there is neither an actor
@@ -75,14 +74,22 @@ graph TD
 
 | Milestone ID | Title                               | Target Modules               | Status      | Primary Prerequisite                   | Details                                                             |
 |:-------------|:------------------------------------|:-----------------------------|:------------|:---------------------------------------|:--------------------------------------------------------------------|
-| **M-A**      | Physical Network Transport Bridge   | `nexus/cluster`, `consensus` | `[TODO]`    | Single-Group Consensus Engine (Passed) | [Specification](milestones/milestone-a-network-transport-bridge.md) |
+| **M-A**      | Physical Network Transport Bridge   | `nexus/cluster`, `consensus` | `[IN_PROGRESS]` (85%) | Single-Group Consensus Engine (Passed) | [Specification](milestones/milestone-a-network-transport-bridge.md) |
 | **M-B**      | Durable Co-located Storage Engine   | `consensus`, `common`        | `[TODO]`    | Single-Group Consensus Engine (Passed) | [Specification](milestones/milestone-b-durable-storage-engine.md)   |
 | **M-C**      | Actor Runtime Supervised Hosting    | `nexus/core`, `consensus`    | `[TODO]`    | Single-Group Consensus Engine (Passed) | [Specification](milestones/milestone-c-actor-runtime-hosting.md)    |
 | **M-D**      | Multi-Raft Sharding & Control Plane | `consensus`, `nexus/*`       | `[BLOCKED]` | Milestones M-A, M-B, and M-C           | [Specification](milestones/milestone-d-multi-raft-sharding.md)      |
 
 ---
 
-## 5. Architectural References
+## 5. Potential Future Convenience Features
+
+This section catalogs architectural enhancements, specialized client adapters, and convenience features that provide concrete performance, ergonomics, or determinism advantages under advanced deployment topologies, but are deferred until concrete consumer components require them:
+
+- **`Doer.Capture`-Based `ClusterClient` Variant (`SequencedClusterClient`)**: An alternative TCP client implementation confined to a single-threaded `SchedulingDoer` that returns path-dependent `sequencer.Capture` instances rather than `scala.concurrent.Future`. While external JVM applications and HTTP gateways require standard thread-safe `Future` handles, internal actor runtimes (such as `nexus/core` actants or inter-cluster coordinators) running on `Doer` incur thread-hop context switches, volatile write fences, and extraneous heap allocations when interacting through `Future`-based client interfaces. Confining the client to a `Doer` enables lock-free unsynchronized correlation tracking (`mutable.Map[CorrelationId, doer.Captor[?]]`), eliminates context switching onto `scala.concurrent.ExecutionContext`, and allows multi-client workloads to run deterministically within discrete-event simulation test harnesses where virtual time is controlled step-by-step. This feature is deferred until cross-cluster federation, hierarchical Raft coordination, or actant-driven gateway services in `nexus` require high-throughput client multiplexing over a single-threaded sequencer.
+
+---
+
+## 6. Architectural References
 
 - [Multi-Raft System Architecture](../architecture/system-architecture.md): Scalability analysis, USL framing, control/data plane separation, and lazy consensus pillars.
 - [Lazy Raft Consensus Protocol Specification](../architecture/lazy-multi-raft-consensus.md): Formal single-group state machine invariants, message specifications, and election mechanics.

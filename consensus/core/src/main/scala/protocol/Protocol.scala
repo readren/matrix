@@ -173,13 +173,6 @@ final class AppendResult_Rejected(val term: Term, val firstEmptyRecordIndex: Rec
 	override def toString: String = s"Rejected(@$term, rejected, firstEmptyRecordIndex=$firstEmptyRecordIndex, ${RoleOrdinal_nameOf(roleOrdinal)})"
 }
 
-final class AppendResult_Failed(val error: Throwable) extends AppendResult {
-	override val term: Term = PRE_INIT
-	override def toString: String = s"AppendResult(failed, error=$error)"
-}
-
-val failedAppendResultBuilder: Throwable => Maybe[AppendResult_Failed] = e => Maybe(new AppendResult_Failed(e))
-
 /**
  * Information that a participant exposes about itself for the purpose of leader election.
  */

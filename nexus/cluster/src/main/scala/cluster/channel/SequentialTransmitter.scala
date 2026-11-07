@@ -64,6 +64,30 @@ class SequentialTransmitter[M](
 	 */
 	private val transmissionQueue: ConcurrentLinkedQueue[(message: M, onComplete: Transmitter.Report => Unit)] = new ConcurrentLinkedQueue()
 
+	private def startTransmission(message: M, msgVersion: ProtocolVersion, behindTransmissionEnabled: Boolean, timeout: Long, timeUnit: TimeUnit)(onTransmissionComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
+		transmitter.transmit[M](message, msgVersion, behindTransmissionEnabled, timeout, timeUnit) { report =>
+			// After transmission completes, check if more messages are waiting
+			if queueSize.decrementAndGet() > 0 then {
+				// Process the next message from the queue
+				var next = transmissionQueue.poll()
+				
+				// Handle potential memory visibility issues with concurrent collections.
+				// The poll() method may return null even when elements exist due to memory visibility between threads. The VarHandle.fullFence() ensures the polling thread can see updates made by the adding thread.
+				while next == null do {
+					VarHandle.fullFence()
+					next = transmissionQueue.poll()
+				}
+				
+				startTransmission(next.message, msgVersion, behindTransmissionEnabled, timeout, timeUnit)(next.onComplete)
+			} else {
+				transmitter.pruneTo(minBuffersOnIdle)
+				onIdleHandler()
+			}
+			// Always invoke the completion callback for the current message
+			onTransmissionComplete(report)
+		}
+	}
+
 	/**
 	 * Transmits a message, either immediately or by adding it to the queue for later processing.
 	 * 
@@ -81,29 +105,7 @@ class SequentialTransmitter[M](
 	def transmit(message: M, msgVersion: ProtocolVersion, behindTransmissionEnabled: Boolean = true, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onTransmissionComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
 		// Check if this is the first message (no transmission in progress)
 		if queueSize.getAndIncrement() == 0 then {
-			// Start transmission immediately
-			transmitter.transmit[M](message, msgVersion, behindTransmissionEnabled, timeout, timeUnit) { report =>
-				// After transmission completes, check if more messages are waiting
-				if queueSize.decrementAndGet() > 0 then {
-					// Process the next message from the queue
-					var next = transmissionQueue.poll()
-					
-					// Handle potential memory visibility issues with concurrent collections.
-					// The poll() method may return null even when elements exist due to memory visibility between threads. The VarHandle.fullFence() ensures the polling thread can see updates made by the adding thread.
-					while next == null do {
-						VarHandle.fullFence()
-						next = transmissionQueue.poll()
-					}
-					
-					// Recursively transmit the next message
-					transmit(next.message, msgVersion, behindTransmissionEnabled, timeout, timeUnit)(next.onComplete)
-				} else {
-					transmitter.pruneTo(minBuffersOnIdle)
-					onIdleHandler()
-				}
-				// Always invoke the completion callback for the current message
-				onTransmissionComplete(report)
-			}
+			startTransmission(message, msgVersion, behindTransmissionEnabled, timeout, timeUnit)(onTransmissionComplete)
 		} else {
 			// Add a message to queue for later processing
 			transmissionQueue.add((message, onTransmissionComplete))

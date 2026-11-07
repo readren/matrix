@@ -26,7 +26,7 @@ class TupleSerializationSuite extends FunSuite {
 		val reader = new Deserializer.Reader {
 			override val governingVersion: ProtocolVersion = DEFAULT_VERSION
 			override def position: Int = buffer.position()
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = buffer
+			override def readByte(): Byte = buffer.get()
 			override def peekByte: Byte = buffer.get(buffer.position())
 		}
 
@@ -114,7 +114,7 @@ class TupleSerializationSuite extends FunSuite {
 		val reader = new Deserializer.Reader {
 			override val governingVersion: ProtocolVersion = DEFAULT_VERSION
 			override def position: Int = buffer.position()
-			override def getContentBytes(maxBytesToConsume: Int): ByteBuffer = buffer
+			override def readByte(): Byte = buffer.get()
 			override def peekByte: Byte = buffer.get(buffer.position())
 		}
 
