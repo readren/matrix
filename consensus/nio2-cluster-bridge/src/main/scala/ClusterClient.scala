@@ -3,7 +3,7 @@ package nio2
 
 import readren.common.Maybe
 import readren.consensus.protocol.*
-import readren.nexus.cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.service.{ChannelId, ChannelOrigin}
 import readren.sequencer.MilliDuration
@@ -24,7 +24,7 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 
 	private var channel: AsynchronousSocketChannel | Null = null
 	private var receiver: Receiver | Null = null
-	private var transmitter: SequentialTransmitter[ClusterWireMessage] | Null = null
+	private var transmitter: PipelinedTransmitter[ClusterWireMessage] | Null = null
 	@volatile private var isClosed: Boolean = false
 
 	private var lastCorrelationId: CorrelationId = CorrelationId.Initial
@@ -43,7 +43,7 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 				val localAddr = try asc.getLocalAddress catch { case _: Throwable => new InetSocketAddress("127.0.0.1", 0) }
 				val remoteAddr = try Maybe(asc.getRemoteAddress) catch { case _: Throwable => Maybe.empty }
 
-				val transmitterContext = new Transmitter.Context {
+				val transmitterContext = new PipelinedTransmitter.Context {
 					override def myAddress: SocketAddress = localAddr
 					override def oPeerAddress: Maybe[SocketAddress] = remoteAddr
 					override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, remoteAddr)
@@ -54,12 +54,13 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 					override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, remoteAddr)
 				}
 
-				val trans = new SequentialTransmitter[ClusterWireMessage](
+				val trans = new PipelinedTransmitter[ClusterWireMessage](
 					asc,
 					transmitterContext,
 					buffersCapacity = config.frameCapacity,
 					maxBuffers = config.maxBuffers,
-					minBuffersOnIdle = config.minBuffersOnIdle
+					minBuffersOnIdle = config.minBuffersOnIdle,
+					streamTransferBufferCapacity = config.streamTransferBufferCapacity
 				)
 				val recv = new Receiver(
 					asc,
@@ -67,7 +68,8 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 					buffersCapacity = config.frameCapacity,
 					maxBuffers = config.maxBuffers,
 					minBuffersOnIdle = config.minBuffersOnIdle,
-					allocationLimits = config.allocationLimits
+					allocationLimits = config.allocationLimits,
+					streamTransferBufferCapacity = config.streamTransferBufferCapacity
 				)
 
 				transmitter = trans

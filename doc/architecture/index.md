@@ -3,7 +3,7 @@ type: "Index"
 title: "Matrix Project Knowledge Base"
 description: "Index of all architectural and operational specifications."
 tags: ["index", "documentation"]
-timestamp: "2026-11-02T13:45:00Z"
+timestamp: "2026-11-08T18:00:00Z"
 ---
 
 # Matrix Project Knowledge Base
@@ -24,6 +24,7 @@ timestamp: "2026-11-02T13:45:00Z"
 
 - [Coding Guidelines](coding-guidelines.md)
 - [Common Primitives](common-primitives.md)
+- [Byte Streaming Primitives (ByteSource & ByteSink)](byte-streaming-primitives.md)
 
 ## Design Decisions (ADRs)
 
@@ -33,3 +34,4 @@ timestamp: "2026-11-02T13:45:00Z"
 - [Design Discussion Transcript: Lazy Multi-Raft](transcript-lazy-multi-raft-design.md)
 - [Simplify Sequencer Error Handling](adr-simplify-error-handling.md)
 - [Evaluation of Spare-Slot Pattern](adr-spare-slot-pattern-evaluation.md)
+- [Generic Out-of-Line ByteSource Serialization and Constant-Memory Trailing Streams](adr-trailing-stream-bulk-byte-source-transfer.md)

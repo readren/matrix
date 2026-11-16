@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.service
 
-import cluster.channel.Transmitter.NotDelivered
+import cluster.channel.PipelinedTransmitter.NotDelivered
 import cluster.misc.CommonExtensions.*
 import cluster.misc.DoNothing
 import cluster.serialization.ProtocolVersion

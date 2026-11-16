@@ -3,8 +3,123 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-11-07T22:10:00Z"
+timestamp: "2026-11-15T18:20:00Z"
 ---
+
+## [2026-11-15T18:20:00Z]
+- **Updated** `cluster-serialization.md`: Refined Section 8 terminology so the 3-bit value paired with the 28-bit wait-queue count inside the 31-bit coordination state is described as the joint stage state rather than a pipeline mode.
+
+## [2026-11-15T17:24:00Z]
+- **Updated** `cluster-serialization.md`: Refined the `PipelinedTransmitter` coordination-state specification in Section 8 from two coupled per-stage sub-states to a single unified 6-mode pipeline state (`idle`, `serializing-only`, `transmitting-only`, `pipelined`, `handoff-pending`, and `pruning`) paired with the 28-bit wait-queue counter.
+
+## [2026-11-13T21:35:00Z]
+- **Updated** `cluster-serialization.md` and `adr-trailing-stream-bulk-byte-source-transfer.md`: Clarified `PipelinedTransmitter` pipeline descriptions so stages represent isolated operational phases and state compartments coordinated across calling and NIO.2 completion threads rather than active actors.
+
+## [2026-11-13T16:34:00Z]
+- **Updated** `cluster-serialization.md`, `cluster-serialization-guide.md`, `adr-trailing-stream-bulk-byte-source-transfer.md`, `lazy-multi-raft-consensus.md`, and `log.md`: Standardized all pipeline stage terminology from numbered stage labels to explicit serialization and transmission stage terminology.
+
+## [2026-11-13T16:13:00Z]
+- **Updated** `cluster-serialization.md`: Documented the Bounded Wait-Queue Admission Control Invariant for `PipelinedTransmitter` (31-bit non-negative coordination state with a 28-bit wait-queue capacity limit of `2^28 - 1`, synchronous `RejectedExecutionException` on queue saturation prior to state mutation, preservation of strict FIFO serialized completion callbacks, and caller exception propagation semantics).
+
+## [2026-11-12T23:59:00Z]
+- **Updated** `adr-trailing-stream-bulk-byte-source-transfer.md`: Formalized the Atomic Work-Stealing Stream Trampoline Invariant (serializing synchronous returns, inline pre-return `PENDING` callbacks, and multi-threaded asynchronous completions in $O(1)$ stack depth with at-most-once stream finalization), the Deferred Sink Sealing and Rollback Unlinking Invariant (ensuring already-sealed staging sinks of a multi-stream message are unlinked if a later stream in the same package aborts or faults), and the Unified Channel Virtualization Invariant across both circular storage framing reads and trailing stream chunk reads while preserving chronological order of staged leftover bytes.
+
+## [2026-11-12T23:55:00Z]
+- **Updated** `cluster-serialization.md`, `cluster-serialization-guide.md`, `adr-trailing-stream-bulk-byte-source-transfer.md`, and `lazy-multi-raft-consensus.md`: Documented the standalone `PipelinedTransmitter` two-stage architecture invariants (isolated serialization-stage encoding and transmission-stage bounded gathering socket I/O and trailing streaming, shared `TransmissionProtocol` wire sentinels and completion reports, atomic FIFO queue reservation, strict FIFO completion callback ordering across serialization failures, dual-stage quiescent pruning, and lazy stream transfer buffer release) alongside the preserved legacy `Transmitter` and `SequentialTransmitter` behind-transmission coordination, updated cluster services and consensus bridge callers to `PipelinedTransmitter`, and documented `Receiver` trailing stream fault handling distinguishing clean in-band peer stream aborts (channel stays open, aborted package skipped) from local/framing faults (socket teardown), plus 5-byte (32-bit) chunk header VLQ bounds.
+
+## [2026-11-12T05:13:00Z]
+
+- Updated Section 8 of `doc/architecture/cluster-serialization.md` to align the Concurrent Behind-Transmission Coordination Invariant with semantically honest state terminology (`serializing-and-transmitting`, `transmission-paused-while-serializing`, `serialization-completed-and-transmitting`, `serialization-failed`, and `transmission-failed`).
+
+## [2026-11-11T20:52:00Z]
+
+- Updated Section 8 of `doc/architecture/cluster-serialization.md` to reflect circular-storage exhaustion and lock-free behind-transmission coordination:
+  - Revised the Transport Buffer Capacity Ceiling Invariant so `DualEndedCircularStorage` reports exhaustion via an empty `Maybe` without throwing inside the collection, and `Transmitter` handles buffer ceiling exhaustion by failing fast with `BuffersCountExceededException` reported as `TransmissionFailure` (sending the corrupted-package sentinel first if frames are already in flight).
+  - Formalized the Concurrent Behind-Transmission Handoff Invariant specifying the lock-free atomic five-state coordination protocol between message serialization and asynchronous NIO2 frame transmission.
+
+## [2026-11-11T14:40:00Z]
+
+- Formalized the Transport Frame Header Contiguity & Reserved Buffer Headroom Invariant in Section 8 of `doc/architecture/cluster-serialization.md`:
+  - Synthesized the rationale for holding back transport buffer write limits by the maximum VLQ header size (`buffersCapacity - FRAME_HEADER_MAX_SIZE`), explaining why frame headers and wire sentinels are strictly forbidden from splitting across circular storage buffers.
+  - Specified the dynamic limit extension mechanism into reserved headroom on split header reception, guaranteeing single-buffer decoding for the transport framing loop and eliminating multi-buffer reassembly state machines across asynchronous completion dispatches.
+
+## [2026-11-10T20:50:00Z]
+
+- Documented trailing stream leftover pipelining design rationale, alternative evaluation, and channel virtualization invariants in `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md`:
+  - Articulated the comparative analysis of four architectural options for handling trailing stream leftover bytes arriving across TCP message boundaries: rejected direct multi-buffer ring slicing due to buffer capacity mismatch and framing state desynchronization, rejected direct slice retention in `streamTransferBuffer` due to buffer reuse collision hazard during consecutive streams, and rejected layered channel decorator wrappers due to allocation overhead and lifecycle decoupling.
+  - Documented the selected isolated leftover staging architecture (`streamTransferLeftover` and `readChannel`) in Section 6, specifying Case 1 (staging into isolated heap buffer and resetting circular storage target) versus Case 2 (in-place `target.compact()` for streams contained entirely in initial packet) and explaining the rationale for buffer reuse safety, framing state machine uniformity, zero-allocation fast paths, and idle buffer pruning safety.
+  - Formalized the Trailing Stream Leftover Staging and Channel Virtualization Invariant in Section 7.
+
+## [2026-11-10T16:30:00Z]
+
+- Completed Automated Test Coverage Matrix Hardening (Gap D7) and resolved transport framing and circular storage boundary defects:
+  - Renamed `StreamingDefectsSuite.scala` to semantically honest `ClusterWireStreamingSuite.scala` in `consensus/nio2-cluster-bridge`, implementing a comprehensive test matrix (TC-01 through TC-15) covering property-based testing with minimal and near-minimal randomized capacities ($C_{buf} \in [10, 128]$ bytes, $C_{stream} \in [16, 256]$ bytes, $chunkSize \in [1, 64]$ bytes).
+  - Hardened multi-buffer control package deserialization in `Receiver.deserializePackage`: when a package payload exhausts the current circular storage buffer and the package terminator sentinel resides in the subsequent buffer, `Receiver` catches up `readEndBuffer` to `writeEndBuffer` prior to checking package consumption, eliminating false-positive `TheDeserializerHasNotConsumedTheWholePackage` reception faults.
+  - Corrected split frame header limit calculation in `Receiver`: when a frame header spans buffer boundaries (`SPLIT`), the buffer limit is extended to `nextFrameHeaderPos + FRAME_HEADER_MAX_SIZE` using reserved capacity, preventing truncation or clamping of already received bytes.
+  - Implemented `streamTransferLeftover` staging in `Receiver`: unconsumed pipelined bytes following a trailing stream in `streamTransferBuffer` are staged into a dedicated leftover buffer and fed into `Receiver`'s framing loop on the subsequent reception cycle via `readChannel`, preventing out-of-order circular storage corruption and socket read hangs on zero-length stream follow-up packages.
+  - Formalized the Multi-Buffer Deserializer Boundary Catch-Up Invariant, Split Frame Header Limit Invariant, and Trailing Stream Leftover Staging Invariant in `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md`, and marked Category 5 (Gap D7) as completed in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md`.
+
+## [2026-11-10T15:15:00Z]
+
+- Parameterized streaming transfer buffer capacity across `nexus/cluster` and `consensus/nio2-cluster-bridge`:
+  - Promoted hardcoded direct transfer buffer capacity (64 KiB) to configurable constructor parameters across `Transmitter`, `SequentialTransmitter`, `Receiver`, `ParticipantService.DelegateConfig`, and `ClusterBridgeConfig`, with default fallbacks preserving backwards compatibility.
+  - Updated `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md` to document the configurable transfer buffer capacity per channel.
+
+## [2026-11-10T12:00:00Z]
+
+- Updated ADR `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md`, `doc/roadmap/index.md`, and `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` to document the planned Consensus Snapshot Concurrency Governor and Elastic Transport Streaming Buffer Pool architecture:
+  - Formalized the necessity of decoupling transport buffer allocation from concurrency throttling: transport-level bounded buffer pools cause catastrophic socket deadlocks and TCP ZeroWindow stalls under load, while 8 KiB circular storage chunking increases disk/syscall thrashing eightfold.
+  - Documented the two-tier architectural solution: an application-level consensus governor in `consensus/core` and `consensus/nio2-cluster-bridge` enforcing an admission cap ($K$) via protocol-level backpressure, coupled with an elastic direct buffer pool in `nexus/cluster` with deadlock-free on-demand allocation and bounded idle retention ($K$).
+
+## [2026-11-09T23:00:00Z]
+
+- Completed architectural remediation of zero-copy trailing stream payload transport across `common`, `nexus/cluster`, and `consensus/nio2-cluster-bridge`:
+  - Refactored `ByteSource.AsyncReader.read` and `ByteSink.write` to return synchronous completion status (`Int` bytes transferred or `PENDING`), eliminating fragile boolean trampolining and preventing stack overflow across thread-local completions.
+  - Implemented multi-write slicing loop in `FileByteSink.write` ensuring entire buffer contents are persisted to asynchronous channels before invoking completion handlers.
+  - Hardened `FileByteSource` lifecycle with a hybrid model combining explicit `close()` unlinking with a fallback `java.lang.ref.Cleaner` cleanup task to prevent orphaned temporary files on discarded streams.
+  - Resolved circular storage buffer slicing in `Receiver.finishTrailingStream` across `DualEndedCircularStorage` buffer boundaries, preventing buffer overflow on large subsequent message packages.
+  - Bounded VLQ chunk continuation decoding to 5 bytes (< 28 bits) and clamped chunk sizes to 64 KiB, immediately tearing down channel sockets upon mid-stream protocol violations to prevent socket starvation and frame desynchronization.
+  - Preserved `frameBuffer(1)` non-null state in `Transmitter` across trailing streaming to protect single-flight invariants against concurrent callers.
+  - Established regression test suite `readren.consensus.nio2.StreamingDefectsSuite` covering all reproduction scenarios and updated ADR `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md`.
+
+## [2026-11-09T05:05:00Z]
+
+- Established the dedicated architectural concept specification for transport-agnostic byte streaming primitives in `doc/architecture/byte-streaming-primitives.md`:
+  - Formalized the capability-first architecture of `ByteSource` and `ByteSink` in `readren.common`, defining the Bounded Extent & Exact Size Invariant, Multi-Session Repeatable Extraction Invariant, Dual Modality (Push vs Pull) Invariant, Zero-Copy Bulk Transfer Invariant, and Deterministic Lifecycle Invariant.
+  - Specified the Single-Flight Invariant and Cross-Thread Serialized Continuity Invariant for `ByteSource.AsyncReader`, detailing how Java NIO.2 completion hand-offs establish JMM happens-before ordering without atomic compound operations.
+  - Formalized the Staging Pre-Allocation & Declared Size Invariant, Early Handle Projection Invariant, Incremental Non-Blocking Ingestion Invariant, and Strict Terminal State Machine Invariant (`seal` vs `discard`) for `ByteSink` and `ByteSink.Allocator`.
+  - Split `ByteSource.scala` into distinct `ByteSource.scala` and `ByteSink.scala` source files (and split `ByteSourceTest.scala` into `ByteSourceTest.scala` and `ByteSinkTest.scala`), removing legacy forwarder type aliases from `object ByteSource`.
+  - Rewrote Scaladoc across `common/src/main/scala/ByteSource.scala` and `common/src/main/scala/ByteSink.scala` to formulate contracts around intrinsic capabilities and operational guarantees rather than downstream consumers.
+  - Optimized channel allocation overhead in `nexus/cluster.Transmitter` and `Receiver` for out-of-line streaming: hoisted `pendingByteSources` and `pendingByteSinks` queues to reusable instance fields reset per message, made `Transmitter.byteSourceReadHandler` and `Transmitter.streamHandler` lazy vals to eliminate handler allocations for non-streaming messages, and replaced temporary 5-byte heap buffer and lambda allocations in `Receiver` with primitive bitwise VLQ chunk header decoding across buffer boundaries.
+
+## [2026-11-09T03:30:00Z]
+
+- Formalized the transition from generic `Payload` naming to semantically precise `ByteSource` and `ByteSink` contracts in `readren.common`:
+  - Retained `ByteSource` and `ByteSink` within `readren.common` to preserve foundational architectural layering, guaranteeing that consensus state machine logic and persistence SPI contracts remain decoupled from cluster transport and networking abstractions.
+  - Renamed ADR `doc/architecture/adr-trailing-stream-bulk-payload-transfer.md` to `doc/architecture/adr-trailing-stream-bulk-byte-source-transfer.md` and updated `doc/architecture/index.md` accordingly.
+  - Updated Section 8 of `doc/architecture/cluster-serialization.md` and `doc/architecture/cluster-serialization-guide.md` to establish the Generic Out-of-Line ByteSource Serialization & Deferred Queueing Invariant and `ByteSink.Allocator` staging contracts.
+  - Updated Sections 8.I, 8.III, and 8.IV of `doc/architecture/lazy-multi-raft-consensus.md` to specify `SnapshotByteSource`, `ByteSource`, `BufferByteSource`, and `FileByteSource` lifecycle ownership and zero-copy transfer semantics.
+  - Updated `doc/roadmap/index.md` and `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` to align milestone deliverables with `ByteSource` terminology.
+
+## [2026-11-09T03:00:00Z]
+
+- Synchronized the architectural OKF bundle with Generic Out-of-Line Payload Serialization (Model A — Eager Pre-Delivery):
+  - Updated `doc/architecture/cluster-serialization.md` Section 8 to formalize the Generic Out-of-Line Payload Serialization & Deferred Queueing Invariant, Trailing Stream Chunk Framing & Sentinel Invariant, Eager Pre-Delivery Streaming & Bounded Staging Invariant, Asynchronous Completion Loop Trampolining Invariant, and Deferred Sink Sealing Invariant, eliminating obsolete heap-copying direct-buffer invariants.
+  - Updated `doc/architecture/lazy-multi-raft-consensus.md` Sections 8.I and 8.III to formalize the Physical Transport Stream Snapshot Reception Invariant, Streaming Snapshot Carrier & Repeatable Async Reader Invariant, Zero-Copy Transport and Non-Blocking Async Invariant, and Snapshot Storage Ownership & Rejection Cleanup Invariant across `readren.common.Payload`.
+  - Authored Section 8 in `doc/architecture/cluster-serialization-guide.md` providing developer guidance on macro derivation for product types containing `Payload` fields, deferred queueing (`putPayload` and `readPayload`), and staging thresholds via `Payload.Allocator`.
+  - Updated `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md` to resolve the Physical Transport Streaming Gap and mark Milestone M-A as completed at 100%.
+
+## [2026-11-09T02:50:00Z]
+
+- Updated ADR `doc/architecture/adr-trailing-stream-bulk-payload-transfer.md` to define transport control sentinels (`CORRUPTED_PACKAGE_SENTINEL = 0xffff_fffeL`, `STREAM_FOLLOWS_SENTINEL = 0xffff_fffdL`) as positive unsigned 64-bit `Long` constants and formalize the Unsigned Wire Sentinel Decoding Invariant, replacing the previous signed two's complement representation to ensure consistent equality semantics with `VLQ.tryToDecodeUnsignedInt`.
+
+## [2026-11-08T18:00:00Z]
+
+- Formally accepted ADR `doc/architecture/adr-trailing-stream-bulk-payload-transfer.md` and updated `doc/architecture/index.md` to establish the generic out-of-line `Payload` serialization architecture: integrated polymorphic non-blocking asynchronous I/O abstractions (`Payload.AsyncReader`, `Payload.AsyncSink`, `Payload.Allocator`, `DefaultAllocator`), iterative completion loop trampolining in `Transmitter` and `Receiver` to eliminate call-stack recursion exhaustion, deferred sink sealing preventing premature channel closure, `DualEndedCircularStorage` buffer compaction on single-buffer stream completion, and aligned negative two's complement sentinel decoding in `Receiver` matching `VLQ.tryToDecodeUnsignedInt`.
+
+## [2026-11-08T16:25:00Z]
+
+- Updated proposed ADR `doc/architecture/adr-trailing-stream-bulk-payload-transfer.md` and `doc/architecture/index.md` to specify Generic Out-of-Line `Payload` Serialization (Model A): a foundational `Payload` trait in `common`, deferred out-of-line payload queueing via `Serializer.Writer.putPayload` and `Deserializer.Reader.readPayload`, concatenated chunk-framed trailing streams following `STREAM_FOLLOWS_SENTINEL`, eager pre-delivery streaming into staging files in `Receiver`, and explicit `SnapshotPayload` lifecycle ownership across `Workspace` replacement and `onInstallSnapshot` rejection.
 
 ## [2026-11-07T22:10:00Z]
 

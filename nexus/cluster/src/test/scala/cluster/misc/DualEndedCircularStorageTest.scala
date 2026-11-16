@@ -2,6 +2,8 @@ package readren.nexus
 package cluster.misc
 
 import munit.FunSuite
+import readren.common.Maybe
+
 import java.nio.ByteBuffer
 
 class DualEndedCircularStorageTest extends FunSuite {
@@ -24,9 +26,7 @@ class DualEndedCircularStorageTest extends FunSuite {
 		val b3 = storage.advanceWriteEnd()
 		assertEquals(storage.bufferCount, 3)
 
-		intercept[DualEndedCircularStorage.StorageCapacityExceededException] {
-			storage.advanceWriteEnd()
-		}
+		assertEquals(storage.advanceWriteEnd(), Maybe.empty)
 		assertEquals(storage.bufferCount, 3)
 	}
 
@@ -40,11 +40,11 @@ class DualEndedCircularStorageTest extends FunSuite {
 		// advancing readEnd moves read pointer to b2
 		assert(storage.advanceReadEnd())
 		assert(!storage.hasPendingBuffersBehind)
-		assert(storage.readEnd eq b2)
+		assert(b2.is(storage.readEnd))
 
 		// advanceWriteEnd now loops to b1 instead of allocating because b1 was consumed
 		val reused = storage.advanceWriteEnd()
-		assert(reused eq b1)
+		assert(reused.is(b1))
 		assertEquals(storage.bufferCount, 2)
 	}
 
@@ -70,7 +70,7 @@ class DualEndedCircularStorageTest extends FunSuite {
 		// Ring must remain fully circular and valid
 		val b1 = storage.writeEnd
 		val b2 = storage.advanceWriteEnd()
-		assert(b1 ne b2)
+		assert(b2.exists(_ ne b1))
 		// Catching up to readEnd: third advance should allocate again up to maxBuffers
 		val b3 = storage.advanceWriteEnd()
 		assertEquals(storage.bufferCount, 3)

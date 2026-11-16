@@ -2,7 +2,6 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.Transmitter.{Context, Report}
-import cluster.misc.DualEndedCircularStorage
 import cluster.serialization.{ProtocolVersion, Serializer}
 
 import java.lang.invoke.VarHandle
@@ -31,17 +30,21 @@ import java.util.concurrent.{ConcurrentLinkedQueue, TimeUnit}
  * @param channel the underlying channel for transmission
  * @param context the transmission context
  * @param buffersCapacity the capacity of transmission buffers
+ * @param maxBuffers the maximum number of buffers allowed in circular storage
+ * @param minBuffersOnIdle the minimum number of buffers retained on idle transitions
+ * @param streamTransferBufferCapacity the capacity of the direct buffer used to transfer streaming chunks
  * @tparam M the type of messages to transmit
  */
 class SequentialTransmitter[M](
 	channel: AsynchronousSocketChannel,
 	val context: Context,
-	buffersCapacity: Int = 8192,
-	maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
-	val minBuffersOnIdle: Int = 2
+	buffersCapacity: Int = Transmitter.DEFAULT_BUFFERS_CAPACITY,
+	maxBuffers: Int = Transmitter.DEFAULT_MAX_BUFFERS,
+	val minBuffersOnIdle: Int = 2,
+	val streamTransferBufferCapacity: Int = Transmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY
 ) {
 
-	private val transmitter = new Transmitter(channel, context, buffersCapacity, maxBuffers)
+	private val transmitter = new Transmitter(channel, context, buffersCapacity, maxBuffers, streamTransferBufferCapacity)
 
 	def pruneTo(targetCount: Int): Int = transmitter.pruneTo(targetCount)
 

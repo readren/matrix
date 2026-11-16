@@ -200,7 +200,7 @@ class SerializationDerivationSuite extends FunSuite {
 		val buffer = ByteBuffer.allocate(bufferCapacity)
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = writerVersion
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Deserializer.Reader {

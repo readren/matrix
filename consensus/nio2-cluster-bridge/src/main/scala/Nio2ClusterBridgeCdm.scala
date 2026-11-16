@@ -4,7 +4,7 @@ package nio2
 import readren.common.Maybe
 import readren.consensus.ConsensusClusterBridgeCdm
 import readren.consensus.protocol.*
-import readren.nexus.cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.service.{ChannelId, ChannelOrigin}
 import readren.sequencer.*
@@ -18,6 +18,7 @@ import scala.collection.mutable
 import scala.compiletime.deferred
 import scala.reflect.ClassTag
 import scala.util.Try
+import scala.util.control.NonFatal
 
 trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 
@@ -144,7 +145,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 			val localAddr = try socketChannel.getLocalAddress catch { case _: Throwable => new InetSocketAddress("127.0.0.1", 0) }
 			val remoteAddr = try Maybe(socketChannel.getRemoteAddress) catch { case _: Throwable => Maybe.empty }
 
-			val transmitterContext = new Transmitter.Context {
+			val transmitterContext = new PipelinedTransmitter.Context {
 				override def myAddress: SocketAddress = localAddr
 				override def oPeerAddress: Maybe[SocketAddress] = remoteAddr
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.ACCEPTED, remoteAddr)
@@ -155,12 +156,13 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.ACCEPTED, remoteAddr)
 			}
 
-			val transmitter = new SequentialTransmitter[ClusterWireMessage](
+			val transmitter = new PipelinedTransmitter[ClusterWireMessage](
 				socketChannel,
 				transmitterContext,
 				buffersCapacity = bridgeConfig.frameCapacity,
 				maxBuffers = bridgeConfig.maxBuffers,
-				minBuffersOnIdle = bridgeConfig.minBuffersOnIdle
+				minBuffersOnIdle = bridgeConfig.minBuffersOnIdle,
+				streamTransferBufferCapacity = bridgeConfig.streamTransferBufferCapacity
 			)
 			val receiver = new Receiver(
 				socketChannel,
@@ -168,7 +170,8 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 				buffersCapacity = bridgeConfig.frameCapacity,
 				maxBuffers = bridgeConfig.maxBuffers,
 				minBuffersOnIdle = bridgeConfig.minBuffersOnIdle,
-				allocationLimits = bridgeConfig.allocationLimits
+				allocationLimits = bridgeConfig.allocationLimits,
+				streamTransferBufferCapacity = bridgeConfig.streamTransferBufferCapacity
 			)
 
 			receiver.receive[ClusterWireMessage](
@@ -222,7 +225,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 			remotePeerId: ParticipantId,
 			socketChannel: AsynchronousSocketChannel,
 			receiver: Receiver,
-			transmitter: SequentialTransmitter[ClusterWireMessage],
+			transmitter: PipelinedTransmitter[ClusterWireMessage],
 			agreedVersion: ProtocolVersion
 		): Unit = {
 			assert(sequencer.isInSequence)
@@ -259,7 +262,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 		private def hatchAcceptedClient(
 			socketChannel: AsynchronousSocketChannel,
 			receiver: Receiver,
-			transmitter: SequentialTransmitter[ClusterWireMessage],
+			transmitter: PipelinedTransmitter[ClusterWireMessage],
 			agreedVersion: ProtocolVersion
 		): Unit = {
 			assert(sequencer.isInSequence)
@@ -297,7 +300,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 						val localAddr = try clientChannel.getLocalAddress catch { case _: Throwable => new InetSocketAddress("127.0.0.1", 0) }
 						val remoteAddr = try Maybe(clientChannel.getRemoteAddress) catch { case _: Throwable => Maybe.empty }
 
-						val transmitterContext = new Transmitter.Context {
+						val transmitterContext = new PipelinedTransmitter.Context {
 							override def myAddress: SocketAddress = localAddr
 							override def oPeerAddress: Maybe[SocketAddress] = remoteAddr
 							override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, remoteAddr)
@@ -308,12 +311,13 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 							override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, remoteAddr)
 						}
 
-						val transmitter = new SequentialTransmitter[ClusterWireMessage](
+						val transmitter = new PipelinedTransmitter[ClusterWireMessage](
 							clientChannel,
 							transmitterContext,
 							buffersCapacity = bridgeConfig.frameCapacity,
 							maxBuffers = bridgeConfig.maxBuffers,
-							minBuffersOnIdle = bridgeConfig.minBuffersOnIdle
+							minBuffersOnIdle = bridgeConfig.minBuffersOnIdle,
+							streamTransferBufferCapacity = bridgeConfig.streamTransferBufferCapacity
 						)
 						val receiver = new Receiver(
 							clientChannel,
@@ -321,7 +325,8 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 							buffersCapacity = bridgeConfig.frameCapacity,
 							maxBuffers = bridgeConfig.maxBuffers,
 							minBuffersOnIdle = bridgeConfig.minBuffersOnIdle,
-							allocationLimits = bridgeConfig.allocationLimits
+							allocationLimits = bridgeConfig.allocationLimits,
+							streamTransferBufferCapacity = bridgeConfig.streamTransferBufferCapacity
 						)
 
 						val handshakeMessage = PeerHandshake(boundParticipantId, bridgeConfig.supportedVersions)
@@ -477,7 +482,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 		private final class PeerConnection(val peerId: ParticipantId, var origin: ChannelOrigin) {
 			var channel: AsynchronousSocketChannel | Null = null
 			var receiver: Receiver | Null = null
-			var transmitter: SequentialTransmitter[ClusterWireMessage] | Null = null
+			var transmitter: PipelinedTransmitter[ClusterWireMessage] | Null = null
 			var agreedVersion: ProtocolVersion = ProtocolVersion.OF_THIS_PROJECT
 			var isConnected: Boolean = false
 			var isConnecting: Boolean = false
@@ -509,7 +514,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 			def attach(
 				newChannel: AsynchronousSocketChannel,
 				newReceiver: Receiver,
-				newTransmitter: SequentialTransmitter[ClusterWireMessage],
+				newTransmitter: PipelinedTransmitter[ClusterWireMessage],
 				newAgreedVersion: ProtocolVersion
 			): Unit = {
 				channel = newChannel
@@ -609,7 +614,9 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 											val cap = delegate.onInstallSnapshot(peerId, inqTerm, snapshot, batch, lCommit, termAtCommit)
 											cap.andThen(
 												res => transmitResponse(InstallSnapshotReply(corrId, res)),
-												err => ()
+												err => {
+													try snapshot.stateMachineSnapshot.close() catch { case NonFatal(_) => () }
+												}
 											)
 
 										case PermitQuiescence(corrId, secIdx) =>
@@ -672,7 +679,7 @@ trait Nio2ClusterBridgeCdm extends ConsensusClusterBridgeCdm { thisSdm =>
 		private final class ClientConnection(
 			val channel: AsynchronousSocketChannel,
 			val receiver: Receiver,
-			val transmitter: SequentialTransmitter[ClusterWireMessage],
+			val transmitter: PipelinedTransmitter[ClusterWireMessage],
 			val agreedVersion: ProtocolVersion
 		) {
 			var isConnected: Boolean = true

@@ -2,7 +2,7 @@ package readren.nexus
 package cluster.service
 
 import cluster.channel.Receiver
-import cluster.channel.Transmitter.{Delivered, NotDelivered}
+import cluster.channel.PipelinedTransmitter.{Delivered, NotDelivered}
 import cluster.serialization.ProtocolVersion
 import cluster.service.ChannelOrigin.ACCEPTED
 import cluster.service.Protocol.CommunicationStatus.HANDSHOOK

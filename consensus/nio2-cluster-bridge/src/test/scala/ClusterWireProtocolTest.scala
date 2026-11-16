@@ -5,7 +5,7 @@ import ClusterWireProtocolTest.*
 import protocol.*
 import readren.common.Maybe
 import readren.consensus.ConsensusWireTypesCdm
-import readren.nexus.cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.serialization.InvariantIterableFactory.given
@@ -43,7 +43,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 	private def createWriterAndReader(buffer: ByteBuffer): (Serializer.Writer, Deserializer.Reader) = {
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Deserializer.Reader {
@@ -79,9 +79,9 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 
 	test("CorrelationId next increments and wraps around signed 16-bit boundaries") {
 		assertEquals(CorrelationId(0.toShort).next.toShort, 1.toShort)
-		assertEquals(CorrelationId(32767.toShort).next.toShort, (-32768).toShort)
-		assertEquals(CorrelationId((-32768).toShort).next.toShort, (-32767).toShort)
-		assertEquals(CorrelationId((-1).toShort).next.toShort, 0.toShort)
+		assertEquals(CorrelationId(32767.toShort).next.toShort, -32768.toShort)
+		assertEquals(CorrelationId(-32768.toShort).next.toShort, -32767.toShort)
+		assertEquals(CorrelationId(-1.toShort).next.toShort, 0.toShort)
 	}
 
 	test("CorrelationId isLapsedRelativeTo correctly evaluates awaiter capacity exhaustion across wrap-around boundaries") {
@@ -186,7 +186,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 	}
 
 	test("InstallSnapshot request round-trip serialization with streaming snapshot payload") {
-		val payload = new BufferSnapshotPayload(ByteBuffer.wrap("state-machine-bytes".getBytes(StandardCharsets.UTF_8)))
+		val payload = new BufferSnapshotByteSource(ByteBuffer.wrap("state-machine-bytes".getBytes(StandardCharsets.UTF_8)))
 		val sec = SoleElectorateChange[String](term(3), "req-snap", term(2), Set("node-1"), Set("node-1", "node-2"))
 		val snapData = SnapshotData[String](
 			lastIncludedRecordIndex = 50L,
@@ -360,9 +360,9 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 		}
 	}
 
-	//// 7. Physical Network Pipeline Tests via SequentialTransmitter & Receiver ////
+	//// 7. Physical Network Pipeline Tests via PipelinedTransmitter & Receiver ////
 
-	test("Round-trip framing through SequentialTransmitter and Receiver over NIO2 TCP socket loopback") {
+	test("Round-trip framing through PipelinedTransmitter and Receiver over NIO2 TCP socket loopback") {
 		val serverChannel = AsynchronousServerSocketChannel.open().bind(new InetSocketAddress("127.0.0.1", 0))
 		val port = serverChannel.getLocalAddress.asInstanceOf[InetSocketAddress].getPort
 
@@ -373,7 +373,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 		connectFuture.get(5, TimeUnit.SECONDS)
 		val serverConnection = acceptFuture.get(5, TimeUnit.SECONDS)
 
-		val transmitterContext = new Transmitter.Context {
+		val transmitterContext = new PipelinedTransmitter.Context {
 			override def myAddress: SocketAddress = clientChannel.getLocalAddress
 			override def oPeerAddress: Maybe[SocketAddress] = Maybe.some(serverConnection.getLocalAddress)
 			override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(clientChannel.getLocalAddress))
@@ -384,7 +384,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 			override def channelId: ChannelId = new ChannelId(ChannelOrigin.ACCEPTED, Maybe.some(serverConnection.getLocalAddress))
 		}
 
-		val transmitter = new SequentialTransmitter[ClusterWireMessage](clientChannel, transmitterContext, buffersCapacity = 8192)
+		val transmitter = new PipelinedTransmitter[ClusterWireMessage](clientChannel, transmitterContext, buffersCapacity = 8192)
 		val receiver = new Receiver(serverConnection, receiverContext, buffersCapacity = 8192)
 
 		def transmitAndReceive(frame: ClusterWireMessage): ClusterWireMessage = {
@@ -394,8 +394,8 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 				case fault: Receiver.Fault => promise.failure(new RuntimeException(s"Receiver fault: $fault"))
 			}
 			transmitter.transmit(frame, ProtocolVersion(1), timeout = 5, timeUnit = TimeUnit.SECONDS) {
-				case Transmitter.Delivered => ()
-				case notDelivered: Transmitter.NotDelivered => promise.failure(new RuntimeException(s"Transmission failure: $notDelivered"))
+				case PipelinedTransmitter.Delivered => ()
+				case notDelivered: PipelinedTransmitter.NotDelivered => promise.failure(new RuntimeException(s"Transmission failure: $notDelivered"))
 			}
 			Await.result(promise.future, 5.seconds)
 		}
@@ -439,6 +439,48 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 			val clientReply = SubmitClientCommandReply(CorrelationId(2.toShort), TestSdm.Processed(6L, "val"))
 			val receivedClientReply = transmitAndReceive(clientReply)
 			assertEquals(receivedClientReply, clientReply)
+
+			// 5. Streaming InstallSnapshot with FilePayload
+			val tempSnapFile = java.nio.file.Files.createTempFile("test-stream-snap-", ".bin")
+			tempSnapFile.toFile.deleteOnExit()
+			val snapBytes = "cluster-wire-protocol-streaming-snapshot-content-123456789".getBytes(StandardCharsets.UTF_8)
+			java.nio.file.Files.write(tempSnapFile, snapBytes)
+			val snapPayload = new readren.common.FileByteSource(tempSnapFile, deleteOnClose = false)
+			val installSnap = InstallSnapshot(
+				correlationId = CorrelationId(3.toShort),
+				inquirerTerm = term(4),
+				snapshot = SnapshotData[String](
+					lastIncludedRecordIndex = 25L,
+					lastIncludedRecordTerm = term(4),
+					latestElectorateChange = SoleElectorateChange[String](term(4), "req-3", term(3), Set("node-source"), Set("node-source", "node-dest")),
+					latestElectorateChangeIndex = 24L,
+					stateMachineSnapshot = snapPayload
+				),
+				batch = IArray.empty[Record],
+				leaderCommit = 25L,
+				termAtLeaderCommit = term(4)
+			)
+			val receivedInstallSnap = transmitAndReceive(installSnap)
+			receivedInstallSnap match {
+				case dec: InstallSnapshot =>
+					assertEquals(dec.correlationId, installSnap.correlationId)
+					assertEquals(dec.inquirerTerm, installSnap.inquirerTerm)
+					assertEquals(dec.snapshot.lastIncludedRecordIndex, 25L)
+					assertEquals(dec.snapshot.stateMachineSnapshot.size, snapBytes.length.toLong)
+					val readCh = dec.snapshot.stateMachineSnapshot.openChannel()
+					try {
+						val dst = ByteBuffer.allocate(snapBytes.length)
+						readCh.read(dst)
+						dst.flip()
+						val readArr = new Array[Byte](dst.remaining())
+						dst.get(readArr)
+						assertEquals(new String(readArr, StandardCharsets.UTF_8), new String(snapBytes, StandardCharsets.UTF_8))
+					} finally {
+						readCh.close()
+						dec.snapshot.stateMachineSnapshot.close()
+					}
+				case other => fail(s"Expected InstallSnapshot but got $other")
+			}
 		} finally {
 			clientChannel.close()
 			serverConnection.close()

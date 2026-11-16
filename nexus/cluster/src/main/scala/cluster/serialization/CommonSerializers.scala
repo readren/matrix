@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.serialization
 
-import readren.common.Maybe
+import readren.common.{Maybe, ByteSource}
 
 import java.nio.charset.StandardCharsets
 import scala.collection.SortedMap
@@ -269,5 +269,18 @@ object CommonSerializers {
 			val tail = dT.deserialize(reader)
 			head *: tail
 		}
+
+	//// ByteSource
+	private val byteSourceSerializer: Serializer[ByteSource] =
+		(message: ByteSource, writer: Serializer.Writer) => writer.putByteSource(message)
+
+	given Serializer[ByteSource] = byteSourceSerializer
+
+	private val byteSourceDeserializer: Deserializer[ByteSource] =
+		(reader: Deserializer.Reader) => reader.readByteSource()
+
+	given Deserializer[ByteSource] = byteSourceDeserializer
+
+	given ValueOrReferenceTest[ByteSource] = ValueOrReferenceTest.whenReference
 
 }

@@ -55,32 +55,33 @@ object VLQ {
 	 * @return The decoded unsigned integer.
 	 */
 	def decodeUnsignedInt(reader: ByteReader): Int = {
-		var value: Int = 0
 		var m = reader.readByte()
-		var displacement = 0
+		var value = m & 0x7f
+		var displacement = 7
 		while m < 0 do {
-			value |= (m & 0x7f) << displacement
 			m = reader.readByte()
+			value |= (m & 0x7f) << displacement
 			displacement += 7
-			if displacement >= 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
+			if displacement > 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
 		}
-		value | (m << displacement)
+		value
 	}
 
 	/** Like [[decodeUnsignedInt]] but returns `-1L` if the provided [[BoundedByteReader]] has not enough bytes. */
 	def tryToDecodeUnsignedInt(reader: BoundedByteReader): Long = {
 		if reader.hasMoreBytes then {
-			var value: Int = 0
 			var m = reader.readByte()
-			var displacement = 0
-			while m < 0 && reader.hasMoreBytes do {
-				value |= (m & 0x7f) << displacement
-				m = reader.readByte()
-				displacement += 7
-				if displacement >= 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
+			var value = m & 0x7fL
+			var displacement = 7
+			while m < 0 do {
+				if reader.hasMoreBytes then {
+					m = reader.readByte()
+					value |= (m & 0x7fL) << displacement
+					displacement += 7
+					if displacement > 7 * INT_MAX_LENGTH then throw new IntegerOverflowException
+				} else return -1L
 			}
-			if m >= 0 then value.toLong | (m << displacement)
-			else -1L
+			value
 		} else -1L
 	}
 

@@ -328,7 +328,7 @@ class RaftPaperExamplesTest extends FunSuite {
 			lastIncludedRecordTerm = 1.asInstanceOf[Term],
 			latestElectorateChange = initConfig,
 			latestElectorateChangeIndex = 1,
-			stateMachineSnapshot = BufferSnapshotPayload(snapshotData)
+			stateMachineSnapshot = BufferSnapshotByteSource(snapshotData)
 		)
 		leaderMem.maybeLatestSnapshot = Maybe(snapshot)
 		leaderMem._logBufferOffset = 6

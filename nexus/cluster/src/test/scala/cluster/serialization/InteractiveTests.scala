@@ -66,7 +66,7 @@ object InteractiveTests {
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
 
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 
 			override def position: Int = buffer.position()
 		}

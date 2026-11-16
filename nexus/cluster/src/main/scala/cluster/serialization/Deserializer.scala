@@ -2,6 +2,7 @@ package readren.nexus
 package cluster.serialization
 
 import cluster.misc.VLQ
+import readren.common.{BufferByteSource, FileByteSource, ByteSource}
 import cluster.serialization.Deserializer.Reader
 
 import java.nio.ByteBuffer
@@ -216,13 +217,48 @@ object Deserializer {
 			array
 		}
 
-		/** Unconditionally deserializes an instance of the specified type from the backing buffer using the provided [[Deserializer]].
-		 *
-		 * @return an instance of `A`; or a [[Problem]] if the deserialization failed.
+		/** Default standalone implementation for deserializing a [[ByteSource]].\
+		 * Reads the unsigned VLQ byte length and consumes inline chunked bytes into a [[BufferByteSource]] or temporary [[FileByteSource]].\
+		 * Transport implementations (such as `Receiver`) override this method to allocate staging sinks and queue them out-of-line.
+		 * @throws NegativeLengthException if the decoded stream length is negative.
+		 * @throws AllocationThresholdExceededException if the declared length exceeds [[allocationLimits.maxByteSourceBytes]].
+		 * @throws LengthMismatchException if the end-of-stream is reached before reading all chunked bytes.
+		 * @throws UnexpectedBufferEnd if all received bytes were consumed and the package was not fully read.
+		 * @throws java.io.IOException if creating or writing the temporary staging file fails in fallback mode. */
+		def readByteSource(): ByteSource = {
+			val size = readUnsignedLongVlq()
+			if size < 0 then throw new Deserializer.NegativeLengthException(position, size, "ByteSource")
+			if size > allocationLimits.maxByteSourceBytes then {
+				throw new Deserializer.AllocationThresholdExceededException(position, size, allocationLimits.maxByteSourceBytes, "ByteSource")
+			}
+			if size <= 2 * 1024 * 1024 then {
+				val length = validateArrayLength(size.toInt, 1, "ByteSource")
+				val bytes = readBytes(length)
+				BufferByteSource(bytes)
+			} else {
+				val tempFile = java.nio.file.Files.createTempFile("cluster-bytesource-", ".bin")
+				tempFile.toFile.deleteOnExit()
+				val channel = java.nio.channels.FileChannel.open(tempFile, java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.CREATE)
+				try {
+					var remaining = size
+					val buffer = new Array[Byte](math.min(remaining, 64 * 1024).toInt)
+					while remaining > 0 do {
+						val chunk = math.min(remaining, buffer.length).toInt
+						readBytes(buffer, 0, chunk)
+						channel.write(ByteBuffer.wrap(buffer, 0, chunk))
+						remaining -= chunk
+					}
+				} finally {
+					channel.close()
+				}
+				new FileByteSource(tempFile, deleteOnClose = true)
+			}
+		}
+
+		/** Deserializes a complete object from the backing buffer using the provided [[Deserializer]].
 		 * @throws LengthMismatchException if the end-of-stream is reached.
 		 * @throws UnexpectedBufferEnd if all the received bytes were consumed and the package was not fully read.
-		 * @throws FrameMisalignmentException if a frame boundary is touched.
-		 * */
+		 * @throws FrameMisalignmentException if a frame boundary is touched. */
 		inline def readFull[A](using deserializer: Deserializer[A]): A = {
 			deserializer.deserialize(this)
 		}

@@ -97,7 +97,7 @@ class VLQTest extends ScalaCheckSuite {
 			buffer.clear()
 			encodeUnsignedInt(expected, buffer)
 			buffer.flip()
-			expected == tryToDecodeUnsignedInt(buffer)
+			expected == tryToDecodeUnsignedInt(buffer).toInt
 		}
 
 		List[Int](0, 0x7f, 0x80, Integer.MIN_VALUE, Integer.MAX_VALUE).forall(check)
@@ -159,7 +159,7 @@ class VLQTest extends ScalaCheckSuite {
 			val length = buffer.position - p0
 			val bytes = new Array[Byte](length)
 			buffer.get(p0, bytes)
-			println(f"${length}%2d: ${value}%21s, ${bytes.map(byte => (f"${byte}%02X").takeRight(2)).mkString("_")}")
+			println(f"$length%2d: $value%21s, ${bytes.map(byte => f"$byte%02X".takeRight(2)).mkString("_")}")
 		}
 
 		buffer.clear()
@@ -227,7 +227,7 @@ class VLQTest extends ScalaCheckSuite {
 			val length = buffer.position - p0
 			val bytes = new Array[Byte](length)
 			buffer.get(p0, bytes)
-			println(f"${length}%2d: ${value}% 21d, ${bytes.map(byte => (f"${byte}%02X").takeRight(2)).mkString("_")}")
+			println(f"$length%2d: $value% 21d, ${bytes.map(byte => f"$byte%02X".takeRight(2)).mkString("_")}")
 		}
 	}
 

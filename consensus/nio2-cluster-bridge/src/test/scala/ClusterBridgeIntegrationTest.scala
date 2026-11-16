@@ -208,6 +208,9 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 
 			override def resetLog(snapshot: SnapshotData[ParticipantId], tailRecords: IArray[Record]): Unit = {
 				sequencer.checkWithin()
+				maybeLatestSnapshot.foreach { old =>
+					if old.stateMachineSnapshot ne snapshot.stateMachineSnapshot then old.stateMachineSnapshot.close()
+				}
 				maybeLatestSnapshot = Maybe(snapshot)
 				val newOffset = snapshot.lastIncludedRecordIndex + 1
 				_logBufferOffset = newOffset
@@ -224,11 +227,16 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 					else logBuffer.dropInPlace(dropCount)
 					_logBufferOffset = newOffset
 				}
+				maybeLatestSnapshot.foreach { old =>
+					if old.stateMachineSnapshot ne snapshot.stateMachineSnapshot then old.stateMachineSnapshot.close()
+				}
 				maybeLatestSnapshot = Maybe(snapshot)
 			}
 
 			override def release(): sequencer.Capture[Unit] = {
 				sequencer.checkWithin()
+				maybeLatestSnapshot.foreach(_.stateMachineSnapshot.close())
+				maybeLatestSnapshot = Maybe.empty
 				sequencer.Capture_unit
 			}
 		}
@@ -253,7 +261,7 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 
 			override def applyClientCommand(index: RecordIndex, command: ClientCommand): sequencer.Capture[StateMachineResponse] = {
 				sequencer.checkWithin()
-				appliedCommands += ((index, command))
+				appliedCommands.addOne((index, command))
 				if index > highestAppliedIndex then highestAppliedIndex = index
 				sequencer.Keeper(s"ack-$command")
 			}
@@ -264,7 +272,7 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 				else sequencer.Keeper(0L)
 			}
 
-			override def takeSnapshot(): sequencer.Capture[SnapshotPayload] = {
+			override def takeSnapshot(): sequencer.Capture[SnapshotByteSource] = {
 				sequencer.checkWithin()
 				val baos = new java.io.ByteArrayOutputStream()
 				val oos = new java.io.ObjectOutputStream(baos)
@@ -280,13 +288,13 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 					val tempFile = Files.createTempFile("state-machine-snapshot-", ".bin")
 					tempFile.toFile.deleteOnExit()
 					Files.write(tempFile, bytes)
-					sequencer.Keeper(new FileSnapshotPayload(tempFile, deleteOnClose = true))
+					sequencer.Keeper(new FileSnapshotByteSource(tempFile, deleteOnClose = true))
 				} else {
-					sequencer.Keeper(new BufferSnapshotPayload(ByteBuffer.wrap(bytes)))
+					sequencer.Keeper(new BufferSnapshotByteSource(ByteBuffer.wrap(bytes)))
 				}
 			}
 
-			override def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit] = {
+			override def installSnapshot(data: SnapshotByteSource): sequencer.Capture[Unit] = {
 				sequencer.checkWithin()
 				val channel = data.openChannel()
 				val in = new java.io.ObjectInputStream(Channels.newInputStream(channel))
@@ -297,7 +305,7 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 				while i < count do {
 					val idx = in.readLong()
 					val cmd = in.readUTF()
-					appliedCommands += ((idx, cmd))
+					appliedCommands.addOne((idx, cmd))
 					i += 1
 				}
 				in.close()

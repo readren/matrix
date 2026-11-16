@@ -25,7 +25,7 @@ val deserializer = Deserializer.derive[Thing]
 val buffer = ByteBuffer.allocate(20)
 val writer = new Serializer.Writer {
 	override val governingVersion: ProtocolVersion = ProtocolVersion(1)
-	override def getBuffer(minimumRemaining: Int) = buffer
+	protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 	override def position = buffer.position()
 }
 val reader = new Deserializer.Reader {

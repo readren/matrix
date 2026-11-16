@@ -71,5 +71,5 @@ final case class SnapshotData[P <: AnyRef](
 	lastIncludedRecordTerm: Term,
 	latestElectorateChange: ElectorateChange[P],
 	latestElectorateChangeIndex: RecordIndex,
-	stateMachineSnapshot: SnapshotPayload
+	stateMachineSnapshot: SnapshotByteSource
 )

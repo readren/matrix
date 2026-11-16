@@ -3,8 +3,7 @@ package nio2
 
 import munit.FunSuite
 import readren.common.Maybe
-import readren.consensus.protocol.*
-import readren.nexus.cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.service.{ChannelId, ChannelOrigin}
@@ -14,9 +13,9 @@ import readren.sequencer.providers.CooperativeThreadDrivenSchedulerDp
 import java.net.{InetSocketAddress, SocketAddress}
 import java.nio.channels.AsynchronousSocketChannel
 import java.util.Comparator
-import java.util.concurrent.{CountDownLatch, TimeUnit}
-import scala.concurrent.{Await, Promise}
+import java.util.concurrent.TimeUnit
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, Promise}
 import scala.reflect.ClassTag
 
 class ClusterBridgeHandshakeTest extends FunSuite {
@@ -55,7 +54,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 		try {
 			clientChannel.connect(serverAddress).get(5, TimeUnit.SECONDS)
 
-			val transmitterContext = new Transmitter.Context {
+			val transmitterContext = new PipelinedTransmitter.Context {
 				override def myAddress: SocketAddress = clientChannel.getLocalAddress
 				override def oPeerAddress: Maybe[SocketAddress] = Maybe.some(serverAddress)
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
@@ -66,7 +65,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
 			}
 
-			val transmitter = new SequentialTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
+			val transmitter = new PipelinedTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
 			val receiver = new Receiver(clientChannel, receiverContext)
 
 			val promise = Promise[sdm.wireProtocol.ClusterWireMessage]()
@@ -102,7 +101,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 		try {
 			clientChannel.connect(serverAddress).get(5, TimeUnit.SECONDS)
 
-			val transmitterContext = new Transmitter.Context {
+			val transmitterContext = new PipelinedTransmitter.Context {
 				override def myAddress: SocketAddress = clientChannel.getLocalAddress
 				override def oPeerAddress: Maybe[SocketAddress] = Maybe.some(serverAddress)
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
@@ -113,7 +112,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
 			}
 
-			val transmitter = new SequentialTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
+			val transmitter = new PipelinedTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
 			val receiver = new Receiver(clientChannel, receiverContext)
 
 			val promise = Promise[sdm.wireProtocol.ClusterWireMessage]()
@@ -167,7 +166,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 		try {
 			clientChannel.connect(serverAddress).get(5, TimeUnit.SECONDS)
 
-			val transmitterContext = new Transmitter.Context {
+			val transmitterContext = new PipelinedTransmitter.Context {
 				override def myAddress: SocketAddress = clientChannel.getLocalAddress
 				override def oPeerAddress: Maybe[SocketAddress] = Maybe.some(serverAddress)
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
@@ -178,7 +177,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
 			}
 
-			val transmitter = new SequentialTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
+			val transmitter = new PipelinedTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
 			val receiver = new Receiver(clientChannel, receiverContext)
 
 			val promise = Promise[sdm.wireProtocol.ClusterWireMessage]()
@@ -218,7 +217,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 		try {
 			clientChannel.connect(serverAddress).get(5, TimeUnit.SECONDS)
 
-			val transmitterContext = new Transmitter.Context {
+			val transmitterContext = new PipelinedTransmitter.Context {
 				override def myAddress: SocketAddress = clientChannel.getLocalAddress
 				override def oPeerAddress: Maybe[SocketAddress] = Maybe.some(serverAddress)
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
@@ -229,7 +228,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(serverAddress))
 			}
 
-			val transmitter = new SequentialTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
+			val transmitter = new PipelinedTransmitter[sdm.wireProtocol.ClusterWireMessage](clientChannel, transmitterContext)
 			val receiver = new Receiver(clientChannel, receiverContext)
 
 			val promise = Promise[sdm.wireProtocol.ClusterWireMessage]()

@@ -48,7 +48,7 @@ class ReferenceDeduplicationSuite extends FunSuite {
 		val buffer = ByteBuffer.allocate(bufferCapacity)
 		val writer = new Writer {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Reader {
@@ -232,7 +232,7 @@ class ReferenceDeduplicationSuite extends FunSuite {
 		val buffer = ByteBuffer.allocate(4096)
 		val writer = new Writer(sharedMap) {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Reader(sharedBuf) {

@@ -33,7 +33,7 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 	private def createWriterAndReader(buffer: ByteBuffer): (Serializer.Writer, Deserializer.Reader) = {
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = ProtocolVersion(1)
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Deserializer.Reader {
@@ -208,12 +208,12 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 		}
 	}
 
-	//// 6. SnapshotPayload & SnapshotData ////
+	//// 6. SnapshotByteSource & SnapshotData ////
 
-	test("SnapshotPayload round-trip preserves bytes and size") {
+	test("SnapshotByteSource round-trip preserves bytes and size") {
 		val rawBytes = "Snapshot serialized state machine content bytes 123456789".getBytes(StandardCharsets.UTF_8)
-		val payload = new BufferSnapshotPayload(ByteBuffer.wrap(rawBytes))
-		val decoded = roundTrip[SnapshotPayload](payload)
+		val payload = new BufferSnapshotByteSource(ByteBuffer.wrap(rawBytes))
+		val decoded = roundTrip[SnapshotByteSource](payload)
 		assertEquals(decoded.size, payload.size)
 
 		val ch = decoded.openChannel()
@@ -230,14 +230,14 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 		}
 	}
 
-	test("FileSnapshotPayload round-trip preserves file content and zero-copy transfer") {
+	test("FileSnapshotByteSource round-trip preserves file content and zero-copy transfer") {
 		val tempFile = java.nio.file.Files.createTempFile("test-snap-", ".bin")
 		tempFile.toFile.deleteOnExit()
-		val content = "FileSnapshotPayload on-disk streaming verification".getBytes(StandardCharsets.UTF_8)
+		val content = "FileSnapshotByteSource on-disk streaming verification".getBytes(StandardCharsets.UTF_8)
 		java.nio.file.Files.write(tempFile, content)
 
-		val payload = new FileSnapshotPayload(tempFile, deleteOnClose = false)
-		val decoded = roundTrip[SnapshotPayload](payload)
+		val payload = new FileSnapshotByteSource(tempFile, deleteOnClose = false)
+		val decoded = roundTrip[SnapshotByteSource](payload)
 		assertEquals(decoded.size, content.length.toLong)
 
 		val ch = decoded.openChannel()
@@ -264,7 +264,7 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 			oldParticipants = Set("n1"),
 			newParticipants = Set("n1", "n2")
 		)
-		val snapPayload = new BufferSnapshotPayload(ByteBuffer.wrap("snap-content".getBytes(StandardCharsets.UTF_8)))
+		val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap("snap-content".getBytes(StandardCharsets.UTF_8)))
 		val snapshotData = SnapshotData[String](
 			lastIncludedRecordIndex = 200L,
 			lastIncludedRecordTerm = term(5),

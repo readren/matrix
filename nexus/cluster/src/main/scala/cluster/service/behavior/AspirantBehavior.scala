@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.service.behavior
 
-import cluster.channel.Transmitter.{Delivered, NotDelivered}
+import cluster.channel.PipelinedTransmitter.{Delivered, NotDelivered}
 import cluster.misc.CommonExtensions.*
 import cluster.service.*
 import cluster.service.ContactCard.*

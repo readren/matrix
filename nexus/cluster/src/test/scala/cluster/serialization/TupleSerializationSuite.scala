@@ -20,7 +20,7 @@ class TupleSerializationSuite extends FunSuite {
 		val buffer = ByteBuffer.allocate(bufferCapacity)
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = DEFAULT_VERSION
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Deserializer.Reader {
@@ -108,7 +108,7 @@ class TupleSerializationSuite extends FunSuite {
 		val buffer = ByteBuffer.allocate(64)
 		val writer = new Serializer.Writer {
 			override val governingVersion: ProtocolVersion = DEFAULT_VERSION
-			override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
+			protected override def getBuffer(minimumRemaining: Int): ByteBuffer = buffer
 			override def position: Int = buffer.position()
 		}
 		val reader = new Deserializer.Reader {

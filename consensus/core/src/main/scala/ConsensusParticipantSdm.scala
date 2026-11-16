@@ -96,12 +96,12 @@ trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusCluste
 		 * The implementation should support calls to [[StateMachine.applyClientCommand]] while this method is running, keeping the result invariant.\
 		 * This method is called when the log exceeds the compaction threshold and all entries up to the highest applied command index have been applied.\
 		 * @return a [[sequencer.Capture]] that yields the serialized state machine state. */
-		def takeSnapshot(): sequencer.Capture[SnapshotPayload]
+		def takeSnapshot(): sequencer.Capture[SnapshotByteSource]
 
 		/** Installs a snapshot received from the leader, replacing the current state machine state.\
 		 * @param data the serialized state machine state.
 		 * @return a [[sequencer.Capture]] that completes when the snapshot has been installed. */
-		def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit]
+		def installSnapshot(data: SnapshotByteSource): sequencer.Capture[Unit]
 	}
 
 	//// NOTIFICATIONS
@@ -788,7 +788,12 @@ trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusCluste
 					primaryState1 <- primaryStateFence.advanceIfWith(updater)
 					response <- {
 						if currentRole ne thisStatefulRole then currentRole.onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
-						else handleAppendOutcome(primaryState1, inquirerId, inquirerTerm, Maybe(snapshot), snapshot.lastIncludedRecordIndex, snapshot.lastIncludedRecordTerm, batch, leaderCommit, termAtLeaderCommit, updater)
+						else {
+							// Release the StateMachine snapshot if it won't be used.
+							if !updater.isSnapshotUpdated && !updater.haveToWaitCommandApplier then snapshot.stateMachineSnapshot.close()
+							// Update the derived state, apply committed commands, and yield the response to the inquirer.
+							handleAppendOutcome(primaryState1, inquirerId, inquirerTerm, Maybe(snapshot), snapshot.lastIncludedRecordIndex, snapshot.lastIncludedRecordTerm, batch, leaderCommit, termAtLeaderCommit, updater)
+						}
 					}
 				} yield response
 			}
@@ -1383,6 +1388,7 @@ trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusCluste
 			}
 
 			override def onInstallSnapshot(inquirerId: ParticipantId, inquirerTerm: Term, snapshot: SnapshotData[ParticipantId], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term)(using Trace.Context): sequencer.Capture[AppendResult] = {
+				snapshot.stateMachineSnapshot.close()
 				sequencer.Keeper(AppendResult_Rejected(PRE_INIT, Long.MaxValue, ordinal))
 			}
 
@@ -1497,6 +1503,7 @@ trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusCluste
 					become(Starting).onInstallSnapshot(inquirerId, inquirerTerm, snapshot, batch, leaderCommit, termAtLeaderCommit)
 				} else {
 					// If not, return a rejection.
+					snapshot.stateMachineSnapshot.close()
 					sequencer.Keeper(AppendResult_Rejected(finalTerm, excludingElectorateIndex + 1, ordinal))
 				}
 			}
@@ -2646,7 +2653,7 @@ trait ConsensusParticipantSdm extends ConsensusWireTypesCdm with ConsensusCluste
 			 * @note Out-of-order responses (where `appendSerial < lastReceivedAppendSerial`) are intentionally processed rather than dropped. They carry valid historical index data, and their potential to cause spurious backtracking is naturally neutralized by the monotonic watermarks (`highestRecordIndexKnownToBeAppended`). However, non-monotonic state like `respondedAsRetiring` must be explicitly guarded by `appendSerial` to prevent stale responses from overwriting the latest known state. \
 			 * @param learnerId the identifier of the peer or retiring participant.
 			 * @param learnerProgress the [[LearnerProgress]] instance for the participant.
-			 * @param appendResult the response from the peer about the appending.
+			 * @param maybeAppendResult the response from the peer about the appending.
 			 * @param appendSerial the serial number of the RPC request.
 			 * @param appendRequestTerm the term passed to [[ClusterBridge.appendRecords]] as `inquirerTerm` parameter.
 			 * @param indexAfterTopRecordSent index of the record after the one at the top of the records passed to `appendRecords`.

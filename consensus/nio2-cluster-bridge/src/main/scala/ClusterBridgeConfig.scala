@@ -1,6 +1,7 @@
 package readren.consensus
 package nio2
 
+import readren.nexus.cluster.channel.PipelinedTransmitter
 import readren.nexus.cluster.misc.DualEndedCircularStorage
 import readren.nexus.cluster.serialization.{AllocationLimits, ProtocolVersion}
 import readren.sequencer.MilliDuration
@@ -9,6 +10,7 @@ import readren.sequencer.MilliDuration
  * @param frameCapacity byte capacity of each direct buffer allocated by [[DualEndedCircularStorage]].
  * @param maxBuffers maximum number of circular direct buffers retained per socket channel.
  * @param minBuffersOnIdle minimum number of direct buffers preserved when the channel is idle.
+ * @param streamTransferBufferCapacity byte capacity of the direct streaming transfer buffer.
  * @param allocationLimits limits enforced on dynamic memory allocations during serialization.
  * @param supportedVersions set of protocol versions supported by this participant, exchanged during handshakes to negotiate the highest mutually supported version.
  * @param connectTimeout maximum duration to await asynchronous peer TCP channel establishment.
@@ -24,8 +26,9 @@ import readren.sequencer.MilliDuration
  * @param replicationLoopRetryDelay delay before retrying failed replication loops on active leaders.*/
 final case class ClusterBridgeConfig(
 	frameCapacity: Int = 8192,
-	maxBuffers: Int = DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
+	maxBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_BUFFERS, // TODO discriminate buffer count between transmission and reception
 	minBuffersOnIdle: Int = 2,
+	streamTransferBufferCapacity: Int = PipelinedTransmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
 	allocationLimits: AllocationLimits = AllocationLimits.Default,
 	supportedVersions: Set[ProtocolVersion] = Set(ProtocolVersion.OF_THIS_PROJECT),
 	connectTimeout: MilliDuration = 5000L,

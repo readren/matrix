@@ -8,9 +8,9 @@ import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.serialization.InvariantIterableFactory.given
 import readren.nexus.cluster.serialization.ValueOrReferenceTest.given
 
-import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
-import java.nio.file.{Files, StandardOpenOption}
+
+
+
 import scala.collection.immutable.ListSet
 
 trait ConsensusProtocolSerializers {
@@ -31,56 +31,6 @@ trait ConsensusProtocolSerializers {
 
 	given commandAttemptFlagSerializer: Serializer[CommandAttemptFlag] = (flag: CommandAttemptFlag, writer: Serializer.Writer) => writer.putByte(flag.asInstanceOf[Byte])
 	given commandAttemptFlagDeserializer: Deserializer[CommandAttemptFlag] = (reader: Deserializer.Reader) => reader.readByte().asInstanceOf[CommandAttemptFlag]
-
-	//// SnapshotPayload Codec ////
-
-	given snapshotPayloadSerializer: Serializer[SnapshotPayload] = (payload: SnapshotPayload, writer: Serializer.Writer) => {
-		val size = payload.size
-		writer.putLong(size)
-		val channel = payload.openChannel()
-		try {
-			val buffer = ByteBuffer.allocate(8192)
-			var remaining = size
-			while remaining > 0 do {
-				buffer.clear()
-				val toRead = math.min(buffer.capacity().toLong, remaining).toInt
-				buffer.limit(toRead)
-				val readBytes = channel.read(buffer)
-				if readBytes < 0 then throw new java.io.EOFException(s"Premature end of channel for SnapshotPayload: expected $remaining more bytes")
-				buffer.flip()
-				writer.putBuffer(buffer)
-				remaining -= readBytes
-			}
-		} finally {
-			channel.close()
-		}
-	}
-
-	given snapshotPayloadDeserializer: Deserializer[SnapshotPayload] = (reader: Deserializer.Reader) => {
-		val size = reader.readLong()
-		if size < 0 then throw new Deserializer.NegativeLengthException(reader.position, size, "SnapshotPayload")
-		if size <= 2 * 1024 * 1024 then {
-			val bytes = reader.readBytes(size.toInt)
-			new BufferSnapshotPayload(ByteBuffer.wrap(bytes))
-		} else {
-			val tempFile = Files.createTempFile("consensus-snapshot-", ".bin")
-			tempFile.toFile.deleteOnExit()
-			val channel = FileChannel.open(tempFile, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
-			try {
-				var remaining = size
-				val buffer = new Array[Byte](math.min(remaining, 64 * 1024).toInt)
-				while remaining > 0 do {
-					val chunk = math.min(remaining, buffer.length).toInt
-					reader.readBytes(buffer, 0, chunk)
-					channel.write(ByteBuffer.wrap(buffer, 0, chunk))
-					remaining -= chunk
-				}
-			} finally {
-				channel.close()
-			}
-			new FileSnapshotPayload(tempFile, deleteOnClose = true)
-		}
-	}
 
 	//// Protocol Codecs Derived via Tasty Macro Derivation ////
 

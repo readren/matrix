@@ -3,7 +3,7 @@ type: "How-To"
 title: "Cluster Binary Serialization Developer Guide"
 description: "Practical guide and mental model for cluster binary serializer and deserializer derivation, illustrating synthesized code across type structures, nesting modes, and discrimination criteria."
 tags: ["user-guide", "nexus", "serialization", "cluster"]
-timestamp: "2026-11-02T15:05:00Z"
+timestamp: "2026-11-13T16:34:00Z"
 ---
 
 # Cluster Binary Serialization Developer Guide
@@ -393,3 +393,36 @@ given Deserializer[Thing] = Deserializer.derive[Thing](FLAT)
 ```
 
 In this configuration, serializing `Rare("sample")` emits the single discriminator `10` followed by the string payload. Serializing `Wheel(18)` emits the outer discriminator `20` (written by `Thing`'s serializer) followed immediately by the inner discriminator `1` (written by `CarPart`'s tree serializer) and the diameter integer `18`. Deserialization follows the exact reverse path, dispatching on `20` to invoke `Deserializer[CarPart]`.
+
+## 8. Generic Out-of-Line ByteSource Streaming
+
+The serialization framework supports arbitrary-sized binary streams through the foundational `readren.common.ByteSource` abstraction without altering synchronous `Serializer` or `Deserializer` signatures.
+
+### Derivation for Messages Containing ByteSources
+
+When a product type includes a field typed as a subtype of `readren.common.ByteSource`, macro derivation and `CommonSerializers` route the byte source out-of-line:
+
+```scala
+case class SnapshotPackage(term: Int, index: Long, payload: ByteSource)
+
+given Serializer[SnapshotPackage] = Serializer.derive[SnapshotPackage]
+given Deserializer[SnapshotPackage] = Deserializer.derive[SnapshotPackage]
+```
+
+- **Serialization Path:** When `CommonSerializers.derivedSerializer` processes a `ByteSource` field, it does not write raw byte content into the active transport buffer. Instead, it invokes `writer.putByteSource(payload)`, enqueueing the byte source instance onto the writer's deferred byte source queue (`pendingByteSources`).
+- **Deserialization Path:** When `CommonSerializers.derivedDeserializer` reads a `ByteSource` field, it invokes `reader.readByteSource()`, which dequeues a pre-delivered, fully-staged `ByteSource` instance from the reader's staging queue (`pendingByteSinks`).
+
+### Wire Framing & Trailing Stream Architecture
+
+The transport layer (`PipelinedTransmitter` or legacy `Transmitter`, paired with `Receiver`) manages the physical transfer of queued byte sources transparently:
+
+1. **Control Package Header:** The transmitter (`PipelinedTransmitter` in its serialization stage, or legacy `Transmitter`) serializes the control package in-line across `DualEndedCircularStorage` buffers. If `pendingByteSources` contains one or more entries, the package terminates with the reserved wire sentinel `STREAM_FOLLOWS_SENTINEL` (`0xffff_fffdL`).
+2. **Chunked Trailing Stream:** Immediately following the control package, the transmitter flushes each queued byte source in FIFO order through non-blocking `ByteSource.AsyncReader` instances into a reusable direct transfer buffer (64 KiB by default). Byte sources are framed on the wire as length-prefixed chunks (`VLQ32(n)` followed by `n` raw bytes), terminating with `0x00` on clean completion or `CORRUPTED_PACKAGE_SENTINEL` (`0xffff_fffeL`) on in-band transmission aborts.
+3. **Eager Pre-Delivery Reception:** Upon reading `STREAM_FOLLOWS_SENTINEL`, `Receiver` deserializes the control package to determine the number and sizes of incoming byte sources, allocating staging sinks (`ByteSink`) via `ByteSink.Allocator`. It then streams all incoming trailing chunks directly into the staging sinks prior to delivering the message to the application callback.
+
+### Staging Configuration (`ByteSink.Allocator`)
+
+`Receiver` configures byte source staging via `ByteSink.Allocator` (with `DefaultAllocator` provided as the baseline implementation):
+
+- **Small Streams ($\le 64$ KiB):** Staged in reusable direct memory buffers (`BufferByteSource`) with zero disk I/O.
+- **Large Streams ($> 64$ KiB):** Staged in temporary disk files (`FileByteSource`) via asynchronous NIO channels, ensuring direct memory consumption in `DualEndedCircularStorage` remains strictly $O(1)$ regardless of stream size.

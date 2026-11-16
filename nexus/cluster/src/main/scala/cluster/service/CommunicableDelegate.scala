@@ -1,8 +1,8 @@
 package readren.nexus
 package cluster.service
 
-import cluster.channel.Transmitter.{Delivered, NotDelivered}
-import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import cluster.channel.PipelinedTransmitter.{Delivered, NotDelivered}
+import cluster.channel.{PipelinedTransmitter, Receiver}
 import cluster.serialization.ProtocolVersion
 import cluster.service.ParticipantService.DelegateConfig
 import cluster.service.Protocol.*
@@ -29,7 +29,7 @@ class CommunicableDelegate(
 ) extends ParticipantDelegate, BehaviorsHelper { thisCommunicableDelegate =>
 	val config: DelegateConfig = owner.config.participantDelegatesConfig
 
-	private val transmitterToPeer: SequentialTransmitter[Protocol] = owner.buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId)
+	private val transmitterToPeer: PipelinedTransmitter[Protocol] = owner.buildTransmitterFor(channel, Maybe.some(peerContactAddress), channelId)
 
 	private var agreedVersion: ProtocolVersion = ProtocolVersion.NOT_SPECIFIED
 
@@ -196,23 +196,25 @@ class CommunicableDelegate(
 		transmitToPeerOrRestartChannel(ILostCommunicationWith(otherParticipant))
 	}
 
-	private[service] def reportTransmissionFailure(failure: Transmitter.NotDelivered): Unit = {
+	private[service] def reportTransmissionFailure(failure: PipelinedTransmitter.NotDelivered): Unit = {
 		failure match {
-			case transmissionFailure: Transmitter.TransmissionFailure =>
+			case transmissionFailure: PipelinedTransmitter.TransmissionFailure =>
 				scribe.error(s"${owner.myAddress}: I failed to transmit the message `${transmissionFailure.rootMessage}` to `$peerContactAddress` through channel $channelId.", transmissionFailure.cause)
-			case serializationFailure: Transmitter.SerializationProblem =>
-				scribe.error(s"${owner.myAddress}: I failed to serialize the message `${serializationFailure.rootMessage}` (at position ${serializationFailure.problem.position}) for `$peerContactAddress` ${if serializationFailure.aFragmentWasTransmitted then "after" else "before"} the transmission started, through channel $channelId.", serializationFailure.problem)
+			case serializationFailure: PipelinedTransmitter.SerializationProblem =>
+				scribe.error(s"${owner.myAddress}: I failed to serialize the message `${serializationFailure.rootMessage}` (at position ${serializationFailure.problem.position}) for `$peerContactAddress` before transmission started, through channel $channelId.", serializationFailure.problem)
+			case byteSourceProblem: PipelinedTransmitter.ByteSourceProblem =>
+				scribe.error(s"${owner.myAddress}: I failed to read out-of-line byte source for message `${byteSourceProblem.rootMessage}` to `$peerContactAddress` through channel $channelId.", byteSourceProblem.cause)
 		}
 	}
 
 	/** Reports the transmission failure and then calls the specified consumer.
 	 * @note The consumer is called within a [[sequencer.run]] block but not within a [[exposingChangesDo]] block.
 	 */
-	private[service] def ifFailureReportItAndThen(consumer: Transmitter.NotDelivered => Unit)(report: Transmitter.Report): Unit = {
+	private[service] def ifFailureReportItAndThen(consumer: PipelinedTransmitter.NotDelivered => Unit)(report: PipelinedTransmitter.Report): Unit = {
 		report match {
-			case Transmitter.Delivered => // do nothing
+			case PipelinedTransmitter.Delivered => // do nothing
 
-			case failure: Transmitter.NotDelivered =>
+			case failure: PipelinedTransmitter.NotDelivered =>
 				reportTransmissionFailure(failure)
 				sequencer.run(consumer(failure))
 		}
@@ -302,8 +304,8 @@ class CommunicableDelegate(
 		transmitToPeer(message)(ifFailureReportItAndThen(restartChannel))
 	}
 
-	private[service] def transmitToPeer(message: Protocol)(onTransmissionComplete: Transmitter.Report => Unit): Unit = {
-		transmitterToPeer.transmit(message, agreedVersion, config.behindTransmissionEnabled, config.transmitterTimeout, config.timeUnit)(onTransmissionComplete)
+	private[service] def transmitToPeer(message: Protocol)(onTransmissionComplete: PipelinedTransmitter.Report => Unit): Unit = {
+		transmitterToPeer.transmit(message, agreedVersion, config.transmitterTimeout, config.timeUnit)(onTransmissionComplete)
 		scribe.trace(s"${owner.myAddress}: The message `$message` was queued for transmission to `$peerContactAddress` through channel $channelId.")
 	}
 
@@ -332,7 +334,7 @@ class CommunicableDelegate(
 		if owner.removeDelegate(this, true) then completeChannelClosing()
 	}
 
-	private[service] def restartChannel(notDeliveredCause: Transmitter.NotDelivered): Unit =
+	private[service] def restartChannel(notDeliveredCause: PipelinedTransmitter.NotDelivered): Unit =
 		restartChannel(s"A transmission failed with $notDeliveredCause.")
 
 	private[service] def restartChannel(motive: String): Unit = {

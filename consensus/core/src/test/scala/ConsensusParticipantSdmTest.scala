@@ -1,7 +1,7 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
-import env.BufferSnapshotPayload
+import env.BufferSnapshotByteSource
 import protocol.*
 
 import munit.ScalaCheckEffectSuite
@@ -825,7 +825,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				}
 			}
 
-			override def takeSnapshot(): sequencer.Capture[SnapshotPayload] = {
+			override def takeSnapshot(): sequencer.Capture[SnapshotByteSource] = {
 				sequencer.checkWithin()
 				// Serialize the applied commands map as a simple byte array
 				val bytes = java.io.ByteArrayOutputStream()
@@ -833,10 +833,10 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				out.writeInt(highestAppliedCommandSerial)
 				out.writeLong(highestAppliedCommandIndex)
 				out.flush()
-				sequencer.Keeper(BufferSnapshotPayload(bytes.toByteArray))
+				sequencer.Keeper(BufferSnapshotByteSource(bytes.toByteArray))
 			}
 
-			override def installSnapshot(data: SnapshotPayload): sequencer.Capture[Unit] = {
+			override def installSnapshot(data: SnapshotByteSource): sequencer.Capture[Unit] = {
 				sequencer.checkWithin()
 				val channel = data.openChannel()
 				val in = java.io.ObjectInputStream(java.nio.channels.Channels.newInputStream(channel))
@@ -1065,6 +1065,9 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 
 			override def resetLog(snapshot: SnapshotData[ParticipantId], tailRecords: IArray[Record]): Unit = {
 				sequencer.checkWithin()
+				maybeLatestSnapshot.foreach { old =>
+					if old.stateMachineSnapshot ne snapshot.stateMachineSnapshot then old.stateMachineSnapshot.close()
+				}
 				maybeLatestSnapshot = Maybe(snapshot)
 				val newOffset = snapshot.lastIncludedRecordIndex + 1
 				_logBufferOffset = newOffset
@@ -1081,11 +1084,16 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 					else logBuffer.dropInPlace(dropCount)
 					_logBufferOffset = newOffset
 				}
+				maybeLatestSnapshot.foreach { old =>
+					if old.stateMachineSnapshot ne snapshot.stateMachineSnapshot then old.stateMachineSnapshot.close()
+				}
 				maybeLatestSnapshot = Maybe(snapshot)
 			}
 
 			override def release(): sequencer.Capture[Unit] = {
 				scribe.info(s"workspace-$myId: was released")
+				maybeLatestSnapshot.foreach(_.stateMachineSnapshot.close())
+				maybeLatestSnapshot = Maybe.empty
 				sequencer.Capture_unit
 			}
 		}

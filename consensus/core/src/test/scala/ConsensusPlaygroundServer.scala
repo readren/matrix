@@ -208,7 +208,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		smOut.flush()
 		val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
 
-		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, BufferSnapshotPayload(snapshotData))
+		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, BufferSnapshotByteSource(snapshotData))
 
 		val m0 = e.node(0).storage.savedMemory
 		m0.currentTerm = 1.asInstanceOf[Term]

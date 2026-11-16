@@ -3,6 +3,7 @@ package cluster.serialization
 
 import cluster.misc.VLQ
 import cluster.serialization.Serializer.Writer
+import readren.common.ByteSource
 
 import java.nio.ByteBuffer
 import scala.compiletime.summonFrom
@@ -26,8 +27,11 @@ object Serializer {
 
 	abstract class Writer(protected val refs: RecyclableIdentityIntMap = new RecyclableIdentityIntMap()) extends VLQ.ByteWriter {
 
-		/** Resets the reference deduplication table across composite message frames. */
-		def resetDeduplication(): Unit = refs.reset()
+		/** Resets the reference deduplication table and escaping state across composite message frames. */
+		def resetDeduplication(): Unit = {
+			refs.reset()
+			haveToEscape = false
+		}
 
 		/** Flag that determines if the first byte produced by the serialization of the next component should be escaped if it is equal to [[BACK_REFERENCE_HEADER]].
 		 * This flag is set by the [[write]] method before calling [[writeFull]] when the argument is not deduplicated (is the first occurrence of it within the context of the serialization of the composite that contains it).
@@ -38,11 +42,11 @@ object Serializer {
 		 * Exposed here because the serialized representation format depends on the rules defined by this specific version.
 		 * This is required to support coexistence and interaction between different versions of the same component in a distributed system.
 		 * It ensures that the serializer generates a serialized representation of the message that is compatible with the specified version, accounting for changes in the message structure (e.g., added or removed fields) across versions. */
-		val governingVersion: ProtocolVersion
+		def governingVersion: ProtocolVersion
 
 		/** The implementation must return a [[ByteBuffer]] with at least `minimumRemaining` bytes of remaining space to write.
 		 * The caller must not write more than the provided `minimumRemaining` bytes. */
-		def getBuffer(minimumRemaining: Int): ByteBuffer
+		protected def getBuffer(minimumRemaining: Int): ByteBuffer
 
 		/** The implementation must return the position of the backing buffer.
 		 * This method is used for diagnostic purposes only. */
@@ -163,6 +167,36 @@ object Serializer {
 					buffer.put(source)
 					source.limit(prevLimit)
 				}
+			}
+		}
+
+		/** Default standalone implementation for serializing a [[ByteSource]].\
+		 * Writes the unsigned VLQ byte length followed by inline chunked bytes.\
+		 * Transport implementations (such as `Transmitter`) override this method to queue byte sources out-of-line.
+		 * @param source the byte source to serialize.
+		 * @throws SerializationException if [[ByteSource.size]] is negative.
+		 * @throws java.io.EOFException if the source channel yields fewer bytes than declared by [[ByteSource.size]].
+		 * @throws java.io.IOException if an error occurs opening or reading the source channel. */
+		def putByteSource(source: ByteSource): Unit = {
+			val size = source.size
+			if size < 0 then throw new SerializationException(position, s"Negative byte source size ($size)")
+			putUnsignedLongVlq(size)
+			val channel = source.openChannel()
+			try {
+				val buffer = ByteBuffer.allocate(8192)
+				var remaining = size
+				while remaining > 0 do {
+					buffer.clear()
+					val toRead = math.min(buffer.capacity().toLong, remaining).toInt
+					buffer.limit(toRead)
+					val readBytes = channel.read(buffer)
+					if readBytes < 0 then throw new java.io.EOFException(s"Premature end of channel for ByteSource: expected $remaining more bytes")
+					buffer.flip()
+					putBuffer(buffer)
+					remaining -= readBytes
+				}
+			} finally {
+				channel.close()
 			}
 		}
 

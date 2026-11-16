@@ -16,8 +16,8 @@ import scala.language.implicitConversions
 object InteractiveTests {
 
 	ScribeConfig.init(deleteLogFilesOnLaunch = true)
-	// Set debug level for Transmitter class
-	Logger("readren.nexus.cluster.channel.Transmitter").withMinimumLevel(Level.Debug).replace()
+	// Set debug level for PipelinedTransmitter class
+	Logger("readren.nexus.cluster.channel.PipelinedTransmitter").withMinimumLevel(Level.Debug).replace()
 
 	// Set debug level for Receiver class
 	Logger("readren.nexus.cluster.channel.Receiver").withMinimumLevel(Level.Debug).replace()
@@ -43,8 +43,8 @@ object InteractiveTests {
 
 		val socketOptions: Set[SocketOptionValue[Any]] = Set(StandardSocketOptions.SO_REUSEADDR -> java.lang.Boolean.TRUE)
 		val acceptedConnectionsFilter: ContactAddressFilter = _ => true
-		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
-		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(false, receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configA = new ParticipantService.Config(addressA, seeds, participantDelegatesConfig = DelegateConfig(receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
+		val configB = new ParticipantService.Config(addressB, seeds, participantDelegatesConfig = DelegateConfig(receiverTimeout = 5_000), acceptedConnectionsFilter = acceptedConnectionsFilter, socketOptions = socketOptions)
 
 		val schedulingDap = new CooperativeThreadDrivenSchedulerDp.Impl(unhandledExceptionReporter = (doer, e) => scribe.error(s"Unhandled exception in an operation executed by the sequencer of the service at port ${doer.tag}", e))
 		val sequencerA: SchedulingDoer = schedulingDap.provide(portA.toString)

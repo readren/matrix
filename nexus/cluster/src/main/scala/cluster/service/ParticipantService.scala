@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.service
 
-import cluster.channel.{Receiver, SequentialTransmitter, Transmitter}
+import cluster.channel.{PipelinedTransmitter, Receiver}
 import cluster.serialization.{AllocationLimits, ProtocolVersion}
 import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
 import cluster.service.ParticipantService.*
@@ -78,7 +78,6 @@ object ParticipantService {
 	 * If the peer is alive but not responding (e.g., deadlock, overload), retries would not help. In conclusion, no more than a single retry is needed. 
 	 */
 	class DelegateConfig(
-		val behindTransmissionEnabled: Boolean = true,
 		val receiverTimeout: Long = 60_000,
 		val transmitterTimeout: Long = 500,
 		val timeUnit: TimeUnit = TimeUnit.MILLISECONDS,
@@ -88,11 +87,15 @@ object ParticipantService {
 		val closeDelay: MilliDuration = 200,
 		val heartbeatPeriod: MilliDuration = 10_000,
 		val heartbeatMargin: MilliDuration = 12_000,
-		val maxBuffers: Int = cluster.misc.DualEndedCircularStorage.DEFAULT_MAX_BUFFERS,
+		val maxBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_BUFFERS,
 		val minBuffersOnIdle: Int = 2,
-		val allocationLimits: AllocationLimits = AllocationLimits.Default
+		val allocationLimits: AllocationLimits = AllocationLimits.Default,
+		val streamTransferBufferCapacity: Int = PipelinedTransmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
+		val maxGatheringBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_GATHERING_BUFFERS
 	) {
 		require(maxBuffers.toLong * frameCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * frameCapacity.toLong} bytes) exceeds Int.MaxValue")
+		require(streamTransferBufferCapacity > 0, s"streamTransferBufferCapacity must be positive, got $streamTransferBufferCapacity")
+		require(maxGatheringBuffers >= 2, s"maxGatheringBuffers must be at least 2, got $maxGatheringBuffers")
 	}
 
 	def start(sequencer: SchedulingDoer, clock: Clock, serviceConfig: Config, startingListeners: Iterable[EventListener] = None): ParticipantService = {
@@ -438,13 +441,13 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 		eventListeners.forEach { (listener, _) => listener.handle(event) }
 	}
 
-	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: SequentialTransmitter[Protocol], channelId: ChannelId): Unit = {
+	private[service] def closeDiscardedChannelGracefully(discardedChannel: AsynchronousSocketChannel, transmitter: PipelinedTransmitter[Protocol], channelId: ChannelId): Unit = {
 		scribe.trace(s"$myAddress: About to gracefully close the connection to ${transmitter.context.showPeerAddress} (channel $channelId) in four steps: 1) shutdown input, 2) send a $ChannelDiscarded message, 3) shutdown output, 4) completely close the channel after a while.")
-		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, false, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
-			case failure: Transmitter.NotDelivered =>
+		transmitter.transmit(ChannelDiscarded, ProtocolVersion.OF_THIS_PROJECT, config.participantDelegatesConfig.transmitterTimeout, config.participantDelegatesConfig.timeUnit) {
+			case failure: PipelinedTransmitter.NotDelivered =>
 				scribe.trace(s"$myAddress: The transmission of the $ChannelDiscarded message to ${transmitter.context.showPeerAddress} failed with `$failure`. Closing the channel immediately.")
 				discardedChannel.close()
-			case Transmitter.Delivered =>
+			case PipelinedTransmitter.Delivered =>
 				discardedChannel.shutdownOutput()
 				sequencer.schedule(sequencer.newDelaySchedule(config.participantDelegatesConfig.closeDelay)) { _ => discardedChannel.close() }
 		}
@@ -462,13 +465,21 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 		}
 	}
 
-	private[service] def buildTransmitterFor(channel: AsynchronousSocketChannel, oPeerContactAddress: Maybe[ContactAddress], aChannelId: ChannelId): SequentialTransmitter[Protocol] = {
-		object context extends Transmitter.Context {
+	private[service] def buildTransmitterFor(channel: AsynchronousSocketChannel, oPeerContactAddress: Maybe[ContactAddress], aChannelId: ChannelId): PipelinedTransmitter[Protocol] = {
+		object context extends PipelinedTransmitter.Context {
 			override val myAddress: ContactAddress = thisParticipantService.myAddress
 			override val oPeerAddress: Maybe[ContactAddress] = oPeerContactAddress
 			override val channelId: ChannelId = aChannelId
 		}
-		new SequentialTransmitter[Protocol](channel, context, config.participantDelegatesConfig.frameCapacity, config.participantDelegatesConfig.maxBuffers, config.participantDelegatesConfig.minBuffersOnIdle)
+		new PipelinedTransmitter[Protocol](
+			channel,
+			context,
+			config.participantDelegatesConfig.frameCapacity,
+			config.participantDelegatesConfig.maxBuffers,
+			config.participantDelegatesConfig.minBuffersOnIdle,
+			config.participantDelegatesConfig.streamTransferBufferCapacity,
+			config.participantDelegatesConfig.maxGatheringBuffers
+		)
 	}
 
 	private[service] def buildReceiverFor(channel: AsynchronousSocketChannel, peerContactAddressGetter: () => Maybe[ContactAddress], aChannelId: ChannelId): Receiver = {
@@ -479,6 +490,14 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 
 			override val channelId: ChannelId = aChannelId
 		}
-		new Receiver(channel, context, config.participantDelegatesConfig.frameCapacity, maxBytesToCompact = 256, config.participantDelegatesConfig.maxBuffers, config.participantDelegatesConfig.minBuffersOnIdle, config.participantDelegatesConfig.allocationLimits)
+		new Receiver(
+			channel,
+			context,
+			config.participantDelegatesConfig.frameCapacity,
+			config.participantDelegatesConfig.maxBuffers,
+			config.participantDelegatesConfig.minBuffersOnIdle,
+			config.participantDelegatesConfig.allocationLimits,
+			streamTransferBufferCapacity = config.participantDelegatesConfig.streamTransferBufferCapacity
+		)
 	}
 }
