@@ -79,14 +79,14 @@ object PipelinedTransmitter {
 
 	private object CoordinationState {
 		/** Completely quiescent coordination state (`0`): `queuedCount == 0` and [[JointStageState.Idle]]. */
-		val Idle: CoordinationState = JointStageState.Idle.toInt
+		val Idle: CoordinationState = JointStageState.Idle
 
 		/** Initial coordination state claimed atomically by [[PipelinedTransmitter.pruneTo]] to claim exclusive ownership of both serialization and transmission state (`queuedCount == 0` and [[JointStageState.Pruning]]). */
-		val Pruning: CoordinationState = JointStageState.Pruning.toInt
+		val Pruning: CoordinationState = JointStageState.Pruning
 
 		/** Converts a raw non-negative 31-bit integer read from [[PipelinedTransmitter.coordinationState]] into a [[CoordinationState]]. */
 		inline def fromInt(raw: Int): CoordinationState = {
-			assert(raw >= 0 && (raw & JointStageStateMask) <= JointStageState.Pruning.toInt, s"Invalid CoordinationState bits: $raw")
+			assert(raw >= 0 && (raw & JointStageStateMask) <= JointStageState.Pruning, s"Invalid CoordinationState bits: $raw")
 			raw
 		}
 
@@ -102,7 +102,7 @@ object PipelinedTransmitter {
 
 			/** Returns a copy of this state with bits `28..30` replaced by `next` while preserving [[queuedCount]]. */
 			inline def withJointStageState(next: JointStageState): CoordinationState =
-				(state & ~JointStageStateMask) | next.toInt
+				(state & ~JointStageStateMask) | next
 
 			/** Returns a copy of this state with [[queuedCount]] incremented by `1` while preserving [[jointStageState]]. */
 			inline def withIncrementedQueue: CoordinationState = {
@@ -989,7 +989,8 @@ class PipelinedTransmitter[M](
 	}
 
 	/** Drives the trailing stream state machine iteratively across queued [[readren.common.ByteSource]] instances using [[transmissionStreamWorkPermits]] to serialize synchronous, inline-callback, and multi-threaded asynchronous completions in $O(1)$ stack depth.
-	 * Executed initially on the NIO.2 completion thread from [[startTrailingStream]], and resumed on NIO.2 or [[readren.common.ByteSource.AsyncReader]] completion threads whenever a reader or socket write callback fires. */
+	 * Executed initially on the NIO.2 completion thread from [[startTrailingStream]], and resumed on NIO.2 or [[readren.common.ByteSource.AsyncReader]] completion threads whenever a reader or socket write callback fires.
+	 * @note Trampoline necessity vs. SPI contract: This trampoline removes any assumption about how [[readren.common.ByteSource.AsyncReader]] or [[channel]] dispatches completions, keeping stack depth $O(1)$ even if an `AsyncReader` or a custom/mock [[java.nio.channels.AsynchronousSocketChannel]] invokes [[java.nio.channels.CompletionHandler]] inline before returning `PENDING`. Without this trampoline, a direct tail-recursive/looping implementation would require [[readren.common.ByteSource.AsyncReader]] never to invoke `CompletionHandler` inline before returning [[readren.common.ByteSource.AsyncReader.PENDING]] (reporting synchronous completions strictly via the `Int` return value) and would rely on [[java.nio.channels.AsynchronousSocketChannel]] bounding consecutive inline callback depth. */
 	private def runTrailingStreamLoop(): Unit = {
 		if transmissionStreamWorkPermits.getAndIncrement() == 0 then {
 			var terminalReport: Report | Null = null

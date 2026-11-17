@@ -17,7 +17,8 @@ import scala.util.control.NonFatal
  *
  * ==Concurrency Contract (Single-Flight Invariant)==
  * At most one [[write]] operation may be pending per [[ByteSink]] instance at any given time.
- * Initiating a new write before the previous completion callback has executed is strictly prohibited.
+ * Initiating a new write before the previous completion callback has executed is strictly prohibited.\
+ * Callers without an iterative trampoline rely on implementations reporting synchronous completions via the `Int` return value rather than invoking [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSink.PENDING]], preventing unbounded stack recursion when ingesting multi-chunk streams.
  *
  * @note Common use cases include staging incoming out-of-line network message streams and spooling uploaded files to temporary storage. */
 trait ByteSink {

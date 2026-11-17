@@ -3,12 +3,14 @@ type: "Log"
 title: "Matrix Roadmap Modification Log"
 description: "Changelog recording milestone state transitions, dependency adjustments, and roadmap scope evolutions."
 tags: ["roadmap", "log"]
-timestamp: "2026-11-11T20:42:00Z"
+timestamp: "2026-11-17T10:56:40Z"
 ---
 
 # Matrix Roadmap Modification Log
 
 This log chronicles modifications, status transitions, and scope definitions across the Matrix architectural roadmap.
+
+- 2026-11-17: Synchronized `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md` with the current codebase: gave precedence to `PipelinedTransmitter` over the legacy `SequentialTransmitter` / `Transmitter` pair (splitting out its eventual removal evaluation under Category 3), marked Optimization O1 (state hoisting) as completed, updated Defect C7, Defect C9, and Optimization O3 descriptions, pruned resolved/stale items from Category 3 and the transport gap summary, added Optimization O7 (Anchor + Relative VLQ Delta encoding for `StateInfo` and `AppendRecords`) and asymmetric TX/RX `maxBuffers` configuration tracking, and corrected repository source links in Section 6.
 
 - 2026-11-11: Added Category 6 (Wire Protocol Scaling & Payload Streaming) to Milestone M-A in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and updated `doc/roadmap/index.md`, specifying a `ClusterBridgeConfig` predicate (`IArray[Record] => Boolean`) to conditionally stream `AppendRecords` and `InstallSnapshot` record batches out-of-line via `ByteSource` with `ProtocolVersion` compatibility and non-blocking FIFO receiver decoding.
 

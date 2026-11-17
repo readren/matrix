@@ -3,8 +3,20 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-11-15T18:20:00Z"
+timestamp: "2026-11-17T10:13:00Z"
 ---
+
+## [2026-11-17T10:13:00Z]
+- **Updated** `cluster-serialization.md`: Refined the Asynchronous Completion Loop Trampolining Invariant to attribute iterative completion trampolining specifically to `PipelinedTransmitter` and `Receiver`, and documented the non-trampolined trailing-stream contract of `Transmitter`.
+
+## [2026-11-17T09:41:00Z]
+- **Updated** `byte-streaming-primitives.md` and `adr-trailing-stream-bulk-byte-source-transfer.md`: Clarified the relation between the atomic stream trampolines (`PipelinedTransmitter` and `Receiver`) and the `ByteSource.AsyncReader` / `ByteSink` contract expectation that callers without an iterative trampoline rely on synchronous completions being returned via the `Int` return value rather than inline `CompletionHandler` invocations prior to `PENDING`.
+
+## [2026-11-17T00:59:00Z]
+- **Updated** `cluster-serialization.md`: Documented `SequentialTransmitter`'s atomic `pruning` exclusivity around `pruneTo`, bounded wait-queue admission control (`RejectedExecutionException` on `MaxQueuedCount`), per-message submission parameter preservation, and strict FIFO callback ordering prior to starting queued transmissions.
+
+## [2026-11-16T16:12:00Z]
+- **Updated** `cluster-serialization.md` and `adr-trailing-stream-bulk-byte-source-transfer.md`: Documented the simplified serialize-before-transmit single-frame control package behavior and bounded gathering writes of `Transmitter` (and `SequentialTransmitter`), including zero-wire-byte fail-fast reporting on control serialization and buffer-capacity failures, omission of frame length headers on zero-byte control payloads, and retention of the single-flight active-transmission guard across trailing streams.
 
 ## [2026-11-15T18:20:00Z]
 - **Updated** `cluster-serialization.md`: Refined Section 8 terminology so the 3-bit value paired with the 28-bit wait-queue count inside the 31-bit coordination state is described as the joint stage state rather than a pipeline mode.

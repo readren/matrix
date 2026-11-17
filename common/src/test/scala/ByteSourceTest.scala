@@ -3,7 +3,7 @@ package readren.common
 import munit.FunSuite
 
 import java.nio.ByteBuffer
-import java.nio.channels.CompletionHandler
+import java.nio.channels.{ClosedChannelException, CompletionHandler}
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import scala.concurrent.{Await, Promise}
@@ -32,6 +32,25 @@ class ByteSourceTest extends FunSuite {
 		assertEquals(eofResult, -1)
 
 		reader.close()
+	}
+
+	test("BufferByteSource AsyncReader throws ClosedChannelException when read after close without invoking handler") {
+		val source = BufferByteSource("closed-reader-test".getBytes(StandardCharsets.UTF_8))
+		val reader = source.openAsyncReader()
+		reader.close()
+
+		var completedInvoked = false
+		var failedInvoked = false
+		val handler = new CompletionHandler[Integer, Null] {
+			override def completed(result: Integer, attachment: Null): Unit = completedInvoked = true
+			override def failed(exc: Throwable, attachment: Null): Unit = failedInvoked = true
+		}
+
+		intercept[ClosedChannelException] {
+			reader.read(ByteBuffer.allocate(8), null, handler)
+		}
+		assert(!completedInvoked, "CompletionHandler.completed must not be invoked when throwing synchronously")
+		assert(!failedInvoked, "CompletionHandler.failed must not be invoked when throwing ClosedChannelException synchronously")
 	}
 
 	test("FileByteSource openAsyncReader reads content accurately and deleteOnClose works") {

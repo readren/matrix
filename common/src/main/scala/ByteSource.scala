@@ -52,9 +52,8 @@ object ByteSource {
 	 *
 	 * ==Concurrency Contract (Single-Flight Invariant)==
 	 * At most one asynchronous [[read]] operation may be in flight per [[AsyncReader]] instance at any given time.
-	 * Initiating a new read before the previous completion callback has executed is strictly prohibited. Successive non-overlapping
-	 * calls do not require single-thread affinity: because NIO.2 completion dispatch establishes a happens-before relationship,
-	 * successive reads may safely be triggered from arbitrary worker threads (such as from within completion handler callbacks). */
+	 * Initiating a new read before the previous completion callback has executed is strictly prohibited. Successive non-overlapping calls do not require single-thread affinity: because NIO.2 completion dispatch establishes a happens-before relationship, successive reads may safely be triggered from arbitrary worker threads (such as from within completion handler callbacks).\
+	 * Callers without an iterative trampoline rely on implementations reporting synchronous completions via the `Int` return value rather than invoking [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSource.AsyncReader.PENDING]], preventing unbounded stack recursion when reading multi-chunk streams. */
 	trait AsyncReader extends AutoCloseable {
 
 		/** Reads a sequence of bytes from this reader session into the destination buffer.\
@@ -172,11 +171,8 @@ final class BufferByteSource(val buffer: ByteBuffer) extends ByteSource {
 		private var open = true
 
 		override def read[A](dst: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int = {
-			if !open then {
-				val exc = new ClosedChannelException()
-				handler.failed(exc, attachment)
-				throw exc
-			} else if !duplicate.hasRemaining then -1
+			if !open then throw new ClosedChannelException()
+			else if !duplicate.hasRemaining then -1
 			else {
 				val toTransfer = math.min(dst.remaining(), duplicate.remaining())
 				val savedLimit = duplicate.limit()

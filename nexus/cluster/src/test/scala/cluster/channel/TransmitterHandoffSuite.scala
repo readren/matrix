@@ -12,7 +12,7 @@ import readren.common.Maybe
 import java.io.{ByteArrayOutputStream, IOException}
 import java.net.{InetSocketAddress, SocketAddress, SocketOption}
 import java.nio.ByteBuffer
-import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
+import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler, ReadableByteChannel}
 import java.util
 import java.util.Collections
 import java.util.concurrent.*
@@ -141,7 +141,7 @@ class TransmitterHandoffSuite extends FunSuite {
 		override def channelId: ChannelId = new ChannelId(ChannelOrigin.INITIATED, Maybe.some(addr))
 	}
 
-	private case class DecodedPackage(payload: Array[Byte], corrupted: Boolean, trailingStream: Boolean)
+	private case class DecodedPackage(payload: Array[Byte], frameCount: Int, corrupted: Boolean, trailingStream: Boolean)
 
 	private def decodeWirePackage(wire: Array[Byte]): DecodedPackage = {
 		var pos = 0
@@ -151,6 +151,7 @@ class TransmitterHandoffSuite extends FunSuite {
 			b
 		}
 		val payload = new ByteArrayOutputStream()
+		var frameCount = 0
 		var corrupted = false
 		var trailingStream = false
 		var done = false
@@ -167,10 +168,11 @@ class TransmitterHandoffSuite extends FunSuite {
 				val n = frameLen.toInt
 				payload.write(wire, pos, n)
 				pos += n
+				frameCount += 1
 			}
 		}
 		assertEquals(pos, wire.length, "Unexpected trailing wire bytes after package terminator")
-		DecodedPackage(payload.toByteArray, corrupted, trailingStream)
+		DecodedPackage(payload.toByteArray, frameCount, corrupted, trailingStream)
 	}
 
 	private def sequentialPatternBytes(length: Int): Array[Byte] = {
@@ -183,9 +185,25 @@ class TransmitterHandoffSuite extends FunSuite {
 		arr
 	}
 
-	test("SERIALIZING_AND_TRANSMITTING -> SERIALIZATION_COMPLETED_AND_TRANSMITTING: slow NIO2 drains all multi-buffer frames cleanly") {
+	test("constructor validates maxBuffers, aggregate capacity, streamTransferBufferCapacity, and maxGatheringBuffers") {
+		val channel = new ControlledAsyncChannel()
+		intercept[IllegalArgumentException] {
+			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 0)
+		}
+		intercept[IllegalArgumentException] {
+			new Transmitter(channel, newContext, buffersCapacity = 1 << 20, maxBuffers = 4096)
+		}
+		intercept[IllegalArgumentException] {
+			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 0)
+		}
+		intercept[IllegalArgumentException] {
+			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4, maxGatheringBuffers = 1)
+		}
+	}
+
+	test("multi-buffer control package is merged into a single frame and drained across partial deferred gathering writes") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete(maxBytesPerWrite = 7))
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 3)
 		val payload = sequentialPatternBytes(48)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
@@ -194,41 +212,59 @@ class TransmitterHandoffSuite extends FunSuite {
 		}
 
 		transmitter.transmit(payload, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.size, 0, "onComplete must not run while initial behind-transmission write is still deferred")
+		assertEquals(reports.size, 0, "onComplete must not run while gathering writes are still deferred")
 
 		val steps = channel.drainPending()
 		assert(steps >= 3, s"Expected multiple async write steps, got $steps")
 		assertEquals(reports.toList, List(Transmitter.Delivered))
 
 		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
 		assert(!decoded.corrupted)
 		assert(!decoded.trailingStream)
 		assertEquals(decoded.payload.toSeq, payload.toSeq)
 	}
 
-	test("SERIALIZING_AND_TRANSMITTING -> TRANSMISSION_PAUSED_WHILE_SERIALIZING -> SERIALIZATION_COMPLETED_AND_TRANSMITTING: fast NIO2 pauses and caller resumes cleanly") {
+	test("standalone sentinel spills to next gathering batch when maxGatheringBuffers is saturated") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
-		val payload = sequentialPatternBytes(36)
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 2)
+		val payload = sequentialPatternBytes(48)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => {
-			writer.putBytes(msg, 0, 16)
-			// Completing write #0 inline during the buffer advance inside `putBytes` transitions `coordinationCell` to TRANSMISSION_PAUSED_WHILE_SERIALIZING before chunk 2 is written.
-			writer.putBytes(msg, 16, 16)
-			// Caller advances to buffer #3 and observes TRANSMISSION_PAUSED_WHILE_SERIALIZING.
-			writer.putBytes(msg, 32, 4)
+			writer.putBytes(msg)
 		}
 
 		transmitter.transmit(payload, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
 		assertEquals(reports.toList, List(Transmitter.Delivered))
+		assertEquals(channel.writeInvocationCount, 3, "Expected [header, buf0], [buf1, buf2], [sentinel] across 3 gathering calls")
 
 		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
 		assert(!decoded.corrupted)
+		assert(!decoded.trailingStream)
 		assertEquals(decoded.payload.toSeq, payload.toSeq)
 	}
 
-	test("synchronous channel.write exception in getBuffer reports TransmissionFailure once and preserves reusability") {
+	test("zero-byte control package omits frame header and writes only the 0x00 sentinel") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val reports = new ArrayBuffer[Transmitter.Report]()
+
+		given Serializer[Unit] = (_, _) => ()
+
+		transmitter.transmit((), ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.Delivered))
+		assertEquals(channel.writtenBytes.toSeq, Seq(0.toByte))
+
+		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 0)
+		assert(!decoded.corrupted)
+		assert(!decoded.trailingStream)
+		assertEquals(decoded.payload.length, 0)
+	}
+
+	test("synchronous channel.write exception reports TransmissionFailure once and preserves reusability") {
 		val syncBoom = new IOException("sync write boom")
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.SyncThrow(syncBoom) else WriteMode.InlineComplete()
@@ -236,136 +272,217 @@ class TransmitterHandoffSuite extends FunSuite {
 		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
-		given Serializer[Int] = (n, writer) => {
-			var i = 0
-			while i < n do {
-				writer.putBytes(Array.fill[Byte](10)(i.toByte))
-				i += 1
-			}
-		}
+		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
 
-		transmitter.transmit(3, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.toList, List(Transmitter.TransmissionFailure(3, syncBoom)))
+		val firstPayload = sequentialPatternBytes(24)
+		transmitter.transmit(firstPayload, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.TransmissionFailure(firstPayload, syncBoom)))
 
+		val secondPayload = sequentialPatternBytes(10)
 		val nextReports = new ArrayBuffer[Transmitter.Report]()
-		transmitter.transmit(1, ProtocolVersion.OF_THIS_PROJECT)(report => nextReports += report)
+		transmitter.transmit(secondPayload, ProtocolVersion.OF_THIS_PROJECT)(report => nextReports += report)
 		assertEquals(nextReports.toList, List(Transmitter.Delivered))
+
+		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, secondPayload.toSeq)
 	}
 
-	test("SerializationException after behind-transmission started while NIO2 in flight emits corrupted sentinel") {
-		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
+	test("asynchronous channel write failure reports TransmissionFailure once and resets storage for reuse") {
+		val ioBoom = new IOException("async socket broken")
+		val channel = new ControlledAsyncChannel(idx =>
+			if idx == 0 then WriteMode.InlineFailed(ioBoom) else WriteMode.InlineComplete()
+		)
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val reports = new ArrayBuffer[Transmitter.Report]()
+
+		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
+
+		val firstPayload = sequentialPatternBytes(30)
+		transmitter.transmit(firstPayload, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.TransmissionFailure(firstPayload, ioBoom)))
+		assertEquals(channel.writtenBytes.length, 0)
+
+		val secondPayload = sequentialPatternBytes(12)
+		val nextReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit(secondPayload, ProtocolVersion.OF_THIS_PROJECT)(report => nextReports += report)
+		assertEquals(nextReports.toList, List(Transmitter.Delivered))
+
+		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, secondPayload.toSeq)
+	}
+
+	test("SerializationException writes zero wire bytes, reports aFragmentWasTransmitted=false, and resets storage") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
 		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 		val failure = new SerializationException(5, "bad object")
 
-		given Serializer[String] = (_, writer) => {
-			writer.putBytes(Array.fill[Byte](12)(1))
-			writer.putBytes(Array.fill[Byte](5)(2))
-			throw failure
-		}
-
-		transmitter.transmit("msg", ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.size, 0, "Callback must wait until in-flight frame and corrupted sentinel complete")
-
-		channel.drainPending()
-		assertEquals(reports.toList, List(Transmitter.SerializationProblem("msg", failure, true)))
-
-		val decoded = decodeWirePackage(channel.writtenBytes)
-		assert(decoded.corrupted, "Wire package must terminate with CORRUPTED_PACKAGE_SENTINEL")
-	}
-
-	test("SerializationException when behind-transmission already paused emits corrupted sentinel from caller") {
-		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
-		val reports = new ArrayBuffer[Transmitter.Report]()
-		val failure = new SerializationException(3, "paused failure")
-
-		given Serializer[String] = (_, writer) => {
-			writer.putBytes(Array.fill[Byte](12)(1))
-			// Crossing the 16-byte buffer boundary starts write #0, which completes synchronously inline -> TRANSMISSION_PAUSED_WHILE_SERIALIZING.
-			writer.putBytes(Array.fill[Byte](5)(2))
-			throw failure
-		}
-
-		transmitter.transmit("msg-paused", ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.toList, List(Transmitter.SerializationProblem("msg-paused", failure, true)))
-
-		val decoded = decodeWirePackage(channel.writtenBytes)
-		assert(decoded.corrupted, "Wire package must terminate with CORRUPTED_PACKAGE_SENTINEL")
-	}
-
-	test("TRANSMISSION_FAILED aborts serialization on next getBuffer without exhausting remaining buffers") {
-		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 16)
-		val reports = new ArrayBuffer[Transmitter.Report]()
-		val ioBoom = new IOException("async socket broken")
-		var iterationsCompleted = 0
-
-		given Serializer[Int] = (count, writer) => {
-			var i = 0
-			while i < count do {
-				writer.putBytes(Array.fill[Byte](12)(i.toByte))
-				if i == 1 then {
-					val pending = channel.pollPending()
-					assert(pending ne null)
-					pending.nn.completeFailure(ioBoom)
-				}
-				iterationsCompleted += 1
-				i += 1
+		given Serializer[String] = (s, writer) => {
+			if s == "bad" then {
+				writer.putBytes(Array.fill[Byte](20)(1))
+				throw failure
+			} else {
+				writer.putBytes(s.getBytes("UTF-8"))
 			}
 		}
 
-		transmitter.transmit(10, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(iterationsCompleted, 2, "Serialization should abort on the third getBuffer immediately after TRANSMISSION_FAILED")
-		assertEquals(reports.toList, List(Transmitter.TransmissionFailure(10, ioBoom)))
+		transmitter.transmit("bad", ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.SerializationProblem("bad", failure, aFragmentWasTransmitted = false)))
+		assertEquals(channel.writeInvocationCount, 0, "No socket writes must occur when serialization fails")
+		assertEquals(channel.writtenBytes.length, 0)
+
+		val nextReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit("ok", ProtocolVersion.OF_THIS_PROJECT)(report => nextReports += report)
+		assertEquals(nextReports.toList, List(Transmitter.Delivered))
+
+		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, "ok".getBytes("UTF-8").toSeq)
 	}
 
-	test("TRANSMISSION_FAILED right before serialize returns reports TransmissionFailure once without corrupted sentinel") {
-		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
-		val reports = new ArrayBuffer[Transmitter.Report]()
-		val ioBoom = new IOException("late socket failure")
-
-		given Serializer[String] = (_, writer) => {
-			writer.putBytes(Array.fill[Byte](12)(1))
-			writer.putBytes(Array.fill[Byte](12)(2))
-			val pending = channel.pollPending()
-			assert(pending ne null)
-			pending.nn.completeFailure(ioBoom)
-		}
-
-		transmitter.transmit("late-fail", ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.toList, List(Transmitter.TransmissionFailure("late-fail", ioBoom)))
-		assertEquals(channel.writeInvocationCount, 1, "Must not dispatch sentinel writes after TRANSMISSION_FAILED")
-	}
-
-	test("BuffersCountExceededException after behind-transmission started emits corrupted sentinel and reports TransmissionFailure") {
-		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
+	test("BuffersCountExceededException writes zero wire bytes, reports TransmissionFailure, and resets storage") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
 		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 2)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
-		given Serializer[Int] = (_, writer) => {
-			writer.putBytes(Array.fill[Byte](16)(1))
-			writer.putBytes(Array.fill[Byte](16)(2))
-			// With maxBuffers = 2 (32 bytes total) and write #0 deferred, advancing to a 3rd buffer exceeds capacity.
-			writer.putBytes(Array.fill[Byte](1)(3))
-		}
+		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
 
-		transmitter.transmit(42, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
-		assertEquals(reports.size, 0, "Callback must wait until deferred frame and corrupted sentinel finish")
-
-		channel.drainPending()
+		val oversized = sequentialPatternBytes(33)
+		transmitter.transmit(oversized, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
 		assertEquals(reports.size, 1)
 		reports.head match {
-			case Transmitter.TransmissionFailure(42, _: BuffersCountExceededException) => ()
+			case Transmitter.TransmissionFailure(msg, _: BuffersCountExceededException) => assertEquals(msg, oversized)
 			case other => fail(s"Expected TransmissionFailure(_, BuffersCountExceededException), got $other")
 		}
+		assertEquals(channel.writeInvocationCount, 0, "No socket writes must occur when buffer capacity is exceeded")
+		assertEquals(channel.writtenBytes.length, 0)
+
+		val valid = sequentialPatternBytes(20)
+		val nextReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit(valid, ProtocolVersion.OF_THIS_PROJECT)(report => nextReports += report)
+		assertEquals(nextReports.toList, List(Transmitter.Delivered))
 
 		val decoded = decodeWirePackage(channel.writtenBytes)
-		assert(decoded.corrupted, "Wire package must terminate with CORRUPTED_PACKAGE_SENTINEL after capacity exceeded mid-flight")
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, valid.toSeq)
 	}
 
-	test("concurrent serializer vs async NIO2 executor stress completes losslessly with single callback per message") {
+	test("concurrent transmit while in flight throws TransmissionInProgressException and re-entrant transmit in callback succeeds") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val reports = new ArrayBuffer[Transmitter.Report]()
+
+		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
+
+		val first = sequentialPatternBytes(10)
+		val second = sequentialPatternBytes(6)
+		transmitter.transmit(first, ProtocolVersion.OF_THIS_PROJECT) { report =>
+			reports += report
+			transmitter.transmit(second, ProtocolVersion.OF_THIS_PROJECT)(r => reports += r)
+		}
+		intercept[Transmitter.TransmissionInProgressException] {
+			transmitter.transmit(second, ProtocolVersion.OF_THIS_PROJECT)(_ => ())
+		}
+
+		channel.drainPending()
+		assertEquals(reports.toList, List(Transmitter.Delivered, Transmitter.Delivered))
+	}
+
+	test("single-frame control package with trailing ByteSource writes STREAM_FOLLOWS_SENTINEL and stream chunks") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete(maxBytesPerWrite = 5))
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 2)
+		val controlPrefix = sequentialPatternBytes(14)
+		val streamBytes = sequentialPatternBytes(23)
+		val source: readren.common.ByteSource = readren.common.BufferByteSource(streamBytes)
+		val reports = new ArrayBuffer[Transmitter.Report]()
+
+		given Serializer[(Array[Byte], readren.common.ByteSource)] = (msg, writer) => {
+			writer.putBytes(msg._1)
+			writer.putByteSource(msg._2)
+		}
+
+		transmitter.transmit((controlPrefix, source), ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.Delivered))
+
+		val wire = channel.writtenBytes
+		var pos = 0
+		val reader: VLQ.ByteReader = () => {
+			val b = wire(pos)
+			pos += 1
+			b
+		}
+		val controlLen = VLQ.decodeUnsignedInt(reader)
+		val controlOut = java.util.Arrays.copyOfRange(wire, pos, pos + controlLen)
+		pos += controlLen
+		val sentinel = Integer.toUnsignedLong(VLQ.decodeUnsignedInt(reader))
+		assertEquals(sentinel, Transmitter.STREAM_FOLLOWS_SENTINEL)
+
+		val streamed = new ByteArrayOutputStream()
+		var streamDone = false
+		while !streamDone do {
+			val chunkLen = VLQ.decodeUnsignedInt(reader)
+			if chunkLen == 0 then streamDone = true
+			else {
+				streamed.write(wire, pos, chunkLen)
+				pos += chunkLen
+			}
+		}
+		assertEquals(pos, wire.length)
+		assertEquals(streamed.toByteArray.toSeq, streamBytes.toSeq)
+		assert(controlOut.startsWith(controlPrefix))
+	}
+
+	test("synchronous channel.write exception during trailing stream closes reader, reports TransmissionFailure, and preserves reusability") {
+		val streamSyncBoom = new IOException("trailing stream sync write boom")
+		val channel = new ControlledAsyncChannel(idx =>
+			if idx == 1 then WriteMode.SyncThrow(streamSyncBoom) else WriteMode.InlineComplete()
+		)
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 32, maxBuffers = 8)
+		val reports = new ArrayBuffer[Transmitter.Report]()
+		var readerClosed = false
+
+		val streamBytes = sequentialPatternBytes(18)
+		val spySource = new readren.common.ByteSource {
+			private val delegate = readren.common.BufferByteSource(streamBytes)
+			override def size: Long = delegate.size
+			override def openChannel(): ReadableByteChannel = delegate.openChannel()
+			override def transferTo(target: java.nio.channels.WritableByteChannel): Long = delegate.transferTo(target)
+			override def openAsyncReader(): readren.common.ByteSource.AsyncReader = new readren.common.ByteSource.AsyncReader {
+				private val underlying = delegate.openAsyncReader()
+				override def read[A](dst: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int = underlying.read(dst, attachment, handler)
+				override def close(): Unit = {
+					readerClosed = true
+					underlying.close()
+				}
+			}
+		}
+
+		given Serializer[(Array[Byte], readren.common.ByteSource)] = (msg, writer) => {
+			writer.putBytes(msg._1)
+			writer.putByteSource(msg._2)
+		}
+
+		val firstMsg = (sequentialPatternBytes(6), spySource)
+		transmitter.transmit(firstMsg, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
+		assertEquals(reports.toList, List(Transmitter.TransmissionFailure(firstMsg, streamSyncBoom)))
+		assert(readerClosed, "Active AsyncReader should be closed on synchronous trailing-stream channel.write failure")
+
+		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
+		val bytesBeforeSecond = channel.writtenBytes.length
+		val secondPayload = sequentialPatternBytes(9)
+		val secondReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit(secondPayload, ProtocolVersion.OF_THIS_PROJECT)(report => secondReports += report)
+		assertEquals(secondReports.toList, List(Transmitter.Delivered))
+
+		val wireAfterFirst = java.util.Arrays.copyOfRange(channel.writtenBytes, bytesBeforeSecond, channel.writtenBytes.length)
+		val decoded = decodeWirePackage(wireAfterFirst)
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, secondPayload.toSeq)
+	}
+
+	test("async NIO2 executor stress completes losslessly as a single frame with single callback per message") {
 		val executor = Executors.newFixedThreadPool(2)
 		try {
 			val rng = new Random(42L)
@@ -394,8 +511,8 @@ class TransmitterHandoffSuite extends FunSuite {
 					}
 				}
 
-				val transmitter = new Transmitter(asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 32)
-				val payload = sequentialPatternBytes(8 + rng.nextInt(120))
+				val transmitter = new Transmitter(asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 32, maxGatheringBuffers = 3)
+				val payload = sequentialPatternBytes(if msgIndex % 20 == 0 then 0 else 1 + rng.nextInt(150))
 				val callbackCount = new AtomicInteger(0)
 				val reportRef = new AtomicReference[Transmitter.Report | Null](null)
 				val doneLatch = new CountDownLatch(1)
@@ -406,7 +523,6 @@ class TransmitterHandoffSuite extends FunSuite {
 						val step = math.min(9, msg.length - off)
 						writer.putBytes(msg, off, step)
 						off += step
-						if rng.nextBoolean() then Thread.`yield`()
 					}
 				}
 
@@ -421,12 +537,101 @@ class TransmitterHandoffSuite extends FunSuite {
 				assertEquals(reportRef.get(), Transmitter.Delivered)
 
 				val decoded = decodeWirePackage(asyncChannel.writtenBytes)
+				assertEquals(decoded.frameCount, if payload.isEmpty then 0 else 1)
 				assert(!decoded.corrupted)
 				assertEquals(decoded.payload.toSeq, payload.toSeq)
 				msgIndex += 1
 			}
 		} finally {
 			executor.shutdownNow()
+		}
+	}
+
+	test("SerializationException thrown inside Writer.write resets haveToEscape for the subsequent message") {
+		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
+		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val failure = new SerializationException(0, "abort inside write")
+
+		final case class Box(bytes: Array[Byte], shouldFail: Boolean)
+		given Serializer[Box] = (box, writer) => {
+			if box.shouldFail then throw failure
+			else writer.putBytes(box.bytes)
+		}
+		given Serializer[(Box, Boolean)] = (msg, writer) => {
+			if msg._2 then writer.write(msg._1)
+			else writer.putBytes(msg._1.bytes)
+		}
+
+		val failingMsg = (Box(Array.emptyByteArray, shouldFail = true), true)
+		val firstReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit(failingMsg, ProtocolVersion.OF_THIS_PROJECT)(r => firstReports += r)
+		assertEquals(firstReports.toList, List(Transmitter.SerializationProblem(failingMsg, failure, aFragmentWasTransmitted = false)))
+
+		val secondPayload = Array[Byte](Serializer.BACK_REFERENCE_HEADER, 1, 2, 3)
+		val secondReports = new ArrayBuffer[Transmitter.Report]()
+		transmitter.transmit((Box(secondPayload, shouldFail = false), false), ProtocolVersion.OF_THIS_PROJECT)(r => secondReports += r)
+		assertEquals(secondReports.toList, List(Transmitter.Delivered))
+
+		val decoded = decodeWirePackage(channel.writtenBytes)
+		assertEquals(decoded.frameCount, 1)
+		assertEquals(decoded.payload.toSeq, secondPayload.toSeq)
+	}
+
+	test("sequential transmissions across distinct caller and NIO2 threads preserve state isolation and lossless delivery") {
+		val ioExecutor = Executors.newSingleThreadExecutor()
+		val callerExecutors = Array(Executors.newSingleThreadExecutor(), Executors.newSingleThreadExecutor())
+		try {
+			final class ResettableAsyncChannel extends BaseMockAsyncSocketChannel {
+				private val capturedFrames = new ByteArrayOutputStream()
+				override def writtenBytes: Array[Byte] = synchronized(capturedFrames.toByteArray)
+				def resetCaptured(): Unit = synchronized(capturedFrames.reset())
+
+				override def write[A](
+					srcs: Array[ByteBuffer],
+					offset: Int,
+					length: Int,
+					timeout: Long,
+					unit: TimeUnit,
+					attachment: A,
+					handler: CompletionHandler[java.lang.Long, ? >: A]
+				): Unit = {
+					val written = consumeAndCapture(srcs, offset, length, 5)
+					synchronized {
+						capturedFrames.write(captured.toByteArray)
+						captured.reset()
+					}
+					ioExecutor.execute(() => handler.completed(java.lang.Long.valueOf(written), attachment))
+				}
+			}
+			val asyncChannel = new ResettableAsyncChannel
+
+			val transmitter = new Transmitter(asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 16, maxGatheringBuffers = 2)
+			given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
+
+			var i = 0
+			while i < 40 do {
+				asyncChannel.resetCaptured()
+				val payload = sequentialPatternBytes(1 + (i * 7) % 60)
+				val expectedAttachment = s"att-$i"
+				val result = new AtomicReference[(Transmitter.Report, String) | Null](null)
+				val done = new CountDownLatch(1)
+				val caller = callerExecutors(i % 2)
+				caller.execute(() => {
+					transmitter.transmitWithAttachment(payload, ProtocolVersion.OF_THIS_PROJECT, expectedAttachment) { (report, att) =>
+						result.set((report, att))
+						done.countDown()
+					}
+				})
+				assert(done.await(5, TimeUnit.SECONDS), s"Timed out on cross-thread message #$i")
+				assertEquals(result.get(), (Transmitter.Delivered, expectedAttachment))
+				val decoded = decodeWirePackage(asyncChannel.writtenBytes)
+				assertEquals(decoded.frameCount, 1)
+				assertEquals(decoded.payload.toSeq, payload.toSeq)
+				i += 1
+			}
+		} finally {
+			ioExecutor.shutdownNow()
+			callerExecutors.foreach(_.shutdownNow())
 		}
 	}
 }

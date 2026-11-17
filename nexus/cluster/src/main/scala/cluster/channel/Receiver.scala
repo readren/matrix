@@ -746,7 +746,8 @@ class Receiver(
 					}
 				}
 
-				/** Drives [[stepStreamIngestion]] iteratively using [[streamTrampoline]] to serialize synchronous, inline-callback, and multi-threaded asynchronous sink/channel completions in $O(1)$ stack depth and guarantee single execution of [[finishTrailingStream]]. */
+				/** Drives [[stepStreamIngestion]] iteratively using [[streamTrampoline]] to serialize synchronous, inline-callback, and multi-threaded asynchronous sink/channel completions in $O(1)$ stack depth and guarantee single execution of [[finishTrailingStream]].
+				 * @note Trampoline necessity vs. SPI contract: This trampoline removes any assumption about how [[readren.common.ByteSink]] or [[channel]] dispatches completions, keeping stack depth $O(1)$ even if a `ByteSink`, [[readChannel]] (which completes synchronously inline when draining [[streamTransferLeftover]]), or a custom/mock [[java.nio.channels.AsynchronousSocketChannel]] invokes [[java.nio.channels.CompletionHandler]] inline before returning `PENDING`. Without this trampoline, a direct looping implementation would require [[readren.common.ByteSink]] never to invoke `CompletionHandler` inline before returning [[readren.common.ByteSink.PENDING]] (reporting synchronous completions strictly via the `Int` return value), avoid unbounded inline `readChannel` chains, and rely on [[java.nio.channels.AsynchronousSocketChannel]] bounding consecutive inline callback depth. */
 				def scheduleStreamIngestion(): Unit = {
 					if streamTrampoline.getAndIncrement() == 0 then {
 						var terminalAction = 0

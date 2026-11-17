@@ -3,7 +3,7 @@ type: "Concept"
 title: "Byte Streaming Primitives (ByteSource & ByteSink)"
 description: "Capabilities, operational models, lifecycle state machines, and concurrency contracts of the transport-agnostic ByteSource and ByteSink primitives in common."
 tags: ["common", "primitives", "byte-source", "byte-sink", "streaming", "io"]
-timestamp: "2026-11-09T05:00:00Z"
+timestamp: "2026-11-17T09:41:00Z"
 ---
 
 # Byte Streaming Primitives: `ByteSource` & `ByteSink`
@@ -42,6 +42,7 @@ A `ByteSource` represents an immutable, repeatable supplier of sequential bytes 
 
 - **Single-Flight Invariant:** At most one asynchronous `read` operation may be pending per `AsyncReader` instance at any point in time. Invoking `read(...)` while a prior `read(...)` is in progress is strictly prohibited and results in undefined behavior or channel faults.
 - **Cross-Thread Serialized Continuity Invariant:** Successive non-overlapping `read` invocations do not require single-thread caller affinity. Under the Java Memory Model (JLS §17.4.5), NIO.2 completion hand-offs through thread pools establish a happens-before relationship between the completion of read $N$ (including internal offset advances) and the initiation of read $N+1$. Therefore, successive reads may safely be triggered from arbitrary thread pool workers (such as from within completion handler callbacks) without requiring `AtomicLong` or internal synchronization locks.
+- **Synchronous Return vs. Inline Callback Invariant:** Callers without an iterative trampoline rely on `AsyncReader.read` reporting synchronous completions directly via its `Int` return value rather than invoking `CompletionHandler` inline before returning `PENDING`, preventing unbounded stack recursion on multi-chunk streams.
 
 ---
 
@@ -51,7 +52,7 @@ A `ByteSink` is a single-use, write-only staged accumulator that ingests bytes a
 
 - **Staging Pre-Allocation & Declared Size Invariant:** A `ByteSink` is provisioned with an `expectedSize: Long`, allowing backing storage implementations to pre-allocate memory buffers or reserve disk blocks upfront, eliminating repeated dynamic reallocation overhead.
 - **Early Handle Projection Invariant:** The projected `ByteSource` handle (`def byteSource: ByteSource`) is available immediately upon `ByteSink` instantiation, prior to byte transfer. This allows caller frameworks to synchronously assemble enclosing messages, domain wrappers, or metadata envelopes while the underlying binary bytes are still streaming into the sink.
-- **Incremental Non-Blocking Ingestion Invariant:** `write(src, attachment, handler)` ingests byte chunks asynchronously using standard NIO.2 `CompletionHandler` callbacks. Each write operation consumes all available bytes between `src.position()` and `src.limit()` before invoking the completion handler. At most one write operation may be pending at any given time (single-flight write invariant).
+- **Incremental Non-Blocking Ingestion Invariant:** `write(src, attachment, handler)` ingests byte chunks asynchronously using standard NIO.2 `CompletionHandler` callbacks. Each write operation consumes all available bytes between `src.position()` and `src.limit()` before invoking the completion handler. At most one write operation may be pending at any given time (single-flight write invariant). Callers without an iterative trampoline rely on `ByteSink.write` reporting synchronous completions directly via its `Int` return value rather than invoking `CompletionHandler` inline before returning `PENDING`, preventing unbounded stack recursion on multi-chunk streams.
 - **Strict Terminal State Machine Invariant (`seal` vs `discard`):** An active `ByteSink` begins in the *Ingesting* state and must transition into exactly one of two mutually exclusive terminal states:
   - *`seal()` (Success):* Closes write channel descriptors, flushes buffers, and commits the underlying data to an immutable state, enabling the projected `byteSource` to be safely read.
   - *`discard()` (Abort/Fault):* Aborts ingestion immediately, closes channel descriptors, and unlinks/deletes any ephemeral backing resources (such as temporary disk files), preventing abandoned staging artifacts from leaking storage.
