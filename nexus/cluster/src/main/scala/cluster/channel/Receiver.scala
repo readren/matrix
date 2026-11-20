@@ -4,7 +4,7 @@ package channel
 
 import cluster.channel.Receiver.*
 import cluster.misc.LoggingTools.*
-import cluster.misc.{DualEndedCircularStorage, VLQ}
+import cluster.misc.{DualEndedCircularStorage, RingLength, VLQ}
 import cluster.serialization.{AllocationLimits, Deserializer, ProtocolVersion, RecyclableObjectBuffer}
 import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
@@ -15,22 +15,36 @@ import scribe.LogFeature
 import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
-import java.util.ArrayDeque
+import java.util as util
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.{Future, Promise}
 import scala.util.control.NonFatal
 
 object Receiver {
-	private inline val FRAME_HEADER_MAX_SIZE = VLQ.INT_MAX_LENGTH
+	/** Maximum byte length of a single-frame VLQ header reserved at the tail of each circular storage buffer. */
+	inline val FRAME_HEADER_MAX_SIZE = VLQ.INT_MAX_LENGTH
 
 	/** Default buffer capacity (8 KiB) for each direct circular storage buffer. */
-	inline val DEFAULT_BUFFERS_CAPACITY = 8192
+	inline val DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING = 8192
 	/** Default maximum number of buffers in the [[DualEndedCircularStorage]]. */
-	inline val DEFAULT_MAX_BUFFERS = 128
+	val DEFAULT_RING_MAX_LENGTH: RingLength = RingLength(128)
+	/** Default minimum number of buffers retained in each [[cluster.misc.DualEndedCircularStorage]] on idle reception. */
+	val DEFAULT_RING_MIN_LENGTH_ON_IDLE: RingLength = RingLength(2)
 
 	/** Default capacity (64 KiB) for the direct streaming transfer buffer. */
 	inline val DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY = 65536
+
+	/** Computes the maximum payload bytes guaranteed to fit in a single-frame package received into a [[Receiver]] ring (for example from [[PipelinedTransmitter]] or [[Transmitter]]), accounting for per-buffer `buffersInitialLimit` headroom plus the single frame header and terminal sentinel (with at least 1 sentinel byte preceding `buffersInitialLimit`).
+	 * @param ringMaxLength the maximum number of buffers in the [[DualEndedCircularStorage]] ring.
+	 * @param capacityOfBufferInRing the byte capacity of each buffer in the ring.
+	 * @return the guaranteed single-frame payload byte capacity.*/
+	inline def maxSingleFramePackagePayloadBytes(ringMaxLength: RingLength, capacityOfBufferInRing: Int): Int = {
+		ringMaxLength * (capacityOfBufferInRing - (FRAME_HEADER_MAX_SIZE - 1)) - (FRAME_HEADER_MAX_SIZE + 1)
+	}
+
+	/** Maximum single-frame package payload bytes guaranteed under [[DEFAULT_RING_MAX_LENGTH]] and [[DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING]]. */
+	val DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES: Int = maxSingleFramePackagePayloadBytes(DEFAULT_RING_MAX_LENGTH, DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING)
 
 	type Lazy[A <: Matchable] = misc.Lazy[A, Fault]
 
@@ -91,37 +105,37 @@ object Receiver {
  *
  * @param channel The channel that connects the peer with us.
  * @param context Diagnostic addressing context for local and peer endpoints.
- * @param buffersCapacity The capacity of each buffer of the [[misc.DualEndedCircularStorage]].
- * @param maxBuffers The maximum number of buffers allowed in circular storage.
- * @param minBuffersOnIdle The minimum number of buffers retained when circular storage is pruned during idle transitions.
+ * @param capacityOfBufferInRing The capacity of each buffer of the [[misc.DualEndedCircularStorage]].
+ * @param ringMaxLength The maximum number of buffers allowed in [[misc.DualEndedCircularStorage]].
+ * @param ringMinLengthOnIdle The minimum number of buffers retained when circular storage is pruned during idle transitions.
  * @param allocationLimits The security bounds governing maximum permissible allocations during deserialization.
  * @param byteSinkAllocator Allocator responsible for provisioning [[readren.common.ByteSink]] instances for out-of-line streams.
  * @param streamTransferBufferCapacity The capacity of the direct buffer used to transfer streaming chunks. */
 class Receiver(
 	channel: AsynchronousSocketChannel,
 	context: Context,
-	buffersCapacity: Int = Receiver.DEFAULT_BUFFERS_CAPACITY,
-	val maxBuffers: Int = DEFAULT_MAX_BUFFERS,
-	val minBuffersOnIdle: Int = 2,
+	capacityOfBufferInRing: Int = Receiver.DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING,
+	val ringMaxLength: RingLength = DEFAULT_RING_MAX_LENGTH,
+	val ringMinLengthOnIdle: RingLength = DEFAULT_RING_MIN_LENGTH_ON_IDLE,
 	val allocationLimits: AllocationLimits = AllocationLimits.Default,
 	val byteSinkAllocator: ByteSink.Allocator = ByteSink.DefaultAllocator,
 	val streamTransferBufferCapacity: Int = Receiver.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY
 ) {
-	private val buffersInitialLimit = buffersCapacity - FRAME_HEADER_MAX_SIZE
+	private val buffersInitialLimit = capacityOfBufferInRing - FRAME_HEADER_MAX_SIZE + 1
 	require(streamTransferBufferCapacity > 0, s"streamTransferBufferCapacity must be positive, got $streamTransferBufferCapacity")
 	private val streamTransferBuffer: ByteBuffer = ByteBuffer.allocateDirect(streamTransferBufferCapacity)
 	/** @note Concurrency invariant: Reusable queue safely shared across inbound message receptions because Receiver enforces single-flight message processing per socket channel. */
-	private val pendingByteSinks: ArrayDeque[ByteSink] = new ArrayDeque[ByteSink]()
+	private val pendingByteSinks: util.ArrayDeque[ByteSink] = new util.ArrayDeque[ByteSink]()
 	/** Staging sinks that have already been filled and polled from [[pendingByteSinks]] during the active message's trailing stream, retained until the message completes so they can be discarded if a subsequent stream in the same package aborts or faults. */
-	private val completedByteSinks: ArrayDeque[ByteSink] = new ArrayDeque[ByteSink]()
+	private val completedByteSinks: util.ArrayDeque[ByteSink] = new util.ArrayDeque[ByteSink]()
 
-	assert(buffersCapacity > FRAME_HEADER_MAX_SIZE)
-	require(maxBuffers.toLong * buffersCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * buffersCapacity.toLong} bytes) exceeds Int.MaxValue")
-	private val totalBufferCapacity: Int = maxBuffers * buffersCapacity
-	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
+	assert(capacityOfBufferInRing > FRAME_HEADER_MAX_SIZE)
+	require(ringMaxLength.toLong * capacityOfBufferInRing.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${ringMaxLength.toLong * capacityOfBufferInRing.toLong} bytes) exceeds Int.MaxValue")
+	private val totalBufferCapacity: Int = ringMaxLength * capacityOfBufferInRing
+	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(capacityOfBufferInRing), ringMaxLength)
 
 	/** The total number of buffers currently allocated in circular storage. */
-	def bufferCount: Int = circularStorage.bufferCount
+	def ringLength: RingLength = circularStorage.ringLength
 	private val deduplicationBuffer: RecyclableObjectBuffer = new RecyclableObjectBuffer()
 
 	/** Isolated staging buffer holding pipelined bytes that arrived in [[streamTransferBuffer]] past the terminal chunk sentinel of a trailing stream.
@@ -402,7 +416,7 @@ class Receiver(
 					}
 				} catch {
 					case lme: LengthMismatchException => DeserializerAndFrameMismatch(lme)
-					case scala.util.control.NonFatal(e) => DeserializationProblem(e)
+					case NonFatal(e) => DeserializationProblem(e)
 				} finally {
 					currentPackageContentBytesBound = Int.MaxValue
 				}
@@ -522,8 +536,8 @@ class Receiver(
 						streamTransferLeftover = null
 					}
 					val curTarget = circularStorage.writeEnd
-					// Prune circular storage down to minBuffersOnIdle only when no pipelined bytes are waiting in target or streamTransferLeftover.
-					if curTarget.position == 0 && streamTransferLeftover == null then circularStorage.pruneTo(minBuffersOnIdle)
+					// Prune the circular storage down to `ringMinLengthOnIdle` only when no pipelined bytes are waiting in target or `streamTransferLeftover`.
+					if curTarget.position == 0 && streamTransferLeftover == null then circularStorage.pruneTo(ringMinLengthOnIdle)
 
 					if isDrainingFault || streamProtocolFault != null then {
 						// Socket teardown upon local or protocol fault: Suppress secondary close exceptions to ensure staging sink cleanup and onComplete callback execute with primary fault preserved
@@ -836,7 +850,7 @@ class Receiver(
 						packageContentBytesCommitted = 0
 						val outcome = deserializePackage(writeEndBuffer, nextFrameHeaderPos, totalPackageContentBytes)
 						prepareCircularStorageForNextReception(writeEndBuffer, nextFrameHeaderPos, posAfterLastReceivedByte)
-						if writeEndBuffer.position == 0 then circularStorage.pruneTo(minBuffersOnIdle)
+						if writeEndBuffer.position == 0 then circularStorage.pruneTo(ringMinLengthOnIdle)
 						if !pendingByteSinks.isEmpty then {
 							while !pendingByteSinks.isEmpty do {
 								val sink = pendingByteSinks.poll()
@@ -870,7 +884,7 @@ class Receiver(
 						writeEndBuffer.limit(posAfterLastReceivedByte)
 						writeEndBuffer.compact()
 						writeEndBuffer.limit(buffersInitialLimit)
-						if writeEndBuffer.position == 0 then circularStorage.pruneTo(minBuffersOnIdle)
+						if writeEndBuffer.position == 0 then circularStorage.pruneTo(ringMinLengthOnIdle)
 						scribe.warn(s"Reception progress at `${context.myAddress}` from `${context.showPeerAddress}`: A corrupted package was skipped")
 						receiveWithAttachment[M, A](msgVersion, attachment, timeout, timeUnit)(onComplete)
 					}
@@ -899,7 +913,7 @@ class Receiver(
 						packageContentBytesCommitted += currentBufferContentBytes
 						circularStorage.advanceWriteEnd().fold {
 							packageContentBytesCommitted = 0
-							onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.channelId, new BuffersCountExceededException(s"Message reception exceeded maximum buffer capacity ($maxBuffers buffers of $buffersCapacity bytes)")), attachment)
+							onComplete(ReceptionFailure(context.myAddress, context.oPeerAddress, context.channelId, new RingLengthExceededException(s"Message reception exceeded maximum buffer capacity ($ringMaxLength buffers of $capacityOfBufferInRing bytes)")), attachment)
 						} { nextWriteBuffer =>
 							nextWriteBuffer.clear()
 							nextWriteBuffer.limit(buffersInitialLimit)

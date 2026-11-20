@@ -2,6 +2,7 @@ package readren.consensus
 package nio2
 
 import protocol.*
+import readren.nexus.cluster.channel.{Receiver, TransmissionProtocol}
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.serialization.InvariantIterableFactory.given
@@ -65,14 +66,71 @@ class ClusterWireProtocol[S <: ConsensusWireTypesCdm](val sdm: S)(using
 	given wireRecordDeserializer: Deserializer[Record] =
 		ConsensusProtocolSerializers.recordDeserializer[C, P](using clientCommandDeserializer, participantIdDeserializer, ValueOrReferenceTest.whenReference[P])
 
+	val wireRecordBatchArraySerializer: Serializer[IArray[Record]] = summon[Serializer[IArray[Record]]]
+
+	val wireRecordBatchArrayDeserializer: Deserializer[IArray[Record]] = summon[Deserializer[IArray[Record]]]
+
+	/** Treats [[RecordBatch]] as a value container so the batch wrapper itself is never inserted into the enclosing reference-deduplication table. */
+	given recordBatchValueOrReference: ValueOrReferenceTest[RecordBatch] = ValueOrReferenceTest.whenValue[Int].asInstanceOf[ValueOrReferenceTest[RecordBatch]]
+
+	given recordBatchSerializer: Serializer[RecordBatch] = (batch: RecordBatch, writer: Serializer.Writer) => {
+		batch match {
+			case RecordBatch.Records(records) =>
+				writer.putUnsignedIntVlq(0)
+				wireRecordBatchArraySerializer.serialize(records, writer)
+			case RecordBatch.EncodedInline(encoded) =>
+				if encoded.byteLength > Int.MaxValue.toLong then {
+					throw new Serializer.SerializationException(writer.position, s"EncodedInline RecordBatch length (${encoded.byteLength}) exceeds Int.MaxValue")
+				}
+				writer.putUnsignedIntVlq(1)
+				writer.putUnsignedIntVlq(encoded.byteLength.toInt)
+				encoded.writeInlineTo(writer)
+			case RecordBatch.EncodedOutOfLine(source) =>
+				if source.size <= 0L then {
+					throw new Serializer.SerializationException(writer.position, s"EncodedOutOfLine RecordBatch source must be non-empty, got size=${source.size}")
+				}
+				writer.putUnsignedIntVlq(2)
+				writer.putByteSource(source)
+		}
+	}
+
+	given recordBatchDeserializer: Deserializer[RecordBatch] = (reader: Deserializer.Reader) => {
+		reader.readUnsignedIntVlq() match {
+			case 0 =>
+				RecordBatch.Records(wireRecordBatchArrayDeserializer.deserialize(reader))
+			case 1 =>
+				val byteLength = reader.validateArrayLength(reader.readUnsignedIntVlq(), 1, "RecordBatch.EncodedInline")
+				val nestedReader = new NestedScopeReader(reader, byteLength)
+				val records = wireRecordBatchArrayDeserializer.deserialize(nestedReader)
+				nestedReader.requireFullyConsumed()
+				RecordBatch.Records(records)
+			case 2 =>
+				val source = reader.readByteSource()
+				if source.size <= 0L then {
+					throw new Deserializer.NegativeLengthException(reader.position, source.size, "RecordBatch.EncodedOutOfLine")
+				}
+				RecordBatch.EncodedOutOfLine(source)
+			case other =>
+				throw new Deserializer.InvalidDiscriminatorException(reader.position, other, "RecordBatch")
+		}
+	}
+
 	//// Message Hierarchy ////
 
 	sealed trait ClusterWireMessage
 
 	sealed trait HandshakeMessage extends ClusterWireMessage
-	final case class PeerHandshake(senderId: P, supportedVersions: Set[ProtocolVersion]) extends HandshakeMessage
+	final case class PeerHandshake(
+		senderId: P,
+		supportedVersions: Set[ProtocolVersion],
+		maxInboundControlPackageBytes: Int
+	) extends HandshakeMessage
 	final case class ClientHandshake(supportedVersions: Set[ProtocolVersion]) extends HandshakeMessage
-	final case class HandshakeAck(responderId: P, agreedVersion: ProtocolVersion) extends HandshakeMessage
+	final case class HandshakeAck(
+		responderId: P,
+		agreedVersion: ProtocolVersion,
+		maxInboundControlPackageBytes: Int
+	) extends HandshakeMessage
 	final case class HandshakeReject(reason: String) extends HandshakeMessage
 
 	sealed trait ConsensusRpcRequest extends ClusterWireMessage {
@@ -86,8 +144,48 @@ class ClusterWireProtocol[S <: ConsensusWireTypesCdm](val sdm: S)(using
 	// - inquirerTerm is serialized once using writer.putInt and prevLogIndex once using writer.putLong as anchors.
 	// - The remaining terms (prevLogTerm, termAtLeaderCommit, and embedded record terms) are encoded as relative VLQ deltas (writer.putIntVlq) from inquirerTerm.
 	// - The remaining record indices (leaderCommit and embedded record indices) are encoded as relative VLQ deltas (writer.putLongVlq) from prevLogIndex.
-	final case class AppendRecords(correlationId: CorrelationId, inquirerTerm: Term, prevLogIndex: RecordIndex, prevLogTerm: Term, batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term) extends ConsensusRpcRequest
-	final case class InstallSnapshot(correlationId: CorrelationId, inquirerTerm: Term, snapshot: SnapshotData[P], batch: IArray[Record], leaderCommit: RecordIndex, termAtLeaderCommit: Term) extends ConsensusRpcRequest
+	final case class AppendRecords(
+		correlationId: CorrelationId,
+		inquirerTerm: Term,
+		prevLogIndex: RecordIndex,
+		prevLogTerm: Term,
+		batch: RecordBatch,
+		leaderCommit: RecordIndex,
+		termAtLeaderCommit: Term
+	) extends ConsensusRpcRequest
+
+	object AppendRecords {
+		def apply(
+			correlationId: CorrelationId,
+			inquirerTerm: Term,
+			prevLogIndex: RecordIndex,
+			prevLogTerm: Term,
+			batch: IArray[Record],
+			leaderCommit: RecordIndex,
+			termAtLeaderCommit: Term
+		): AppendRecords = new AppendRecords(correlationId, inquirerTerm, prevLogIndex, prevLogTerm, RecordBatch.Records(batch), leaderCommit, termAtLeaderCommit)
+	}
+
+	final case class InstallSnapshot(
+		correlationId: CorrelationId,
+		inquirerTerm: Term,
+		snapshot: SnapshotData[P],
+		batch: RecordBatch,
+		leaderCommit: RecordIndex,
+		termAtLeaderCommit: Term
+	) extends ConsensusRpcRequest
+
+	object InstallSnapshot {
+		def apply(
+			correlationId: CorrelationId,
+			inquirerTerm: Term,
+			snapshot: SnapshotData[P],
+			batch: IArray[Record],
+			leaderCommit: RecordIndex,
+			termAtLeaderCommit: Term
+		): InstallSnapshot = new InstallSnapshot(correlationId, inquirerTerm, snapshot, RecordBatch.Records(batch), leaderCommit, termAtLeaderCommit)
+	}
+
 	final case class PermitQuiescence(correlationId: CorrelationId, indexOfGrantedSec: RecordIndex) extends ConsensusRpcRequest
 
 	sealed trait ConsensusRpcResponse extends ClusterWireMessage {

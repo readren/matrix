@@ -1,14 +1,13 @@
 package readren.consensus
 
 import ConsensusParticipantSdm.*
-import env.BufferSnapshotByteSource
 import protocol.*
 
 import munit.ScalaCheckEffectSuite
 import org.scalacheck.Gen
 import org.scalacheck.Test.Parameters
 import org.scalacheck.effect.PropF
-import readren.common.{Maybe, ScribeConfig}
+import readren.common.{BufferByteSource, Maybe, ScribeConfig}
 import readren.sequencer.providers.CooperativeFlatPollingSchedulerDp
 import readren.sequencer.{Doer, MilliDuration, MilliTime, MonotonicClock}
 import scribe.message.LoggableMessage
@@ -833,7 +832,7 @@ class ConsensusParticipantSdmTest extends ScalaCheckEffectSuite {
 				out.writeInt(highestAppliedCommandSerial)
 				out.writeLong(highestAppliedCommandIndex)
 				out.flush()
-				sequencer.Keeper(BufferSnapshotByteSource(bytes.toByteArray))
+				sequencer.Keeper(BufferByteSource(bytes.toByteArray))
 			}
 
 			override def installSnapshot(data: SnapshotByteSource): sequencer.Capture[Unit] = {

@@ -80,6 +80,28 @@ class ByteSourceTest extends FunSuite {
 		assert(!Files.exists(tempFile), "deleteOnClose should delete the file upon source.close()")
 	}
 
+	test("FileByteSource AsyncReader throws ClosedChannelException when read after close without invoking handler") {
+		val tempFile = Files.createTempFile("test-closed-file-source-", ".bin")
+		Files.write(tempFile, "closed-file-reader".getBytes(StandardCharsets.UTF_8))
+		val source = new FileByteSource(tempFile, deleteOnClose = true)
+		val reader = source.openAsyncReader()
+		reader.close()
+
+		var completedInvoked = false
+		var failedInvoked = false
+		val handler = new CompletionHandler[Integer, Null] {
+			override def completed(result: Integer, attachment: Null): Unit = completedInvoked = true
+			override def failed(exc: Throwable, attachment: Null): Unit = failedInvoked = true
+		}
+
+		intercept[ClosedChannelException] {
+			reader.read(ByteBuffer.allocate(8), null, handler)
+		}
+		assert(!completedInvoked, "CompletionHandler.completed must not be invoked when throwing synchronously")
+		assert(!failedInvoked, "CompletionHandler.failed must not be invoked when throwing ClosedChannelException synchronously")
+		source.close()
+	}
+
 	test("BufferByteSource supports repeatable independent readers without cursor interference") {
 		val data = "Repeatable extraction independence".getBytes(StandardCharsets.UTF_8)
 		val source = BufferByteSource(data)

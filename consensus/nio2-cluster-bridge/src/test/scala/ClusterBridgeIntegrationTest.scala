@@ -2,8 +2,9 @@ package readren.consensus
 package nio2
 
 import munit.FunSuite
-import readren.common.Maybe
+import readren.common.{BufferByteSource, FileByteSource, Maybe}
 import readren.consensus.protocol.*
+import readren.nexus.cluster.misc.RingLength
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.sequencer.SchedulingDoer
@@ -43,7 +44,8 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 		val initialElectorate: Set[String],
 		val customCompactionThreshold: Int = 1000,
 		val customRetentionAfterSnapshot: Int = 10,
-		val remembersLastAppliedCommandIndex: Boolean = true
+		val remembersLastAppliedCommandIndex: Boolean = true,
+		val customBridgeConfig: Option[ClusterBridgeConfig] = None
 	) extends ConsensusParticipantSdm with Nio2ClusterBridgeCdm { thisNode =>
 
 		override type ParticipantId = String
@@ -68,13 +70,15 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 		override def contactAddressOf(id: ParticipantId): SocketAddress = peerAddressLookup(id)
 		override def localBindAddress: SocketAddress = new InetSocketAddress("127.0.0.1", 0)
 
-		override val bridgeConfig: ClusterBridgeConfig = ClusterBridgeConfig(
-			fastRpcTimeout = 4000L,
-			snapshotRpcTimeout = 10000L,
-			clientRpcTimeout = 5000L,
-			connectTimeout = 4000L,
-			unreachableFollowersRetryDelay = 100L,
-			replicationLoopRetryDelay = 50L
+		override val bridgeConfig: ClusterBridgeConfig = customBridgeConfig.getOrElse(
+			ClusterBridgeConfig(
+				fastRpcTimeout = 4000L,
+				snapshotRpcTimeout = 10000L,
+				clientRpcTimeout = 5000L,
+				connectTimeout = 4000L,
+				unreachableFollowersRetryDelay = 100L,
+				replicationLoopRetryDelay = 50L
+			)
 		)
 
 		var bridge: Nio2ClusterBridge = new Nio2ClusterBridge(nodeId)
@@ -288,9 +292,9 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 					val tempFile = Files.createTempFile("state-machine-snapshot-", ".bin")
 					tempFile.toFile.deleteOnExit()
 					Files.write(tempFile, bytes)
-					sequencer.Keeper(new FileSnapshotByteSource(tempFile, deleteOnClose = true))
+					sequencer.Keeper(new FileByteSource(tempFile, deleteOnClose = true))
 				} else {
-					sequencer.Keeper(new BufferSnapshotByteSource(ByteBuffer.wrap(bytes)))
+					sequencer.Keeper(new BufferByteSource(ByteBuffer.wrap(bytes)))
 				}
 			}
 
@@ -374,7 +378,8 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 		nodeIds: List[String],
 		initialElectorate: Set[String],
 		compactionThreshold: Int = 1000,
-		retentionAfterSnapshot: Int = 10
+		retentionAfterSnapshot: Int = 10,
+		customBridgeConfig: Option[ClusterBridgeConfig] = None
 	)(testBody: (Map[String, TestNode], ConcurrentHashMap[String, SocketAddress], CooperativeThreadDrivenSchedulerDp.Impl) => Unit): Unit = {
 		val schedulerDp = new CooperativeThreadDrivenSchedulerDp.Impl(unhandledExceptionReporter = (_, e) => e.printStackTrace())
 		val addressRegistry = new ConcurrentHashMap[String, SocketAddress]()
@@ -384,7 +389,7 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 		}
 
 		val nodes = nodeIds.map { id =>
-			id -> new TestNode(id, peerLookup, schedulerDp, initialElectorate, compactionThreshold, retentionAfterSnapshot)
+			id -> new TestNode(id, peerLookup, schedulerDp, initialElectorate, compactionThreshold, retentionAfterSnapshot, customBridgeConfig = customBridgeConfig)
 		}.toMap
 
 		try {
@@ -662,6 +667,54 @@ class ClusterBridgeIntegrationTest extends FunSuite {
 					case other => fail(s"Expected Processed, got: $other")
 				}
 			}
+		}
+	}
+
+	test("Scenario 6 - Replication of oversized record batches exceeding control package capacity via out-of-line ByteSource streaming") {
+		val clusterIds = List("node-1", "node-2", "node-3")
+		// Constrain peer control package capacity to 4 * 4096 = 16 KiB while allowing client submissions up to 64 KiB
+		val constrainedPeerConfig = ClusterBridgeConfig(
+			sizeOfBuffersInRing = 4096,
+			maxRingLengthForTransmission = RingLength(16),
+			maxRingLengthForReception = RingLength(16),
+			stagedBatchInlineThreshold = RingLength(1),
+			fastRpcTimeout = 5000L,
+			snapshotRpcTimeout = 10000L,
+			clientRpcTimeout = 5000L,
+			connectTimeout = 4000L,
+			unreachableFollowersRetryDelay = 100L,
+			replicationLoopRetryDelay = 50L
+		)
+		withCluster(clusterIds, clusterIds.toSet, customBridgeConfig = Some(constrainedPeerConfig)) { (nodes, addressRegistry, _) =>
+			val node1 = nodes("node-1")
+			val node2 = nodes("node-2")
+			val node3 = nodes("node-3")
+
+			withClient(node1) { client =>
+				Await.result(client.sendCommand("cmd-init"), 5.seconds)
+				Await.result(node1.listener.leaderPromise.future, 5.seconds)
+
+				// Disconnect node-3 while committing five 16 KiB commands (~80 KiB catch-up batch, far above stagedBatchInlineThreshold = 1 buffer / 4 KiB and 64 KiB control ring)
+				node3.bridge.close()
+
+				val largePayload = "L" * (16 * 1024)
+				for i <- 1 to 5 do {
+					val resp = Await.result(client.sendCommand(s"large-$i-$largePayload"), 5.seconds)
+					resp match {
+						case node1.Processed(idx, _) =>
+							Await.result(node1.listener.awaitApplied(idx), 5.seconds)
+							Await.result(node2.listener.awaitApplied(idx), 5.seconds)
+						case other => fail(s"Expected Processed, got: $other")
+					}
+				}
+			}
+
+			// Reconnect node-3: leader replicates the entire 80 KiB catch-up batch in a single AppendRecords RPC streamed out-of-line
+			node3.restartWithFreshBridge(newAddr => addressRegistry.put("node-3", newAddr))
+			val highestIdx = node1.stateMachine.highestAppliedIndex
+			Await.result(node3.listener.awaitApplied(highestIdx), 10.seconds)
+			assertEquals(node3.stateMachine.highestAppliedIndex, highestIdx)
+			assertEquals(node3.stateMachine.appliedCommands.toList, node1.stateMachine.appliedCommands.toList)
 		}
 	}
 }

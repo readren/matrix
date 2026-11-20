@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.channel
 
-import cluster.misc.VLQ
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.Serializer.SerializationException
 import cluster.service.ChannelId
 import cluster.service.Protocol.ContactAddress
@@ -63,14 +63,14 @@ object TransmissionProtocol {
 	/** Pre-encoded 5-byte unsigned VLQ representation of [[TransmissionProtocol.STREAM_FOLLOWS_SENTINEL]]. */
 	val STREAM_FOLLOWS_SENTINEL_ENCODED: Array[Byte] = encodeSentinel(STREAM_FOLLOWS_SENTINEL)
 
-	/** Default buffer capacity (8 KiB) for each direct circular storage buffer. */
-	inline val DEFAULT_BUFFERS_CAPACITY = 8192
+	/** Default capacity for the buffers in a [[cluster.misc.DualEndedCircularStorage]]. */
+	inline val DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING = 8192
 
-	/** Default maximum number of buffers in each [[cluster.misc.DualEndedCircularStorage]] ring. */
-	inline val DEFAULT_MAX_BUFFERS = 128
+	/** Default maximum number of buffers in a [[cluster.misc.DualEndedCircularStorage]]. */
+	val DEFAULT_RING_MAX_LENGTH: RingLength = RingLength(128)
 
-	/** Default minimum number of buffers retained in each [[cluster.misc.DualEndedCircularStorage]] ring on idle transitions. */
-	inline val DEFAULT_MIN_BUFFERS_ON_IDLE = 2
+	/** Default minimum number of buffers retained in each [[cluster.misc.DualEndedCircularStorage]] on idle transitions. */
+	val DEFAULT_RING_MIN_LENGTH_ON_IDLE: RingLength = RingLength(2)
 
 	/** Default capacity (64 KiB) for the direct streaming transfer buffer. */
 	inline val DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY = 65536

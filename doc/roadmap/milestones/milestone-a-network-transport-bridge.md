@@ -2,16 +2,16 @@
 type: "Milestone"
 id: "M-A"
 title: "Physical Network Transport Bridge"
-status: "IN_PROGRESS"
-progress_percentage: 90
+status: "COMPLETED"
+progress_percentage: 100
 target_modules: ["nexus/cluster", "consensus/core", "consensus/nio2-cluster-bridge"]
 prerequisites: ["single-group-consensus-engine"]
-timestamp: "2026-11-17T10:56:40Z"
+timestamp: "2026-11-20T01:40:00Z"
 ---
 
 # Milestone A: Physical Network Transport Bridge (`consensus/nio2-cluster-bridge` &harr; `nexus/cluster`)
 
-**Status**: `[IN_PROGRESS]` | **Progress**: 90% | **Target Modules**: `nexus/cluster`, `consensus/core`, `consensus/nio2-cluster-bridge` | **Parent Roadmap**: [Matrix System Architecture Roadmap](../index.md)
+**Status**: `[COMPLETED]` | **Progress**: 100% | **Target Modules**: `nexus/cluster`, `consensus/core`, `consensus/nio2-cluster-bridge` | **Parent Roadmap**: [Matrix System Architecture Roadmap](../index.md)
 
 ---
 
@@ -33,7 +33,7 @@ timestamp: "2026-11-17T10:56:40Z"
 - **Cluster Electorate Integration**: Translate cluster topology and connectivity changes into `requestElectorateChange` calls.
 - **Multi-Process Test Harness**: Implement an automated test suite executing a multi-node cluster over loopback TCP sockets.
 - **Transport Snapshot Streaming & Partitioning**: Support streaming arbitrary-sized snapshot byte sources through `nexus/cluster` without circular storage buffer exhaustion.
-- **Adaptive Record Batch Streaming**: Conditionally stream oversized `Record` batches in `AppendRecords` and `InstallSnapshot` RPCs out-of-line via `ByteSource` based on a configurable `ClusterBridgeConfig` predicate.
+- **Adaptive Record Batch Encoding & Streaming**: Encode `Record` batches in `AppendRecords` and `InstallSnapshot` RPCs according to a configurable `RecordBatchEncodingStrategy` selector (`WithinControlPackage`, `StagedOnSequencer`, `StagedOnCodecExecutor`) and automatically place pre-encoded batches inline or out-of-line via `ByteSource` based on exact encoded byte length and handshake-negotiated control-package capacity.
 
 ### Out-of-Scope
 
@@ -76,17 +76,13 @@ timestamp: "2026-11-17T10:56:40Z"
 
 #### Category 2: Performance & Allocation Efficiency
 - [x] `[Efficiency / Allocation]` **Transmitter Reusable State Hoisting (Optimization O1)**: Eliminate per-message `LazyRef`, closure, and primitive boxing heap allocations (`ObjectRef`, `LongRef`, `BooleanRef`, `IntRef`) across non-streaming and fast-path messages. `PipelinedTransmitter` hoists its writers, completion handlers, `invokeWithoutAttachment` adapter, and isolated per-stage state to class/companion level (allocating only a `MsgSubmission` envelope when queueing under contention); the legacy `Transmitter` and `SequentialTransmitter` pair have likewise been refactored with hoisted class-level state and handlers.
-- [ ] `[Efficiency / Throughput]` **Double-Buffering I/O Pipeline Evaluation (Optimization O3)**: Overlap disk I/O and network socket transfer during trailing stream transfers in `PipelinedTransmitter` (and in `Transmitter`, if retained) and `Receiver` using alternating double buffers to decouple disk latency from network latency.
-- [ ] `[Efficiency / I/O-Amplification]` **Small-Write Accumulation in Receiver (Optimization O4)**: Accumulate incoming socket fragments into the transfer buffer and flush to disk in full blocks (e.g. 64 KiB) or upon stream termination, mitigating small-write filesystem amplification and eliminating per-chunk completion handler allocations.
-- [ ] `[Efficiency / Memory]` **BufferByteSink Heap Buffers & Constructor Buffer Injection (Optimization O5)**: Allow `BufferByteSink` to wrap an existing `ByteBuffer` directly (deriving `expectedSize = buffer.remaining().toLong`), and evaluate heap buffer allocation for small streams ($\le 64$ KiB) to avoid direct memory zeroing and GC cleaner overhead.
-- [ ] `[Efficiency / Threading]` **Linux File Channel Thread-Hop Profiling (Optimization O6)**: Profile the two-thread-hop overhead of `AsynchronousFileChannel`'s default thread pool on Linux against positional `FileChannel` I/O on a dedicated executor.
-- [ ] `[Efficiency / Wire-Format]` **Anchor + Relative VLQ Delta Wire Format for `StateInfo` and `AppendRecords` (Optimization O7)**: Encode `StateInfo` and `AppendRecords` using full-width anchor terms and record indices (`currentTerm` / `inquirerTerm` and `lastRecordIndex` / `prevLogIndex`) paired with relative VLQ deltas for surrounding terms and indices (tracking the `TODO` markers in `ConsensusProtocolSerializers.scala` and `ClusterWireProtocol.scala`).
+- [x] `[Efficiency / I/O-Amplification]` **Small-Write Coalescing in `FileByteSink` (Optimization O4)**: Coalesce sub-block writes synchronously inside `FileByteSink` using a lazily allocated heap staging buffer (default 64 KiB, capped to `expectedSize`) until a full block accumulates, `expectedSize` is reached, or `seal()` runs, bypassing staging with zero copy for full-block or stream-completing writes and hoisting the internal `CompletionHandler` to eliminate per-write handler allocations.
+- [x] `[Efficiency / Memory]` **BufferByteSink Heap Buffers & Constructor Buffer Injection (Optimization O5)**: `BufferByteSink` now provides a primary constructor wrapping an existing writable `ByteBuffer` directly (deriving `expectedSize = backing.remaining().toLong` across its initial `[position, limit)` range) and a secondary `byteLength: Int` constructor allocating a heap `ByteBuffer` (`ByteBuffer.allocate`) for small streams ($\le 64$ KiB) via `ByteSink.DefaultAllocator` to avoid direct-memory zeroing and GC cleaner overhead.
 
 #### Category 3: Code Hygiene & Repository Cleanliness
-- [ ] `[Hygiene / Formatting]` **Import & Line-Ending Normalization**: Replace the redundant `scala.util.control.NonFatal(e)` qualification in `Receiver.scala` with the imported `NonFatal`, remove empty import lines in `ConsensusProtocolSerializers.scala`, and standardize CRLF/LF line endings across modified transport and consensus files.
-- [ ] `[Hygiene / Cleanliness]` **Redundant Snapshot Forwarder Removal**: Remove redundant snapshot alias files (`FileSnapshotByteSource.scala` in `consensus/nio2-cluster-bridge` and `consensus/nio2-persistence`, and `BufferSnapshotByteSource.scala` in `consensus/core/src/test/scala/env/`) once callers reference `FileByteSource` and `BufferByteSource` directly.
-- [ ] `[Hygiene / Decommissioning]` **Legacy Transmitter Pair Removal Evaluation**: Evaluate removing `SequentialTransmitter.scala` and `Transmitter.scala` (along with `TransmitterHandoffSuite.scala` and `SequentialTransmitterSuite.scala`) if future operational experience confirms they are unnecessary alongside `PipelinedTransmitter.scala`.
-- [ ] `[Configuration / Clarity]` **Asymmetric TX/RX Buffer & Gathering Configuration**: Separate transmission and reception `maxBuffers` limits in `ClusterBridgeConfig` (and `ParticipantService.DelegateConfig`) as noted in `ClusterBridgeConfig.scala`, and expose `maxGatheringBuffers` in `ClusterBridgeConfig` if per-bridge tuning is needed.
+- [x] `[Hygiene / Formatting]` **Import & Line-Ending Normalization**: Replace the redundant `scala.util.control.NonFatal(e)` qualification in `Receiver.scala` with the imported `NonFatal`, remove empty import lines in `ConsensusProtocolSerializers.scala`, and standardize CRLF/LF line endings across modified transport and consensus files.
+- [x] `[Hygiene / Cleanliness]` **Redundant Snapshot Forwarder Removal**: Remove redundant snapshot alias files (`FileSnapshotByteSource.scala` in `consensus/nio2-cluster-bridge` and `consensus/nio2-persistence`, and `BufferSnapshotByteSource.scala` in `consensus/core/src/test/scala/env/`) once callers reference `FileByteSource` and `BufferByteSource` directly.
+- [x] `[Configuration / Clarity]` **Asymmetric TX/RX Buffer & Gathering Configuration**: Separate transmission and reception `ringMaxLength` limits in `ClusterBridgeConfig` (as `maxRingLengthForTransmission` and `maxRingLengthForReception`, alongside `sizeOfBuffersInRing`) and `ParticipantService.DelegateConfig` (as `transmitterRingMaxLength` and `receiverRingMaxLength`) with aggregate capacity validation, and expose `maxGatheringBuffers` in `ClusterBridgeConfig`.
 
 #### Category 4: Documentation & Invariant Integrity
 - [x] `[Documentation / Integrity]` **Documentation Restoration & Specification Alignment**: Restore deleted invariant comments in `Transmitter` and `Receiver`, reattach orphaned Scaladoc to `readFull` in `Deserializer.scala`, reconcile method signatures in `adr-trailing-stream-bulk-byte-source-transfer.md`, eliminate unsubstantiated specification claims (disk preallocation, memory unmapping, `sendfile` transport), and purge session-debugging local variable names from ADR invariant titles.
@@ -95,7 +91,7 @@ timestamp: "2026-11-17T10:56:40Z"
 - [x] `[Testing / Verification]` **Automated Test Coverage Matrix Hardening (Gap D7)**: Implement dedicated test scenarios covering zero-length byte sources, multiple sources per message, in-band stream aborts, pipelined messages immediately following a stream, malformed/excessive chunk headers, and asynchronous completion races.
 
 #### Category 6: Wire Protocol Scaling & Payload Streaming
-- [ ] `[Scaling / Wire-Protocol]` **Predicate-Driven Out-of-Line `ByteSource` Batch Streaming for `AppendRecords` and `InstallSnapshot`**: Add a configurable predicate (`IArray[Record] => Boolean`) to `ClusterBridgeConfig` (`consensus/nio2-cluster-bridge`) that determines whether the `batch: IArray[Record]` payload of outbound `AppendRecords` and `InstallSnapshot` RPCs is serialized inline or wrapped in a `ByteSource` for out-of-line trailing-stream transmission. Wire serialization in `ClusterWireProtocol` must distinguish inline and streamed batch representations under negotiated `ProtocolVersion` compatibility, supply a size-known `ByteSource` prior to control-package emission, deserialize received streamed batches asynchronously off the `sequencer` thread in `Nio2ClusterBridgeCdm` while preserving per-peer FIFO RPC delivery ordering before invoking `Delegate.onAppendRecords` / `Delegate.onInstallSnapshot`, and close the temporary `ByteSource` immediately after decoding.
+- [x] `[Scaling / Wire-Protocol]` **Configurable Record-Batch Encoding Strategy and Exact-Size Out-of-Line `ByteSource` Streaming for `AppendRecords` and `InstallSnapshot`**: Add `RecordBatchEncodingStrategy` (`WithinControlPackage`, `StagedOnSequencer`, `StagedOnCodecExecutor`) and a configurable selector (`IArray[Record] => RecordBatchEncodingStrategy`, defaulting to `WithinControlPackage` for empty batches and `StagedOnCodecExecutor` for non-empty batches) to `ClusterBridgeConfig` (`consensus/nio2-cluster-bridge`). Pre-encode staged batches in an isolated reference-deduplication scope (`ChunkedHeapWriter` / `ChunkedBufferByteSource`), advertise `maxInboundControlPackageBytes` in `PeerHandshake` and `HandshakeAck`, place pre-encoded batches inline (`RecordBatch.EncodedInline`, tag `1`, decoded via `NestedScopeReader`) when they fit within the negotiated per-peer inline ceiling or out-of-line (`RecordBatch.EncodedOutOfLine`, tag `2`, decoded off-`sequencer` via `ReadableChannelReader`) when they exceed it, preserve per-peer FIFO RPC delivery ordering across canonical `PeerConnection` instances, fail pending RPCs fast on `PipelinedTransmitter.NotDelivered` reports, and close temporary batch and snapshot `ByteSource` instances deterministically across all completion and error paths.
 
 ---
 
@@ -124,4 +120,4 @@ timestamp: "2026-11-17T10:56:40Z"
 
 ## 7. Deferred Architectural Enhancements
 
-- **Consensus Snapshot Concurrency Governor & Elastic Transport Streaming Pool**: While the transport bridge successfully streams arbitrary snapshot byte sources with $O(1)$ memory per connection, executing concurrent snapshot transfers across many peers simultaneously under multi-raft sharding can induce severe physical disk I/O and network socket thrashing if unthrottled. To prevent this without causing transport socket deadlocks or TCP ZeroWindow stalls (which inevitably arise if buffer pools are rigidly bounded at the transport layer), a two-tiered design is scheduled: (1) an application-level consensus admission governor in `consensus/core` and `consensus/nio2-cluster-bridge` that bounds concurrent active snapshot transfers to a configured ceiling $K$, throttling outbound snapshot transfers and returning explicit protocol backpressure for excess inbound requests, and (2) an elastic direct buffer pool in `nexus/cluster` that allocates 64 KiB streaming buffers on demand to prevent transport channel blocking while bounding idle buffer retention to $K$ instances, allowing burst buffers to be collected by the JVM `Cleaner`.
+Non-blocking post-M-A transport optimizations (`O3`, `O6`, `O7`, `O8`), the Consensus Snapshot Concurrency Governor and Elastic Transport Streaming Pool design, and legacy transmitter pair (`SequentialTransmitter`/`Transmitter`) removal evaluation have been relocated to the dedicated [Transport Optimization & Cleanup Backlog](../backlog-transport-optimizations.md).

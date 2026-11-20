@@ -2,7 +2,7 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.Receiver.{Fault, ReceptionFailure}
-import cluster.misc.VLQ
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.{Deserializer, ProtocolVersion}
 import cluster.service.{ChannelId, ChannelOrigin}
 
@@ -138,8 +138,8 @@ class ReceiverSuite extends FunSuite {
 	}
 
 	test("first reception enforces buffersInitialLimit before extending for a split multi-byte header") {
-		val buffersCapacity = 28
-		val expectedInitialLimit = buffersCapacity - VLQ.INT_MAX_LENGTH
+		val capacityOfBuferInRing = 28
+		val expectedInitialLimit = capacityOfBuferInRing - VLQ.INT_MAX_LENGTH + 1
 		val expectedPayload = Array.tabulate[Byte](150)(index => (index & 0x7f).toByte)
 		val controlBytes = encodePlainPayloadControlBytes(expectedPayload)
 		assertEquals(controlBytes.length, 153)
@@ -157,7 +157,7 @@ class ReceiverSuite extends FunSuite {
 			)
 		)
 		val (_, _, _, context) = createContext(channel)
-		val receiver = new Receiver(channel, context, buffersCapacity = buffersCapacity, maxBuffers = 16)
+		val receiver = new Receiver(channel, context, capacityOfBufferInRing = capacityOfBuferInRing, ringMaxLength = RingLength(16))
 
 		var recordedOutcome: WireFrameMessage | Fault | Null = null
 		receiver.receive[WireFrameMessage](ProtocolVersion.OF_THIS_PROJECT, 1L, TimeUnit.SECONDS) { outcome =>
@@ -180,8 +180,8 @@ class ReceiverSuite extends FunSuite {
 	}
 
 	test("trailing stream Case 2 compaction resets limit to buffersInitialLimit before pipelined split header") {
-		val buffersCapacity = 32
-		val expectedInitialLimit = buffersCapacity - VLQ.INT_MAX_LENGTH
+		val capacityOfBufferInRing = 32
+		val expectedInitialLimit = capacityOfBufferInRing - VLQ.INT_MAX_LENGTH + 1
 		val expectedStreamPayload = Array(0x5a.toByte)
 		val firstMessageControlBytes = Array[Byte](1, 0, expectedStreamPayload.length.toByte)
 		val firstMessageWireBytes = {
@@ -209,7 +209,7 @@ class ReceiverSuite extends FunSuite {
 		System.arraycopy(secondMessageWireBytes, 0, combinedWire, firstMessageWireBytes.length, secondMessageWireBytes.length)
 
 		val firstChunkEnd = expectedInitialLimit
-		val secondChunkEnd = firstChunkEnd + 11
+		val secondChunkEnd = firstChunkEnd + 10
 		val channel = new ScriptedReadSocketChannel(
 			List(
 				util.Arrays.copyOfRange(combinedWire, 0, firstChunkEnd),
@@ -221,8 +221,8 @@ class ReceiverSuite extends FunSuite {
 		val receiver = new Receiver(
 			channel,
 			context,
-			buffersCapacity = buffersCapacity,
-			maxBuffers = 16,
+			capacityOfBufferInRing = capacityOfBufferInRing,
+			ringMaxLength = RingLength(16),
 			byteSinkAllocator = new ByteSink.DefaultAllocator(inMemoryThreshold = 64)
 		)
 
@@ -246,7 +246,7 @@ class ReceiverSuite extends FunSuite {
 		}
 
 		assertEquals(channel.recordedReadBounds(0), (0, expectedInitialLimit))
-		assertEquals(channel.recordedReadBounds(1), (15, expectedInitialLimit))
+		assertEquals(channel.recordedReadBounds(1), (16, expectedInitialLimit))
 		assertEquals(channel.recordedReadBounds(2), (26, 25 + VLQ.INT_MAX_LENGTH))
 
 		secondOutcome match {
@@ -262,7 +262,7 @@ class ReceiverSuite extends FunSuite {
 		val malformedFrameHeader = Array.fill[Byte](7)(0x81.toByte) :+ 0x01.toByte
 		val channel = new ScriptedReadSocketChannel(List(malformedFrameHeader))
 		val (localAddress, remoteAddress, channelId, context) = createContext(channel)
-		val receiver = new Receiver(channel, context, buffersCapacity = 64, maxBuffers = 4)
+		val receiver = new Receiver(channel, context, capacityOfBufferInRing = 64, ringMaxLength = RingLength(4))
 
 		var recordedOutcome: WireFrameMessage | Fault | Null = null
 		receiver.receive[WireFrameMessage](ProtocolVersion.OF_THIS_PROJECT, 1L, TimeUnit.SECONDS) { outcome =>
@@ -289,7 +289,7 @@ class ReceiverSuite extends FunSuite {
 			closeFailure = Some(new IOException("simulated close error"))
 		)
 		val (localAddress, remoteAddress, channelId, context) = createContext(channel)
-		val receiver = new Receiver(channel, context, buffersCapacity = 64, maxBuffers = 4)
+		val receiver = new Receiver(channel, context, capacityOfBufferInRing = 64, ringMaxLength = RingLength(4))
 
 		var recordedOutcome: WireFrameMessage | Fault | Null = null
 		receiver.receive[WireFrameMessage](ProtocolVersion.OF_THIS_PROJECT, 1L, TimeUnit.SECONDS) { outcome =>

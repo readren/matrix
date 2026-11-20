@@ -2,8 +2,7 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.Transmitter.*
-import cluster.misc.LoggingTools.*
-import cluster.misc.{DualEndedCircularStorage, VLQ}
+import cluster.misc.{DualEndedCircularStorage, RingLength, VLQ}
 import cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.serialization.{ProtocolVersion, RecyclableIdentityIntMap, Serializer}
 
@@ -11,7 +10,7 @@ import readren.common.ByteSource
 
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
-import java.util.ArrayDeque
+import java.util as util
 import java.util.concurrent.TimeUnit
 import scala.util.control.NonFatal
 
@@ -30,21 +29,20 @@ object Transmitter {
  *
  * @param channel The channel over which the messages will be transmitted.
  * @param context Transport diagnostic addressing context.
- * @param buffersCapacity The capacity of each buffer of the [[misc.DualEndedCircularStorage]].
- * @param maxBuffers The maximum number of buffers allowed in circular storage.
+ * @param capacityOfBufferInRing The capacity of each buffer of the [[misc.DualEndedCircularStorage]].
+ * @param ringMaxLength The maximum number of buffers allowed in circular storage.
  * @param streamTransferBufferCapacity The capacity of the direct buffer used to transfer streaming chunks.
  * @param maxGatheringBuffers The maximum number of [[java.nio.ByteBuffer]] entries submitted per gathering socket write call. */
 class Transmitter(
 	channel: AsynchronousSocketChannel,
 	context: Context,
-	buffersCapacity: Int = Transmitter.DEFAULT_BUFFERS_CAPACITY,
-	val maxBuffers: Int = DEFAULT_MAX_BUFFERS,
+	capacityOfBufferInRing: Int = Transmitter.DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING,
+	val ringMaxLength: RingLength = DEFAULT_RING_MAX_LENGTH,
 	val streamTransferBufferCapacity: Int = Transmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
 	val maxGatheringBuffers: Int = Transmitter.DEFAULT_MAX_GATHERING_BUFFERS
 ) {
-	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
-	require(maxBuffers >= 1, s"maxBuffers must be at least 1, got $maxBuffers")
-	require(maxBuffers.toLong * buffersCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * buffersCapacity.toLong} bytes) exceeds Int.MaxValue")
+	assert(capacityOfBufferInRing >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
+	require(ringMaxLength.toLong * capacityOfBufferInRing.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${ringMaxLength.toLong * capacityOfBufferInRing.toLong} bytes) exceeds Int.MaxValue")
 	require(streamTransferBufferCapacity > 0, s"streamTransferBufferCapacity must be positive, got $streamTransferBufferCapacity")
 	require(maxGatheringBuffers >= 2, s"maxGatheringBuffers must be at least 2, got $maxGatheringBuffers")
 
@@ -55,7 +53,7 @@ class Transmitter(
 	private val frameHeaderWriter: VLQ.ByteWriter = (byte: Byte) => frameHeaderBuffer.put(byte)
 	/** Holds the standalone package terminator sentinel (`0x00` for standalone packages, or [[STREAM_FOLLOWS_SENTINEL_ENCODED]] when trailing byte sources are pending) when it does not fit at the tail of the final [[circularStorage]] buffer. */
 	private val sentinelBuffer: ByteBuffer = ByteBuffer.allocate(VLQ.INT_MAX_LENGTH)
-	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
+	private val circularStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(capacityOfBufferInRing), ringMaxLength)
 	/** Bounded array of [[java.nio.ByteBuffer]] entries passed to gathering [[channel.write]] calls: starts with [[frameHeaderBuffer]] on the first batch, followed by unread buffers from [[circularStorage]], and ends with [[sentinelBuffer]] when needed. */
 	private val gatheringBatch: Array[ByteBuffer] = new Array[ByteBuffer](maxGatheringBuffers)
 	/** Guards single-flight transmission: `true` while control packaging, gathering socket writes, or trailing streaming is in progress; reset to `false` before invoking `onComplete`. */
@@ -65,7 +63,7 @@ class Transmitter(
 	private val streamChunkHeaderBuffer: ByteBuffer = ByteBuffer.allocate(VLQ.INT_MAX_LENGTH)
 	private val streamChunkBuffers: Array[ByteBuffer] = Array(streamChunkHeaderBuffer, streamTransferBuffer)
 	/** @note Concurrency invariant: Reusable queue safely shared across transmissions because Transmitter enforces single-flight message transmission on this socket. Cleared on initiation, stream termination, and error cleanup. */
-	private val pendingByteSources: ArrayDeque[ByteSource] = new ArrayDeque[ByteSource]()
+	private val pendingByteSources: util.ArrayDeque[ByteSource] = new util.ArrayDeque[ByteSource]()
 
 	// Active single-flight per-message metadata, cleared in `completeTransmission` before releasing `transmissionInProgress` and invoking the callback.
 	private var currentMessage: Any = null
@@ -197,13 +195,13 @@ class Transmitter(
 		}
 	}
 
-	/** Prunes unused allocated buffers in circular storage down to a target count.
-	 * @param targetCount The desired target number of buffers to retain.
-	 * @return The number of pruned buffers actually freed. */
-	def pruneTo(targetCount: Int): Int = circularStorage.pruneTo(targetCount)
+	/** Prunes unused allocated buffers in circular storage down to a target length.
+	 * @param targetLength The desired target number of buffers to retain.
+	 * @return The number of buffers retained in circular storage after pruning. */
+	def pruneTo(targetLength: RingLength): RingLength = circularStorage.pruneTo(targetLength)
 
 	/** The total number of buffers currently allocated in circular storage. */
-	def bufferCount: Int = circularStorage.bufferCount
+	def ringLength: RingLength = circularStorage.ringLength
 
 	// ====================================================================================================
 	// Transmission Lifecycle Orchestration
@@ -263,14 +261,14 @@ class Transmitter(
 		/** Obtains a [[java.nio.ByteBuffer]] having at least `minimumRemaining` bytes available, flipping full buffers, accumulating [[totalControlBytes]], and advancing [[circularStorage]] when needed.
 		 * @param minimumRemaining The minimum number of contiguous bytes required for the next serialization write.
 		 * @return A [[java.nio.ByteBuffer]] positioned for writing with at least `minimumRemaining` bytes available.
-		 * @throws cluster.channel.BuffersCountExceededException if advancing [[circularStorage]] would exceed [[maxBuffers]]. */
+		 * @throws cluster.channel.RingLengthExceededException if advancing [[circularStorage]] would exceed [[ringMaxLength]]. */
 		protected override def getBuffer(minimumRemaining: Int): ByteBuffer = {
 			if writeEndBuffer.remaining() < minimumRemaining then {
 				// Record the payload bytes written into the current buffer and flip it so gathering writes can read it directly during transmission.
 				totalControlBytes += writeEndBuffer.position()
 				writeEndBuffer.flip()
 				circularStorage.advanceWriteEnd().fold {
-					throw new BuffersCountExceededException(s"Message transmission exceeded maximum buffer capacity ($maxBuffers buffers of $buffersCapacity bytes)")
+					throw new RingLengthExceededException(s"Message transmission exceeded maximum buffer capacity ($ringMaxLength buffers of $capacityOfBufferInRing bytes)")
 				} { nextBuffer =>
 					nextBuffer.clear()
 					writeEndBuffer = nextBuffer

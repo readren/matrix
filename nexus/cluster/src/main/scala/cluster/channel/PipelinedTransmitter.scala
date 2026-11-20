@@ -2,7 +2,7 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.PipelinedTransmitter.*
-import cluster.misc.{DualEndedCircularStorage, VLQ}
+import cluster.misc.{DualEndedCircularStorage, RingLength, VLQ}
 import cluster.serialization.Serializer.{SerializationException, Writer}
 import cluster.serialization.{ProtocolVersion, RecyclableIdentityIntMap, Serializer}
 
@@ -11,7 +11,7 @@ import readren.common.ByteSource
 import java.lang.invoke.VarHandle
 import java.nio.ByteBuffer
 import java.nio.channels.{AsynchronousSocketChannel, CompletionHandler}
-import java.util.ArrayDeque
+import java.util as util
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 import java.util.concurrent.{ConcurrentLinkedQueue, RejectedExecutionException, TimeUnit}
 import scala.util.control.NonFatal
@@ -30,13 +30,13 @@ object PipelinedTransmitter {
 	private[PipelinedTransmitter] opaque type JointStageState = Int
 
 	private object JointStageState {
-		/** Neither serialization nor transmission is active (`0 << 28`), both stage rings are pruned to `minBuffersOnIdle`, and `queuedCount` is always `0`. */
+		/** Neither serialization nor transmission is active (`0 << 28`), both stage rings are pruned to `ringMinLengthOnIdle`, and `queuedCount` is always `0`. */
 		val Idle: JointStageState = 0 << 28
 
 		/** Only serialization is active (`1 << 28`); the thread in [[PipelinedTransmitter.runSerializationLoop]] owns both serialization and transmission stage variables, and `queuedCount >= 0`. */
 		val SerializingOnly: JointStageState = 1 << 28
 
-		/** Only socket transmission is active (`2 << 28`); the active transmission chain owns transmission stage variables, [[PipelinedTransmitter.serializationStorage]] is pruned to `minBuffersOnIdle`, and `queuedCount` is always `0`. */
+		/** Only socket transmission is active (`2 << 28`); the active transmission chain owns transmission stage variables, [[PipelinedTransmitter.serializationStorage]] is pruned to `ringMinLengthOnIdle`, and `queuedCount` is always `0`. */
 		val TransmittingOnly: JointStageState = 2 << 28
 
 		/** Both stages are active in parallel (`3 << 28`); the thread in [[PipelinedTransmitter.runSerializationLoop]] owns serialization stage variables, the active transmission chain owns transmission stage variables, and `queuedCount >= 0`. */
@@ -188,24 +188,22 @@ object PipelinedTransmitter {
  *
  * @param channel The channel over which the messages will be transmitted.
  * @param context Transport diagnostic addressing context.
- * @param buffersCapacity The capacity of each buffer of the [[cluster.misc.DualEndedCircularStorage]].
- * @param maxBuffers The maximum number of buffers allowed in each stage's circular storage.
- * @param minBuffersOnIdle The minimum number of buffers retained per stage on idle transitions.
+ * @param capacityOfBufferInRing The capacity of each buffer of the [[cluster.misc.DualEndedCircularStorage]].
+ * @param ringMaxLength The maximum number of buffers allowed in each stage's circular storage.
+ * @param ringMinLengthOnIdle The minimum number of buffers retained per stage on idle transitions.
  * @param streamTransferBufferCapacity The capacity of the direct buffer lazily allocated to transfer streaming chunks.
  * @param maxGatheringBuffers The maximum number of [[java.nio.ByteBuffer]] entries submitted per gathering socket write call.
  * @tparam M The type of messages transmitted by this instance. */
 class PipelinedTransmitter[M](
 	channel: AsynchronousSocketChannel,
 	val context: Context,
-	buffersCapacity: Int = PipelinedTransmitter.DEFAULT_BUFFERS_CAPACITY,
-	val maxBuffers: Int = DEFAULT_MAX_BUFFERS,
-	val minBuffersOnIdle: Int = DEFAULT_MIN_BUFFERS_ON_IDLE,
-	val streamTransferBufferCapacity: Int = PipelinedTransmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
-	val maxGatheringBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_GATHERING_BUFFERS
+	capacityOfBufferInRing: Int = DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING,
+	val ringMaxLength: RingLength = DEFAULT_RING_MAX_LENGTH,
+	val ringMinLengthOnIdle: RingLength = DEFAULT_RING_MIN_LENGTH_ON_IDLE,
+	val streamTransferBufferCapacity: Int = DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
+	val maxGatheringBuffers: Int = DEFAULT_MAX_GATHERING_BUFFERS
 ) {
-	assert(buffersCapacity >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
-	require(maxBuffers >= 1, s"maxBuffers must be at least 1, got $maxBuffers")
-	require(minBuffersOnIdle >= 1, s"minBuffersOnIdle must be at least 1, got $minBuffersOnIdle")
+	assert(capacityOfBufferInRing >= Serializer.BUFFER_SIZE_REQUIRED_BY_MOST_DEMANDING_OPERATION)
 	require(streamTransferBufferCapacity > 0, s"streamTransferBufferCapacity must be positive, got $streamTransferBufferCapacity")
 	require(maxGatheringBuffers >= 2, s"maxGatheringBuffers must be at least 2, got $maxGatheringBuffers")
 
@@ -223,16 +221,16 @@ class PipelinedTransmitter[M](
 
 	// ====================================================================================================
 	// Serialization Stage Isolated State
-	// Concurrency invariant: Accessed and mutated exclusively by the single thread in `runSerializationLoop` while `JointStageState.SerializingOnly` or `JointStageState.Pipelined` holds, by the finishing thread in `onTransmissionFinished` while `JointStageState.HandoffPending` holds (during `handoffSerializedOutcomeToTransmissionStage` and Case A `serializationStorage.pruneTo`), or by the caller in `pruneTo` while `JointStageState.Pruning` holds, with the sole exception of the unlocked diagnostic read in `bufferCount`.
+	// Concurrency invariant: Accessed and mutated exclusively by the single thread in `runSerializationLoop` while `JointStageState.SerializingOnly` or `JointStageState.Pipelined` holds, by the finishing thread in `onTransmissionFinished` while `JointStageState.HandoffPending` holds (during `handoffSerializedOutcomeToTransmissionStage` and Case A `serializationStorage.pruneTo`), or by the caller in `pruneTo` while `JointStageState.Pruning` holds, with the sole exception of the unlocked diagnostic read in `bufferInRingTotalCount`.
 	// ====================================================================================================
 
 	/** Circular direct-buffer ring into which the active serialization thread serializes the control package.
 	 * Mutated by the thread executing [[runSerializationLoop]] (either a caller thread or an NIO.2 completion thread) and swapped with [[transmissionStorage]] in [[handoffSerializedOutcomeToTransmissionStage]]. */
-	private var serializationStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
+	private var serializationStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(capacityOfBufferInRing), ringMaxLength)
 
 	/** FIFO queue of non-empty out-of-line [[readren.common.ByteSource]] instances encountered while serializing the current control package.
 	 * Populated by the serialization thread in [[serializationWriter.putByteSource]] and swapped with [[transmissionByteSources]] in [[handoffSerializedOutcomeToTransmissionStage]]. */
-	private var serializationByteSources: ArrayDeque[ByteSource] = new ArrayDeque[ByteSource]()
+	private var serializationByteSources: util.ArrayDeque[ByteSource] = new util.ArrayDeque[ByteSource]()
 
 	/** Reusable identity map for object-reference deduplication during control package serialization.
 	 * Reset and mutated exclusively by the serialization thread inside [[serializationWriter.prepare]] and [[cluster.serialization.Serializer.serialize]]. */
@@ -246,7 +244,7 @@ class PipelinedTransmitter[M](
 	 * Set by the serialization thread in [[serializationWriter.finishControlPackage]] and copied to [[transmissionNeedsSeparateSentinel]] in [[handoffSerializedOutcomeToTransmissionStage]]. */
 	private var serializationNeedsSeparateSentinel: Boolean = false
 
-	/** Holds the non-delivery report when control package serialization fails (via [[cluster.serialization.Serializer.SerializationException]] or [[BuffersCountExceededException]]), or `null` when serialization succeeded.
+	/** Holds the non-delivery report when control package serialization fails (via [[cluster.serialization.Serializer.SerializationException]] or [[RingLengthExceededException]]), or `null` when serialization succeeded.
 	 * Written by the serialization thread in [[runSerializationLoop]] and copied to [[transmissionFailureReport]] in [[handoffSerializedOutcomeToTransmissionStage]] so failures are reported in strict FIFO order via [[initiateTransmission]] and [[onTransmissionFinished]]. */
 	private var serializationFailureReport: NotDelivered | Null = null
 
@@ -272,16 +270,16 @@ class PipelinedTransmitter[M](
 
 	// ====================================================================================================
 	// Transmission Stage Isolated State
-	// Concurrency invariant: Accessed and mutated exclusively by the active transmission chain (thread calling `initiateTransmission` through NIO.2 / AsyncReader completion callbacks up to `onTransmissionFinished`) while `JointStageState.TransmittingOnly`, `JointStageState.Pipelined`, or `JointStageState.HandoffPending` holds, by the single thread in `runSerializationLoop` while `JointStageState.SerializingOnly` holds (during `handoffSerializedOutcomeToTransmissionStage`), or by the caller in `pruneTo` while `JointStageState.Pruning` holds, with the sole exception of the unlocked diagnostic read in `bufferCount`.
+	// Concurrency invariant: Accessed and mutated exclusively by the active transmission chain (thread calling `initiateTransmission` through NIO.2 / AsyncReader completion callbacks up to `onTransmissionFinished`) while `JointStageState.TransmittingOnly`, `JointStageState.Pipelined`, or `JointStageState.HandoffPending` holds, by the single thread in `runSerializationLoop` while `JointStageState.SerializingOnly` holds (during `handoffSerializedOutcomeToTransmissionStage`), or by the caller in `pruneTo` while `JointStageState.Pruning` holds, with the sole exception of the unlocked diagnostic read in `bufferInRingTotalCount`.
 	// ====================================================================================================
 
 	/** Circular direct-buffer ring holding the serialized control package buffers currently being transmitted.
 	 * Swapped in from [[serializationStorage]] during [[handoffSerializedOutcomeToTransmissionStage]] and drained across NIO.2 completion callbacks in [[fillAndSendNextControlBatch]] and [[onTransmissionFinished]]. */
-	private var transmissionStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(buffersCapacity), maxBuffers)
+	private var transmissionStorage: DualEndedCircularStorage[ByteBuffer] = new DualEndedCircularStorage[ByteBuffer](() => ByteBuffer.allocateDirect(capacityOfBufferInRing), ringMaxLength)
 
 	/** FIFO queue of out-of-line [[readren.common.ByteSource]] instances awaiting trailing stream transmission after the control package completes.
 	 * Swapped in from [[serializationByteSources]] during [[handoffSerializedOutcomeToTransmissionStage]] and drained in [[runTrailingStreamLoop]]. */
-	private var transmissionByteSources: ArrayDeque[ByteSource] = new ArrayDeque[ByteSource]()
+	private var transmissionByteSources: util.ArrayDeque[ByteSource] = new util.ArrayDeque[ByteSource]()
 
 	/** Dedicated 5-byte buffer holding the VLQ-encoded single-frame length header ([[transmissionTotalControlBytes]]) for the transmitted control package.
 	 * Populated by the thread starting transmission in [[initiateTransmission]] (via [[transmissionControlWriteHandler.putByte]]) and consumed by [[channel]] in the first gathering write batch. */
@@ -493,13 +491,13 @@ class PipelinedTransmitter[M](
 		}
 	}
 
-	/** Prunes unused allocated buffers in both [[serializationStorage]] and [[transmissionStorage]] via [[DualEndedCircularStorage.pruneTo]] down to `targetCount` per stage when the pipeline is completely idle, and releases [[streamTransferBuffer]].
+	/** Prunes unused allocated buffers in both [[serializationStorage]] and [[transmissionStorage]] via [[DualEndedCircularStorage.pruneTo]] down to `targetLength` per stage when the pipeline is completely idle, and releases [[streamTransferBuffer]].
 	 * Executed on any caller thread invoking [[pruneTo]]. To prevent races with concurrent [[transmit]] or [[transmitWithAttachment]] calls during pruning, the caller atomically claims exclusive ownership of both serialization and transmission state by transitioning [[CoordinationState.Idle]] into [[CoordinationState.Pruning]] (`queuedCount == 0`, [[JointStageState.Pruning]]), prunes both rings, and then releases ownership (picking up any message submission that was enqueued while pruning was in progress by transitioning to [[JointStageState.SerializingOnly]]).
-	 * @param targetCount The desired target number of buffers to retain per stage.
-	 * @return The total number of buffers retained across both stages (or the current [[bufferCount]] if the pipeline was not idle). */
-	def pruneTo(targetCount: Int): Int = {
+	 * @param targetLength The desired target number of buffers to retain per stage.
+	 * @return The total number of buffers retained across both stages (or the current [[bufferInRingTotalCount]] if the pipeline was not idle). */
+	def pruneTo(targetLength: RingLength): RingLength = {
 		if coordinationState.compareAndSetCoordinationState(CoordinationState.Idle, CoordinationState.Pruning) then {
-			val retained = serializationStorage.pruneTo(targetCount) + transmissionStorage.pruneTo(targetCount)
+			val retained = RingLength(serializationStorage.pruneTo(targetLength) + transmissionStorage.pruneTo(targetLength))
 			streamTransferBuffer = null
 			streamChunkBuffers(1) = null
 			var nextMsgSubmission: MsgSubmission | Null = null
@@ -526,13 +524,13 @@ class PipelinedTransmitter[M](
 			}
 			retained
 		} else {
-			bufferCount
+			bufferInRingTotalCount
 		}
 	}
 
 	/** Returns the total number of buffers currently allocated across both [[serializationStorage]] and [[transmissionStorage]].
 	 * May be called from any thread (reads `@volatile` buffer counts from both rings). */
-	def bufferCount: Int = serializationStorage.bufferCount + transmissionStorage.bufferCount
+	def bufferInRingTotalCount: RingLength = RingLength(serializationStorage.ringLength + transmissionStorage.ringLength)
 
 	// ====================================================================================================
 	// Pipeline Stage Orchestrators
@@ -585,11 +583,11 @@ class PipelinedTransmitter[M](
 			}
 
 			if failureReport ne null then {
-				// Serialization failed before touching the wire: discard any buffers written into serializationStorage and prune it back to minBuffersOnIdle.
+				// Serialization failed before touching the wire: discard any buffers written into `serializationStorage` and prune it back to `ringMinLengthOnIdle`.
 				while serializationStorage.advanceReadEnd() do ()
 				serializationStorage.writeEnd.clear()
 				serializationByteSources.clear()
-				serializationStorage.pruneTo(minBuffersOnIdle)
+				serializationStorage.pruneTo(ringMinLengthOnIdle)
 			} else {
 				// Serialization succeeded: flip the final write-end buffer and inline or flag the package sentinel.
 				serializationWriter.finishControlPackage(!serializationByteSources.isEmpty)
@@ -631,7 +629,7 @@ class PipelinedTransmitter[M](
 					if cur.queuedCount == 0 then {
 						// Case B: No transmission is in-flight (`SerializingOnly`) and `transmissionQueue` is empty.
 						// Prune `serializationStorage` while still in `SerializingOnly` to uphold the pruned-serialization invariant of `TransmittingOnly`, then transition `coordinationState` to `TransmittingOnly` (`queuedCount == 0`) and schedule transmission initiation.
-						serializationStorage.pruneTo(minBuffersOnIdle)
+						serializationStorage.pruneTo(ringMinLengthOnIdle)
 						// Transition to `TransmittingOnly` to allow callers to claim serialization on the pruned `serializationStorage`, and schedule initiation of transmission from `transmissionStorage`.
 						if coordinationState.compareAndSetCoordinationState(cur, cur.withJointStageState(JointStageState.TransmittingOnly)) then {
 							wasStateChangedConcurrently = false
@@ -743,7 +741,7 @@ class PipelinedTransmitter[M](
 					if c2.queuedCount == 0 then {
 						// Case A: `HandoffPending` and `transmissionQueue` is empty.
 						// Uphold the pruned-serialization invariant of `TransmittingOnly` by pruning the newly swapped `serializationStorage` before transitioning to `TransmittingOnly`.
-						serializationStorage.pruneTo(minBuffersOnIdle)
+						serializationStorage.pruneTo(ringMinLengthOnIdle)
 						if coordinationState.compareAndSetCoordinationState(c2, c2.withJointStageState(JointStageState.TransmittingOnly)) then {
 							startTransmission = true
 							swapped = true
@@ -764,10 +762,10 @@ class PipelinedTransmitter[M](
 				// Transition to `SerializingOnly` and exit; the active serialization thread will observe `SerializingOnly` when it finishes serializing (in `runSerializationLoop` Cases B/C) and initiate transmission itself.
 				if coordinationState.compareAndSetCoordinationState(cur, cur.withJointStageState(JointStageState.SerializingOnly)) then done = true
 			} else {
-				// Case D: `TransmittingOnly` (which implies `queuedCount == 0` and `serializationStorage` is already pruned to `minBuffersOnIdle`).
+				// Case D: `TransmittingOnly` (which implies `queuedCount == 0` and `serializationStorage` is already pruned to `ringMinLengthOnIdle`).
 				// Prune `transmissionStorage` and release the lazy `streamTransferBuffer`, then CAS to `CoordinationState.Idle`.
 				assert(cur.queuedCount == 0)
-				transmissionStorage.pruneTo(minBuffersOnIdle)
+				transmissionStorage.pruneTo(ringMinLengthOnIdle)
 				streamTransferBuffer = null
 				streamChunkBuffers(1) = null
 				if coordinationState.compareAndSetCoordinationState(cur, CoordinationState.Idle) then {
@@ -836,14 +834,14 @@ class PipelinedTransmitter[M](
 		 * Executed by the serialization thread during [[cluster.serialization.Serializer.serialize]].
 		 * @param minimumRemaining The minimum number of contiguous bytes required for the next primitive or chunk write.
 		 * @return A [[java.nio.ByteBuffer]] positioned for writing with at least `minimumRemaining` bytes available.
-		 * @throws cluster.channel.BuffersCountExceededException if advancing [[serializationStorage]] would exceed [[maxBuffers]]. */
+		 * @throws cluster.channel.RingLengthExceededException if advancing [[serializationStorage]] would exceed [[ringMaxLength]]. */
 		protected override def getBuffer(minimumRemaining: Int): ByteBuffer = {
 			if writeEndBuffer.remaining() < minimumRemaining then {
 				// Record the payload bytes written into the current buffer and flip it so gathering writes can read it directly during transmission.
 				serializationTotalControlBytes += writeEndBuffer.position()
 				writeEndBuffer.flip()
 				serializationStorage.advanceWriteEnd().fold {
-					throw new BuffersCountExceededException(s"Message transmission exceeded maximum buffer capacity ($maxBuffers buffers of $buffersCapacity bytes)")
+					throw new RingLengthExceededException(s"Message transmission exceeded maximum buffer capacity ($ringMaxLength buffers of $capacityOfBufferInRing bytes)")
 				} { nextBuffer =>
 					nextBuffer.clear()
 					writeEndBuffer = nextBuffer

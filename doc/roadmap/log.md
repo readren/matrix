@@ -3,13 +3,19 @@ type: "Log"
 title: "Matrix Roadmap Modification Log"
 description: "Changelog recording milestone state transitions, dependency adjustments, and roadmap scope evolutions."
 tags: ["roadmap", "log"]
-timestamp: "2026-11-17T10:56:40Z"
+timestamp: "2026-11-20T01:40:00Z"
 ---
 
 # Matrix Roadmap Modification Log
 
 This log chronicles modifications, status transitions, and scope definitions across the Matrix architectural roadmap.
 
+- 2026-11-19: Relocated deferred post-M-A optimizations (`O3`, `O6`, `O7`, `O8`), the Section 7 elastic streaming pool/governor proposal, and legacy transmitter pair (`SequentialTransmitter`/`Transmitter`) removal evaluation out of Milestone M-A into `doc/roadmap/backlog-transport-optimizations.md` (`T-OPT`, `[DEFERRED]`, non-blocking for M-B, M-C, and M-D), and marked Milestone M-A as `[COMPLETED]` (`100%`) in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md`.
+- 2026-11-19: Synchronized `doc/roadmap/index.md` and `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` with completed Category 6 work (adaptive `RecordBatchEncodingStrategy`, isolated batch serialization scopes, handshake `maxInboundControlPackageBytes` negotiation, per-message `envelopeMeasurer`, and `stagedBatchInlineThreshold: RingLength`) and updated Category 3 `RingLength` configuration names (`sizeOfBuffersInRing`, `maxRingLengthForTransmission`, `maxRingLengthForReception`, `transmitterRingMaxLength`, and `receiverRingMaxLength`), advancing Milestone M-A progress to `95%`.
+- 2026-11-18: Updated the Category 3 asymmetric TX/RX buffer configuration item in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` to reflect the `ClusterBridgeConfig` field renames (`sizeOfRingBuffers`, `maxBuffersPerTxRing`, and `maxBuffersInRxRing`) while preserving `transmitterMaxBuffers` and `receiverMaxBuffers` for `ParticipantService.DelegateConfig`.
+- 2026-11-17: Marked Category 3 hygiene/formatting normalization, redundant snapshot forwarder removal (`FileSnapshotByteSource.scala` and `BufferSnapshotByteSource.scala`), and asymmetric `transmitterMaxBuffers` / `receiverMaxBuffers` plus `maxGatheringBuffers` configuration (`ClusterBridgeConfig` and `ParticipantService.DelegateConfig`) as completed in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md`.
+- 2026-11-17: Marked Optimization O4 (`FileByteSink` small-write coalescing with lazy heap staging buffer, zero-copy full-block/final-write bypass, and hoisted completion handler) as completed in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md`.
+- 2026-11-17: Marked Optimization O5 (`BufferByteSink` heap allocation for $\le 64$ KiB streams and `ByteBuffer` constructor wrapping) as completed in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md`, and added Optimization O8 tracking a pooled `ByteSink.Allocator` implementation.
 - 2026-11-17: Synchronized `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and `doc/roadmap/index.md` with the current codebase: gave precedence to `PipelinedTransmitter` over the legacy `SequentialTransmitter` / `Transmitter` pair (splitting out its eventual removal evaluation under Category 3), marked Optimization O1 (state hoisting) as completed, updated Defect C7, Defect C9, and Optimization O3 descriptions, pruned resolved/stale items from Category 3 and the transport gap summary, added Optimization O7 (Anchor + Relative VLQ Delta encoding for `StateInfo` and `AppendRecords`) and asymmetric TX/RX `maxBuffers` configuration tracking, and corrected repository source links in Section 6.
 
 - 2026-11-11: Added Category 6 (Wire Protocol Scaling & Payload Streaming) to Milestone M-A in `doc/roadmap/milestones/milestone-a-network-transport-bridge.md` and updated `doc/roadmap/index.md`, specifying a `ClusterBridgeConfig` predicate (`IArray[Record] => Boolean`) to conditionally stream `AppendRecords` and `InstallSnapshot` record batches out-of-line via `ByteSource` with `ProtocolVersion` compatibility and non-blocking FIFO receiver decoding.

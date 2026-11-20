@@ -44,20 +44,20 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 
 	private inline def term(i: Int): Term = i.asInstanceOf[Term]
 
-	val genMinimalBuffersCapacity: Gen[Int] = Gen.chooseNum(10, 128)
+	val genMinimalCapacityForBuffersInRing: Gen[Int] = Gen.chooseNum(10, 128)
 	val genMinimalStreamTransferCapacity: Gen[Int] = Gen.chooseNum(16, 256)
 	val genChunkSliceSize: Gen[Int] = Gen.chooseNum(1, 64)
 
 	private def withLoopbackConnection(
-		buffersCapacity: Int = 8192,
+		capacityOfBufferInRing: Int = 8192,
 		streamTransferBufferCapacity: Int = 64 * 1024,
 		allocationLimits: AllocationLimits = AllocationLimits.Default
 	)(testCode: (PipelinedTransmitter[ClusterWireMessage], Receiver, AsynchronousSocketChannel, AsynchronousSocketChannel) => Unit): Unit = {
-		withTypedLoopbackConnection[ClusterWireMessage](buffersCapacity, streamTransferBufferCapacity, allocationLimits)(testCode)
+		withTypedLoopbackConnection[ClusterWireMessage](capacityOfBufferInRing, streamTransferBufferCapacity, allocationLimits)(testCode)
 	}
 
 	private def withTypedLoopbackConnection[M](
-		buffersCapacity: Int = 8192,
+		capacityOfBufferInRing: Int = 8192,
 		streamTransferBufferCapacity: Int = 64 * 1024,
 		allocationLimits: AllocationLimits = AllocationLimits.Default
 	)(testCode: (PipelinedTransmitter[M], Receiver, AsynchronousSocketChannel, AsynchronousSocketChannel) => Unit): Unit = {
@@ -85,13 +85,13 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 		val transmitter = new PipelinedTransmitter[M](
 			clientChannel,
 			transmitterContext,
-			buffersCapacity = buffersCapacity,
+			capacityOfBufferInRing = capacityOfBufferInRing,
 			streamTransferBufferCapacity = streamTransferBufferCapacity
 		)
 		val receiver = new Receiver(
 			serverConnection,
 			receiverContext,
-			buffersCapacity = buffersCapacity,
+			capacityOfBufferInRing = capacityOfBufferInRing,
 			allocationLimits = allocationLimits,
 			streamTransferBufferCapacity = streamTransferBufferCapacity
 		)
@@ -139,12 +139,12 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 		val bgEc = ExecutionContext.fromExecutor(pool)
 		try {
 			for _ <- 0 until 5 do {
-				val bufCap = genMinimalBuffersCapacity.sample.getOrElse(32)
+				val bufCap = genMinimalCapacityForBuffersInRing.sample.getOrElse(32)
 				val streamCap = genMinimalStreamTransferCapacity.sample.getOrElse(64)
 				val maxChunk = genChunkSliceSize.sample.getOrElse(16)
 				val rawBytes = ("StreamingPayloadChunkData" * 20).getBytes(StandardCharsets.UTF_8)
 
-				withLoopbackConnection(buffersCapacity = bufCap, streamTransferBufferCapacity = streamCap) { (transmitter, receiver, _, _) =>
+				withLoopbackConnection(capacityOfBufferInRing = bufCap, streamTransferBufferCapacity = streamCap) { (transmitter, receiver, _, _) =>
 					var offset = 0
 					var isSync = true
 					val alternatingSource = new ByteSource {
@@ -208,8 +208,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-02: Trailing Stream Leftover Buffer Management & Circular Storage Slicing
 	// -------------------------------------------------------------------------
 	test("TC-02: Leftover bytes exceeding single buffer in finishTrailingStream slice cleanly across circular storage") {
-		withLoopbackConnection(buffersCapacity = 8192, streamTransferBufferCapacity = 64 * 1024) { (_, receiver, clientChannel, _) =>
-			val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap(new Array[Byte](100)))
+		withLoopbackConnection(capacityOfBufferInRing = 8192, streamTransferBufferCapacity = 64 * 1024) { (_, receiver, clientChannel, _) =>
+			val snapPayload = new BufferByteSource(ByteBuffer.wrap(new Array[Byte](100)))
 			val snapMsg = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -278,16 +278,16 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// -------------------------------------------------------------------------
 	test("TC-03: Sequential transmission of consecutive streaming messages on same socket completes losslessly") {
 		for _ <- 0 until 3 do {
-			val bufCap = genMinimalBuffersCapacity.sample.getOrElse(48)
+			val bufCap = genMinimalCapacityForBuffersInRing.sample.getOrElse(48)
 			val streamCap = genMinimalStreamTransferCapacity.sample.getOrElse(64)
 			val payload1 = ("Stream1Data" * 15).getBytes(StandardCharsets.UTF_8)
 			val payload2 = ("Stream2Data" * 25).getBytes(StandardCharsets.UTF_8)
 
-			withLoopbackConnection(buffersCapacity = bufCap, streamTransferBufferCapacity = streamCap) { (transmitter, receiver, _, _) =>
+			withLoopbackConnection(capacityOfBufferInRing = bufCap, streamTransferBufferCapacity = streamCap) { (transmitter, receiver, _, _) =>
 				val snap1: ClusterWireMessage = InstallSnapshot(
 					correlationId = CorrelationId(1.toShort),
 					inquirerTerm = term(1),
-					snapshot = SnapshotData[String](1L, term(1), SoleElectorateChange[String](term(1), "req1", term(1), Set("a"), Set("a")), 1L, new BufferSnapshotByteSource(ByteBuffer.wrap(payload1))),
+					snapshot = SnapshotData[String](1L, term(1), SoleElectorateChange[String](term(1), "req1", term(1), Set("a"), Set("a")), 1L, new BufferByteSource(ByteBuffer.wrap(payload1))),
 					batch = IArray.empty[Record],
 					leaderCommit = 1L,
 					termAtLeaderCommit = term(1)
@@ -295,7 +295,7 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 				val snap2: ClusterWireMessage = InstallSnapshot(
 					correlationId = CorrelationId(2.toShort),
 					inquirerTerm = term(1),
-					snapshot = SnapshotData[String](2L, term(1), SoleElectorateChange[String](term(1), "req2", term(1), Set("a"), Set("a")), 2L, new BufferSnapshotByteSource(ByteBuffer.wrap(payload2))),
+					snapshot = SnapshotData[String](2L, term(1), SoleElectorateChange[String](term(1), "req2", term(1), Set("a"), Set("a")), 2L, new BufferByteSource(ByteBuffer.wrap(payload2))),
 					batch = IArray.empty[Record],
 					leaderCommit = 2L,
 					termAtLeaderCommit = term(1)
@@ -330,9 +330,9 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// -------------------------------------------------------------------------
 	test("TC-04: Zero-length ByteSource round-trips without stream sentinels or framing mismatch under randomized capacities") {
 		for _ <- 0 until 5 do {
-			val bufCap = genMinimalBuffersCapacity.sample.getOrElse(32)
-			withLoopbackConnection(buffersCapacity = bufCap) { (transmitter, receiver, _, _) =>
-				val emptySource = new BufferSnapshotByteSource(ByteBuffer.allocate(0))
+			val bufCap = genMinimalCapacityForBuffersInRing.sample.getOrElse(32)
+			withLoopbackConnection(capacityOfBufferInRing = bufCap) { (transmitter, receiver, _, _) =>
+				val emptySource = new BufferByteSource(ByteBuffer.allocate(0))
 				val msg: ClusterWireMessage = InstallSnapshot(
 					correlationId = CorrelationId(10.toShort),
 					inquirerTerm = term(2),
@@ -360,8 +360,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-05: Zero-Length ByteSource Pipelined with Follow-Up Message
 	// -------------------------------------------------------------------------
 	test("TC-05: Zero-length ByteSource followed immediately by pipelined message in same frame deserializes cleanly") {
-		withLoopbackConnection(buffersCapacity = 8192) { (_, receiver, clientChannel, _) =>
-			val emptySource = new BufferSnapshotByteSource(ByteBuffer.allocate(0))
+		withLoopbackConnection(capacityOfBufferInRing = 8192) { (_, receiver, clientChannel, _) =>
+			val emptySource = new BufferByteSource(ByteBuffer.allocate(0))
 			val snapMsg = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -416,8 +416,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-06: Malformed Chunk Header & Length Bounds Validation
 	// -------------------------------------------------------------------------
 	test("TC-06: Malformed chunk header with > 5 continuation bytes triggers protocol fault") {
-		withLoopbackConnection(buffersCapacity = 8192) { (_, receiver, clientChannel, _) =>
-			val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap(new Array[Byte](100)))
+		withLoopbackConnection(capacityOfBufferInRing = 8192) { (_, receiver, clientChannel, _) =>
+			val snapPayload = new BufferByteSource(ByteBuffer.wrap(new Array[Byte](100)))
 			val snapMsg = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -457,8 +457,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	}
 
 	test("TC-06B: Chunk size exceeding remaining expected stream bytes triggers protocol fault") {
-		withLoopbackConnection(buffersCapacity = 8192) { (_, receiver, clientChannel, _) =>
-			val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap(new Array[Byte](50)))
+		withLoopbackConnection(capacityOfBufferInRing = 8192) { (_, receiver, clientChannel, _) =>
+			val snapPayload = new BufferByteSource(ByteBuffer.wrap(new Array[Byte](50)))
 			val snapMsg = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -503,8 +503,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// -------------------------------------------------------------------------
 	test("TC-07: Declared ByteSource size exceeding AllocationLimits triggers rejection before sink allocation") {
 		val tightLimits = new AllocationLimits(maxByteSourceBytes = 256L)
-		withLoopbackConnection(buffersCapacity = 8192, allocationLimits = tightLimits) { (transmitter, receiver, _, _) =>
-			val oversizedPayload = new BufferSnapshotByteSource(ByteBuffer.wrap(new Array[Byte](1024)))
+		withLoopbackConnection(capacityOfBufferInRing = 8192, allocationLimits = tightLimits) { (transmitter, receiver, _, _) =>
+			val oversizedPayload = new BufferByteSource(ByteBuffer.wrap(new Array[Byte](1024)))
 			val snapMsg: ClusterWireMessage = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -532,7 +532,7 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-08: Outbound Mid-Stream Abort & Receiver Recovery
 	// -------------------------------------------------------------------------
 	test("TC-08: Outbound AsyncReader failure mid-stream emits corruption sentinel and Receiver skips aborted package on open channel") {
-		withLoopbackConnection(buffersCapacity = 4096, streamTransferBufferCapacity = 64) { (transmitter, receiver, _, _) =>
+		withLoopbackConnection(capacityOfBufferInRing = 4096, streamTransferBufferCapacity = 64) { (transmitter, receiver, _, _) =>
 			var chunkCount = 0
 			val failingSource = new ByteSource {
 				override def size: Long = 500L
@@ -593,8 +593,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-09: Inbound Mid-Stream Peer Abort Sentinel Recovery
 	// -------------------------------------------------------------------------
 	test("TC-09: Peer emitting in-band corruption sentinel skips aborted stream and receives subsequent message") {
-		withLoopbackConnection(buffersCapacity = 8192) { (_, receiver, clientChannel, _) =>
-			val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap(new Array[Byte](200)))
+		withLoopbackConnection(capacityOfBufferInRing = 8192) { (_, receiver, clientChannel, _) =>
+			val snapPayload = new BufferByteSource(ByteBuffer.wrap(new Array[Byte](200)))
 			val snapMsg = InstallSnapshot(
 				correlationId = CorrelationId(1.toShort),
 				inquirerTerm = term(1),
@@ -648,7 +648,7 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-12: Pipelined Queueing During Active Trailing Streaming
 	// -------------------------------------------------------------------------
 	test("TC-12: PipelinedTransmitter queues and pipelines concurrent transmission during active trailing streaming") {
-		withLoopbackConnection(buffersCapacity = 8192) { (transmitter, receiver, _, _) =>
+		withLoopbackConnection(capacityOfBufferInRing = 8192) { (transmitter, receiver, _, _) =>
 			val readInitiatedPromise = Promise[(ByteBuffer, Any, CompletionHandler[Integer, Any])]()
 			val payloadBytes = Array.tabulate[Byte](1024)(i => (i & 0xff).toByte)
 			val slowByteSource = new ByteSource {
@@ -720,8 +720,8 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 	// TC-14: Multi-Span Control Frame Serialization with getBuffer
 	// -------------------------------------------------------------------------
 	test("TC-14: Multi-buffer frame serialization flushes do not emit premature sentinels") {
-		// buffersCapacity = 32 bytes forces a 500-byte AppendRecords message to span ~16 circular storage buffers
-		withLoopbackConnection(buffersCapacity = 32) { (transmitter, receiver, _, _) =>
+		// capacityOfBufferInRing = 32 bytes forces a 500-byte AppendRecords message to span ~16 circular storage buffers
+		withLoopbackConnection(capacityOfBufferInRing = 32) { (transmitter, receiver, _, _) =>
 			val largePayload = "MultiBufferFramingTestContentPayload" * 15
 			val appendMsg: ClusterWireMessage = AppendRecords(
 				correlationId = CorrelationId(99.toShort),
@@ -768,11 +768,11 @@ class ClusterWireStreamingSuite extends ScalaCheckSuite {
 		val payloadA = "FirstStreamPayloadData".getBytes(StandardCharsets.UTF_8)
 		val payloadB = "SecondStreamPayloadData-WithDifferentLength".getBytes(StandardCharsets.UTF_8)
 
-		withTypedLoopbackConnection[CompositeStreamMessage](buffersCapacity = 48, streamTransferBufferCapacity = 32) { (transmitter, receiver, _, _) =>
+		withTypedLoopbackConnection[CompositeStreamMessage](capacityOfBufferInRing = 48, streamTransferBufferCapacity = 32) { (transmitter, receiver, _, _) =>
 			val msg = CompositeStreamMessage(
 				42L,
-				new BufferSnapshotByteSource(ByteBuffer.wrap(payloadA)),
-				new BufferSnapshotByteSource(ByteBuffer.wrap(payloadB))
+				new BufferByteSource(ByteBuffer.wrap(payloadA)),
+				new BufferByteSource(ByteBuffer.wrap(payloadB))
 			)
 
 			val p = Promise[CompositeStreamMessage]()

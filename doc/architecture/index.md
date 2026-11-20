@@ -3,7 +3,7 @@ type: "Index"
 title: "Matrix Project Knowledge Base"
 description: "Index of all architectural and operational specifications."
 tags: ["index", "documentation"]
-timestamp: "2026-11-08T18:00:00Z"
+timestamp: "2026-11-18T04:10:00Z"
 ---
 
 # Matrix Project Knowledge Base
@@ -35,3 +35,4 @@ timestamp: "2026-11-08T18:00:00Z"
 - [Simplify Sequencer Error Handling](adr-simplify-error-handling.md)
 - [Evaluation of Spare-Slot Pattern](adr-spare-slot-pattern-evaluation.md)
 - [Generic Out-of-Line ByteSource Serialization and Constant-Memory Trailing Streams](adr-trailing-stream-bulk-byte-source-transfer.md)
+- [Size-Agnostic Consensus Record-Batch Encoding, Isolated Deduplication Scopes, and Negotiated Inline-vs-Stream Placement](adr-record-batch-encoding-placement.md)

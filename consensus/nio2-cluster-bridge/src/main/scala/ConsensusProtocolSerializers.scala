@@ -1,15 +1,11 @@
 package readren.consensus
 package nio2
 
-import protocol.*
-import readren.common.Maybe
+import readren.consensus.protocol.*
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.serialization.InvariantIterableFactory.given
 import readren.nexus.cluster.serialization.ValueOrReferenceTest.given
-
-
-
 
 import scala.collection.immutable.ListSet
 
@@ -50,7 +46,6 @@ trait ConsensusProtocolSerializers {
 
 	given appendResultRejectedSerializer: Serializer[AppendResult_Rejected] = Serializer.derive[AppendResult_Rejected]
 	given appendResultRejectedDeserializer: Deserializer[AppendResult_Rejected] = Deserializer.derive[AppendResult_Rejected]
-
 
 	given appendResultSerializer: Serializer[AppendResult] = Serializer.derive[AppendResult]
 	given appendResultDeserializer: Deserializer[AppendResult] = Deserializer.derive[AppendResult]

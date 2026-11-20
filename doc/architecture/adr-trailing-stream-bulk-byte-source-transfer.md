@@ -3,7 +3,7 @@ type: "Decision"
 title: "Generic Out-of-Line ByteSource Serialization and Constant-Memory Trailing Streams"
 description: "Decision to represent arbitrarily large binary streams via a foundational ByteSource trait in common and stream them out-of-line after the control package in Transmitter and Receiver without changing synchronous Serializer or Deserializer signatures."
 tags: ["design-history", "common", "nexus", "consensus", "transport", "serialization", "snapshot"]
-timestamp: "2026-11-17T09:41:00Z"
+timestamp: "2026-11-19T18:55:00Z"
 ---
 
 # Architectural Decision Record: Generic Out-of-Line ByteSource Serialization
@@ -16,7 +16,7 @@ The cluster transport ([Cluster Binary Serialization](cluster-serialization.md))
 
 Consensus `InstallSnapshot` messages ([Lazy Raft Consensus Protocol Specification](lazy-multi-raft-consensus.md)) embed state machine snapshots (`SnapshotByteSource`) whose size is unbounded. Streaming these payloads inline through `Serializer.Writer` and `Deserializer.Reader` creates two symmetrical bottlenecks:
 
-1. **Reception:** `Receiver` accumulates all frames of a package in `DualEndedCircularStorage` before invoking `Deserializer.deserialize`, failing with `BuffersCountExceededException` once the total package size exceeds the circular buffer ceiling.
+1. **Reception:** `Receiver` accumulates all frames of a package in `DualEndedCircularStorage` before invoking `Deserializer.deserialize`, failing with `RingLengthExceededException` once the total package size exceeds the circular buffer ceiling.
 2. **Transmission:** `Transmitter` runs `Serializer.serialize` synchronously on the caller thread (the consensus `sequencer`). Because reading and serializing bytes into memory outpaces socket transmission, the caller exhausts `DualEndedCircularStorage.advanceWriteEnd()` before network writes drain the ring, aborting the package with `CORRUPTED_PACKAGE_SENTINEL`. Blocking during serialization is impossible because it would freeze the single-threaded `sequencer`.
 
 At the same time, forcing `Serializer` and `Deserializer` (and the TASTy macro derivation engine) into an asynchronous continuation-passing style or manually splitting domain messages (`InstallSnapshot`, `SnapshotData`) into separate control envelopes and transport-specific stream calls would pollute protocol definitions and higher-level bridge logic.
@@ -88,7 +88,7 @@ To seamlessly transition between constant-memory stream mode and framed message 
   1. *Elimination of Buffer Reuse Clobbering Hazards:* Isolating leftover bytes in an independent buffer decouples downstream message framing from stream buffer recycling. If the subsequent message also has a trailing stream, `streamTransferBuffer` can be cleared and used for socket reads without risk of clobbering unconsumed data.
   2. *Preservation of Framing and Streaming Continuity:* Feeding staged bytes through `readChannel` for both control framing and trailing stream chunk reads ensures that pipelined bursts containing consecutive streaming messages consume staged bytes strictly in chronological order without bypassing buffered data or hanging on empty sockets.
   3. *Zero-Allocation Fast Path:* In non-pipelined flows or when the stream was fully absorbed in the initial buffer with no prior staged leftovers (Case 2), zero heap allocations occur. When pipelining across stream boundaries does occur, allocating a transient heap buffer in young-generation Eden space (typically tens or hundreds of bytes) incurs negligible GC overhead compared to socket I/O latency, while providing absolute safety against memory corruption.
-  4. *Idle Buffer Pruning Safety:* Circular storage is pruned down to `minBuffersOnIdle` only when both `circularStorage.writeEnd.position == 0` and `streamTransferLeftover == null`, ensuring that idle buffer reclamation never discards pipelined message bytes waiting in staging.
+  4. *Idle Buffer Pruning Safety:* Circular storage is pruned down to `ringMinLengthOnIdle` only when both `circularStorage.writeEnd.position == 0` and `streamTransferLeftover == null`, ensuring that idle buffer reclamation never discards pipelined message bytes waiting in staging.
 
 ## Invariants
 

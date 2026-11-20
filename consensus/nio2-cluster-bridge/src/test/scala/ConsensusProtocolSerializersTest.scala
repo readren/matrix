@@ -3,6 +3,7 @@ package nio2
 
 import ConsensusProtocolSerializers.given
 import protocol.*
+import readren.common.{BufferByteSource, FileByteSource}
 import readren.consensus.ConsensusWireTypesCdm
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
@@ -212,7 +213,7 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 
 	test("SnapshotByteSource round-trip preserves bytes and size") {
 		val rawBytes = "Snapshot serialized state machine content bytes 123456789".getBytes(StandardCharsets.UTF_8)
-		val payload = new BufferSnapshotByteSource(ByteBuffer.wrap(rawBytes))
+		val payload = new BufferByteSource(ByteBuffer.wrap(rawBytes))
 		val decoded = roundTrip[SnapshotByteSource](payload)
 		assertEquals(decoded.size, payload.size)
 
@@ -230,13 +231,13 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 		}
 	}
 
-	test("FileSnapshotByteSource round-trip preserves file content and zero-copy transfer") {
+	test("FileByteSource round-trip preserves file content and zero-copy transfer") {
 		val tempFile = java.nio.file.Files.createTempFile("test-snap-", ".bin")
 		tempFile.toFile.deleteOnExit()
-		val content = "FileSnapshotByteSource on-disk streaming verification".getBytes(StandardCharsets.UTF_8)
+		val content = "FileByteSource on-disk streaming verification".getBytes(StandardCharsets.UTF_8)
 		java.nio.file.Files.write(tempFile, content)
 
-		val payload = new FileSnapshotByteSource(tempFile, deleteOnClose = false)
+		val payload = new FileByteSource(tempFile, deleteOnClose = false)
 		val decoded = roundTrip[SnapshotByteSource](payload)
 		assertEquals(decoded.size, content.length.toLong)
 
@@ -264,7 +265,7 @@ class ConsensusProtocolSerializersTest extends ScalaCheckSuite {
 			oldParticipants = Set("n1"),
 			newParticipants = Set("n1", "n2")
 		)
-		val snapPayload = new BufferSnapshotByteSource(ByteBuffer.wrap("snap-content".getBytes(StandardCharsets.UTF_8)))
+		val snapPayload = new BufferByteSource(ByteBuffer.wrap("snap-content".getBytes(StandardCharsets.UTF_8)))
 		val snapshotData = SnapshotData[String](
 			lastIncludedRecordIndex = 200L,
 			lastIncludedRecordTerm = term(5),

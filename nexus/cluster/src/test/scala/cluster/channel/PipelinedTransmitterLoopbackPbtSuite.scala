@@ -2,22 +2,21 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.PipelinedTransmitter.*
-import cluster.misc.VLQ
-import cluster.serialization.CommonSerializers.given
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.Serializer.SerializationException
 import cluster.serialization.{AllocationLimits, Deserializer, ProtocolVersion, Serializer}
 import cluster.service.{ChannelId, ChannelOrigin}
 
 import munit.ScalaCheckSuite
 import org.scalacheck.{Gen, Prop, Test}
-import readren.common.{BufferByteSource, ByteSink as CommonByteSink, ByteSource, FileByteSource, Maybe}
+import readren.common.{BufferByteSource, ByteSource, FileByteSource, Maybe, ByteSink as CommonByteSink}
 
 import java.io.{ByteArrayOutputStream, EOFException, IOException}
 import java.net.{InetSocketAddress, SocketAddress, SocketOption, StandardSocketOptions}
 import java.nio.ByteBuffer
-import java.nio.channels.{AsynchronousChannelGroup, AsynchronousServerSocketChannel, AsynchronousSocketChannel, CompletionHandler, InterruptedByTimeoutException}
+import java.nio.channels.*
 import java.nio.file.{Files, Path}
-import java.util.{Arrays, Collections}
+import java.util
 import java.util.concurrent.*
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 import java.util.concurrent.locks.LockSupport
@@ -157,14 +156,14 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 	}
 
 	private case class LoopbackConfig(
-		txBuffersCapacity: Int,
-		txMaxBuffers: Int,
-		txMinBuffersOnIdle: Int,
+		capacityOfBufferInTxRing: Int,
+		txRingMaxLength: RingLength,
+		txRingMinLengthOnIdle: RingLength,
 		txStreamTransferBufferCapacity: Int,
 		txMaxGatheringBuffers: Int,
-		rxBuffersCapacity: Int,
-		rxMaxBuffers: Int,
-		rxMinBuffersOnIdle: Int,
+		capacityOfBufferInRxRing: Int,
+		rxRingMaxLength: RingLength,
+		rxRingMinLengthOnIdle: RingLength,
 		rxStreamTransferBufferCapacity: Int,
 		soSndBuf: Int,
 		soRcvBuf: Int,
@@ -463,18 +462,18 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 			val tx = new PipelinedTransmitter[WireEnvelope](
 				clientChannel,
 				makeContext(clientChannel.getLocalAddress, accepted.getLocalAddress, ChannelOrigin.INITIATED),
-				buffersCapacity = cfg.txBuffersCapacity,
-				maxBuffers = cfg.txMaxBuffers,
-				minBuffersOnIdle = cfg.txMinBuffersOnIdle,
+				capacityOfBufferInRing = cfg.capacityOfBufferInTxRing,
+				ringMaxLength = cfg.txRingMaxLength,
+				ringMinLengthOnIdle = cfg.txRingMinLengthOnIdle,
 				streamTransferBufferCapacity = cfg.txStreamTransferBufferCapacity,
 				maxGatheringBuffers = cfg.txMaxGatheringBuffers
 			)
 			val rx = new Receiver(
 				accepted,
 				makeReceiverContext(accepted.getLocalAddress, clientChannel.getLocalAddress, ChannelOrigin.ACCEPTED),
-				buffersCapacity = cfg.rxBuffersCapacity,
-				maxBuffers = cfg.rxMaxBuffers,
-				minBuffersOnIdle = cfg.rxMinBuffersOnIdle,
+				capacityOfBufferInRing = cfg.capacityOfBufferInRxRing,
+				ringMaxLength = cfg.rxRingMaxLength,
+				ringMinLengthOnIdle = cfg.rxRingMinLengthOnIdle,
 				allocationLimits = AllocationLimits.Default,
 				byteSinkAllocator = makeSinkAllocator(cfg.sinkMode, bgExecutor),
 				streamTransferBufferCapacity = cfg.rxStreamTransferBufferCapacity
@@ -574,10 +573,10 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 	// Minimal & Almost-Minimal Buffer Generators
 	// ====================================================================================================
 
-	private val genTxBuffersCapacity: Gen[Int] =
+	private val genCapacityOfBufferInTxRing: Gen[Int] =
 		Gen.frequency(3 -> Gen.const(9), 2 -> Gen.const(10), 2 -> Gen.const(11), 2 -> Gen.const(12), 3 -> Gen.chooseNum(13, 28))
 
-	private val genRxBuffersCapacity: Gen[Int] =
+	private val genCapacityOfBufferInRxRing: Gen[Int] =
 		Gen.frequency(3 -> Gen.const(6), 2 -> Gen.const(7), 2 -> Gen.const(8), 2 -> Gen.const(9), 3 -> Gen.chooseNum(10, 28))
 
 	private val genStreamTransferBufferCapacity: Gen[Int] =
@@ -586,7 +585,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 	private val genMaxGatheringBuffers: Gen[Int] =
 		Gen.frequency(3 -> Gen.const(2), 2 -> Gen.const(3), 2 -> Gen.const(4), 1 -> Gen.const(5))
 
-	private val genMinBuffersOnIdle: Gen[Int] = Gen.chooseNum(1, 3)
+	private val genRingMinLengthOnIdle: Gen[Int] = Gen.chooseNum(1, 3)
 
 	private val genChannelGroupMode: Gen[ChannelGroupMode] =
 		Gen.oneOf(ChannelGroupMode.SystemDefault, ChannelGroupMode.FixedPool(1), ChannelGroupMode.FixedPool(2), ChannelGroupMode.FixedPool(4))
@@ -599,12 +598,12 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 
 	private def genLoopbackConfig(maxControlBytesPerMsg: Int, txMaxBuffersFloor: Int = 0): Gen[LoopbackConfig] =
 		for {
-			txCap <- genTxBuffersCapacity
+			txCap <- genCapacityOfBufferInTxRing
 			txGather <- genMaxGatheringBuffers
-			txMinIdle <- genMinBuffersOnIdle
+			txMinIdle <- genRingMinLengthOnIdle
 			txStreamCap <- genStreamTransferBufferCapacity
-			rxCap <- genRxBuffersCapacity
-			rxMinIdle <- genMinBuffersOnIdle
+			rxCap <- genCapacityOfBufferInRxRing
+			rxMinIdle <- genRingMinLengthOnIdle
 			rxStreamCap <- genStreamTransferBufferCapacity
 			soSndBuf <- Gen.chooseNum(128, 1024)
 			soRcvBuf <- Gen.chooseNum(128, 1024)
@@ -620,14 +619,14 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 			val rxUsable = rxCap - 5
 			val rxNeeded = math.max(rxMinIdle, math.ceil((maxControlBytesPerMsg + 80).toDouble / rxUsable).toInt + extraRxBuf)
 			LoopbackConfig(
-				txBuffersCapacity = txCap,
-				txMaxBuffers = txMaxBuf,
-				txMinBuffersOnIdle = txMinIdle,
+				capacityOfBufferInTxRing = txCap,
+				txRingMaxLength = RingLength(txMaxBuf),
+				txRingMinLengthOnIdle = RingLength(txMinIdle),
 				txStreamTransferBufferCapacity = txStreamCap,
 				txMaxGatheringBuffers = txGather,
-				rxBuffersCapacity = rxCap,
-				rxMaxBuffers = math.max(rxNeeded, 4),
-				rxMinBuffersOnIdle = rxMinIdle,
+				capacityOfBufferInRxRing = rxCap,
+				rxRingMaxLength = RingLength(math.max(rxNeeded, 4)),
+				rxRingMinLengthOnIdle = RingLength(rxMinIdle),
 				rxStreamTransferBufferCapacity = rxStreamCap,
 				soSndBuf = soSndBuf,
 				soRcvBuf = soRcvBuf,
@@ -718,14 +717,14 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 		assertEquals(actual.producerId, expected.producerId)
 		assertEquals(actual.seq, expected.seq)
 		assertEquals(actual.versionTag, expected.versionTag)
-		assert(Arrays.equals(actual.controlPayload, expected.controlPayload), s"Control payload mismatch for (${expected.producerId}, ${expected.seq})")
+		assert(util.Arrays.equals(actual.controlPayload, expected.controlPayload), s"Control payload mismatch for (${expected.producerId}, ${expected.seq})")
 		assertEquals(actual.dedupFirst, expected.dedupFirst)
 		assertEquals(actual.dedupSecond, expected.dedupSecond)
 		assert(actual.dedupFirst eq actual.dedupSecond, s"Reference deduplication failed for (${expected.producerId}, ${expected.seq})")
 		assertEquals(actual.streams.size, expected.expectedStreams.size)
 		actual.streams.zip(expected.expectedStreams).foreach { (actualBs, expectedBytes) =>
 			val readBytes = readAndCloseByteSource(actualBs)
-			assert(Arrays.equals(readBytes, expectedBytes), s"Trailing ByteSource payload mismatch for (${expected.producerId}, ${expected.seq}): expectedLen=${expectedBytes.length}, actualLen=${readBytes.length}")
+			assert(util.Arrays.equals(readBytes, expectedBytes), s"Trailing ByteSource payload mismatch for (${expected.producerId}, ${expected.seq}): expectedLen=${expectedBytes.length}, actualLen=${readBytes.length}")
 		}
 	}
 
@@ -790,7 +789,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				while i < preCount do {
 					val idx = i
 					tx.transmitWithAttachment(envelopes(idx), ProtocolVersion(sc.plans(idx).msgVersionId), idx, timeout = 10L, timeUnit = TimeUnit.SECONDS) { (rep, att) =>
-						txCallbacks.synchronized(txCallbacks += ((att, rep)))
+						txCallbacks.synchronized(txCallbacks.addOne((att, rep)))
 						txDoneLatch.countDown()
 					}
 					i += 1
@@ -801,7 +800,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				while i < n do {
 					val idx = i
 					tx.transmitWithAttachment(envelopes(idx), ProtocolVersion(sc.plans(idx).msgVersionId), idx, timeout = 10L, timeUnit = TimeUnit.SECONDS) { (rep, att) =>
-						txCallbacks.synchronized(txCallbacks += ((att, rep)))
+						txCallbacks.synchronized(txCallbacks.addOne((att, rep)))
 						txDoneLatch.countDown()
 					}
 					i += 1
@@ -828,7 +827,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					assertEnvelopeMatches(envelopes(k), rxOutcomes(k))
 					k += 1
 				}
-				assert(tx.bufferCount <= 2 * sc.cfg.txMinBuffersOnIdle, s"Expected pruned bufferCount <= ${2 * sc.cfg.txMinBuffersOnIdle}, got ${tx.bufferCount}")
+				assert(tx.bufferInRingTotalCount <= 2 * sc.cfg.txRingMinLengthOnIdle, s"Expected pruned bufferInRingTotalCount <= ${2 * sc.cfg.txRingMinLengthOnIdle}, got ${tx.bufferInRingTotalCount}")
 				true
 			}
 		}
@@ -922,7 +921,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				val idleListenersPending = new AtomicInteger(0)
 				val disruptor = new Thread(() => {
 					while !stopDisruptor.get() do {
-						tx.pruneTo(sc.cfg.txMinBuffersOnIdle)
+						tx.pruneTo(sc.cfg.txRingMinLengthOnIdle)
 						if idleListenersPending.get() < 4 then {
 							idleListenersPending.incrementAndGet()
 							tx.triggerOnIdle(() => {
@@ -988,7 +987,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				// Verify strict per-producer monotonic sequence order on wire for base tasks
 				for pid <- 0 until numThreads do {
 					val baseSeqsForPid = rxOrder.filter(m => m.producerId == pid && m.seq < 10000).map(_.seq).toVector
-					assertEquals(baseSeqsForPid, (0 until sc.perThreadPlans(pid).size).toVector)
+					assertEquals(baseSeqsForPid, sc.perThreadPlans(pid).indices.toVector)
 				}
 
 				// Verify exact content of every received envelope
@@ -997,7 +996,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					assert(expected ne null, s"Unexpected envelope (${actual.producerId}, ${actual.seq})")
 					assertEnvelopeMatches(expected, actual)
 				}
-				assert(tx.bufferCount <= 2 * sc.cfg.txMinBuffersOnIdle)
+				assert(tx.bufferInRingTotalCount <= 2 * sc.cfg.txRingMinLengthOnIdle)
 				true
 			}
 		}
@@ -1030,9 +1029,9 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 			smallTxMaxBuf <- Gen.chooseNum(6, 9)
 			maxBurstCtrl = smallTxMaxBuf * 28
 			rawCfg <- genLoopbackConfig(maxBurstCtrl, txMaxBuffersFloor = smallTxMaxBuf)
-			cfg = rawCfg.copy(txMinBuffersOnIdle = math.min(rawCfg.txMinBuffersOnIdle, smallTxMaxBuf))
-			maxValidCtrl = math.max(0, smallTxMaxBuf * cfg.txBuffersCapacity - 42)
-			maxSafePrefix = math.max(1, smallTxMaxBuf * cfg.txBuffersCapacity - 12)
+			cfg = rawCfg.copy(txRingMinLengthOnIdle = RingLength(math.min(rawCfg.txRingMinLengthOnIdle, smallTxMaxBuf)))
+			maxValidCtrl = math.max(0, smallTxMaxBuf * cfg.capacityOfBufferInTxRing - 42)
+			maxSafePrefix = math.max(1, smallTxMaxBuf * cfg.capacityOfBufferInTxRing - 12)
 			n <- Gen.chooseNum(10, 20)
 			concurrent <- Gen.oneOf(false, true)
 			ops <- Gen.containerOfN[Vector, SerializationOpPlan](n, for {
@@ -1042,7 +1041,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				streamCount <- Gen.oneOf(0, 1)
 				streams <- Gen.listOfN(streamCount, genValidStreamSpec(maxBytes = 80))
 				plan = MsgPlan(ctrl, esc, tagVal, 1, 1, streams, 0L)
-				prefixLen <- Gen.chooseNum(1, math.min(maxSafePrefix, cfg.txBuffersCapacity * 2 + 3))
+				prefixLen <- Gen.chooseNum(1, math.min(maxSafePrefix, cfg.capacityOfBufferInTxRing * 2 + 3))
 				prefix <- genRandomBytes(prefixLen, prefixLen)
 				kind <- Gen.frequency(
 					5 -> Gen.const(0),
@@ -1056,7 +1055,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				case 1 => SerializationOpPlan(plan, SerializationBehavior.ThrowSerExMidway(prefix), OpOutcomeExpectation.ExpectSerializationProblem)
 				case 2 => SerializationOpPlan(plan, SerializationBehavior.ThrowNegativeByteSourceSize(prefix), OpOutcomeExpectation.ExpectSerializationProblem)
 				case 3 =>
-					val overflow = smallTxMaxBuf * cfg.txBuffersCapacity + 1
+					val overflow = smallTxMaxBuf * cfg.capacityOfBufferInTxRing + 1
 					SerializationOpPlan(plan, SerializationBehavior.ExceedMaxBuffers(overflow), OpOutcomeExpectation.ExpectTransmissionFailure)
 				case _ => SerializationOpPlan(plan, SerializationBehavior.ThrowNonFatalMidway(prefix), OpOutcomeExpectation.ExpectTransmissionFailure)
 			})
@@ -1107,7 +1106,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 							var idx = from
 							while idx < untilIdx do {
 								tx.transmitWithAttachment(envelopes(idx), fixedVersion, idx, timeout = 10L, timeUnit = TimeUnit.SECONDS) { (rep, att) =>
-									txResults.synchronized(txResults += ((att, rep)))
+									txResults.synchronized(txResults.addOne((att, rep)))
 									txDoneLatch.countDown()
 								}
 								idx += 1
@@ -1126,7 +1125,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					var idx = 0
 					while idx < totalOps do {
 						tx.transmitWithAttachment(envelopes(idx), fixedVersion, idx, timeout = 10L, timeUnit = TimeUnit.SECONDS) { (rep, att) =>
-							txResults.synchronized(txResults += ((att, rep)))
+							txResults.synchronized(txResults.addOne((att, rep)))
 							txDoneLatch.countDown()
 						}
 						idx += 1
@@ -1272,7 +1271,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				while idx < total do {
 					val id = idx
 					tx.transmitWithAttachment(envelopes(id), fixedVersion, id, timeout = 10L, timeUnit = TimeUnit.SECONDS) { (rep, att) =>
-						txReports.synchronized(txReports += ((att, rep)))
+						txReports.synchronized(txReports.addOne((att, rep)))
 						txLatch.countDown()
 					}
 					idx += 1
@@ -1301,7 +1300,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				rxDelivered.foreach { actual =>
 					assertEnvelopeMatches(envelopes(actual.seq), actual)
 				}
-				assert(tx.bufferCount <= 2 * sc.cfg.txMinBuffersOnIdle)
+				assert(tx.bufferInRingTotalCount <= 2 * sc.cfg.txRingMinLengthOnIdle)
 				true
 			}
 		}
@@ -1445,7 +1444,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				tx.triggerOnIdle(() => idleLatch.countDown())
 				val idleOk = idleLatch.await(5, TimeUnit.SECONDS)
 				assert(idleOk, "Transmitter failed to transition to idle after teardown")
-				assert(tx.bufferCount <= 2 * sc.cfg.txMinBuffersOnIdle)
+				assert(tx.bufferInRingTotalCount <= 2 * sc.cfg.txRingMinLengthOnIdle)
 				true
 			}
 		}
@@ -1508,9 +1507,9 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 			smallTxMaxBuf <- Gen.chooseNum(6, 9)
 			maxBurstCtrl = smallTxMaxBuf * 28
 			rawCfg <- genLoopbackConfig(maxBurstCtrl, txMaxBuffersFloor = smallTxMaxBuf)
-			cfg = rawCfg.copy(txMinBuffersOnIdle = math.min(rawCfg.txMinBuffersOnIdle, smallTxMaxBuf))
-			maxValidCtrl = math.max(0, smallTxMaxBuf * cfg.txBuffersCapacity - 64)
-			maxSafePrefix = math.max(1, smallTxMaxBuf * cfg.txBuffersCapacity - 16)
+			cfg = rawCfg.copy(txRingMinLengthOnIdle = RingLength(math.min(rawCfg.txRingMinLengthOnIdle, smallTxMaxBuf)))
+			maxValidCtrl = math.max(0, smallTxMaxBuf * cfg.capacityOfBufferInTxRing - 64)
+			maxSafePrefix = math.max(1, smallTxMaxBuf * cfg.capacityOfBufferInTxRing - 16)
 			threads <- Gen.chooseNum(2, 4)
 			perThread <- Gen.chooseNum(4, 7)
 			threadOps <- Gen.containerOfN[Vector, Vector[ChaoticOpPlan]](threads, Gen.containerOfN[Vector, ChaoticOpPlan](perThread, for {
@@ -1528,14 +1527,14 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					case 1 =>
 						for {
 							ctrl <- genRandomBytes(0, math.min(maxValidCtrl, 32))
-							prefixLen <- Gen.chooseNum(1, math.min(maxSafePrefix, cfg.txBuffersCapacity + 3))
+							prefixLen <- Gen.chooseNum(1, math.min(maxSafePrefix, cfg.capacityOfBufferInTxRing + 3))
 							prefix <- genRandomBytes(prefixLen, prefixLen)
 							errPick <- Gen.chooseNum(0, 3)
 							plan = MsgPlan(ctrl, markerStartsWithEscape = true, tagPayload = prefixLen, versionTag = 1, msgVersionId = 1, streamSpecs = Nil, serializationDelayNanos = 0L)
 						} yield errPick match {
 							case 0 => ChaoticOpKind.FailSerialization(plan, SerializationBehavior.ThrowSerExMidway(prefix), OpOutcomeExpectation.ExpectSerializationProblem)
 							case 1 => ChaoticOpKind.FailSerialization(plan, SerializationBehavior.ThrowNegativeByteSourceSize(prefix), OpOutcomeExpectation.ExpectSerializationProblem)
-							case 2 => ChaoticOpKind.FailSerialization(plan, SerializationBehavior.ExceedMaxBuffers(smallTxMaxBuf * cfg.txBuffersCapacity + 1), OpOutcomeExpectation.ExpectTransmissionFailure)
+							case 2 => ChaoticOpKind.FailSerialization(plan, SerializationBehavior.ExceedMaxBuffers(smallTxMaxBuf * cfg.capacityOfBufferInTxRing + 1), OpOutcomeExpectation.ExpectTransmissionFailure)
 							case _ => ChaoticOpKind.FailSerialization(plan, SerializationBehavior.ThrowNonFatalMidway(prefix), OpOutcomeExpectation.ExpectTransmissionFailure)
 						}
 					case _ =>
@@ -1703,7 +1702,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				val disruptor = new Thread(() => {
 					val r = new Random(77L)
 					while !stopDisruptor.get() do {
-						tx.pruneTo(r.nextInt(sc.cfg.txMinBuffersOnIdle + 2))
+						tx.pruneTo(RingLength(1 + r.nextInt(sc.cfg.txRingMinLengthOnIdle + 1)))
 						tx.triggerOnIdle(() => {
 							idleCounter.incrementAndGet()
 							()
@@ -1780,13 +1779,13 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 						.mkString("\n")
 
 				if !postIdleDone.await(10, TimeUnit.SECONDS) then {
-					fail(s"Chained onIdle callbacks did not run (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, txProbeRem=${postProbeTxDone.getCount}, rxProbeRem=${postProbeDone.getCount}, rxBuf=${rx.bufferCount}, txBuf=${tx.bufferCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
+					fail(s"Chained onIdle callbacks did not run (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, txProbeRem=${postProbeTxDone.getCount}, rxProbeRem=${postProbeDone.getCount}, rxBuf=${rx.ringLength}, txBuf=${tx.bufferInRingTotalCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
 				}
 				if !postProbeTxDone.await(10, TimeUnit.SECONDS) then {
-					fail(s"Re-entrant onIdle probe TX did not complete (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, rxProbeRem=${postProbeDone.getCount}, rxBuf=${rx.bufferCount}, txBuf=${tx.bufferCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
+					fail(s"Re-entrant onIdle probe TX did not complete (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, rxProbeRem=${postProbeDone.getCount}, rxBuf=${rx.ringLength}, txBuf=${tx.bufferInRingTotalCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
 				}
 				if !postProbeDone.await(10, TimeUnit.SECONDS) then {
-					fail(s"Re-entrant onIdle probe was not delivered to Receiver (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, rxBuf=${rx.bufferCount}, txBuf=${tx.bufferCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
+					fail(s"Re-entrant onIdle probe was not delivered to Receiver (txErrors=$txErrors, rxErrors=$rxErrors, idle=$postIdleEvents, rxBuf=${rx.ringLength}, txBuf=${tx.bufferInRingTotalCount})\n--- THREAD DUMP ---\n${dumpAllThreads()}")
 				}
 				assert(txErrors.isEmpty, s"Post-idle TX errors: $txErrors")
 				assert(rxErrors.isEmpty, s"Post-idle RX errors: $rxErrors")
@@ -1795,8 +1794,8 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				val finalIdleLatch = new CountDownLatch(1)
 				tx.triggerOnIdle(() => finalIdleLatch.countDown())
 				assert(finalIdleLatch.await(5, TimeUnit.SECONDS))
-				assertEquals(tx.pruneTo(1), 2)
-				assertEquals(tx.bufferCount, 2)
+				assertEquals(tx.pruneTo(RingLength(1)), 2)
+				assertEquals(tx.bufferInRingTotalCount, 2)
 				true
 			}
 		}
@@ -1807,9 +1806,9 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 	// ====================================================================================================
 
 	private case class ChaosMockScenario(
-		buffersCapacity: Int,
-		maxBuffers: Int,
-		minBuffersOnIdle: Int,
+		capacityOfBufferInRing: Int,
+		ringMaxLength: RingLength,
+		ringMinLengthOnIdle: RingLength,
 		streamTransferCapacity: Int,
 		maxGatheringBuffers: Int,
 		timeoutValue: Long,
@@ -1853,7 +1852,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					} yield StreamSpec.AdversarialAsync(b, c, sched, 0))
 				))
 			} yield (ctrl, streams))
-		} yield ChaosMockScenario(bufCap, maxBuf, minIdle, streamCap, gather, timeoutVal, timeoutUnit, maxChunkWrite, inlinePct, seed, injectFault, syncFault, timeoutEx, msgs)
+		} yield ChaosMockScenario(bufCap, RingLength(maxBuf), RingLength(minIdle), streamCap, gather, timeoutVal, timeoutUnit, maxChunkWrite, inlinePct, seed, injectFault, syncFault, timeoutEx, msgs)
 
 	private def decodeControlAndStreamWire(wire: Array[Byte]): Vector[(Array[Byte], Boolean, Vector[Array[Byte]])] = {
 		var pos = 0
@@ -1961,7 +1960,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					override def close(): Unit = ()
 					override def isOpen: Boolean = true
 					override def getOption[T](name: SocketOption[T]): T = throw new UnsupportedOperationException()
-					override def supportedOptions(): java.util.Set[SocketOption[?]] = Collections.emptySet()
+					override def supportedOptions(): java.util.Set[SocketOption[?]] = util.Collections.emptySet()
 					override def connect[A](remote: SocketAddress, attachment: A, handler: CompletionHandler[Void, ? >: A]): Unit = throw new UnsupportedOperationException()
 					override def connect(remote: SocketAddress): Future[Void] = throw new UnsupportedOperationException()
 					override def read[A](dst: ByteBuffer, timeout: Long, unit: TimeUnit, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Unit = throw new UnsupportedOperationException()
@@ -1974,9 +1973,9 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				val tx = new PipelinedTransmitter[(Int, Array[Byte], List[ByteSource])](
 					mockChannel,
 					makeContext(new InetSocketAddress("127.0.0.1", 9001), new InetSocketAddress("127.0.0.1", 9002), ChannelOrigin.INITIATED),
-					buffersCapacity = sc.buffersCapacity,
-					maxBuffers = sc.maxBuffers,
-					minBuffersOnIdle = sc.minBuffersOnIdle,
+					capacityOfBufferInRing = sc.capacityOfBufferInRing,
+					ringMaxLength = sc.ringMaxLength,
+					ringMinLengthOnIdle = sc.ringMinLengthOnIdle,
 					streamTransferBufferCapacity = sc.streamTransferCapacity,
 					maxGatheringBuffers = sc.maxGatheringBuffers
 				)
@@ -2040,7 +2039,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					tx.transmitWithAttachment(item, ProtocolVersion(1), item._1, timeout = sc.timeoutValue, timeUnit = sc.timeoutUnit) { (rep, id) =>
 						if !overlapGuard.compareAndSet(false, true) then overlapSeen.set(true)
 						try {
-							reports.synchronized(reports += ((id, rep)))
+							reports.synchronized(reports.addOne((id, rep)))
 							doneLatch.countDown()
 						} finally {
 							overlapGuard.set(false)
@@ -2056,7 +2055,7 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 				assert(!overlapSeen.get(), "Detected overlapping callback execution")
 				assert(!timeoutMismatch.get(), "Detected mismatched timeout/timeUnit passed to channel.write")
 				assert(maxObservedBatch.get() <= sc.maxGatheringBuffers, s"Batch length ${maxObservedBatch.get()} exceeded ${sc.maxGatheringBuffers}")
-				assertEquals(reports.map(_._1).toVector, (0 until sc.messages.size).toVector)
+				assertEquals(reports.map(_._1).toVector, sc.messages.indices.toVector)
 				assertEquals(openReaderTrackers.map(_.get()).sum, closeReaderTrackers.map(_.get()).sum, "Leaked open AsyncReader session")
 
 				if injectedFaultTriggered.get() then {
@@ -2066,13 +2065,13 @@ class PipelinedTransmitterLoopbackPbtSuite extends ScalaCheckSuite {
 					val wire = captured.synchronized(captured.toByteArray)
 					val decoded = decodeControlAndStreamWire(wire)
 					assertEquals(decoded.size, sc.messages.size)
-					for idx <- 0 until sc.messages.size do {
-						assert(Arrays.equals(decoded(idx)._1, expectedControls(idx)), s"Control wire mismatch at $idx")
+					for idx <- sc.messages.indices do {
+						assert(util.Arrays.equals(decoded(idx)._1, expectedControls(idx)), s"Control wire mismatch at $idx")
 						val actualStream = decoded(idx)._3.head
-						assert(Arrays.equals(actualStream, expectedStreams(idx)), s"Stream wire mismatch at $idx")
+						assert(util.Arrays.equals(actualStream, expectedStreams(idx)), s"Stream wire mismatch at $idx")
 					}
 				}
-				assertEquals(tx.pruneTo(1), 2)
+				assertEquals(tx.pruneTo(RingLength(1)), 2)
 				true
 			} finally {
 				bgExecutor.shutdownNow()

@@ -5,7 +5,7 @@ import env.*
 import protocol.*
 
 import munit.FunSuite
-import readren.common.Maybe
+import readren.common.{BufferByteSource, Maybe}
 
 class RaftPaperExamplesTest extends FunSuite {
 
@@ -328,7 +328,7 @@ class RaftPaperExamplesTest extends FunSuite {
 			lastIncludedRecordTerm = 1.asInstanceOf[Term],
 			latestElectorateChange = initConfig,
 			latestElectorateChangeIndex = 1,
-			stateMachineSnapshot = BufferSnapshotByteSource(snapshotData)
+			stateMachineSnapshot = BufferByteSource(snapshotData)
 		)
 		leaderMem.maybeLatestSnapshot = Maybe(snapshot)
 		leaderMem._logBufferOffset = 6

@@ -3,8 +3,47 @@ type: "Log"
 title: "Knowledge Base Change Log"
 description: "History of modifications to the OKF bundle."
 tags: ["log", "changelog"]
-timestamp: "2026-11-17T10:13:00Z"
+timestamp: "2026-11-19T22:36:00Z"
 ---
+
+## [2026-11-19T22:36:00Z]
+- **Updated** `cluster-serialization.md`: Aligned quiescent pruning signature to `pruneTo(targetLength)` and aligned `ParticipantService.DelegateConfig` field names (`transmitterRingMaxLength` and `receiverRingMaxLength`) in the Aggregate Transport Capacity Invariant.
+
+## [2026-11-19T18:55:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md`, `adr-trailing-stream-bulk-byte-source-transfer.md`, and `cluster-serialization.md`: Aligned `RingLength`-oriented transport configuration and exception names (`RingLengthExceededException`, `sizeOfBuffersInRing`, `maxRingLengthForTransmission`, `maxRingLengthForReception`, `minRingLengthOnIdle`, `ringMaxLength`, `ringMinLengthOnIdle`).
+
+## [2026-11-19T15:47:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md`: Renamed `maxInlineBuffersPerTxRing` to `stagedBatchInlineThreshold`, typed positive ring-buffer counts via the `RingLength` opaque subtype of `Int` (`>= 1`) across `nexus/cluster` and `ClusterBridgeConfig`, and removed the zero out-of-line special case.
+
+## [2026-11-19T04:38:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md`: Replaced `maxInlineEncodedBatchBytes` and `DeriveFromTransmitterControlCapacity` with the transmitter-ring buffer-count threshold `maxInlineBuffersPerTxRing` (defaulting to $2 \times \text{DefaultMinBuffersOnIdle} = 4$ buffers) in the placement equation and Negotiated Inline Placement Bound Invariant.
+
+## [2026-11-19T01:52:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md`: Replaced the static `ControlPackageHeadroomBytes` heuristic with per-message `envelopeBytes` measurement (fixed primitive bound for `AppendRecords` and counting `Serializer.Writer` pass over `SnapshotData[ParticipantId]` with `putByteSource` overridden for `InstallSnapshot`, plus buffer-boundary alignment slack) and documented `ClusterBridgeConfig.maxInlineEncodedBatchBytes` as the origin of `effectiveLocalMaxInlineBatchBytes`.
+
+## [2026-11-18T22:30:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md` and `cluster-serialization.md`: Updated `Receiver` initial buffer write limit invariants to reserve `FRAME_HEADER_MAX_SIZE - 1` trailing headroom (`buffersCapacity - FRAME_HEADER_MAX_SIZE + 1`) and refined the single-frame peer control-package payload capacity formula to `maxBuffersInRxRing * (sizeOfRingBuffers - FRAME_HEADER_MAX_SIZE + 1) - FRAME_HEADER_MAX_SIZE - 1`.
+
+## [2026-11-18T19:22:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md`: Corrected the peer `Receiver` control-package payload capacity formula to subtract $2 \times \text{FRAME\_HEADER\_MAX\_SIZE}$ for the single control frame header and terminal sentinel while retaining the per-buffer `buffersInitialLimit` factor, and clarified that `PipelinedTransmitter` emits a single-frame control package.
+
+## [2026-11-18T17:27:00Z]
+- **Updated** `adr-record-batch-encoding-placement.md` and `cluster-serialization.md`: Aligned `ClusterBridgeConfig` control-capacity formulas and invariant descriptions with `sizeOfRingBuffers`, `maxBuffersPerTxRing`, and `maxBuffersInRxRing`, distinguishing them from `ParticipantService.DelegateConfig`'s `frameCapacity`, `transmitterMaxBuffers`, and `receiverMaxBuffers`.
+
+## [2026-11-18T04:30:00Z]
+- **Created** `adr-record-batch-encoding-placement.md` and **Updated** `index.md`, `byte-streaming-primitives.md`, and `cluster-serialization.md`: Documented the architectural decision and invariants keeping `ConsensusParticipantSdm` size-agnostic via `RecordBatchEncodingStrategy` selection, handshake-negotiated inline-vs-out-of-line batch placement, isolated batch reference-deduplication scopes (`ChunkedHeapWriter`, `ChunkedBufferByteSource`, `NestedScopeReader`, `ReadableChannelReader`), canonical `PeerConnection` outbound backlog draining, and single-flight pause-and-resume inbound batch decoding.
+
+## [2026-11-17T21:14:00Z]
+- **Updated** `cluster-serialization.md` and `lazy-multi-raft-consensus.md`: Reflected separate `transmitterMaxBuffers` and `receiverMaxBuffers` capacity validation across `ParticipantService.DelegateConfig` and `ClusterBridgeConfig`, and removed the stale `FileSnapshotByteSource` alias reference from `lazy-multi-raft-consensus.md`.
+
+## [2026-11-17T13:22:00Z]
+- **Updated** `byte-streaming-primitives.md`: Formalized symmetric no-inline-callback and synchronous entry-time failure semantics across `ByteSource.AsyncReader.read` and `ByteSink.write`, specifying that closed-resource and entry-time failures throw synchronously (`ClosedChannelException`) without invoking `CompletionHandler` prior to returning `PENDING`.
+
+## [2026-11-17T12:20:00Z]
+- **Updated** `byte-streaming-primitives.md`: Documented `FileByteSink` small-write block coalescing using a lazily allocated heap staging buffer (default 64 KiB, capped to `expectedSize`), zero-copy bypass for full-block and stream-completing writes, synchronous tail flushing on `seal()`, and hoisted single-flight completion handling.
+
+## [2026-11-17T11:38:00Z]
+- **Updated** `byte-streaming-primitives.md`, `cluster-serialization.md`, and `cluster-serialization-guide.md`: Updated `BufferByteSink` in-memory tier specifications for small streams ($\le 64$ KiB) from direct memory allocation to heap `ByteBuffer` allocation and noted direct `ByteBuffer` wrapping support.
 
 ## [2026-11-17T10:13:00Z]
 - **Updated** `cluster-serialization.md`: Refined the Asynchronous Completion Loop Trampolining Invariant to attribute iterative completion trampolining specifically to `PipelinedTransmitter` and `Receiver`, and documented the non-trampolined trailing-stream contract of `Transmitter`.

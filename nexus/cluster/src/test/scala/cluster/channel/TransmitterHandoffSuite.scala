@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.channel
 
-import cluster.misc.VLQ
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.Serializer.SerializationException
 import cluster.serialization.{ProtocolVersion, Serializer}
 import cluster.service.{ChannelId, ChannelOrigin}
@@ -185,25 +185,25 @@ class TransmitterHandoffSuite extends FunSuite {
 		arr
 	}
 
-	test("constructor validates maxBuffers, aggregate capacity, streamTransferBufferCapacity, and maxGatheringBuffers") {
+	test("constructor validates ringMaxLength, aggregate capacity, streamTransferBufferCapacity, and maxGatheringBuffers") {
 		val channel = new ControlledAsyncChannel()
 		intercept[IllegalArgumentException] {
-			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 0)
+			new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(0))
 		}
 		intercept[IllegalArgumentException] {
-			new Transmitter(channel, newContext, buffersCapacity = 1 << 20, maxBuffers = 4096)
+			new Transmitter(channel, newContext, capacityOfBufferInRing = 1 << 20, ringMaxLength = RingLength(4096))
 		}
 		intercept[IllegalArgumentException] {
-			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 0)
+			new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 0)
 		}
 		intercept[IllegalArgumentException] {
-			new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4, maxGatheringBuffers = 1)
+			new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), maxGatheringBuffers = 1)
 		}
 	}
 
 	test("multi-buffer control package is merged into a single frame and drained across partial deferred gathering writes") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete(maxBytesPerWrite = 7))
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 3)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), maxGatheringBuffers = 3)
 		val payload = sequentialPatternBytes(48)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
@@ -227,7 +227,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("standalone sentinel spills to next gathering batch when maxGatheringBuffers is saturated") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 2)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), maxGatheringBuffers = 2)
 		val payload = sequentialPatternBytes(48)
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
@@ -248,7 +248,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("zero-byte control package omits frame header and writes only the 0x00 sentinel") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Unit] = (_, _) => ()
@@ -269,7 +269,7 @@ class TransmitterHandoffSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.SyncThrow(syncBoom) else WriteMode.InlineComplete()
 		)
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
@@ -293,7 +293,7 @@ class TransmitterHandoffSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.InlineFailed(ioBoom) else WriteMode.InlineComplete()
 		)
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
@@ -315,7 +315,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("SerializationException writes zero wire bytes, reports aFragmentWasTransmitted=false, and resets storage") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 		val failure = new SerializationException(5, "bad object")
 
@@ -342,9 +342,9 @@ class TransmitterHandoffSuite extends FunSuite {
 		assertEquals(decoded.payload.toSeq, "ok".getBytes("UTF-8").toSeq)
 	}
 
-	test("BuffersCountExceededException writes zero wire bytes, reports TransmissionFailure, and resets storage") {
+	test("RingLengthExceededException writes zero wire bytes, reports TransmissionFailure, and resets storage") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 2)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(2))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
@@ -353,8 +353,8 @@ class TransmitterHandoffSuite extends FunSuite {
 		transmitter.transmit(oversized, ProtocolVersion.OF_THIS_PROJECT)(report => reports += report)
 		assertEquals(reports.size, 1)
 		reports.head match {
-			case Transmitter.TransmissionFailure(msg, _: BuffersCountExceededException) => assertEquals(msg, oversized)
-			case other => fail(s"Expected TransmissionFailure(_, BuffersCountExceededException), got $other")
+			case Transmitter.TransmissionFailure(msg, _: RingLengthExceededException) => assertEquals(msg, oversized)
+			case other => fail(s"Expected TransmissionFailure(_, RingLengthExceededException), got $other")
 		}
 		assertEquals(channel.writeInvocationCount, 0, "No socket writes must occur when buffer capacity is exceeded")
 		assertEquals(channel.writtenBytes.length, 0)
@@ -371,7 +371,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("concurrent transmit while in flight throws TransmissionInProgressException and re-entrant transmit in callback succeeds") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
@@ -392,7 +392,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("single-frame control package with trailing ByteSource writes STREAM_FOLLOWS_SENTINEL and stream chunks") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete(maxBytesPerWrite = 5))
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 2)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), maxGatheringBuffers = 2)
 		val controlPrefix = sequentialPatternBytes(14)
 		val streamBytes = sequentialPatternBytes(23)
 		val source: readren.common.ByteSource = readren.common.BufferByteSource(streamBytes)
@@ -439,7 +439,7 @@ class TransmitterHandoffSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 1 then WriteMode.SyncThrow(streamSyncBoom) else WriteMode.InlineComplete()
 		)
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 32, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 32, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[Transmitter.Report]()
 		var readerClosed = false
 
@@ -511,7 +511,7 @@ class TransmitterHandoffSuite extends FunSuite {
 					}
 				}
 
-				val transmitter = new Transmitter(asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 32, maxGatheringBuffers = 3)
+				val transmitter = new Transmitter(asyncChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(32), maxGatheringBuffers = 3)
 				val payload = sequentialPatternBytes(if msgIndex % 20 == 0 then 0 else 1 + rng.nextInt(150))
 				val callbackCount = new AtomicInteger(0)
 				val reportRef = new AtomicReference[Transmitter.Report | Null](null)
@@ -549,7 +549,7 @@ class TransmitterHandoffSuite extends FunSuite {
 
 	test("SerializationException thrown inside Writer.write resets haveToEscape for the subsequent message") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new Transmitter(channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new Transmitter(channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val failure = new SerializationException(0, "abort inside write")
 
 		final case class Box(bytes: Array[Byte], shouldFail: Boolean)
@@ -605,7 +605,7 @@ class TransmitterHandoffSuite extends FunSuite {
 			}
 			val asyncChannel = new ResettableAsyncChannel
 
-			val transmitter = new Transmitter(asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 16, maxGatheringBuffers = 2)
+			val transmitter = new Transmitter(asyncChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(16), maxGatheringBuffers = 2)
 			given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
 
 			var i = 0

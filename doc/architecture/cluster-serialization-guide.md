@@ -424,5 +424,5 @@ The transport layer (`PipelinedTransmitter` or legacy `Transmitter`, paired with
 
 `Receiver` configures byte source staging via `ByteSink.Allocator` (with `DefaultAllocator` provided as the baseline implementation):
 
-- **Small Streams ($\le 64$ KiB):** Staged in reusable direct memory buffers (`BufferByteSource`) with zero disk I/O.
+- **Small Streams ($\le 64$ KiB):** Staged in heap memory buffers (`BufferByteSink` / `BufferByteSource`) with zero disk I/O and zero off-heap direct-memory cleaner overhead.
 - **Large Streams ($> 64$ KiB):** Staged in temporary disk files (`FileByteSource`) via asynchronous NIO channels, ensuring direct memory consumption in `DualEndedCircularStorage` remains strictly $O(1)$ regardless of stream size.

@@ -53,7 +53,7 @@ object ByteSource {
 	 * ==Concurrency Contract (Single-Flight Invariant)==
 	 * At most one asynchronous [[read]] operation may be in flight per [[AsyncReader]] instance at any given time.
 	 * Initiating a new read before the previous completion callback has executed is strictly prohibited. Successive non-overlapping calls do not require single-thread affinity: because NIO.2 completion dispatch establishes a happens-before relationship, successive reads may safely be triggered from arbitrary worker threads (such as from within completion handler callbacks).\
-	 * Callers without an iterative trampoline rely on implementations reporting synchronous completions via the `Int` return value rather than invoking [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSource.AsyncReader.PENDING]], preventing unbounded stack recursion when reading multi-chunk streams. */
+	 * Implementations must not invoke [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSource.AsyncReader.PENDING]]: synchronous completions are reported via the returned `Int`, synchronous entry-time failures (such as reading a closed reader) throw directly without invoking [[java.nio.channels.CompletionHandler]], and only post-[[ByteSource.AsyncReader.PENDING]] continuations notify [[java.nio.channels.CompletionHandler]]. Callers without an iterative trampoline rely on this separation to prevent unbounded stack recursion and inverted callback ordering. */
 	trait AsyncReader extends AutoCloseable {
 
 		/** Reads a sequence of bytes from this reader session into the destination buffer.\
@@ -61,7 +61,8 @@ object ByteSource {
 		 * @param dst the buffer into which bytes are transferred.
 		 * @param attachment an arbitrary user attachment passed through to the completion handler; may be `null`.
 		 * @param handler the callback invoked upon asynchronous read completion (`> 0` bytes read, `0` if destination was empty, or `-1` on EOF) or failure.
-		 * @return the number of bytes read synchronously (`>= 0`), `-1` on immediate EOF, or [[ByteSource.AsyncReader.PENDING]] if completing asynchronously via [[handler]]. */
+		 * @return the number of bytes read synchronously (`>= 0`), `-1` on immediate EOF, or [[ByteSource.AsyncReader.PENDING]] if completing asynchronously via [[handler]].
+		 * @throws java.nio.channels.ClosedChannelException if this reader session has been closed. */
 		def read[A](dst: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int
 
 		/** Releases any file descriptors or channel resources allocated exclusively to this reader session.\
@@ -98,7 +99,8 @@ final class FileByteSource(val path: Path, val knownSize: Long = -1L, val delete
 		private var position: Long = 0L
 
 		override def read[A](dst: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int = {
-			if !dst.hasRemaining then 0
+			if !channel.isOpen then throw new ClosedChannelException()
+			else if !dst.hasRemaining then 0
 			else {
 				channel.read(dst, position, attachment, new CompletionHandler[Integer, A] {
 					override def completed(result: Integer, att: A): Unit = {

@@ -57,18 +57,20 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 				val trans = new PipelinedTransmitter[ClusterWireMessage](
 					asc,
 					transmitterContext,
-					buffersCapacity = config.frameCapacity,
-					maxBuffers = config.maxBuffers,
-					minBuffersOnIdle = config.minBuffersOnIdle,
-					streamTransferBufferCapacity = config.streamTransferBufferCapacity
+					capacityOfBufferInRing = config.sizeOfBuffersInRing,
+					ringMaxLength = config.maxRingLengthForTransmission,
+					ringMinLengthOnIdle = config.minRingLengthOnIdle,
+					streamTransferBufferCapacity = config.streamTransferBufferCapacity,
+					maxGatheringBuffers = config.maxGatheringBuffers
 				)
 				val recv = new Receiver(
 					asc,
 					receiverContext,
-					buffersCapacity = config.frameCapacity,
-					maxBuffers = config.maxBuffers,
-					minBuffersOnIdle = config.minBuffersOnIdle,
+					capacityOfBufferInRing = config.sizeOfBuffersInRing,
+					ringMaxLength = config.maxRingLengthForReception,
+					ringMinLengthOnIdle = config.minRingLengthOnIdle,
 					allocationLimits = config.allocationLimits,
+					byteSinkAllocator = config.inboundStagingAllocator,
 					streamTransferBufferCapacity = config.streamTransferBufferCapacity
 				)
 
@@ -79,7 +81,7 @@ class ClusterClient[S <: Nio2ClusterBridgeCdm](val sdm: S)(
 				trans.transmit(handshake, ProtocolVersion.OF_THIS_PROJECT) { _ => () }(using clusterWireMessageSerializer)
 
 				recv.receive[ClusterWireMessage](ProtocolVersion.OF_THIS_PROJECT, timeout, TimeUnit.MILLISECONDS) {
-					case HandshakeAck(_, remoteAgreedVersion) =>
+					case HandshakeAck(_, remoteAgreedVersion, _) =>
 						if !config.supportedVersions.contains(remoteAgreedVersion) then {
 							close()
 							promise.failure(new IOException(s"Server agreed on unsupported protocol version: $remoteAgreedVersion"))

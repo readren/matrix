@@ -2,6 +2,7 @@ package readren.nexus
 package cluster.service
 
 import cluster.channel.{PipelinedTransmitter, Receiver}
+import cluster.misc.RingLength
 import cluster.serialization.{AllocationLimits, ProtocolVersion}
 import cluster.service.ChannelOrigin.{ACCEPTED, INITIATED}
 import cluster.service.ParticipantService.*
@@ -87,13 +88,15 @@ object ParticipantService {
 		val closeDelay: MilliDuration = 200,
 		val heartbeatPeriod: MilliDuration = 10_000,
 		val heartbeatMargin: MilliDuration = 12_000,
-		val maxBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_BUFFERS,
-		val minBuffersOnIdle: Int = 2,
+		val transmitterRingMaxLength: RingLength = PipelinedTransmitter.DEFAULT_RING_MAX_LENGTH,
+		val receiverRingMaxLength: RingLength = Receiver.DEFAULT_RING_MAX_LENGTH,
+		val ringMinLengthOnIdle: RingLength = PipelinedTransmitter.DEFAULT_RING_MIN_LENGTH_ON_IDLE,
 		val allocationLimits: AllocationLimits = AllocationLimits.Default,
 		val streamTransferBufferCapacity: Int = PipelinedTransmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
 		val maxGatheringBuffers: Int = PipelinedTransmitter.DEFAULT_MAX_GATHERING_BUFFERS
 	) {
-		require(maxBuffers.toLong * frameCapacity.toLong <= Int.MaxValue, s"Aggregate circular buffer capacity (${maxBuffers.toLong * frameCapacity.toLong} bytes) exceeds Int.MaxValue")
+		require(transmitterRingMaxLength.toLong * frameCapacity.toLong <= Int.MaxValue, s"Aggregate transmitter circular buffer capacity (${transmitterRingMaxLength.toLong * frameCapacity.toLong} bytes) exceeds Int.MaxValue")
+		require(receiverRingMaxLength.toLong * frameCapacity.toLong <= Int.MaxValue, s"Aggregate receiver circular buffer capacity (${receiverRingMaxLength.toLong * frameCapacity.toLong} bytes) exceeds Int.MaxValue")
 		require(streamTransferBufferCapacity > 0, s"streamTransferBufferCapacity must be positive, got $streamTransferBufferCapacity")
 		require(maxGatheringBuffers >= 2, s"maxGatheringBuffers must be at least 2, got $maxGatheringBuffers")
 	}
@@ -475,8 +478,8 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 			channel,
 			context,
 			config.participantDelegatesConfig.frameCapacity,
-			config.participantDelegatesConfig.maxBuffers,
-			config.participantDelegatesConfig.minBuffersOnIdle,
+			config.participantDelegatesConfig.transmitterRingMaxLength,
+			config.participantDelegatesConfig.ringMinLengthOnIdle,
 			config.participantDelegatesConfig.streamTransferBufferCapacity,
 			config.participantDelegatesConfig.maxGatheringBuffers
 		)
@@ -494,8 +497,8 @@ class ParticipantService private(val sequencer: SchedulingDoer, val clock: Clock
 			channel,
 			context,
 			config.participantDelegatesConfig.frameCapacity,
-			config.participantDelegatesConfig.maxBuffers,
-			config.participantDelegatesConfig.minBuffersOnIdle,
+			config.participantDelegatesConfig.receiverRingMaxLength,
+			config.participantDelegatesConfig.ringMinLengthOnIdle,
 			config.participantDelegatesConfig.allocationLimits,
 			streamTransferBufferCapacity = config.participantDelegatesConfig.streamTransferBufferCapacity
 		)

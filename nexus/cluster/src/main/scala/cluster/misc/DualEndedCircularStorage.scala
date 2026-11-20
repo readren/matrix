@@ -9,10 +9,9 @@ import java.util.function.Supplier
  * It automatically manages underlying buffers (e.g., `ByteBuffer`) and grows dynamically as needed.\
  * The circular storage provides two ends: a **write end** for appending new data and a **read end** for consuming the oldest unread data.
  * @param bufferSupplier A supplier function that provides new buffers (e.g., `ByteBuffer`).
- * @param maxBuffers The maximum number of buffers that may be allocated in this circular storage ring.
+ * @param ringMaxLength The maximum number of buffers that may be allocated in this circular storage ring.
  * @tparam T The type of the buffers used to hold data in the circular storage. */
-class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val maxBuffers: Int) {
-	require(maxBuffers >= 1)
+class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val ringMaxLength: RingLength) {
 
 	private class Node {
 		val buffer: T = bufferSupplier.get
@@ -24,10 +23,10 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val maxBuffers: I
 	@volatile private var writeEndNode: Node = new Node
 	/** The read-end points to the buffer that contains the oldest data. */
 	@volatile private var readEndNode: Node = writeEndNode
-	@volatile private var _bufferCount: Int = 1
+	@volatile private var _ringLength: RingLength = RingLength(1)
 
 	/** Returns the total number of buffers currently allocated in this circular storage ring. */
-	def bufferCount: Int = _bufferCount
+	def ringLength: RingLength = _ringLength
 
 	/** Returns the buffer at the write-end, where new information is appended.\
 	 * Data appended here will be consumed later, potentially at a different pace, from the read end.
@@ -53,16 +52,16 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val maxBuffers: I
 	}
 
 	/** Advances the write-end to the next buffer. If the write-end catches up to the read end, the circular storage grows by adding a new buffer in between. \
-	 * @return The buffer at the new write-end position or [[Maybe.empty]] if this storage needs to grow and [[maxBuffers]] would be exceeded. */
+	 * @return The buffer at the new write-end position or [[Maybe.empty]] if this storage needs to grow and [[ringMaxLength]] would be exceeded. */
 	def advanceWriteEnd(): Maybe[T] = {
 		val nextNode = writeEndNode.next
 		if nextNode eq readEndNode then {
-			if _bufferCount >= maxBuffers then return Maybe.empty
+			if _ringLength >= ringMaxLength then return Maybe.empty
 			val newNode = new Node
 			newNode.next = nextNode
 			writeEndNode.next = newNode
 			writeEndNode = newNode
-			_bufferCount += 1
+			_ringLength = RingLength(_ringLength + 1)
 			Maybe(newNode.buffer)
 		} else {
 			writeEndNode = nextNode
@@ -70,22 +69,21 @@ class DualEndedCircularStorage[T](bufferSupplier: Supplier[T], val maxBuffers: I
 		}
 	}
 
-	/** Prunes the number of allocated buffers down to `targetCount` if the storage is currently quiescent
+	/** Prunes the number of allocated buffers down to `targetLength` if the storage is currently quiescent
 	 * (`readEndNode eq writeEndNode`), releasing detached buffers for garbage collection.
 	 *
-	 * @param targetCount the desired number of buffers to retain in the ring (must be at least 1).
+	 * @param targetLength the desired number of buffers to retain in the ring.
 	 * @return the number of buffers in the ring after pruning. */
-	def pruneTo(targetCount: Int): Int = {
-		val effectiveTarget = math.max(1, targetCount)
-		if _bufferCount > effectiveTarget && (readEndNode eq writeEndNode) then {
+	def pruneTo(targetLength: RingLength): RingLength = {
+		if _ringLength > targetLength && (readEndNode eq writeEndNode) then {
 			var current = writeEndNode
-			for _ <- 1 until effectiveTarget do {
+			for _ <- 1 until targetLength do {
 				current = current.next
 			}
 			current.next = writeEndNode
-			_bufferCount = effectiveTarget
+			_ringLength = targetLength
 		}
-		_bufferCount
+		_ringLength
 	}
 
 	/** Returns an iterator over the buffers in the circular storage.

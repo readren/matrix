@@ -3,7 +3,7 @@ package nio2
 
 import ClusterWireProtocolTest.*
 import protocol.*
-import readren.common.Maybe
+import readren.common.{BufferByteSource, Maybe}
 import readren.consensus.ConsensusWireTypesCdm
 import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
 import readren.nexus.cluster.serialization.*
@@ -116,7 +116,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 	//// 2. Handshake Frames Round-Trip Tests ////
 
 	test("PeerHandshake round-trip serialization") {
-		val frame = PeerHandshake("node-alpha", Set(ProtocolVersion(1), ProtocolVersion(2)))
+		val frame = PeerHandshake("node-alpha", Set(ProtocolVersion(1), ProtocolVersion(2)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 		val decoded = roundTripMessage(frame)
 		assertEquals(decoded, frame)
 	}
@@ -128,7 +128,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 	}
 
 	test("HandshakeAck round-trip serialization") {
-		val frame = HandshakeAck("node-beta", ProtocolVersion(1))
+		val frame = HandshakeAck("node-beta", ProtocolVersion(1), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 		val decoded = roundTripMessage(frame)
 		assertEquals(decoded, frame)
 	}
@@ -186,7 +186,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 	}
 
 	test("InstallSnapshot request round-trip serialization with streaming snapshot payload") {
-		val payload = new BufferSnapshotByteSource(ByteBuffer.wrap("state-machine-bytes".getBytes(StandardCharsets.UTF_8)))
+		val payload = new BufferByteSource(ByteBuffer.wrap("state-machine-bytes".getBytes(StandardCharsets.UTF_8)))
 		val sec = SoleElectorateChange[String](term(3), "req-snap", term(2), Set("node-1"), Set("node-1", "node-2"))
 		val snapData = SnapshotData[String](
 			lastIncludedRecordIndex = 50L,
@@ -384,8 +384,8 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 			override def channelId: ChannelId = new ChannelId(ChannelOrigin.ACCEPTED, Maybe.some(serverConnection.getLocalAddress))
 		}
 
-		val transmitter = new PipelinedTransmitter[ClusterWireMessage](clientChannel, transmitterContext, buffersCapacity = 8192)
-		val receiver = new Receiver(serverConnection, receiverContext, buffersCapacity = 8192)
+		val transmitter = new PipelinedTransmitter[ClusterWireMessage](clientChannel, transmitterContext, capacityOfBufferInRing = 8192)
+		val receiver = new Receiver(serverConnection, receiverContext, capacityOfBufferInRing = 8192)
 
 		def transmitAndReceive(frame: ClusterWireMessage): ClusterWireMessage = {
 			val promise = Promise[ClusterWireMessage]()
@@ -402,7 +402,7 @@ class ClusterWireProtocolTest extends ScalaCheckSuite {
 
 		try {
 			// 1. Handshake
-			val handshake = PeerHandshake("node-source", Set(ProtocolVersion(1)))
+			val handshake = PeerHandshake("node-source", Set(ProtocolVersion(1)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 			val receivedHandshake = transmitAndReceive(handshake)
 			assertEquals(receivedHandshake, handshake)
 

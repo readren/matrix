@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.channel
 
-import cluster.misc.VLQ
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.Serializer.SerializationException
 import cluster.serialization.{ProtocolVersion, Serializer}
 import cluster.service.{ChannelId, ChannelOrigin}
@@ -108,7 +108,7 @@ class SequentialTransmitterSuite extends FunSuite {
 			attachment: A,
 			handler: CompletionHandler[java.lang.Long, ? >: A]
 		): Unit = {
-			synchronized(recordedTimeouts += ((timeout, unit)))
+			synchronized(recordedTimeouts.addOne(timeout -> unit))
 			val idx = writeCounter.getAndIncrement()
 			val mode = scriptedModes(idx)
 			val anyHandler = handler.asInstanceOf[CompletionHandler[java.lang.Long, Any]]
@@ -159,26 +159,26 @@ class SequentialTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val events = new ArrayBuffer[(Int, ProtocolVersion, String, SequentialTransmitter.Report)]()
 
 		val serializerA: Serializer[Int] = (v, w) => {
 			w.putByte(1)
 			w.putInt(v)
-			events += ((v, w.governingVersion, "serA", SequentialTransmitter.Delivered))
+			events.addOne((v, w.governingVersion, "serA", SequentialTransmitter.Delivered))
 		}
 		val serializerB: Serializer[Int] = (v, w) => {
 			w.putByte(2)
 			w.putInt(v * 10)
-			events += ((v, w.governingVersion, "serB", SequentialTransmitter.Delivered))
+			events.addOne((v, w.governingVersion, "serB", SequentialTransmitter.Delivered))
 		}
 
 		val callbacks = new ArrayBuffer[(Int, String, SequentialTransmitter.Report)]()
 		transmitter.transmitWithAttachment(10, ProtocolVersion(1), "att-1", timeout = 2L, timeUnit = TimeUnit.SECONDS) { (r, a) =>
-			callbacks += ((10, a, r))
+			callbacks.addOne((10, a, r))
 		}(using serializerA)
 		transmitter.transmitWithAttachment(20, ProtocolVersion(7), "att-2", timeout = 9L, timeUnit = TimeUnit.MILLISECONDS) { (r, a) =>
-			callbacks += ((20, a, r))
+			callbacks.addOne((20, a, r))
 		}(using serializerB)
 
 		channel.drainPending()
@@ -204,7 +204,7 @@ class SequentialTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val trace = new ArrayBuffer[String]()
 
 		given Serializer[Int] = (v, w) => {
@@ -226,7 +226,7 @@ class SequentialTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val total = 5000
 		val completedCount = new AtomicInteger(0)
 		var lastSeq = -1
@@ -251,36 +251,36 @@ class SequentialTransmitterSuite extends FunSuite {
 
 	test("idle pruning and explicit pruneTo respect Pruning state and concurrent submissions") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new SequentialTransmitter[Array[Byte]](channel, newContext, buffersCapacity = 16, maxBuffers = 8, minBuffersOnIdle = 1)
+		val transmitter = new SequentialTransmitter[Array[Byte]](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), ringMinLengthOnIdle = RingLength(1))
 		given Serializer[Array[Byte]] = (msg, writer) => writer.putBytes(msg)
 
 		val reports = new ArrayBuffer[SequentialTransmitter.Report]()
 		transmitter.transmit(new Array[Byte](64), ProtocolVersion.OF_THIS_PROJECT)(r => reports += r)
-		assert(transmitter.bufferCount >= 4)
+		assert(transmitter.ringLength >= 4)
 
-		// Explicit pruneTo while transmitting must be a safe no-op and return current bufferCount.
-		val duringActive = transmitter.pruneTo(1)
+		// Explicit pruneTo while transmitting must be a safe no-op and return current ringLength.
+		val duringActive = transmitter.pruneTo(RingLength(1))
 		assert(duringActive >= 4)
 
 		channel.drainPending()
 		assertEquals(reports.toList, List(SequentialTransmitter.Delivered))
-		assertEquals(transmitter.bufferCount, 1)
+		assertEquals(transmitter.ringLength, 1)
 	}
 
 	test("callback exception propagates without stalling subsequent queued transmissions") {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[(Int, SequentialTransmitter.Report)]()
 		given Serializer[Int] = (v, w) => w.putInt(v)
 
 		transmitter.transmit(1, ProtocolVersion.OF_THIS_PROJECT) { r =>
-			reports += ((1, r))
+			reports.addOne((1, r))
 			throw new RuntimeException("user callback boom")
 		}
-		transmitter.transmit(2, ProtocolVersion.OF_THIS_PROJECT)(r => reports += ((2, r)))
-		transmitter.transmit(3, ProtocolVersion.OF_THIS_PROJECT)(r => reports += ((3, r)))
+		transmitter.transmit(2, ProtocolVersion.OF_THIS_PROJECT)(r => reports.addOne((2, r)))
+		transmitter.transmit(3, ProtocolVersion.OF_THIS_PROJECT)(r => reports.addOne((3, r)))
 
 		val pending = channel.pollPending()
 		assert(pending ne null)
@@ -299,7 +299,7 @@ class SequentialTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val events = new ArrayBuffer[String]()
 		given Serializer[Int] = (v, w) => w.putInt(v)
 
@@ -326,7 +326,7 @@ class SequentialTransmitterSuite extends FunSuite {
 
 	test("transmit throws RejectedExecutionException when wait queue reaches MaxQueuedCount") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new SequentialTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val transmitter = new SequentialTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4))
 		given Serializer[Int] = (v, w) => w.putInt(v)
 
 		transmitter.transmit(1, ProtocolVersion.OF_THIS_PROJECT)(_ => ())
@@ -373,7 +373,7 @@ class SequentialTransmitterSuite extends FunSuite {
 				}
 			}
 
-			val transmitter = new SequentialTransmitter[Array[Byte]](asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 32, minBuffersOnIdle = 2)
+			val transmitter = new SequentialTransmitter[Array[Byte]](asyncChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(32), ringMinLengthOnIdle = RingLength(2))
 			val totalMessages = 80
 			val payloads = Array.tabulate(totalMessages) { i =>
 				val body = Array.tabulate[Byte](8 + (i % 11) * 7)(j => ((i + j) & 0xff).toByte)
@@ -393,7 +393,7 @@ class SequentialTransmitterSuite extends FunSuite {
 					var i = t
 					while i < totalMessages do {
 						val idx = i
-						if idx % 9 == 0 then transmitter.pruneTo(2)
+						if idx % 9 == 0 then transmitter.pruneTo(RingLength(2))
 						transmitter.transmit(payloads(idx), ProtocolVersion.OF_THIS_PROJECT) { report =>
 							callbackCounts(idx).incrementAndGet()
 							reports(idx) = report

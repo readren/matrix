@@ -186,13 +186,16 @@ class PayloadHardeningSuite extends FunSuite {
 
 	test("Receiver constructor rejects aggregate buffer capacity exceeding Int.MaxValue") {
 		intercept[IllegalArgumentException] {
-			new cluster.channel.Receiver(null, null, buffersCapacity = 1024 * 1024, maxBuffers = 3000)
+			new cluster.channel.Receiver(null, null, capacityOfBufferInRing = 1024 * 1024, ringMaxLength = cluster.misc.RingLength(3000))
 		}
 	}
 
-	test("DelegateConfig rejects aggregate buffer capacity exceeding Int.MaxValue") {
+	test("DelegateConfig rejects aggregate transmitter or receiver buffer capacity exceeding Int.MaxValue") {
 		intercept[IllegalArgumentException] {
-			new cluster.service.ParticipantService.DelegateConfig(frameCapacity = 1024 * 1024, maxBuffers = 3000)
+			new cluster.service.ParticipantService.DelegateConfig(frameCapacity = 1024 * 1024, transmitterRingMaxLength = cluster.misc.RingLength(3000))
+		}
+		intercept[IllegalArgumentException] {
+			new cluster.service.ParticipantService.DelegateConfig(frameCapacity = 1024 * 1024, receiverRingMaxLength = cluster.misc.RingLength(3000))
 		}
 	}
 }

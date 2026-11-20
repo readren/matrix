@@ -5,7 +5,7 @@ import env.*
 import protocol.*
 
 import com.sun.net.httpserver.{HttpExchange, HttpHandler, HttpServer}
-import readren.common.Maybe
+import readren.common.{BufferByteSource, Maybe}
 
 import java.io.*
 import java.net.InetSocketAddress
@@ -208,7 +208,7 @@ class ConsensusPlaygroundServer(val port: Int = 8080) {
 		smOut.flush()
 		val snapshotData = IArray.unsafeFromArray(smBytes.toByteArray)
 
-		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, BufferSnapshotByteSource(snapshotData))
+		val snap = new SnapshotData[NodeId](5, 1.asInstanceOf[Term], initConfig, 1, BufferByteSource(snapshotData))
 
 		val m0 = e.node(0).storage.savedMemory
 		m0.currentTerm = 1.asInstanceOf[Term]

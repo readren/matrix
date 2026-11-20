@@ -3,7 +3,7 @@ package env
 
 import protocol.*
 
-import readren.common.Maybe
+import readren.common.{BufferByteSource, Maybe}
 import readren.consensus.{ConsensusParticipantSdm, TestClientCommand}
 import readren.sequencer.Doer
 
@@ -134,7 +134,7 @@ class EnvironmentNode(
 			out.writeInt(highestAppliedCommandSerial)
 			out.writeLong(highestAppliedCommandIndex)
 			out.flush()
-			sequencer.Keeper(BufferSnapshotByteSource(bytes.toByteArray))
+			sequencer.Keeper(BufferByteSource(bytes.toByteArray))
 		}
 
 		override def installSnapshot(data: SnapshotByteSource): sequencer.Capture[Unit] = {

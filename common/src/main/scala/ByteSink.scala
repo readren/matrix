@@ -1,9 +1,8 @@
 package readren.common
 
 import java.nio.ByteBuffer
-import java.nio.channels.{AsynchronousFileChannel, CompletionHandler}
-import java.nio.file.{Files, Path, StandardOpenOption}
-import scala.util.control.NonFatal
+import java.nio.channels.CompletionHandler
+import java.nio.file.Files
 
 /** A single-use, write-only staged accumulator that ingests bytes asynchronously and transitions into an immutable [[ByteSource]].
  *
@@ -18,7 +17,7 @@ import scala.util.control.NonFatal
  * ==Concurrency Contract (Single-Flight Invariant)==
  * At most one [[write]] operation may be pending per [[ByteSink]] instance at any given time.
  * Initiating a new write before the previous completion callback has executed is strictly prohibited.\
- * Callers without an iterative trampoline rely on implementations reporting synchronous completions via the `Int` return value rather than invoking [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSink.PENDING]], preventing unbounded stack recursion when ingesting multi-chunk streams.
+ * Implementations must not invoke [[java.nio.channels.CompletionHandler]] inline before returning [[ByteSink.PENDING]]: synchronous completions are reported via the returned `Int`, synchronous entry-time failures (such as writing after [[seal]] or [[discard]]) throw directly without invoking [[java.nio.channels.CompletionHandler]], and only post-[[ByteSink.PENDING]] continuations notify [[java.nio.channels.CompletionHandler]]. Callers without an iterative trampoline rely on this separation to prevent unbounded stack recursion and inverted callback ordering.
  *
  * @note Common use cases include staging incoming out-of-line network message streams and spooling uploaded files to temporary storage. */
 trait ByteSink {
@@ -36,7 +35,8 @@ trait ByteSink {
 	 * @param src the buffer containing the bytes to write.
 	 * @param attachment an arbitrary user attachment passed through to the completion handler; may be `null`.
 	 * @param handler the callback invoked upon asynchronous write completion (reporting the total bytes written) or failure.
-	 * @return the number of bytes written synchronously (`>= 0`), or [[ByteSink.PENDING]] if completing asynchronously via [[handler]]. */
+	 * @return the number of bytes written synchronously (`>= 0`), or [[ByteSink.PENDING]] if completing asynchronously via [[handler]].
+	 * @throws java.nio.channels.ClosedChannelException if this sink has already been sealed or discarded. */
 	def write[A](src: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int
 
 	/** Finalizes this sink upon successful ingestion of all [[expectedSize]] bytes.\
@@ -63,7 +63,7 @@ object ByteSink {
 		def allocate(expectedSize: Long): ByteSink
 	}
 
-	/** A size-tiered allocator that routes small streams into direct memory buffers and larger streams into temporary disk files.
+	/** A size-tiered allocator that routes small streams into heap memory buffers and larger streams into temporary disk files.
 	 * @param inMemoryThreshold the maximum byte length eligible for in-memory buffer staging (default 64 KiB).
 	 * @param tempFilePrefix the filename prefix used when creating temporary staging files.
 	 * @param tempFileSuffix the filename suffix used when creating temporary staging files. */
@@ -81,78 +81,4 @@ object ByteSink {
 
 	/** The default singleton allocator instance with a 64 KiB in-memory threshold. */
 	object DefaultAllocator extends DefaultAllocator(64 * 1024, "matrix-bytesource-", ".bin")
-}
-
-/** A [[ByteSink]] implementation backed by an on-disk temporary file via [[AsynchronousFileChannel]].\
- * Upon [[seal]], the write channel is closed and the projected [[FileByteSource]] (configured with `deleteOnClose = true`) becomes readable.\
- * Upon [[discard]], the write channel is closed and the temporary file is deleted immediately.
- * @param path the file system path of the staging file.
- * @param expectedSize the total number of bytes expected to be written. */
-final class FileByteSink(val path: Path, override val expectedSize: Long) extends ByteSink {
-	private val channel = AsynchronousFileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
-	/** The position of the next byte to write.
-	 *  @note Assumes the concurrency invariant: Is thread-safe because callers must adhere to the single-flight contract (at most one outstanding read at any time).
-	 * @note Memory visibility guaranteed because JLS §17.4.5 establishes a happens-before edge between write initiation and completion dispatch across NIO.2 worker threads. */
-	private var position: Long = 0L
-
-	override val byteSource: FileByteSource = new FileByteSource(path, knownSize = expectedSize, deleteOnClose = true)
-
-	override def write[A](src: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int = {
-		val bytesToWrite = src.remaining()
-		if bytesToWrite == 0 then 0
-		else {
-			writeRemaining(src, 0, attachment, handler)
-			ByteSink.PENDING
-		}
-	}
-
-	private def writeRemaining[A](src: ByteBuffer, accumulated: Int, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Unit = {
-		channel.write(src, position, attachment, new CompletionHandler[Integer, A] {
-			override def completed(result: Integer, att: A): Unit = {
-				val written = if result != null && result.intValue() > 0 then result.intValue() else 0
-				if written > 0 then position += written
-				val totalWritten = accumulated + written
-				if src.hasRemaining then writeRemaining(src, totalWritten, att, handler)
-				else handler.completed(totalWritten, att)
-			}
-			override def failed(exc: Throwable, att: A): Unit = handler.failed(exc, att)
-		})
-	}
-
-	/** @inheritdoc
-	 * This implementation in particular closes the write channel, finalizing the staging file so the projected [[FileByteSource]] can be read.
-	 * @throws java.io.IOException if closing the underlying [[java.nio.channels.AsynchronousFileChannel]] fails during finalization. */
-	override def seal(): Unit = {
-		channel.close()
-	}
-
-	/** @inheritdoc
-	 * This implementation in particular closes the channel and immediately unlinks the staging file from disk to prevent orphaned files on aborted or corrupted transfers. */
-	override def discard(): Unit = {
-		// Rollback teardown: Suppress secondary close errors so scratch file unlinking can proceed and primary abort faults are not masked
-		try channel.close() catch { case NonFatal(_) => () }
-		// Best-effort unlinking: Suppress non-fatal deletion errors (e.g. file locks) to prevent aborting caller cleanup loops
-		try Files.deleteIfExists(path) catch { case NonFatal(_) => () }
-	}
-}
-
-/** An in-memory [[ByteSink]] implementation backed by a direct [[ByteBuffer]].\
- * Suitable for small streams within direct memory capacity ceilings.
- * @param byteLength the exact capacity of the direct memory buffer to allocate. */
-final class BufferByteSink(val byteLength: Int) extends ByteSink {
-	private val backing = ByteBuffer.allocateDirect(byteLength)
-
-	override val byteSource: BufferByteSource = new BufferByteSource(backing.asReadOnlyBuffer().position(0).limit(byteLength))
-
-	override def expectedSize: Long = byteLength.toLong
-
-	override def write[A](src: ByteBuffer, attachment: A, handler: CompletionHandler[Integer, ? >: A]): Int = {
-		val bytesToWrite = src.remaining()
-		backing.put(src)
-		bytesToWrite
-	}
-
-	override def seal(): Unit = ()
-
-	override def discard(): Unit = ()
 }

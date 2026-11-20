@@ -3,7 +3,7 @@ type: "Concept"
 title: "Byte Streaming Primitives (ByteSource & ByteSink)"
 description: "Capabilities, operational models, lifecycle state machines, and concurrency contracts of the transport-agnostic ByteSource and ByteSink primitives in common."
 tags: ["common", "primitives", "byte-source", "byte-sink", "streaming", "io"]
-timestamp: "2026-11-17T09:41:00Z"
+timestamp: "2026-11-18T04:30:00Z"
 ---
 
 # Byte Streaming Primitives: `ByteSource` & `ByteSink`
@@ -33,6 +33,7 @@ A `ByteSource` represents an immutable, repeatable supplier of sequential bytes 
   - *Synchronous Pull (`openChannel()`):* Standard blocking channel reads via `java.nio.channels.ReadableByteChannel` (or `FileChannel`), enabling seamless integration with conventional stream decoders and legacy I/O pipelines.
 - **Zero-Copy Bulk Transfer Invariant:** `ByteSource` exposes `transferTo(target: WritableByteChannel): Long`. When backed by persistent file channels (`FileByteSource`), implementations must leverage kernel-level zero-copy primitives (`FileChannel.transferTo` via OS `sendfile`) to stream data directly into target channels without copying bytes through JVM heap or user-space memory.
 - **Deterministic Lifecycle Invariant:** `ByteSource` extends `java.lang.AutoCloseable`. Closing the root `ByteSource` releases underlying shared file handles, unmaps direct memory regions, or unlinks ephemeral storage files (when created with `deleteOnClose = true`). Closing an individual `AsyncReader` or channel session releases only that session's state and does not close or invalidate the parent `ByteSource` or other concurrent reader sessions.
+- **Chunked In-Memory Representation (`ChunkedBufferByteSource`):** In addition to single-buffer (`BufferByteSource`) and file-backed (`FileByteSource`) implementations, `ChunkedBufferByteSource` wraps an immutable sequence of read-only or flipped `ByteBuffer` chunks (`IArray[ByteBuffer]`) with 64-bit `totalSize: Long` accounting. It supports multi-session extraction by duplicating chunk cursors per session without copying payload bytes or hitting the 2 GiB single-`ByteBuffer` addressing ceiling.
 
 ---
 
@@ -42,7 +43,7 @@ A `ByteSource` represents an immutable, repeatable supplier of sequential bytes 
 
 - **Single-Flight Invariant:** At most one asynchronous `read` operation may be pending per `AsyncReader` instance at any point in time. Invoking `read(...)` while a prior `read(...)` is in progress is strictly prohibited and results in undefined behavior or channel faults.
 - **Cross-Thread Serialized Continuity Invariant:** Successive non-overlapping `read` invocations do not require single-thread caller affinity. Under the Java Memory Model (JLS §17.4.5), NIO.2 completion hand-offs through thread pools establish a happens-before relationship between the completion of read $N$ (including internal offset advances) and the initiation of read $N+1$. Therefore, successive reads may safely be triggered from arbitrary thread pool workers (such as from within completion handler callbacks) without requiring `AtomicLong` or internal synchronization locks.
-- **Synchronous Return vs. Inline Callback Invariant:** Callers without an iterative trampoline rely on `AsyncReader.read` reporting synchronous completions directly via its `Int` return value rather than invoking `CompletionHandler` inline before returning `PENDING`, preventing unbounded stack recursion on multi-chunk streams.
+- **Synchronous Return vs. Inline Callback Invariant:** Implementations of `AsyncReader.read` must never invoke `CompletionHandler` inline before returning `PENDING`: synchronous completions are reported via the `Int` return value, synchronous entry-time failures (such as `ClosedChannelException` on a closed reader) throw directly without invoking `CompletionHandler`, and only post-`PENDING` continuations notify `CompletionHandler`. Callers without an iterative trampoline rely on this separation to prevent unbounded stack recursion and inverted callback ordering.
 
 ---
 
@@ -52,7 +53,7 @@ A `ByteSink` is a single-use, write-only staged accumulator that ingests bytes a
 
 - **Staging Pre-Allocation & Declared Size Invariant:** A `ByteSink` is provisioned with an `expectedSize: Long`, allowing backing storage implementations to pre-allocate memory buffers or reserve disk blocks upfront, eliminating repeated dynamic reallocation overhead.
 - **Early Handle Projection Invariant:** The projected `ByteSource` handle (`def byteSource: ByteSource`) is available immediately upon `ByteSink` instantiation, prior to byte transfer. This allows caller frameworks to synchronously assemble enclosing messages, domain wrappers, or metadata envelopes while the underlying binary bytes are still streaming into the sink.
-- **Incremental Non-Blocking Ingestion Invariant:** `write(src, attachment, handler)` ingests byte chunks asynchronously using standard NIO.2 `CompletionHandler` callbacks. Each write operation consumes all available bytes between `src.position()` and `src.limit()` before invoking the completion handler. At most one write operation may be pending at any given time (single-flight write invariant). Callers without an iterative trampoline rely on `ByteSink.write` reporting synchronous completions directly via its `Int` return value rather than invoking `CompletionHandler` inline before returning `PENDING`, preventing unbounded stack recursion on multi-chunk streams.
+- **Incremental Non-Blocking Ingestion Invariant:** `write(src, attachment, handler)` ingests byte chunks asynchronously using standard NIO.2 `CompletionHandler` callbacks. Each write operation consumes all available bytes between `src.position()` and `src.limit()` before completing. At most one write operation may be pending at any given time (single-flight write invariant). Symmetrically with `ByteSource.AsyncReader.read`, implementations must never invoke `CompletionHandler` inline before returning `ByteSink.PENDING`: synchronous completions are reported via the `Int` return value, synchronous entry-time failures (such as `ClosedChannelException` after `seal()` or `discard()`) throw directly without invoking `CompletionHandler`, and only post-`PENDING` continuations notify `CompletionHandler`.
 - **Strict Terminal State Machine Invariant (`seal` vs `discard`):** An active `ByteSink` begins in the *Ingesting* state and must transition into exactly one of two mutually exclusive terminal states:
   - *`seal()` (Success):* Closes write channel descriptors, flushes buffers, and commits the underlying data to an immutable state, enabling the projected `byteSource` to be safely read.
   - *`discard()` (Abort/Fault):* Aborts ingestion immediately, closes channel descriptors, and unlinks/deletes any ephemeral backing resources (such as temporary disk files), preventing abandoned staging artifacts from leaking storage.
@@ -64,8 +65,8 @@ A `ByteSink` is a single-use, write-only staged accumulator that ingests bytes a
 The `ByteSink.Allocator` strategy isolates producers from physical storage topology decisions:
 
 - **Tiered Staging Allocation Invariant:** `DefaultAllocator` dynamically selects the storage medium based on declared stream extent:
-  - *In-Memory Tier ($\le 64$ KiB):* Streams below or equal to the staging threshold are staged in reusable direct memory buffers (`BufferByteSink`), avoiding file descriptor allocation and disk latency.
-  - *Disk Tier ($> 64$ KiB):* Streams exceeding the staging threshold are staged in temporary files (`FileByteSink`) using asynchronous file channels, ensuring that direct memory consumption across arbitrary streams remains strictly $O(1)$.
+  - *In-Memory Tier ($\le 64$ KiB):* Streams below or equal to the staging threshold are staged in heap memory buffers (`BufferByteSink`), avoiding file descriptor allocation, disk latency, and off-heap direct-memory cleaner overhead (`BufferByteSink` can also wrap a caller-supplied writable `ByteBuffer` directly).
+  - *Disk Tier ($> 64$ KiB):* Streams exceeding the staging threshold are staged in temporary files (`FileByteSink`) using asynchronous file channels, ensuring that direct memory consumption across arbitrary streams remains strictly $O(1)$. `FileByteSink` coalesces sub-block writes synchronously in a lazily allocated heap staging block buffer (by default 64 KiB, capped to `expectedSize` when positive) until a full block is accumulated, `expectedSize` is reached, or `seal()` flushes any remaining tail, while bypassing staging with zero copy whenever no buffered bytes are pending and an incoming buffer covers a full block or completes the expected stream, and hoisting its asynchronous write completion handler to avoid per-write allocations.
 
 ---
 

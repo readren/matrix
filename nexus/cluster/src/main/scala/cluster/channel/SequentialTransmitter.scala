@@ -2,6 +2,7 @@ package readren.nexus
 package cluster.channel
 
 import cluster.channel.SequentialTransmitter.*
+import cluster.misc.RingLength
 import cluster.serialization.{ProtocolVersion, Serializer}
 
 import java.lang.invoke.VarHandle
@@ -15,7 +16,7 @@ object SequentialTransmitter {
 	export TransmissionProtocol.*
 
 	/** Maximum number of unserialized messages allowed in [[SequentialTransmitter.transmissionQueue]] (`2^28 - 1 = 268,435,455`), and bitmask isolating bits `0..27` of [[CoordinationState]]. */
-	private inline val MaxQueuedCount = 0x0fff_ffff
+	private inline val MsgQueueMaxLength = 0x0fff_ffff
 
 	/** Bitmask isolating bits `28..30` of [[CoordinationState]], which encode the [[StageState]] (leaving bit `31` unused `0`). */
 	private inline val StageStateMask = 7 << 28
@@ -49,10 +50,10 @@ object SequentialTransmitter {
 		extension (state: CoordinationState) {
 			inline def toInt: Int = state
 			inline def stageState: StageState = state & StageStateMask
-			inline def queuedCount: Int = state & MaxQueuedCount
+			inline def queuedCount: Int = state & MsgQueueMaxLength
 			inline def withStageState(next: StageState): CoordinationState = (state & ~StageStateMask) | next
 			inline def withIncrementedQueue: CoordinationState = {
-				assert(queuedCount < MaxQueuedCount, "CoordinationState queuedCount overflow")
+				assert(queuedCount < MsgQueueMaxLength, "CoordinationState queuedCount overflow")
 				state + 1
 			}
 			inline def withDecrementedQueue: CoordinationState = {
@@ -99,24 +100,22 @@ object SequentialTransmitter {
  *
  * @param channel The underlying channel for transmission.
  * @param context The transmission diagnostic context.
- * @param buffersCapacity The capacity of each circular storage buffer.
- * @param maxBuffers The maximum number of buffers allowed in circular storage.
- * @param minBuffersOnIdle The minimum number of buffers retained on idle transitions.
+ * @param capacityOfBufferInRing The capacity of each circular storage buffer.
+ * @param ringMaxLength The maximum number of buffers allowed in circular storage.
+ * @param ringMinLengthOnIdle The minimum number of buffers retained on idle transitions.
  * @param streamTransferBufferCapacity The capacity of the direct buffer used to transfer streaming chunks.
  * @param maxGatheringBuffers The maximum number of [[java.nio.ByteBuffer]] entries submitted per gathering socket write call.
  * @tparam M The type of messages to transmit. */
 class SequentialTransmitter[M](
 	channel: AsynchronousSocketChannel,
 	val context: Context,
-	buffersCapacity: Int = Transmitter.DEFAULT_BUFFERS_CAPACITY,
-	maxBuffers: Int = Transmitter.DEFAULT_MAX_BUFFERS,
-	val minBuffersOnIdle: Int = Transmitter.DEFAULT_MIN_BUFFERS_ON_IDLE,
-	val streamTransferBufferCapacity: Int = Transmitter.DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
-	val maxGatheringBuffers: Int = Transmitter.DEFAULT_MAX_GATHERING_BUFFERS
+	capacityOfBufferInRing: Int = DEFAULT_CAPACITY_FOR_BUFFERS_IN_RING,
+	ringMaxLength: RingLength = DEFAULT_RING_MAX_LENGTH,
+	val ringMinLengthOnIdle: RingLength = DEFAULT_RING_MIN_LENGTH_ON_IDLE,
+	val streamTransferBufferCapacity: Int = DEFAULT_STREAM_TRANSFER_BUFFER_CAPACITY,
+	val maxGatheringBuffers: Int = DEFAULT_MAX_GATHERING_BUFFERS
 ) {
-	require(minBuffersOnIdle >= 1, s"minBuffersOnIdle must be at least 1, got $minBuffersOnIdle")
-
-	private val transmitter = new Transmitter(channel, context, buffersCapacity, maxBuffers, streamTransferBufferCapacity, maxGatheringBuffers)
+	private val transmitter = new Transmitter(channel, context, capacityOfBufferInRing, ringMaxLength, streamTransferBufferCapacity, maxGatheringBuffers)
 
 	/** Lock-free atomic [[SequentialTransmitter.CoordinationState]] packing [[SequentialTransmitter.StageState]] and `queuedCount` across caller threads, completion threads, and [[pruneTo]]. */
 	private val coordinationState: AtomicInteger = new AtomicInteger(CoordinationState.Idle.toInt)
@@ -156,7 +155,7 @@ class SequentialTransmitter[M](
 	 * @param timeUnit The timeout unit.
 	 * @param onTransmissionComplete Callback invoked in FIFO submission order when transmission completes.
 	 * @param serializer The serializer for the message type.
-	 * @throws java.util.concurrent.RejectedExecutionException if the transmitter is busy and the wait queue has reached [[SequentialTransmitter.MaxQueuedCount]]. */
+	 * @throws java.util.concurrent.RejectedExecutionException if the transmitter is busy and the wait queue has reached [[SequentialTransmitter.MsgQueueMaxLength]]. */
 	def transmit(message: M, msgVersion: ProtocolVersion, timeout: Long = 1, timeUnit: TimeUnit = TimeUnit.SECONDS)(onTransmissionComplete: Report => Unit)(using serializer: Serializer[M]): Unit = {
 		transmitWithAttachment[Report => Unit](message, msgVersion, onTransmissionComplete, timeout, timeUnit)(invokeWithoutAttachment)
 	}
@@ -170,7 +169,7 @@ class SequentialTransmitter[M](
 	 * @param onTransmissionComplete Callback invoked in FIFO submission order with a [[SequentialTransmitter.Report]] and `attachment`.
 	 * @param serializer The serializer for the message type.
 	 * @tparam A The type of the attachment passed through.
-	 * @throws java.util.concurrent.RejectedExecutionException if the transmitter is busy and the wait queue has reached [[SequentialTransmitter.MaxQueuedCount]]. */
+	 * @throws java.util.concurrent.RejectedExecutionException if the transmitter is busy and the wait queue has reached [[SequentialTransmitter.MsgQueueMaxLength]]. */
 	def transmitWithAttachment[A](
 		message: M,
 		msgVersion: ProtocolVersion,
@@ -197,7 +196,7 @@ class SequentialTransmitter[M](
 					activeSerializer = serializer.asInstanceOf[Serializer[Any]]
 					drainActiveTransmissionLoop()
 				}
-			} else if current.queuedCount < MaxQueuedCount then {
+			} else if current.queuedCount < MsgQueueMaxLength then {
 				if coordinationState.compareAndSetCoordinationState(current, current.withIncrementedQueue) then {
 					wasStateChangedConcurrently = false
 					transmissionQueue.add(
@@ -212,25 +211,25 @@ class SequentialTransmitter[M](
 						)
 					)
 				}
-			} else throw new RejectedExecutionException(s"Transmission queue capacity ($MaxQueuedCount) exceeded")
+			} else throw new RejectedExecutionException(s"Transmission queue capacity ($MsgQueueMaxLength) exceeded")
 		}
 	}
 
-	/** Prunes unused allocated buffers in the underlying [[Transmitter]] down to `targetCount` when quiescent (`Idle`).
-	 * @param targetCount The desired target number of buffers to retain.
-	 * @return The number of buffers retained after pruning (or current [[bufferCount]] if a transmission or pruning pass is active). */
-	def pruneTo(targetCount: Int): Int = {
+	/** Prunes unused allocated buffers in the underlying [[Transmitter]] down to `targetLength` when quiescent (`Idle`).
+	 * @param targetLength The desired target number of buffers to retain.
+	 * @return The number of buffers retained after pruning (or current [[ringLength]] if a transmission or pruning pass is active). */
+	def pruneTo(targetLength: RingLength): RingLength = {
 		if coordinationState.compareAndSetCoordinationState(CoordinationState.Idle, CoordinationState.Pruning) then {
-			val retained = transmitter.pruneTo(targetCount)
+			val retained = transmitter.pruneTo(targetLength)
 			releasePruningOwnership()
 			retained
 		} else {
-			bufferCount
+			ringLength
 		}
 	}
 
 	/** The total number of buffers currently allocated in the underlying [[Transmitter]] circular storage. */
-	def bufferCount: Int = transmitter.bufferCount
+	def ringLength: RingLength = transmitter.ringLength
 
 	/** Programs an idle callback to be invoked once when no transmission is in progress and the queue is empty.
 	 * @param onIdle The handler to execute when idle. */
@@ -320,7 +319,7 @@ class SequentialTransmitter[M](
 					done = true
 				}
 			} else if coordinationState.compareAndSetCoordinationState(current, CoordinationState.Pruning) then {
-				transmitter.pruneTo(minBuffersOnIdle)
+				transmitter.pruneTo(ringMinLengthOnIdle)
 				var released = false
 				while !released do {
 					val curPruning = coordinationState.getCoordinationState

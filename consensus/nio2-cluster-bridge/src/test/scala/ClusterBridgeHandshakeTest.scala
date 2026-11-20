@@ -4,6 +4,7 @@ package nio2
 import munit.FunSuite
 import readren.common.Maybe
 import readren.nexus.cluster.channel.{PipelinedTransmitter, Receiver}
+import readren.nexus.cluster.misc.RingLength
 import readren.nexus.cluster.serialization.*
 import readren.nexus.cluster.serialization.CommonSerializers.given
 import readren.nexus.cluster.service.{ChannelId, ChannelOrigin}
@@ -74,7 +75,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				case fault: Receiver.Fault => promise.failure(new RuntimeException(s"Fault: $fault"))
 			}(using sdm.wireProtocol.clusterWireMessageDeserializer)
 
-			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1)))
+			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 			transmitter.transmit(handshake, ProtocolVersion(1)) { _ => () }(using sdm.wireProtocol.clusterWireMessageSerializer)
 
 			val response = Await.result(promise.future, 5.seconds)
@@ -121,7 +122,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				case fault: Receiver.Fault => promise.failure(new RuntimeException(s"Fault: $fault"))
 			}(using sdm.wireProtocol.clusterWireMessageDeserializer)
 
-			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(999)))
+			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(999)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 			transmitter.transmit(handshake, ProtocolVersion(1)) { _ => () }(using sdm.wireProtocol.clusterWireMessageSerializer)
 
 			val response = Await.result(promise.future, 5.seconds)
@@ -186,7 +187,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				case fault: Receiver.Fault => promise.failure(new RuntimeException(s"Fault: $fault"))
 			}(using sdm.wireProtocol.clusterWireMessageDeserializer)
 
-			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1), ProtocolVersion(2)))
+			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1), ProtocolVersion(2)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 			transmitter.transmit(handshake, ProtocolVersion.OF_THIS_PROJECT) { _ => () }(using sdm.wireProtocol.clusterWireMessageSerializer)
 
 			val response = Await.result(promise.future, 5.seconds)
@@ -237,7 +238,7 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 				case fault: Receiver.Fault => promise.failure(new RuntimeException(s"Fault: $fault"))
 			}(using sdm.wireProtocol.clusterWireMessageDeserializer)
 
-			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1)))
+			val handshake = sdm.wireProtocol.PeerHandshake("client-peer", Set(ProtocolVersion(1)), Receiver.DEFAULT_MAX_SINGLE_FRAME_PACKAGE_PAYLOAD_BYTES)
 			transmitter.transmit(handshake, ProtocolVersion.OF_THIS_PROJECT) { _ => () }(using sdm.wireProtocol.clusterWireMessageSerializer)
 
 			val response = Await.result(promise.future, 5.seconds)
@@ -250,6 +251,29 @@ class ClusterBridgeHandshakeTest extends FunSuite {
 		} finally {
 			clientChannel.close()
 			bridge.close()
+		}
+	}
+
+	test("ClusterBridgeConfig validates asymmetric transmitter/receiver maxRingLength and maxGatheringBuffers") {
+		val valid = ClusterBridgeConfig(maxRingLengthForTransmission = RingLength(16), maxRingLengthForReception = RingLength(64), maxGatheringBuffers = 4)
+		assertEquals(valid.maxRingLengthForTransmission, 16)
+		assertEquals(valid.maxRingLengthForReception, 64)
+		assertEquals(valid.maxGatheringBuffers, 4)
+
+		intercept[IllegalArgumentException] {
+			ClusterBridgeConfig(sizeOfBuffersInRing = 1024 * 1024, maxRingLengthForTransmission = RingLength(3000))
+		}
+		intercept[IllegalArgumentException] {
+			ClusterBridgeConfig(sizeOfBuffersInRing = 1024 * 1024, maxRingLengthForReception = RingLength(3000))
+		}
+		intercept[IllegalArgumentException] {
+			ClusterBridgeConfig(maxGatheringBuffers = 1)
+		}
+		intercept[IllegalArgumentException] {
+			RingLength(0)
+		}
+		intercept[IllegalArgumentException] {
+			RingLength(-1)
 		}
 	}
 }

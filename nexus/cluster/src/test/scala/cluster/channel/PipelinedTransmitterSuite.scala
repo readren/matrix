@@ -1,7 +1,7 @@
 package readren.nexus
 package cluster.channel
 
-import cluster.misc.VLQ
+import cluster.misc.{RingLength, VLQ}
 import cluster.serialization.Serializer.SerializationException
 import cluster.serialization.{ProtocolVersion, Serializer}
 import cluster.service.{ChannelId, ChannelOrigin}
@@ -231,7 +231,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 	test("single-frame multi-buffer control package exceeding maxGatheringBuffers transmits across bounded batches with partial writes") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete(maxBytesPerWrite = 7))
-		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, buffersCapacity = 16, maxBuffers = 32, minBuffersOnIdle = 2, maxGatheringBuffers = 4)
+		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(32), ringMinLengthOnIdle = RingLength(2), maxGatheringBuffers = 4)
 		// 264 bytes -> spans 17 circular storage buffers (> maxGatheringBuffers = 4).
 		val payload = sequentialPatternBytes(22 * 12)
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
@@ -247,7 +247,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		assert(steps > 6, s"Expected multiple bounded gathering batches and partial writes, got $steps")
 		assert(channel.maxBatchLength <= 4, s"Gathering batch exceeded maxGatheringBuffers=4: ${channel.maxBatchLength}")
 		assertEquals(reports.toList, List(PipelinedTransmitter.Delivered))
-		assertEquals(transmitter.bufferCount, 3, "Transmitted stage prunes to minBuffersOnIdle=2 while untouched stage retains 1 initial buffer")
+		assertEquals(transmitter.bufferInRingTotalCount, 3, "Transmitted stage prunes to ringMinLengthOnIdle=2 while untouched stage retains 1 initial buffer")
 
 		val decoded = decodeAllWirePackages(channel.writtenBytes)
 		assertEquals(decoded.size, 1)
@@ -260,7 +260,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 	test("exact-capacity buffer triggers separate sentinel buffer even when batch reaches maxGatheringBuffers") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
 		// 4 buffers * 16 bytes = 64 bytes -> header(1) + 4 buffers = 5 buffers, with maxGatheringBuffers = 2 forces sentinel into a separate batch.
-		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, buffersCapacity = 16, maxBuffers = 8, maxGatheringBuffers = 2)
+		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), maxGatheringBuffers = 2)
 		val payload = sequentialPatternBytes(64)
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
 
@@ -280,7 +280,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 	test("inter-message pipelining burst swaps serialization and transmission rings, delivers FIFO, fires triggerOnIdle, and prunes buffers") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete(maxBytesPerWrite = 11))
-		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, buffersCapacity = 16, maxBuffers = 16, minBuffersOnIdle = 2, maxGatheringBuffers = 4)
+		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(16), ringMinLengthOnIdle = RingLength(2), maxGatheringBuffers = 4)
 		val reports = new ArrayBuffer[(Int, PipelinedTransmitter.Report)]()
 		val idleCalls = new AtomicInteger(0)
 
@@ -300,7 +300,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		assertEquals(idleCalls.get(), 1, "onIdle must fire exactly once upon draining the burst")
 		assertEquals(reports.map(_._1).toList, (0 until count).toList)
 		assert(reports.forall(_._2 == PipelinedTransmitter.Delivered))
-		assertEquals(transmitter.bufferCount, 4)
+		assertEquals(transmitter.bufferInRingTotalCount, 4)
 
 		val decoded = decodeAllWirePackages(channel.writtenBytes)
 		assertEquals(decoded.size, count)
@@ -314,9 +314,9 @@ class PipelinedTransmitterSuite extends FunSuite {
 		assertEquals(idleCalls.get(), 2)
 	}
 
-	test("control serialization failures (SerializationException and BuffersCountExceededException) do not taint the wire") {
+	test("control serialization failures (SerializationException and RingLengthExceededException) do not taint the wire") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-		val transmitter = new PipelinedTransmitter[(Int, String)](channel, newContext, buffersCapacity = 16, maxBuffers = 2, minBuffersOnIdle = 2)
+		val transmitter = new PipelinedTransmitter[(Int, String)](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(2), ringMinLengthOnIdle = RingLength(2))
 		val reports = new ArrayBuffer[(Int, PipelinedTransmitter.Report)]()
 		val serFailure = new SerializationException(10, "bad object")
 
@@ -330,7 +330,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 				case 3 =>
 					writer.putBytes(Array.fill[Byte](16)(33))
 					writer.putBytes(Array.fill[Byte](16)(34))
-					// Exceeds maxBuffers = 2 (total capacity = 32 bytes)
+					// Exceeds ringMaxLength = 2 (total capacity = 32 bytes)
 					writer.putBytes(Array.fill[Byte](1)(35))
 				case 4 =>
 					writer.putBytes(Array.fill[Byte](12)(44))
@@ -350,8 +350,8 @@ class PipelinedTransmitterSuite extends FunSuite {
 		assertEquals(byId(1), PipelinedTransmitter.Delivered)
 		assertEquals(byId(2), PipelinedTransmitter.SerializationProblem((2, "bad-ser"), serFailure))
 		byId(3) match {
-			case PipelinedTransmitter.TransmissionFailure(msg, _: BuffersCountExceededException) => assertEquals(msg, (3, "bad-buf"))
-			case other => fail(s"Expected TransmissionFailure(_, BuffersCountExceededException), got $other")
+			case PipelinedTransmitter.TransmissionFailure(msg, _: RingLengthExceededException) => assertEquals(msg, (3, "bad-buf"))
+			case other => fail(s"Expected TransmissionFailure(_, RingLengthExceededException), got $other")
 		}
 		assertEquals(byId(4), PipelinedTransmitter.Delivered)
 
@@ -363,7 +363,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 	test("serialization failure when idle resets storage, triggers onIdle, and preserves reusability") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new PipelinedTransmitter[Boolean](channel, newContext, buffersCapacity = 16, maxBuffers = 4, minBuffersOnIdle = 2)
+		val transmitter = new PipelinedTransmitter[Boolean](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), ringMinLengthOnIdle = RingLength(2))
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
 		val serFailure = new SerializationException(4, "isolated failure")
 		val idleCalls = new AtomicInteger(0)
@@ -391,7 +391,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.SyncThrow(syncBoom) else WriteMode.InlineComplete()
 		)
-		val transmitter = new PipelinedTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val transmitter = new PipelinedTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4))
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
 
 		given Serializer[Int] = (n, writer) => {
@@ -415,7 +415,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new PipelinedTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new PipelinedTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[(Int, PipelinedTransmitter.Report)]()
 
 		given Serializer[Int] = (v, writer) => {
@@ -460,7 +460,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 				}
 			}
 
-			val transmitter = new PipelinedTransmitter[Array[Byte]](asyncChannel, newContext, buffersCapacity = 16, maxBuffers = 32, minBuffersOnIdle = 2, maxGatheringBuffers = 4)
+			val transmitter = new PipelinedTransmitter[Array[Byte]](asyncChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(32), ringMinLengthOnIdle = RingLength(2), maxGatheringBuffers = 4)
 			val totalMessages = 60
 			val payloads = Array.tabulate(totalMessages)(i => {
 				val body = sequentialPatternBytes(8 + (i % 13) * 11)
@@ -513,7 +513,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 				assertEquals(pkg.frameCount, 1)
 				assertEquals(pkg.payload.toSeq, payloads(id).toSeq)
 			}
-			assertEquals(transmitter.bufferCount, 4)
+			assertEquals(transmitter.bufferInRingTotalCount, 4)
 		} finally {
 			producerExecutor.shutdownNow()
 			ioExecutor.shutdownNow()
@@ -585,10 +585,10 @@ class PipelinedTransmitterSuite extends FunSuite {
 	test("constructor rejects invalid capacity and batch parameters") {
 		val channel = new ControlledAsyncChannel()
 		intercept[IllegalArgumentException] {
-			new PipelinedTransmitter[Int](channel, newContext, maxBuffers = 0)
+			new PipelinedTransmitter[Int](channel, newContext, ringMaxLength = RingLength(0))
 		}
 		intercept[IllegalArgumentException] {
-			new PipelinedTransmitter[Int](channel, newContext, minBuffersOnIdle = 0)
+			new PipelinedTransmitter[Int](channel, newContext, ringMinLengthOnIdle = RingLength(0))
 		}
 		intercept[IllegalArgumentException] {
 			new PipelinedTransmitter[Int](channel, newContext, streamTransferBufferCapacity = 0)
@@ -600,7 +600,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 	test("zero-byte control payload omits frame header and transmits standalone sentinel cleanly") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, buffersCapacity = 16, maxBuffers = 4)
+		val transmitter = new PipelinedTransmitter[Array[Byte]](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4))
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
 
 		given Serializer[Array[Byte]] = (msg, writer) => {
@@ -629,9 +629,9 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val transmitter = new PipelinedTransmitter[(Array[Byte], ByteSource)](
 			channel,
 			newContext,
-			buffersCapacity = 16,
-			maxBuffers = 8,
-			minBuffersOnIdle = 1,
+			capacityOfBufferInRing = 16,
+			ringMaxLength = RingLength(8),
+			ringMinLengthOnIdle = RingLength(1),
 			streamTransferBufferCapacity = 4,
 			maxGatheringBuffers = 2
 		)
@@ -664,9 +664,9 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val transmitter = new PipelinedTransmitter[(Int, List[ByteSource])](
 			channel,
 			newContext,
-			buffersCapacity = 16,
-			maxBuffers = 8,
-			minBuffersOnIdle = 1,
+			capacityOfBufferInRing = 16,
+			ringMaxLength = RingLength(8),
+			ringMinLengthOnIdle = RingLength(1),
 			streamTransferBufferCapacity = 4,
 			maxGatheringBuffers = 3
 		)
@@ -746,7 +746,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 	test("trailing stream handles AsyncReader.read returning 0 as premature EOF") {
 		val channel = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-		val transmitter = new PipelinedTransmitter[ByteSource](channel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 8)
+		val transmitter = new PipelinedTransmitter[ByteSource](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 8)
 		val reports = new ArrayBuffer[PipelinedTransmitter.Report]()
 
 		val zeroReturnSource = new ByteSource {
@@ -777,7 +777,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val syncChannel = new ControlledAsyncChannel(idx =>
 			if idx == 1 then WriteMode.SyncThrow(streamSyncBoom) else WriteMode.InlineComplete()
 		)
-		val tx1 = new PipelinedTransmitter[List[ByteSource]](syncChannel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 8)
+		val tx1 = new PipelinedTransmitter[List[ByteSource]](syncChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 8)
 		val reports1 = new ArrayBuffer[PipelinedTransmitter.Report]()
 
 		def trackingSource(bytes: Array[Byte], closeCounter: AtomicInteger): ByteSource = new ByteSource {
@@ -817,7 +817,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val asyncFailChannel = new ControlledAsyncChannel(idx =>
 			if idx == 1 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val tx2 = new PipelinedTransmitter[List[ByteSource]](asyncFailChannel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 8)
+		val tx2 = new PipelinedTransmitter[List[ByteSource]](asyncFailChannel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 8)
 		val reports2 = new ArrayBuffer[PipelinedTransmitter.Report]()
 		val abortingSource = new ByteSource {
 			override def size: Long = 10L
@@ -850,7 +850,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 			else if idx == 1 then WriteMode.SyncThrow(partialBoom)
 			else WriteMode.InlineComplete()
 		)
-		val transmitter = new PipelinedTransmitter[(Array[Byte], Option[ByteSource])](channel, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 8)
+		val transmitter = new PipelinedTransmitter[(Array[Byte], Option[ByteSource])](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 8)
 		val reports = new ArrayBuffer[(Int, PipelinedTransmitter.Report)]()
 
 		given Serializer[(Array[Byte], Option[ByteSource])] = (pair, writer) => {
@@ -888,9 +888,9 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val transmitter = new PipelinedTransmitter[(Array[Byte], Option[ByteSource])](
 			channel,
 			newContext,
-			buffersCapacity = 16,
-			maxBuffers = 16,
-			minBuffersOnIdle = 2,
+			capacityOfBufferInRing = 16,
+			ringMaxLength = RingLength(16),
+			ringMinLengthOnIdle = RingLength(2),
 			streamTransferBufferCapacity = 8
 		)
 		val events = new ArrayBuffer[String]()
@@ -903,9 +903,9 @@ class PipelinedTransmitterSuite extends FunSuite {
 		transmitter.transmit((sequentialPatternBytes(48), Some(BufferByteSource(sequentialPatternBytes(12)))), ProtocolVersion.OF_THIS_PROJECT) { r =>
 			events += s"msg1:$r"
 		}
-		val activeCount = transmitter.bufferCount
+		val activeCount = transmitter.bufferInRingTotalCount
 		assert(activeCount >= 4)
-		assertEquals(transmitter.pruneTo(1), activeCount, "pruneTo must not prune while active")
+		assertEquals(transmitter.pruneTo(RingLength(1)), activeCount, "pruneTo must not prune while active")
 
 		transmitter.triggerOnIdle(() => events += "idle1")
 		transmitter.triggerOnIdle(() => events += "idle2")
@@ -913,10 +913,10 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 		channel.drainPending()
 		assertEquals(events.toList, List("idle1", "idle2", "msg1:Delivered"))
-		assertEquals(transmitter.bufferCount, 3, "Transmitted stage prunes to minBuffersOnIdle=2 while untouched stage retains 1 initial buffer")
+		assertEquals(transmitter.bufferInRingTotalCount, 3, "Transmitted stage prunes to ringMinLengthOnIdle=2 while untouched stage retains 1 initial buffer")
 
-		assertEquals(transmitter.pruneTo(1), 2)
-		assertEquals(transmitter.bufferCount, 2)
+		assertEquals(transmitter.pruneTo(RingLength(1)), 2)
+		assertEquals(transmitter.bufferInRingTotalCount, 2)
 		val transferField = classOf[PipelinedTransmitter[?]].getDeclaredField("streamTransferBuffer")
 		transferField.setAccessible(true)
 		assert(transferField.get(transmitter) eq null, "pruneTo must release streamTransferBuffer")
@@ -938,7 +938,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		val channel = new ControlledAsyncChannel(idx =>
 			if idx == 0 then WriteMode.DeferredComplete() else WriteMode.InlineComplete()
 		)
-		val transmitter = new PipelinedTransmitter[Int](channel, newContext, buffersCapacity = 16, maxBuffers = 8)
+		val transmitter = new PipelinedTransmitter[Int](channel, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8))
 		val reports = new ArrayBuffer[(Int, PipelinedTransmitter.Report)]()
 		given Serializer[Int] = (v, w) => w.putInt(v)
 
@@ -964,7 +964,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 		try {
 			// 1. Race runSerializationLoop handoff against onTransmissionFinished Case C and Case D vs Empty->Serializing.
 			val channel1 = new ControlledAsyncChannel(_ => WriteMode.DeferredComplete())
-			val tx1 = new PipelinedTransmitter[Int](channel1, newContext, buffersCapacity = 16, maxBuffers = 8, minBuffersOnIdle = 1)
+			val tx1 = new PipelinedTransmitter[Int](channel1, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(8), ringMinLengthOnIdle = RingLength(1))
 			val barrier = new CyclicBarrier(2)
 
 			@volatile var delayMsg2 = false
@@ -1024,7 +1024,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 			// 2. Race pruneTo(1), transmit, and triggerOnIdle simultaneously.
 			val channel2 = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-			val tx2 = new PipelinedTransmitter[Array[Byte]](channel2, newContext, buffersCapacity = 16, maxBuffers = 16, minBuffersOnIdle = 2)
+			val tx2 = new PipelinedTransmitter[Array[Byte]](channel2, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(16), ringMinLengthOnIdle = RingLength(2))
 			given Serializer[Array[Byte]] = (bytes, w) => w.putBytes(bytes)
 			val threeBarrier = new CyclicBarrier(3)
 			for round <- 0 until 200 do {
@@ -1036,7 +1036,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 				val fPrune = executor.submit(new Runnable {
 					override def run(): Unit = {
 						threeBarrier.await(5, TimeUnit.SECONDS)
-						tx2.pruneTo(1)
+						tx2.pruneTo(RingLength(1))
 						()
 					}
 				})
@@ -1060,7 +1060,7 @@ class PipelinedTransmitterSuite extends FunSuite {
 
 			// 3. Cross-thread AsyncReader.read completion executing runTrailingStreamLoop BEFORE read() returns PENDING.
 			val channel3 = new ControlledAsyncChannel(_ => WriteMode.InlineComplete())
-			val tx3 = new PipelinedTransmitter[ByteSource](channel3, newContext, buffersCapacity = 16, maxBuffers = 4, streamTransferBufferCapacity = 5)
+			val tx3 = new PipelinedTransmitter[ByteSource](channel3, newContext, capacityOfBufferInRing = 16, ringMaxLength = RingLength(4), streamTransferBufferCapacity = 5)
 			given Serializer[ByteSource] = (s, w) => w.putByteSource(s)
 			val fullStream = sequentialPatternBytes(37)
 			val earlyCompletionSource = new ByteSource {
